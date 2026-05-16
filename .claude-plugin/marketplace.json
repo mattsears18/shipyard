@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mattsears-plugins",
+  "description": "Personal Claude Code plugins by Matt Sears.",
+  "owner": {
+    "name": "Matt Sears",
+    "email": "mattsears18@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "app-audits",
+      "description": "Audit web + mobile apps across UX, performance, security, and accessibility — autonomously files GitHub issues for every finding.",
+      "author": {
+        "name": "Matt Sears"
+      },
+      "category": "quality",
+      "source": "./plugins/app-audits"
+    }
+  ]
+}
