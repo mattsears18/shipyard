@@ -21,6 +21,31 @@ gh label list --repo <owner/repo> --limit 100
 
 Apply whichever of these actually exist: `bug`, `enhancement`, `documentation`, `design`, `a11y`, `performance`, `security`, `web`, `ios`, `android`, `ci`. If a useful label doesn't exist, *don't* create it autonomously — that's a repo-config decision. Use the closest existing label and note the missing label in your end-of-run summary so the user can decide.
 
+## Agent-identifying label (REQUIRED)
+
+Every issue you file MUST also carry an `audit:<dimension>` label identifying which audit agent filed it. Your agent's system prompt tells you which one to apply.
+
+| Agent | Required label | Color (if auto-creating) |
+|---|---|---|
+| `lighthouse-auditor` | `audit:lighthouse` | `c5def5` |
+| `web-ux-auditor` | `audit:web-ux` | `c5def5` |
+| `mobile-ux-auditor` | `audit:mobile-ux` | `c5def5` |
+| `security-auditor` | `audit:security` | `c5def5` |
+| `a11y-auditor` | `audit:a11y` | `c5def5` |
+| `seo-auditor` | `audit:seo` | `c5def5` |
+| `privacy-auditor` | `audit:privacy` | `c5def5` |
+| `release-readiness-auditor` | `audit:release-readiness` | `c5def5` |
+| `pwa-auditor` | `audit:pwa` | `c5def5` |
+
+**Auto-create your audit:* label if it doesn't exist** — this is the one exception to the "don't auto-create labels" rule, because the label is the agent's own metadata, not a repo-config decision. Do this once at the start of the run:
+
+```bash
+gh label list --repo <owner/repo> --limit 100 | grep -q "^audit:<dimension>" || \
+  gh label create "audit:<dimension>" --repo <owner/repo> --color c5def5 --description "Created by app-audits:<agent-name>"
+```
+
+Then pass `--label "audit:<dimension>"` on every `gh issue create` you do.
+
 ## Search for duplicates before filing
 
 For every finding, before `gh issue create`:

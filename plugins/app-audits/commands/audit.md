@@ -11,7 +11,7 @@ Run an autonomous audit and file GitHub issues for every finding. No approval ga
 
 `$ARGUMENTS` may include:
 
-- **Audit type** (required, first positional): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `security`, `a11y`, or `all`.
+- **Audit type** (required, first positional): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `security`, `a11y`, `seo`, `privacy`, `release-readiness`, `pwa`, or `all`.
 - **URL** (optional, second positional, web audits only): the page to audit. If omitted and the audit needs a URL, ask via `AskUserQuestion`.
 - **--repo owner/repo** (optional): target GitHub repo. If omitted, auto-detect via `gh repo view --json nameWithOwner -q .nameWithOwner`. If that fails (not in a repo), ask via `AskUserQuestion`.
 
@@ -19,17 +19,23 @@ Run an autonomous audit and file GitHub issues for every finding. No approval ga
 
 Resolve the target repo *once* in the main session and pass it to every agent. Then dispatch:
 
-| Type | Agents to dispatch |
-|---|---|
-| `lighthouse` | `app-audits:lighthouse-auditor` |
-| `web-ux` | `app-audits:web-ux-auditor` |
-| `mobile-ux` | `app-audits:mobile-ux-auditor` |
-| `ux` | `app-audits:web-ux-auditor` + `app-audits:mobile-ux-auditor` (parallel) |
-| `security` | `app-audits:security-auditor` |
-| `a11y` | `app-audits:a11y-auditor` |
-| `all` | every agent above (parallel) |
+| Type | Agents to dispatch | Needs URL? |
+|---|---|---|
+| `lighthouse` | `app-audits:lighthouse-auditor` | yes |
+| `web-ux` | `app-audits:web-ux-auditor` | yes |
+| `mobile-ux` | `app-audits:mobile-ux-auditor` | no |
+| `ux` | `web-ux-auditor` + `mobile-ux-auditor` (parallel) | yes (web side) |
+| `security` | `app-audits:security-auditor` | optional |
+| `a11y` | `app-audits:a11y-auditor` | yes |
+| `seo` | `app-audits:seo-auditor` | yes |
+| `privacy` | `app-audits:privacy-auditor` | optional |
+| `release-readiness` | `app-audits:release-readiness-auditor` | optional |
+| `pwa` | `app-audits:pwa-auditor` | yes |
+| `all` | every agent above (parallel) | yes |
 
 When dispatching multiple agents, send them as multiple `Agent` tool calls in a single message so they run concurrently.
+
+Every agent applies its own `audit:<dimension>` label to issues it files — that gives the tracker a single filter dimension to find issues by audit source (e.g. `is:open label:audit:lighthouse`).
 
 ## Agent prompt template
 
