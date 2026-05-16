@@ -46,15 +46,69 @@ gh label list --repo <owner/repo> --limit 100 | grep -q "^audit:<dimension>" || 
 
 Then pass `--label "audit:<dimension>"` on every `gh issue create` you do.
 
-## Search for duplicates before filing
+## Deduplication (two-tier)
 
-For every finding, before `gh issue create`:
+**This is the single most important section.** Repeat audits must not produce duplicate issues. Use both tiers — fingerprint first (deterministic), pre-fetched list second (judgment).
 
-```bash
-gh issue list --repo <owner/repo> --search "<distinctive-keyword>" --state all --limit 10 --json number,title,state
+### Tier 1 — Fingerprint marker (deterministic)
+
+Every issue body MUST end with a hidden HTML comment containing a stable `audit-key`:
+
+```
+<!-- audit-key=<dimension>/<finding-type>[/<scope>] -->
 ```
 
-Pick distinctive keywords from the finding itself (`robots.txt`, `LCP`, `hydration`, `color contrast`, `tap target`, `Firebase rules`). If a closely-matching **open** issue exists, skip filing and note the existing issue number in your summary. A closed issue with the same title may indicate a regression — file with a "regression of #N" line in the body.
+The fingerprint is the finding's stable identity — same finding on a future audit MUST produce the same key. Rules for constructing it:
+
+- `<dimension>` is your agent's audit slug (`lighthouse`, `web-ux`, etc.)
+- `<finding-type>` is a stable, kebab-case identifier for the *kind* of finding (use the Lighthouse audit ID directly when applicable, otherwise pick a short canonical name)
+- `<scope>` is optional — include when the same finding-type can occur in multiple places (per-route, per-component, per-platform)
+
+Examples:
+
+| Finding | audit-key |
+|---|---|
+| Lighthouse `robots-txt` failing | `lighthouse/robots-txt` |
+| Lighthouse `document-title` empty on `/register` | `lighthouse/document-title/register` |
+| Lighthouse `errors-in-console` React #418 | `lighthouse/errors-in-console/react-418` |
+| WCAG color contrast on primary button | `a11y/color-contrast/btn-primary` |
+| Typography hierarchy issues across auth flow | `web-ux/typography-hierarchy/auth-flow` |
+| Missing OG image on `/login` | `seo/missing-og-image/login` |
+| Undisclosed Mixpanel processor | `privacy/undisclosed-processor/mixpanel` |
+| Missing iOS app icon at 1024×1024 | `release-readiness/icon-missing/ios-1024` |
+| PWA manifest missing 512×512 icon | `pwa/manifest-icon-missing/512` |
+
+DON'T include in the key:
+- Timestamps, dates, version numbers
+- Volatile file paths
+- Random content from the finding
+- Anything that would change across runs
+
+### Tier 2 — Pre-fetched audit-labeled issues (judgment)
+
+At the start of every run, before filing anything, fetch all issues across all audit dimensions in one call and cache the result:
+
+```bash
+gh issue list --repo <owner/repo> --search '"audit-key="' --state all --limit 100 \
+  --json number,title,state,labels,body
+```
+
+This gives you the full universe of audit-filed issues. Use it for:
+
+- **Cross-audit dedup** — when your finding overlaps with another agent's (e.g., both `lighthouse` and `a11y` catch color contrast), reading the cached bodies lets you detect the overlap and skip.
+- **Fuzzy matches** — a finding whose audit-key has subtly shifted (e.g., the scope changed) but is clearly the same issue. Read titles + bodies; use judgment.
+
+### Filing decision per finding
+
+For each finding you'd file:
+
+1. **Build the audit-key** for this finding.
+2. **Check the cached pre-fetched list** for an issue whose body contains `audit-key=<your-key>` OR is semantically the same finding under a related key.
+3. **If found and OPEN** → skip filing. Add to "Skipped (duplicates)" with the existing issue number.
+4. **If found and CLOSED** → file a new issue. Add `**Regression of #N**` as the first line of the body and reuse the same audit-key.
+5. **If no match** → file with the audit-key appended to the body.
+
+This makes dedup behavior idempotent: running `/audit lighthouse` twice in a row should produce zero new issues on the second run.
 
 ## Conventional Commit title prefixes
 
@@ -96,7 +150,11 @@ Found by `<audit type>` audit of `<url or surface>` on <YYYY-MM-DD>.
 - [ ] <Verifiable outcome>
 - [ ] <Cross-surface consistency check if relevant>
 - [ ] <Regression guard for adjacent areas if relevant>
+
+<!-- audit-key=<dimension>/<finding-type>[/<scope>] -->
 ```
+
+**The `audit-key` HTML comment is mandatory** — it powers idempotent re-runs. If a body would ship without it, that's a bug in your filing process.
 
 ## Cross-references
 
