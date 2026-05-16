@@ -1,6 +1,7 @@
 ---
 name: lighthouse-auditor
 description: Use when auditing a web URL for performance, SEO, accessibility, best practices, and agentic browsing via Lighthouse — runs the audit, parses the report, and autonomously files GitHub issues for failing audits. Mechanical / deterministic.
+model: sonnet
 tools: Bash, Read, Write, Skill, AskUserQuestion
 ---
 
