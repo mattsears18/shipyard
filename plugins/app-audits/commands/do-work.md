@@ -41,10 +41,14 @@ Cache all three for the session.
 
 ### 2. Ensure label exists + recover from prior session
 
-**2a. Ensure the `do-work` label exists** (idempotent — succeeds whether it's already there or not):
+**2a. Ensure required labels exist** (idempotent — each command succeeds whether the label is already there or not). The `do-work` label is the session stamp; `P0`/`P1`/`P2`/`P3` are the priority tiers used both by the auto-triage in step 3 and the ranking step that follows it:
 
 ```bash
 gh label create do-work --repo <owner/repo> --description "Worked on by /do-work" --color 5319E7 2>/dev/null || true
+gh label create P0 --repo <owner/repo> --description "Critical / release-blocker" --color B60205 2>/dev/null || true
+gh label create P1 --repo <owner/repo> --description "High — this cycle"          --color D93F0B 2>/dev/null || true
+gh label create P2 --repo <owner/repo> --description "Normal"                     --color FBCA04 2>/dev/null || true
+gh label create P3 --repo <owner/repo> --description "Low / nice-to-have"         --color 0E8A16 2>/dev/null || true
 ```
 
 **2b. Orphan worktree triage** — scan for `do-work/*` worktrees left behind by a prior killed session:
@@ -84,6 +88,21 @@ gh issue list --repo <owner/repo> --state open --limit 100 \
 
 Add `label:<L>` qualifiers for each `--label` arg.
 
+**Auto-triage priority labels.** Before ranking, ensure every fetched issue carries exactly one of `P0`/`P1`/`P2`/`P3`. For each issue whose `labels` array contains **none** of those four, judge severity from the title, body, and existing labels (`bug`, `security`, `a11y`, `perf`, `chore`, …) using the [audit-rubrics severity buckets](../skills/audit-rubrics/SKILL.md):
+
+- `P0` — broken or unusable: runtime errors on the golden path, exposed secrets, RCE vectors, contrast failures on primary actions
+- `P1` — significant friction or risk: confusing affordances, missing security headers, a11y failures on common flows, CVEs without patches
+- `P2` — polish or moderate risk: spacing nits, copy improvements, low-severity CVEs with patches available
+- `P3` — taste / suggestion: subjective microcopy, "would be nice" refinements
+
+When torn between two tiers, pick the lower-severity one — over-labeling `P0` poisons the priority signal for the rest of the session. Apply exactly one label per issue:
+
+```bash
+gh issue edit <N> --repo <owner/repo> --add-label <Px>
+```
+
+Skip any issue that already carries one or more `P0`/`P1`/`P2`/`P3` labels — preserve the human judgment that set them, even if you'd have picked a different tier. Don't remove existing priority labels, and don't add a second one. If multiple priority labels somehow coexist on the same issue, leave them alone (a human can clean up); ranking will use the highest one.
+
 Client-side filter:
 
 - Drop issues assigned to a user **other than** the gh-authenticated user (they own it).
@@ -93,7 +112,7 @@ Client-side filter:
 Sort the survivors:
 
 1. **Prioritized label** (only if `--prioritize-label` was passed): issues carrying that label come first. Issues without it fall to the next tier.
-2. **Priority label**: `P0` > `P1` > `P2` > unlabeled. Convention: `P0` = critical/release-blocker, `P1` = high (this cycle), `P2` = normal. Create these as GitHub labels in the target repo to opt in.
+2. **Priority label**: `P0` > `P1` > `P2` > `P3` > unlabeled. Convention: `P0` = critical/release-blocker, `P1` = high (this cycle), `P2` = normal, `P3` = low / nice-to-have. After the step-3 auto-triage pass, the `unlabeled` tier should normally be empty — it remains as a safety net for issues triage somehow skipped. If an issue carries multiple priority labels, rank by the highest one present.
 3. **Type**: `bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` > everything else.
 4. **Staleness**: oldest `updatedAt` first within the same tier — stale work counts.
 
