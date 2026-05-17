@@ -69,7 +69,7 @@ For each `do-work/issue-<N>` branch found, inspect its worktree state and act ac
 gh issue list --repo <owner/repo> --label do-work --assignee @me --state open --search '-linked:pr' --json number
 ```
 
-Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory line — don't auto-act on them — log only.
+Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory — don't auto-act.
 
 ### 3. Fetch + rank the backlog
 
