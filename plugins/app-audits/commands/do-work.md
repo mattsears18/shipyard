@@ -26,7 +26,36 @@ gh api user -q .login                                  # the gh-authenticated us
 
 Cache both for the session.
 
-### 2. Fetch + filter the backlog
+### 2. PR triage — fix failing checks before new work
+
+Before picking any new issues, sweep your own open PRs in the target repo and unblock anything that's red. New failures may have appeared since the last iteration (flaky tests, dependency updates, base-branch drift), so re-run this every loop.
+
+```bash
+gh pr list --repo <owner/repo> --state open --author @me \
+  --search '-label:ci-blocked -is:draft' \
+  --json number,title,headRefName,statusCheckRollup,mergeStateStatus \
+  --limit 100
+```
+
+Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` (or `state: FAILURE` / `ERROR` / `TIMED_OUT`). Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
+
+If the failing list is empty → skip to step 3.
+
+Otherwise dispatch one `app-audits:issue-worker` agent **per failing PR**, in parallel, with `isolation: "worktree"`. If the failing PRs exceed `--concurrency`, process in batches of `--concurrency`; within a batch, dispatch in parallel and block until all return before starting the next batch.
+
+Prompt template:
+
+> Fix failing CI checks on PR #<M> in `<owner/repo>` (branch `<headRefName>`) in **fix-checks-only mode**. The PR is already open — do NOT open a new one, do NOT change scope, do NOT modify the PR title/description, do NOT close the linked issue from this PR. Check out the branch (`gh pr checkout <M> --repo <owner/repo>`), then run only the fix-checks loop: pull failed logs (`gh run view <run-id> --repo <owner/repo> --log-failed`), reproduce locally if practical, fix the smallest thing, commit + push to the same branch, re-watch with `gh pr checks <M> --repo <owner/repo> --watch --interval 30`. Hard cap: 3 fix attempts. If checks are already green by the time you start, return `noop: already green`. If you can't fix in 3 attempts, return `blocked: <last failing check> — <last error excerpt>`.
+
+Reconcile returns:
+
+- **green** / **noop** → PR is fine, continue.
+- **blocked** → comment on the PR summarizing the blocker, add the `ci-blocked` label to the PR so it's skipped on subsequent iterations, continue.
+- **errored** (agent itself failed) → record and continue.
+
+After reconciliation, proceed to step 3 — even if some PRs ended up `ci-blocked`. The orchestrator's job is to keep moving; a human can intervene on persistently red PRs.
+
+### 3. Fetch + filter the backlog
 
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 100 \
@@ -42,7 +71,7 @@ Client-side filter:
 - Drop issues whose body contains `Blocked by #N` where #N is still open.
 - Drop the issue if `gh pr list --search "in:body Closes #<N>"` returns an open PR (belt-and-suspenders against the `-linked:pr` qualifier).
 
-### 3. Rank the candidates
+### 4. Rank the candidates
 
 Sort the surviving candidates by:
 
@@ -52,7 +81,7 @@ Sort the surviving candidates by:
 
 If empty → loop ends; report "backlog empty" and stop.
 
-### 4. Scoping pre-flight (parallel, read-only)
+### 5. Scoping pre-flight (parallel, read-only)
 
 Take the top `2 × concurrency` ranked candidates. For each, dispatch a short read-only scoping agent in parallel. Each agent reads the issue + does a quick `grep` / `Explore` pass and returns:
 
@@ -62,7 +91,7 @@ Take the top `2 × concurrency` ranked candidates. For each, dispatch a short re
 
 Treat `touches_lockfile: true` for issues that obviously edit `package.json`, `pnpm-lock.yaml`, `Gemfile.lock`, `go.sum`, `Cargo.lock`, migrations, or root build config. Use the issue body/title — don't over-investigate. Budget ~30s per scoping agent.
 
-### 5. Greedy-pack the batch
+### 6. Greedy-pack the batch
 
 Walk the ranked list (best first), maintaining a batch and a `claimed_paths` set:
 
@@ -72,7 +101,7 @@ Walk the ranked list (best first), maintaining a batch and a `claimed_paths` set
 
 Unbatched candidates roll over to the next iteration.
 
-### 6. Self-assign the batch
+### 7. Self-assign the batch
 
 For every issue in the batch:
 
@@ -82,7 +111,7 @@ gh issue edit <N> --repo <owner/repo> --add-assignee @me
 
 Do this *before* dispatch so a concurrent `/do-work` or a re-fetch can't double-grab.
 
-### 7. Dispatch in parallel
+### 8. Dispatch in parallel
 
 Send one message with N `Agent` calls — `subagent_type: "app-audits:issue-worker"`, `isolation: "worktree"`, one issue per agent. Block until all return.
 
@@ -90,7 +119,7 @@ Prompt template:
 
 > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. Open a PR that closes the issue, get checks green, enable auto-merge, return. Use TDD when adding new behavior. If you hit a blocker you can't resolve in 3 fix attempts on the same PR, return with `blocked: <reason>` — don't burn the session on one issue.
 
-### 8. Reconcile returns and loop
+### 9. Reconcile returns and loop
 
 For each returned agent:
 
@@ -98,7 +127,7 @@ For each returned agent:
 - **blocked** → comment on the issue summarizing the blocker, add the `blocked` label, continue.
 - **errored** (agent itself failed) → record in the session log, continue.
 
-After the batch is fully reconciled, loop to step 2. Loop ends only when step 3 returns zero candidates.
+After the batch is fully reconciled, loop to step 2 (re-triage PRs, then re-fetch the backlog). Loop ends only when step 4 returns zero candidates.
 
 ## End-of-session summary
 
@@ -120,6 +149,8 @@ Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 - Don't disable required checks or weaken branch protection to make a PR pass.
 - Don't loop on the same issue. Once the agent returns `blocked`, label it and skip.
 - Don't fabricate acceptance criteria. The agent should infer reasonable ones from title + context; if even that's unclear, it returns `blocked`.
-- Don't batch two lockfile-touchers (or two issues hitting overlapping paths) into the same iteration — that's what step 5 is for.
+- Don't batch two lockfile-touchers (or two issues hitting overlapping paths) into the same iteration — that's what step 6 is for.
 - Don't dispatch without `isolation: "worktree"` when concurrency > 1. Shared working tree + parallel agents = corrupted state.
 - Don't skip the scoping pre-flight to "save time" — one rebase from a missed collision costs more than the whole pre-flight.
+- Don't skip PR triage to "save time" — a red PR you opened last iteration won't auto-merge no matter how many new issues you ship. Clearing the red is the highest-leverage work in the loop.
+- Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look.

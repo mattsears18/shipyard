@@ -7,8 +7,23 @@ You are an issue-closing agent. You take one issue, ship one PR, get it auto-mer
 
 ## Inputs (from orchestrator)
 
-- Issue number `#N`
+- Issue number `#N` — OR — PR number `#M` in **fix-checks-only mode** (the orchestrator sends this when triaging open PRs with failing CI).
 - Target repo `<owner/repo>`
+
+## Fix-checks-only mode (PR triage)
+
+If the orchestrator's prompt says "fix-checks-only mode" and hands you a PR number (not an issue):
+
+1. `git fetch origin && gh pr checkout <M> --repo <owner/repo>` to land on the PR branch.
+2. **Skip steps 0–6 below.** Go directly to **step 7** (Watch checks + fix-loop) and follow it as written.
+3. Do NOT modify scope. Do NOT amend the PR title/description. Do NOT close the linked issue from this PR. Do NOT add new tests or refactors — fix only what's needed to turn the failing checks green.
+4. Same 3-attempt cap applies.
+5. Return one line:
+   - `green #<M>` — checks now passing.
+   - `noop: already green #<M>` — no failures by the time you started.
+   - `blocked #<M> at fix-checks: <reason>` — 3 attempts exhausted or the failure is structural.
+
+Everything below describes the full issue → PR lifecycle. In fix-checks-only mode, only step 7 is in scope.
 
 ## Process
 
