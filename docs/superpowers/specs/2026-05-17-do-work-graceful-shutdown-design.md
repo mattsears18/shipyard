@@ -18,7 +18,7 @@ We want two things:
 
 ## Design
 
-Two independent mechanisms, sharing one underlying convention.
+Two independent mechanisms, plus a labeling convention that supports both, sharing one underlying naming rule.
 
 ### Shared foundation: deterministic branch naming
 
@@ -28,6 +28,38 @@ The orchestrator currently lets each `issue-worker` agent choose its branch name
 - Fix-checks-only work: continues to use the existing PR's branch (no new name needed)
 
 This single constraint makes `git worktree list | grep ' do-work/'` a complete, self-describing inventory of `/do-work`-owned worktrees. No sidecar metadata file, no `.do-work/state.json`, no separate registry. Git becomes the source of truth for "what was this session doing?"
+
+### Shared foundation: `do-work` label on issues and PRs
+
+Every issue picked up and every PR opened by `/do-work` is stamped with a `do-work` label. The label is **write-once** — never removed, even on block, abandon, or merge. It gives the user:
+
+- A permanent audit trail on GitHub: `gh issue list --label do-work --state closed`, `gh pr list --label do-work --state all`.
+- A cross-check during orphan triage: an open issue with `do-work` + `@me` assignee + no closing PR + no `do-work/issue-<N>` worktree is an inconsistent state worth flagging (e.g., dispatched but agent died before its first commit). Not a recovery action in v1, just logged.
+- A backstop discriminator if branch-name conventions ever drift.
+
+**Setup-time idempotent creation** — runs once at the start of every session, before any other label operation:
+
+```bash
+gh label create do-work --description "Worked on by /do-work" --color 5319E7 2>/dev/null || true
+```
+
+**On dispatch** — when self-assigning an issue, add the label in the same `gh issue edit` call:
+
+```bash
+gh issue edit <N> --add-assignee @me --add-label do-work
+```
+
+**On PR open** — the issue-worker agent's prompt instructs it to include `--label do-work` in its `gh pr create` call. Permanent on the PR.
+
+**Reporting** — the end-of-session summary gains two cumulative-count lines:
+
+```
+Lifetime via /do-work: <I> issues closed, <P> PRs opened
+```
+
+…sourced from `gh issue list --label do-work --state closed --json number -q '. | length'` and the equivalent for PRs. These are repo-wide totals, not session-scoped — the per-session counts continue to be reported above them.
+
+**Naming collision warning**: a user who runs `/do-work --label do-work` would be telling the orchestrator to filter the backlog to issues already touched by `/do-work` — a near-empty set in practice. Filter labels and the output label happen to share a string but play different roles. Documented as a footgun; no code-level protection needed.
 
 ### Mechanism 1: Soft drain via typed keyword
 
@@ -89,24 +121,31 @@ Recovered from prior session: X orphan worktrees (Y salvaged → PRs, Z abandone
 
 ### `plugins/app-audits/commands/do-work.md`
 
-1. **New `## Setup` step 0** — "Orphan triage from prior sessions" — inserted before existing step 1. Contains the classification table and the git/gh commands.
-2. **Existing step 5 (Initial pool fill) + dispatch rules** — the issue-work prompt template gains one line: *"Create your branch as `do-work/issue-<N>`. Do not use any other name."*
+1. **New `## Setup` step 0** — "Orphan triage from prior sessions" — inserted before existing step 1. Contains the classification table and the git/gh commands. Also runs the idempotent `gh label create do-work ...` at the very top.
+2. **Existing step 5 (Initial pool fill) + dispatch rules** — two changes to the dispatch sequence:
+   - Self-assign gains `--add-label do-work`: `gh issue edit <N> --add-assignee @me --add-label do-work`.
+   - The issue-work prompt template gains two lines: *"Create your branch as `do-work/issue-<N>`. Do not use any other name."* and *"When opening the PR, pass `--label do-work` to `gh pr create`."*
 3. **New `## Soft drain` section** between "Steady state" and "Termination" — defines trigger phrases, acknowledgment format, dispatch/refresh skips, second-trigger escalation.
 4. **`## Steady state` step C dispatch** — one-line guard: *"If `draining` is true, skip dispatch. The slot stays empty."*
 5. **`## Steady state` step D periodic refresh** — one-line guard: *"Skip during drain."*
 6. **`## Termination`** — clarify drain-mode termination: as soon as `in_flight` empties, regardless of backlog state. The existing "all queues empty" termination remains valid for the natural exit.
-7. **`## End-of-session summary`** — add the "Recovered from prior session" line.
+7. **`## End-of-session summary`** — add two new lines: the "Recovered from prior session" line and the "Lifetime via /do-work" cumulative counts.
 8. **`## Don't` section** — add:
    - *"Don't claim a worktree whose branch doesn't match `do-work/*`. That's not yours."*
    - *"Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging."*
+   - *"Don't remove the `do-work` label on block, abandon, or any other outcome. It is write-once. Adding the `blocked` / `ci-blocked` label alongside it is how block state is signaled — they coexist."*
 
 ### `plugins/app-audits/agents/issue-worker.md`
 
-Smaller change: a note in the preamble that branch name is provided by the orchestrator in the dispatch prompt and must be honored exactly — the agent does not invent its own name.
+Two small changes:
+
+1. A note in the preamble that branch name is provided by the orchestrator in the dispatch prompt and must be honored exactly — the agent does not invent its own name.
+2. The PR-open step (existing) is updated to include `--label do-work` in `gh pr create`.
 
 ## Edge cases
 
-- **First-run-after-upgrade**: worktrees from sessions before this change use free-form branch names, not `do-work/*`. The new triage step won't see them and will leave them alone. Expected behavior; user can clean them manually.
+- **First-run-after-upgrade**: worktrees from sessions before this change use free-form branch names, not `do-work/*`. The new triage step won't see them and will leave them alone. Expected behavior; user can clean them manually. Issues/PRs from prior sessions also lack the `do-work` label — lifetime reporting starts from the first post-upgrade session forward.
+- **User deletes the `do-work` label** from the repo mid-session: the next `--add-label do-work` call would fail. The setup-time idempotent create re-establishes it next session, so impact is contained to the current session and only manifests on dispatch. Acceptable; not worth defensive coding.
 - **Parallel sessions on the same repo**: the existing self-assign soft-lock prevents both sessions from picking the same new issue. Triage is idempotent — pushing an already-pushed branch is a no-op; opening a duplicate PR fails fast and is caught. We don't need a lock file; just the documented expectation in "Don't".
 - **Multi-repo**: each repo has its own `do-work/issue-N` namespace; no cross-repo collision possible.
 - **Orphan for an issue that has since been closed / has a merged PR**: the "branch is `[gone]`" path applies — cleanup reaps it.
@@ -123,3 +162,4 @@ Smaller change: a note in the preamble that branch name is provided by the orche
 
 - Orphan triage paths can be exercised by manually fabricating worktrees: `git worktree add worktrees/do-work-issue-1 -b do-work/issue-1`, optionally adding commits / staged edits / uncommitted edits, then running `/do-work` and verifying each branch of the classification table.
 - Soft drain can be exercised in any low-traffic repo by typing `stop` mid-session and verifying the orchestrator acknowledges, lets in-flight finish, then runs cleanup and summary.
+- Label correctness can be verified post-session with `gh issue list --label do-work --assignee @me` and `gh pr list --label do-work --author @me` — every item the session touched should appear.
