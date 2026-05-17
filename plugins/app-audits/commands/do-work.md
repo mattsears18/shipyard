@@ -28,7 +28,7 @@ Cache both for the session.
 
 ### 2. PR triage — fix failing checks before new work
 
-Before picking any new issues, sweep your own open PRs in the target repo and unblock anything that's red. New failures may have appeared since the last iteration (flaky tests, dependency updates, base-branch drift), so re-run this every loop.
+Before picking any new issues, sweep your own open PRs in the target repo and unblock anything that's red. This is the **only place CI is watched** — issue-workers in normal mode push, enable auto-merge, snapshot state, and return without blocking on CI. So every PR that ends up red lands here. New failures may also have appeared since the last iteration (flaky tests, dependency updates, base-branch drift), so re-run this every loop.
 
 ```bash
 gh pr list --repo <owner/repo> --state open --author @me \
@@ -117,28 +117,79 @@ Send one message with N `Agent` calls — `subagent_type: "app-audits:issue-work
 
 Prompt template:
 
-> Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. Open a PR that closes the issue, get checks green, enable auto-merge, return. Use TDD when adding new behavior. If you hit a blocker you can't resolve in 3 fix attempts on the same PR, return with `blocked: <reason>` — don't burn the session on one issue.
+> Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. Open a PR that closes the issue, enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery via step-2 PR triage on the next iteration. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue.
 
 ### 9. Reconcile returns and loop
 
 For each returned agent:
 
-- **shipped** (PR open, auto-merge enabled, checks green or queued) → record and continue.
+- **shipped** (PR open, auto-merge enabled — checks may be `green`, `pending`, or `failing`) → record and continue. Don't act on `pending` or `failing` here; step 2 on the next iteration will pick up any PR that's red. `pending` PRs will either auto-merge when green or surface in step 2 once CI reports a failure.
 - **blocked** → comment on the issue summarizing the blocker, add the `blocked` label, continue.
 - **errored** (agent itself failed) → record in the session log, continue.
 
 After the batch is fully reconciled, loop to step 2 (re-triage PRs, then re-fetch the backlog). Loop ends only when step 4 returns zero candidates.
 
+## End-of-session drain
+
+Once step 4 returns zero candidates, some PRs you opened this session may still be `pending` CI. Don't terminate with red PRs hiding in flight.
+
+Drain protocol:
+
+1. Query open PRs you authored this session whose checks are still in progress:
+   ```bash
+   gh pr list --repo <owner/repo> --state open --author @me \
+     --search '-label:ci-blocked -is:draft' \
+     --json number,statusCheckRollup --limit 100
+   ```
+2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running step 2 (PR triage) each pass to catch newly-red PRs.
+3. After 15 min, stop draining and report whatever's still pending in the summary — the user can re-run `/do-work` later, which will sweep those PRs on its next step 2.
+
+## End-of-session cleanup
+
+Each dispatched agent created a worktree and a local branch. After auto-merge fires with `--delete-branch`, the remote branch is gone but the local branch + worktree linger as dead weight in the main checkout. Reap them before the summary.
+
+Run from the main checkout (not from inside any worktree). The `[gone]` upstream marker is what makes this safe — only branches whose remote was deleted post-merge match. Open / blocked / in-flight PRs still have live remotes, so they're untouched.
+
+1. Prune stale remote refs so merged-and-deleted branches surface as `[gone]`:
+   ```bash
+   git fetch --prune
+   ```
+
+2. Snapshot what's about to be reaped (for the summary):
+   ```bash
+   git branch -v | grep '\[gone\]' || echo "(nothing to clean)"
+   ```
+
+3. For each `[gone]` branch, remove its worktree (if any) then delete the branch:
+   ```bash
+   git branch -v | grep '\[gone\]' | sed 's/^[+* ]//' | awk '{print $1}' | while read branch; do
+     worktree=$(git worktree list | grep "\\[$branch\\]" | awk '{print $1}')
+     if [ -n "$worktree" ] && [ "$worktree" != "$(git rev-parse --show-toplevel)" ]; then
+       git worktree remove --force "$worktree"
+     fi
+     git branch -D "$branch"
+   done
+   ```
+
+4. Final consistency pass — drop any worktrees whose checkout directory was deleted out from under git:
+   ```bash
+   git worktree prune
+   ```
+
+Record the count of worktrees and branches removed; pipe it into the summary.
+
 ## End-of-session summary
 
-When the loop ends, report:
+When the loop ends (drain completes or times out, and cleanup has run), report:
 
 ```
 /do-work session:
 Issues processed: N
-Shipped: M (#A → PR #X, #B → PR #Y, ...)
+Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pending], ...)
+In flight at exit: F (#C → PR #Z still pending CI after drain)
 Blocked: K (#P — <reason>, #Q — <reason>)
 Errored: J (#R — <agent error>)
+Cleaned up: <W> worktrees, <B> branches (merged + remote-deleted)
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 ```
 
@@ -154,3 +205,5 @@ Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 - Don't skip the scoping pre-flight to "save time" — one rebase from a missed collision costs more than the whole pre-flight.
 - Don't skip PR triage to "save time" — a red PR you opened last iteration won't auto-merge no matter how many new issues you ship. Clearing the red is the highest-leverage work in the loop.
 - Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look.
+- Don't run end-of-session cleanup from inside a worktree — `git worktree remove` on your own checkout fails. Always run from the repo's primary working tree.
+- Don't cleanup branches by name or pattern — only by `[gone]` upstream. Anything else risks reaping open or blocked PRs the orchestrator didn't author.
