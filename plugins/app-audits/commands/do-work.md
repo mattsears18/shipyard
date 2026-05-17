@@ -13,7 +13,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 - **--repo owner/repo** (optional): target repo. Default: `gh repo view --json nameWithOwner -q .nameWithOwner`. If not in a repo, ask via `AskUserQuestion`.
 - **--label LABEL** (optional, repeatable): only work on issues with all listed labels. Without it: any open candidate issue.
-- **--concurrency N** (optional, default `3`): the size of the rolling worker pool — i.e. the number of agents the orchestrator keeps in flight at any moment. Set to `1` for sequential.
+- **--concurrency N** (optional, default `2`): the size of the rolling worker pool — i.e. the number of agents the orchestrator keeps in flight at any moment. Set to `1` for sequential.
 
 ## Orchestrator state
 
