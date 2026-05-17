@@ -285,6 +285,7 @@ When the loop ends (drain completes or times out, and cleanup has run), report:
 ```
 /do-work session:
 Recovered from prior session: <salvaged_count> salvaged (PRs created/kept), <abandoned_count> abandoned
+Advisory: <A> labeled+assigned issues with no worktree and no PR (#<N>, ...)  # omit line if A == 0
 Issues processed: N
 Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pending], ...)
 In flight at exit: F (#C → PR #Z still pending CI after drain)
