@@ -78,7 +78,7 @@ Any results here that DON'T correspond to a `do-work/*` worktree on disk are "di
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 100 \
   --json number,title,labels,assignees,body,createdAt,updatedAt \
-  --search 'is:issue is:open -linked:pr -label:blocked -label:wontfix -label:needs-design -label:discussion'
+  --search 'is:issue is:open -linked:pr -label:blocked -label:wontfix -label:needs-design -label:needs-triage -label:discussion'
 ```
 
 Add `label:<L>` qualifiers for each `--label` arg.

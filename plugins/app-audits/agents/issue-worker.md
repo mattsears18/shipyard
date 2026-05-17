@@ -71,7 +71,7 @@ Bail with `blocked` if any of:
 
 - Issue state is `CLOSED`.
 - Issue has an assignee that isn't the authenticated `gh` user (someone else picked it up).
-- Issue carries `blocked` / `wontfix` / `needs-design` / `discussion` labels.
+- Issue carries `blocked` / `wontfix` / `needs-design` / `needs-triage` / `discussion` labels.
 - **Any open PR references this issue with a closing keyword** — don't open a duplicate. Return: `blocked: PR #<M> already open for this issue`.
 
 ### 1. Self-assign (soft lock)

@@ -48,6 +48,26 @@ gh label list --repo <owner/repo> --limit 100 | grep -q "^audit:<dimension>" || 
 
 Then pass `--label "audit:<dimension>"` on every `gh issue create` you do.
 
+## `needs-triage` label (when the finding needs refinement before work)
+
+Apply `needs-triage` to any issue you file that **can't be picked up by `/do-work` as-is** because it requires human judgment before implementation. Signals:
+
+- Root cause is ambiguous — the symptom is real but the fix path requires investigation you couldn't do from the audit surface.
+- Acceptance criteria can't be made concrete without product/design/legal input (e.g., "what should the empty state look like?").
+- Scope spans multiple surfaces or repos and needs decomposition into smaller issues.
+- The finding implies a decision (which library to adopt, whether to deprecate an API) rather than a mechanical fix.
+
+If the finding is clean — concrete evidence, obvious fix, verifiable acceptance criteria — do **not** apply `needs-triage`. The label exists to keep `/do-work` from burning agent time on under-specified work; it's not a generic "needs review" flag.
+
+This label is part of the plugin's workflow contract with `/do-work`, so **auto-create it if missing** (same exception as `audit:*`):
+
+```bash
+gh label list --repo <owner/repo> --limit 100 | grep -q "^needs-triage" || \
+  gh label create "needs-triage" --repo <owner/repo> --color fbca04 --description "Needs refinement before /do-work picks it up"
+```
+
+Then pass `--label "needs-triage"` on the `gh issue create` for that finding. Note in your end-of-run summary which issues you triaged out (with reason) so the user knows what's awaiting their input.
+
 ## Deduplication (two-tier)
 
 **This is the single most important section.** Repeat audits must not produce duplicate issues. Use both tiers — fingerprint first (deterministic), pre-fetched list second (judgment).
