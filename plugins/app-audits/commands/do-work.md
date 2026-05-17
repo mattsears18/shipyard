@@ -33,11 +33,47 @@ When a slot opens, the dispatch order is always: `failed_prs` first, then `ready
 ```bash
 gh repo view --json nameWithOwner -q .nameWithOwner   # if --repo omitted
 gh api user -q .login                                  # the gh-authenticated user
+gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name   # default branch (cached as <default-branch>)
 ```
 
-Cache both for the session.
+Cache all three for the session.
 
-### 2. Fetch + rank the backlog
+### 2. Ensure label exists + recover from prior session
+
+**2a. Ensure the `do-work` label exists** (idempotent — succeeds whether it's already there or not):
+
+```bash
+gh label create do-work --repo <owner/repo> --description "Worked on by /do-work" --color 5319E7 2>/dev/null || true
+```
+
+**2b. Orphan worktree triage** — scan for `do-work/*` worktrees left behind by a prior killed session:
+
+```bash
+git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||'
+```
+
+For each `do-work/issue-<N>` branch found, resolve its worktree path with `git worktree list | grep "\[do-work/issue-<N>\]" | awk '{print $1}'` (`<path>` below), then inspect its state and act according to the table. Track `salvaged_count` (worktrees that produced or kept an open PR) and `abandoned_count` (worktrees removed) — both default to 0 and feed into the end-of-session summary.
+
+All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh pr create`) so they operate on the orphan worktree, not the orchestrator's main checkout.
+
+| Worktree state | How to detect | Action |
+|---|---|---|
+| No commits beyond base | `git -C <path> rev-list --count origin/<default-branch>..HEAD` returns `0` | `git worktree remove --force <path>` → `git branch -D do-work/issue-<N>` → `gh issue edit <N> --repo <owner/repo> --remove-assignee @me`. `abandoned_count++`. Issue flows back into the backlog on the normal fetch (step 3). |
+| Only uncommitted edits, no commits | Same `rev-list` returns `0` but `git -C <path> status --porcelain` is non-empty | Same as above — partial WIP from an agent mid-edit is not coherent enough to push. `abandoned_count++`. |
+| Commits ahead, not pushed | `git -C <path> rev-list --count origin/<default-branch>..HEAD` > 0 AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `git -C <path> push -u origin do-work/issue-<N>` → `gh pr list --repo <owner/repo> --head do-work/issue-<N> --json number --jq '.[0].number'`; if empty, `(cd <path> && gh pr create --repo <owner/repo> --fill --label do-work)` then enable auto-merge. `salvaged_count++`. |
+| Commits ahead, pushed, no PR open | Same `rev-list` > 0 AND `ls-remote` shows the branch AND `gh pr list --head` is empty | `(cd <path> && gh pr create --repo <owner/repo> --fill --label do-work)` then enable auto-merge. `salvaged_count++`. |
+| Commits ahead, pushed, PR open | `gh pr list --head` returns a PR number | `gh pr view <M> --repo <owner/repo> --json statusCheckRollup`. If any check is `FAILURE` / `ERROR` / `TIMED_OUT` → push `{number: <M>, ...}` onto `failed_prs`. Otherwise leave alone — auto-merge will handle it. `salvaged_count++`. |
+| Branch is `[gone]` upstream | `git branch -v` shows `[gone]` next to the branch name | `(no-op — handled by end-of-session cleanup)` |
+
+**Inconsistency log (advisory)** — also run a one-line label cross-check:
+
+```bash
+gh issue list --repo <owner/repo> --label do-work --assignee @me --state open --search '-linked:pr' --json number
+```
+
+Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory — don't auto-act.
+
+### 3. Fetch + rank the backlog
 
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 100 \
@@ -61,7 +97,7 @@ Sort the survivors:
 
 This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exist (next step) → loop ends immediately; report "backlog empty" and stop.
 
-### 3. Snapshot failing PRs
+### 4. Snapshot failing PRs
 
 ```bash
 gh pr list --repo <owner/repo> --state open --author @me \
@@ -72,9 +108,9 @@ gh pr list --repo <owner/repo> --state open --author @me \
 
 Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` / `state: FAILURE` / `ERROR` / `TIMED_OUT`. Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
 
-Each entry → push onto `failed_prs`. These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
+Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 2b may already have enqueued some). These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
 
-### 4. Initial scope pre-flight
+### 5. Initial scope pre-flight
 
 Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel (one message, multiple `Agent` tool calls — these are short-lived and *not* backgrounded, so block until all return). Each returns:
 
@@ -86,7 +122,7 @@ Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping a
 
 Push the results onto `ready_issues` (preserving rank). Remove those issue numbers from `raw_backlog`.
 
-### 5. Initial pool fill
+### 6. Initial pool fill
 
 Dispatch up to `--concurrency` workers in parallel — one message with N background `Agent` calls (`run_in_background: true`, `subagent_type: "app-audits:issue-worker"`, `isolation: "worktree"`). For each slot, pick the next job using the **dispatch rules** below.
 
@@ -118,18 +154,22 @@ Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
 ### C. Dispatch a replacement (if work remains)
 
-Apply the **dispatch rules** to pick the next job. If a job is dispatched, the slot is filled again immediately. If no compatible job exists (e.g., backlog dry, or every remaining candidate collides with what's still in flight), leave the slot empty — the next completion will trigger another attempt.
+**Drain guard:** if `draining = true`, skip — the slot stays empty until in-flight empties and the loop terminates.
+
+Otherwise, apply the **dispatch rules** to pick the next job. If a job is dispatched, the slot is filled again immediately. If no compatible job exists (e.g., backlog dry, or every remaining candidate collides with what's still in flight), leave the slot empty — the next completion will trigger another attempt.
 
 ### D. Periodic refresh
 
-Every `--concurrency` completions (a full pool's worth), refresh queues in the background:
+**Drain guard:** skip during drain — refresh is pointless when no new work will be dispatched.
 
-1. **Failed-PR scan** — re-run the step-3 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
-2. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-2 backlog fetch to discover newly-opened issues.
+Otherwise, every `--concurrency` completions (a full pool's worth), refresh queues in the background:
+
+1. **Failed-PR scan** — re-run the step-4 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
+2. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-3 backlog fetch to discover newly-opened issues.
 
 The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
 
-## Dispatch rules (used by step 5 and step C)
+## Dispatch rules (used by step 6 and step C)
 
 When filling a slot, walk this decision tree:
 
@@ -142,11 +182,11 @@ When filling a slot, walk this decision tree:
 2. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
 
    - If the candidate `touches_lockfile`: dispatch only when `in_flight` is empty. While it runs, dispatch nothing else — other slots stay parked until it returns.
-   - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me`) **before** dispatching, to soft-lock against parallel `/do-work` instances. Then dispatch.
+   - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label do-work`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `do-work` label.
 
    Prompt template:
 
-   > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. Open a PR that closes the issue, enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue.
+   > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. Create your branch as `do-work/issue-<N>` — do not use any other name. Open a PR that closes the issue and pass `--label do-work` to `gh pr create`. Enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue.
 
 3. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths, retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster), wait for the colliding worker to return.
 
@@ -156,6 +196,28 @@ When filling a slot, walk this decision tree:
 
 Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`. The harness will notify you on completion — that drives the next iteration of the steady-state loop.
 
+## Soft drain
+
+The orchestrator wakes on two kinds of events: agent-completion notifications and new user messages. On user-message turns only, evaluate the new message body — if its entire **trimmed** body matches one of these trigger phrases (case-insensitive, full body only — never as a substring), drain mode is engaged:
+
+- `stop`
+- `drain`
+- `/do-work stop`
+
+Substring matching is deliberately avoided. Phrases like "don't stop yet" or "I'll drain it later" do not trigger.
+
+**On first trigger:**
+
+1. Acknowledge in chat: *"Draining: \<N\> in flight, no new dispatches. Will exit when they finish or settle."*
+2. Set `draining = true` in TodoWrite.
+3. Steady-state Step A (reconcile) and Step B (release slot) continue normally — in-flight agents must still be properly recorded as they complete.
+4. Steady-state Step C (dispatch) and Step D (periodic refresh) become no-ops while `draining = true` (the guards in those steps handle this).
+5. When `in_flight` empties → run the end-of-session drain (CI pending poll, max 15 min) → end-of-session cleanup → end-of-session summary → exit.
+
+**Second trigger** — typing a stop phrase again while already draining — still waits for `in_flight` to empty (in-flight agents are never hard-cancelled), but skips the CI pending-poll phase and exits immediately after cleanup. Useful when CI is slow and the user wants out.
+
+**Why this is safe:** agents commit at logical milestones (TDD test → commit, implementation → commit) and PRs are opened with `--auto`. Letting an in-flight agent finish naturally never loses work. Killing it mid-edit could.
+
 ## Termination
 
 The loop ends when **all of** the following are true at the same time:
@@ -163,7 +225,9 @@ The loop ends when **all of** the following are true at the same time:
 - `in_flight` is empty (no agents running),
 - `failed_prs` is empty,
 - `ready_issues` is empty,
-- `raw_backlog` is empty AND a fresh step-2 fetch returns zero new candidates.
+- `raw_backlog` is empty AND a fresh step-3 fetch returns zero new candidates.
+
+**Drain-mode termination**: when `draining = true` (see [Soft drain](#soft-drain)), the exit condition collapses to `in_flight` empty — `failed_prs` / `ready_issues` / `raw_backlog` are left as-is and rebuilt next session. The drain → cleanup → summary flow below still runs.
 
 Run end-of-session drain → cleanup → summary.
 
@@ -179,7 +243,7 @@ Drain protocol:
      --search '-label:ci-blocked -is:draft' \
      --json number,statusCheckRollup --limit 100
    ```
-2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running the step-3 failing-PR snapshot each pass. If newly-red PRs appear, dispatch fix-checks-only workers against them (subject to `--concurrency`) and continue draining until they too settle.
+2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running the step-4 failing-PR snapshot each pass. If newly-red PRs appear, dispatch fix-checks-only workers against them (subject to `--concurrency`) and continue draining until they too settle.
 3. After 15 min, stop draining and report whatever's still pending in the summary — the user can re-run `/do-work` later, which will sweep those PRs on its next setup pass.
 
 ## End-of-session cleanup
@@ -222,6 +286,8 @@ When the loop ends (drain completes or times out, and cleanup has run), report:
 
 ```
 /do-work session:
+Recovered from prior session: <salvaged_count> salvaged (PRs created/kept), <abandoned_count> abandoned
+Advisory: <A> labeled+assigned issues with no worktree and no PR (#<N>, ...)  # omit line if A == 0
 Issues processed: N
 Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pending], ...)
 In flight at exit: F (#C → PR #Z still pending CI after drain)
@@ -229,7 +295,17 @@ Blocked: K (#P — <reason>, #Q — <reason>)
 Errored: J (#R — <agent error>)
 Cleaned up: <W> worktrees, <B> branches (merged + remote-deleted)
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
+Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
+
+The lifetime line is sourced from two queries run just before printing the summary:
+
+```bash
+gh issue list --repo <owner/repo> --label do-work --state closed --limit 1000 --json number --jq 'length'
+gh pr list --repo <owner/repo> --label do-work --state all --limit 1000 --json number --jq 'length'
+```
+
+If either query fails (e.g., the label doesn't exist yet because this is a fresh repo), default to `0`.
 
 ## Don't
 
@@ -248,3 +324,6 @@ Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 - Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look.
 - Don't run end-of-session cleanup from inside a worktree — `git worktree remove` on your own checkout fails. Always run from the repo's primary working tree.
 - Don't cleanup branches by name or pattern — only by `[gone]` upstream. Anything else risks reaping open or blocked PRs the orchestrator didn't author.
+- Don't claim a worktree whose branch doesn't match `do-work/*` during orphan triage. That branch is not yours — it could be a developer's WIP.
+- Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging.
+- Don't remove the `do-work` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist.

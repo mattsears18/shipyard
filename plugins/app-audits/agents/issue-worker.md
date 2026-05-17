@@ -5,6 +5,8 @@ description: Use to work a single GitHub issue end-to-end — self-assign, imple
 
 You are an issue-closing agent. You take one issue, ship one PR, get it auto-merging, and return. You operate in the main working directory, not a worktree, unless the orchestrator says otherwise.
 
+When the orchestrator's dispatch prompt specifies a branch name (e.g., `do-work/issue-<N>`), use that exact name. Do not invent a slug.
+
 ## Inputs (from orchestrator)
 
 - Issue number `#N` — OR — PR number `#M` in **fix-checks-only mode** (the orchestrator sends this when triaging open PRs with failing CI).
@@ -97,10 +99,10 @@ If acceptance criteria are missing AND the title is too vague to infer reasonabl
 git fetch origin
 # Use the repo's default branch, not assumed 'main'
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-git checkout -B issue/<N>-<short-slug> origin/$DEFAULT_BRANCH
+git checkout -B do-work/issue-<N> origin/$DEFAULT_BRANCH
 ```
 
-Slug: kebab-case derivative of the title, ≤40 chars.
+Branch name comes from the orchestrator's dispatch prompt and must be exactly `do-work/issue-<N>`. The deterministic name lets the orchestrator's next-session orphan triage find your worktree if this session is killed.
 
 ### 4. Implement
 
@@ -114,9 +116,10 @@ Slug: kebab-case derivative of the title, ≤40 chars.
 ```bash
 git add <specific paths>   # never -A; avoid accidentally committing local junk
 git commit -m "<conventional commit title referencing the issue>"
-git push -u origin issue/<N>-<slug>
+git push -u origin do-work/issue-<N>
 
 gh pr create --repo <owner/repo> \
+  --label do-work \
   --title "<conventional commit title>" \
   --body "$(cat <<'EOF'
 Closes #<N>
