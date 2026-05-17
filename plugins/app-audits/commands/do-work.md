@@ -225,7 +225,7 @@ The loop ends when **all of** the following are true at the same time:
 - `ready_issues` is empty,
 - `raw_backlog` is empty AND a fresh step-3 fetch returns zero new candidates.
 
-**Drain-mode termination**: when `draining = true` (see [Soft drain](#soft-drain)), the loop ends as soon as `in_flight` empties — the other queues are left untouched. The next session will rebuild them.
+**Drain-mode termination**: when `draining = true` (see [Soft drain](#soft-drain)), the exit condition collapses to `in_flight` empty — `failed_prs` / `ready_issues` / `raw_backlog` are left as-is and rebuilt next session. The drain → cleanup → summary flow below still runs.
 
 Run end-of-session drain → cleanup → summary.
 
@@ -284,7 +284,7 @@ When the loop ends (drain completes or times out, and cleanup has run), report:
 
 ```
 /do-work session:
-Recovered from prior session: <salvaged_count> salvaged → PRs, <abandoned_count> abandoned
+Recovered from prior session: <salvaged_count> salvaged (PRs created/kept), <abandoned_count> abandoned
 Issues processed: N
 Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pending], ...)
 In flight at exit: F (#C → PR #Z still pending CI after drain)
