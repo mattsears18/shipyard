@@ -225,6 +225,8 @@ The loop ends when **all of** the following are true at the same time:
 - `ready_issues` is empty,
 - `raw_backlog` is empty AND a fresh step-3 fetch returns zero new candidates.
 
+**Drain-mode termination**: when `draining = true` (see [Soft drain](#soft-drain)), the loop ends as soon as `in_flight` empties — the other queues are left untouched. The next session will rebuild them.
+
 Run end-of-session drain → cleanup → summary.
 
 ## End-of-session drain
@@ -282,6 +284,7 @@ When the loop ends (drain completes or times out, and cleanup has run), report:
 
 ```
 /do-work session:
+Recovered from prior session: <salvaged_count> salvaged → PRs, <abandoned_count> abandoned
 Issues processed: N
 Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pending], ...)
 In flight at exit: F (#C → PR #Z still pending CI after drain)
@@ -289,7 +292,17 @@ Blocked: K (#P — <reason>, #Q — <reason>)
 Errored: J (#R — <agent error>)
 Cleaned up: <W> worktrees, <B> branches (merged + remote-deleted)
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
+Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
+
+The lifetime line is sourced from two queries run just before printing the summary:
+
+```bash
+gh issue list --repo <owner/repo> --label do-work --state closed --limit 1000 --json number --jq 'length'
+gh pr list --repo <owner/repo> --label do-work --state all --limit 1000 --json number --jq 'length'
+```
+
+If either query fails (e.g., the label doesn't exist yet because this is a fresh repo), default to `0`.
 
 ## Don't
 
@@ -308,3 +321,6 @@ Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 - Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look.
 - Don't run end-of-session cleanup from inside a worktree — `git worktree remove` on your own checkout fails. Always run from the repo's primary working tree.
 - Don't cleanup branches by name or pattern — only by `[gone]` upstream. Anything else risks reaping open or blocked PRs the orchestrator didn't author.
+- Don't claim a worktree whose branch doesn't match `do-work/*` during orphan triage. That branch is not yours — it could be a developer's WIP.
+- Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging.
+- Don't remove the `do-work` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist.
