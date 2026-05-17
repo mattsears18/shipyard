@@ -152,11 +152,11 @@ Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
 ### C. Dispatch a replacement (if work remains)
 
-Apply the **dispatch rules** to pick the next job. If a job is dispatched, the slot is filled again immediately. If no compatible job exists (e.g., backlog dry, or every remaining candidate collides with what's still in flight), leave the slot empty — the next completion will trigger another attempt.
+**If `draining = true`, skip dispatch — the slot stays empty until in-flight empties and the loop terminates.** Otherwise, apply the **dispatch rules** to pick the next job. If a job is dispatched, the slot is filled again immediately. If no compatible job exists (e.g., backlog dry, or every remaining candidate collides with what's still in flight), leave the slot empty — the next completion will trigger another attempt.
 
 ### D. Periodic refresh
 
-Every `--concurrency` completions (a full pool's worth), refresh queues in the background:
+**Skip during drain — refresh is pointless when no new work will be dispatched.** Otherwise, every `--concurrency` completions (a full pool's worth), refresh queues in the background:
 
 1. **Failed-PR scan** — re-run the step-4 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
 2. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-3 backlog fetch to discover newly-opened issues.
@@ -189,6 +189,28 @@ When filling a slot, walk this decision tree:
 5. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
 
 Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`. The harness will notify you on completion — that drives the next iteration of the steady-state loop.
+
+## Soft drain
+
+The orchestrator wakes on two kinds of events: agent-completion notifications and new user messages. On user-message turns only, evaluate the new message body — if its entire **trimmed** body matches one of these trigger phrases (case-insensitive, full body only — never as a substring), drain mode is engaged:
+
+- `stop`
+- `drain`
+- `/do-work stop`
+
+Substring matching is deliberately avoided. Phrases like "don't stop yet" or "I'll drain it later" do not trigger.
+
+**On first trigger:**
+
+1. Acknowledge in chat: *"Draining: N in flight, no new dispatches. Will exit when they finish or settle."* (replace N with the current `in_flight` count).
+2. Set `draining = true` in your mental state (or TodoWrite — your call).
+3. Steady-state Step A (reconcile) and Step B (release slot) continue normally — in-flight agents must still be properly recorded as they complete.
+4. Steady-state Step C (dispatch) and Step D (periodic refresh) become no-ops while `draining = true` (the guards in those steps handle this).
+5. When `in_flight` empties → run the end-of-session drain (CI pending poll, max 15 min) → end-of-session cleanup → end-of-session summary → exit.
+
+**Second trigger** — typing a stop phrase again while already draining — skips the CI pending-poll phase and exits immediately after cleanup. Useful when CI is slow and the user wants out.
+
+**Why this is safe:** agents commit at logical milestones (TDD test → commit, implementation → commit) and PRs are opened with `--auto`. Letting an in-flight agent finish naturally never loses work. Killing it mid-edit could.
 
 ## Termination
 
