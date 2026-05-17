@@ -176,7 +176,7 @@ When filling a slot, walk this decision tree:
 2. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
 
    - If the candidate `touches_lockfile`: dispatch only when `in_flight` is empty. While it runs, dispatch nothing else — other slots stay parked until it returns.
-   - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label do-work`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the audit label.
+   - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label do-work`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `do-work` label.
 
    Prompt template:
 
