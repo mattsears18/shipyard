@@ -152,11 +152,15 @@ Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
 ### C. Dispatch a replacement (if work remains)
 
-**If `draining = true`, skip dispatch — the slot stays empty until in-flight empties and the loop terminates.** Otherwise, apply the **dispatch rules** to pick the next job. If a job is dispatched, the slot is filled again immediately. If no compatible job exists (e.g., backlog dry, or every remaining candidate collides with what's still in flight), leave the slot empty — the next completion will trigger another attempt.
+**Drain guard:** if `draining = true`, skip — the slot stays empty until in-flight empties and the loop terminates.
+
+Otherwise, apply the **dispatch rules** to pick the next job. If a job is dispatched, the slot is filled again immediately. If no compatible job exists (e.g., backlog dry, or every remaining candidate collides with what's still in flight), leave the slot empty — the next completion will trigger another attempt.
 
 ### D. Periodic refresh
 
-**Skip during drain — refresh is pointless when no new work will be dispatched.** Otherwise, every `--concurrency` completions (a full pool's worth), refresh queues in the background:
+**Drain guard:** skip during drain — refresh is pointless when no new work will be dispatched.
+
+Otherwise, every `--concurrency` completions (a full pool's worth), refresh queues in the background:
 
 1. **Failed-PR scan** — re-run the step-4 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
 2. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-3 backlog fetch to discover newly-opened issues.
@@ -202,8 +206,8 @@ Substring matching is deliberately avoided. Phrases like "don't stop yet" or "I'
 
 **On first trigger:**
 
-1. Acknowledge in chat: *"Draining: N in flight, no new dispatches. Will exit when they finish or settle."* (replace N with the current `in_flight` count).
-2. Set `draining = true` in your mental state (or TodoWrite — your call).
+1. Acknowledge in chat: *"Draining: \<N\> in flight, no new dispatches. Will exit when they finish or settle."*
+2. Set `draining = true` in TodoWrite.
 3. Steady-state Step A (reconcile) and Step B (release slot) continue normally — in-flight agents must still be properly recorded as they complete.
 4. Steady-state Step C (dispatch) and Step D (periodic refresh) become no-ops while `draining = true` (the guards in those steps handle this).
 5. When `in_flight` empties → run the end-of-session drain (CI pending poll, max 15 min) → end-of-session cleanup → end-of-session summary → exit.
