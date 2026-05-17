@@ -11,7 +11,7 @@ Run an autonomous audit and file GitHub issues for every finding. No approval ga
 
 `$ARGUMENTS` may include:
 
-- **Audit type** (required, first positional): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `security`, `a11y`, `seo`, `privacy`, `release-readiness`, `pwa`, or `all`.
+- **Audit type** (required, first positional): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `security`, `a11y`, `seo`, `privacy`, `release-readiness`, `pwa`, `tech-debt`, `testing`, or `all`.
 - **URL** (optional, second positional, web audits only): the page to audit. If omitted and the audit needs a URL, ask via `AskUserQuestion`.
 - **--repo owner/repo** (optional): target GitHub repo. If omitted, auto-detect via `gh repo view --json nameWithOwner -q .nameWithOwner`. If that fails (not in a repo), ask via `AskUserQuestion`.
 
@@ -31,6 +31,8 @@ Resolve the target repo *once* in the main session and pass it to every agent. T
 | `privacy` | `app-audits:privacy-auditor` | optional |
 | `release-readiness` | `app-audits:release-readiness-auditor` | optional |
 | `pwa` | `app-audits:pwa-auditor` | yes |
+| `tech-debt` | `app-audits:tech-debt-auditor` | no |
+| `testing` | `app-audits:testing-auditor` | no |
 | `all` | every agent above (parallel) | yes |
 
 When dispatching multiple agents, send them as multiple `Agent` tool calls in a single message so they run concurrently.

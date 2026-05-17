@@ -36,6 +36,8 @@ Every issue you file MUST also carry an `audit:<dimension>` label identifying wh
 | `privacy-auditor` | `audit:privacy` | `c5def5` |
 | `release-readiness-auditor` | `audit:release-readiness` | `c5def5` |
 | `pwa-auditor` | `audit:pwa` | `c5def5` |
+| `tech-debt-auditor` | `audit:tech-debt` | `c5def5` |
+| `testing-auditor` | `audit:testing` | `c5def5` |
 
 **Auto-create your audit:* label if it doesn't exist** — this is the one exception to the "don't auto-create labels" rule, because the label is the agent's own metadata, not a repo-config decision. Do this once at the start of the run:
 
@@ -77,6 +79,23 @@ Examples:
 | Undisclosed Mixpanel processor | `privacy/undisclosed-processor/mixpanel` |
 | Missing iOS app icon at 1024×1024 | `release-readiness/icon-missing/ios-1024` |
 | PWA manifest missing 512×512 icon | `pwa/manifest-icon-missing/512` |
+| Stale TODOs in `lib/auth/` | `tech-debt/stale-todos/lib-auth` |
+| `@ts-ignore` pile-up in `lib/api/` | `tech-debt/suppression-pileup/ts-ignore/lib-api` |
+| Skipped tests > 6mo in `billing/` | `tech-debt/stale-skipped-tests/billing` |
+| Dead feature flag `new_checkout` | `tech-debt/dead-flag/new-checkout` |
+| Internal calls to deprecated `getUserSync` | `tech-debt/deprecated-internal-use/getUserSync` |
+| Direct dep `react-router` 2+ majors behind | `tech-debt/outdated-dep/react-router` |
+| Critical-path coverage gap in `lib/auth/` | `testing/coverage-gap/lib-auth` |
+| Test workflow not in branch protection | `testing/ci-gate-missing/branch-protection` |
+| Empty/no-assertion tests in `billing/` | `testing/no-assertion-tests/billing` |
+| Tautological assertions in `utils/` | `testing/tautological-assertions/utils` |
+| Swallowed failures in async tests | `testing/swallowed-failures` |
+| Title/body mismatch tests in `auth/` | `testing/title-body-mismatch/auth` |
+| Snapshot-only on behavioral units in `hooks/` | `testing/snapshot-only-behavioral/hooks` |
+| Repo has API routes but zero integration tests | `testing/missing-test-type/integration` |
+| Flaky test `Auth › refresh token retries` | `testing/flaky-test/auth-refresh-token-retries` |
+| Flaky job — `e2e.yml` retries on same SHA | `testing/flaky-job/e2e` |
+| Test runner doesn't upload JUnit artifacts | `testing/no-test-reporting` |
 
 DON'T include in the key:
 - Timestamps, dates, version numbers
