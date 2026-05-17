@@ -1,6 +1,6 @@
 ---
 description: Continuously work through open GitHub issues — pick the best ones, implement in parallel worktrees, open PRs, enable auto-merge, then loop. Runs until zero matching issues remain.
-argument-hint: [--repo owner/repo] [--label LABEL ...] [--concurrency N]
+argument-hint: [--repo owner/repo] [--label LABEL ...] [--prioritize-label LABEL] [--concurrency N]
 ---
 
 # /do-work
@@ -13,6 +13,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 - **--repo owner/repo** (optional): target repo. Default: `gh repo view --json nameWithOwner -q .nameWithOwner`. If not in a repo, ask via `AskUserQuestion`.
 - **--label LABEL** (optional, repeatable): only work on issues with all listed labels. Without it: any open candidate issue.
+- **--prioritize-label LABEL** (optional): if provided, issues carrying this label sort ahead of everything else in the backlog — they still pass through normal eligibility (assignee, blocked, linked-PR filters), but get a priority boost above the `P0/P1/P2` tiers. Issues without the label fall back to the normal ranking. Differs from `--label`, which **filters** the backlog rather than reordering it.
 - **--concurrency N** (optional, default `2`): the size of the rolling worker pool — i.e. the number of agents the orchestrator keeps in flight at any moment. Set to `1` for sequential.
 
 ## Orchestrator state
@@ -91,9 +92,10 @@ Client-side filter:
 
 Sort the survivors:
 
-1. **Priority label**: `P0` > `P1` > `P2` > unlabeled.
-2. **Type**: `bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` > everything else.
-3. **Staleness**: oldest `updatedAt` first within the same tier — stale work counts.
+1. **Prioritized label** (only if `--prioritize-label` was passed): issues carrying that label come first. Issues without it fall to the next tier.
+2. **Priority label**: `P0` > `P1` > `P2` > unlabeled. Convention: `P0` = critical/release-blocker, `P1` = high (this cycle), `P2` = normal. Create these as GitHub labels in the target repo to opt in.
+3. **Type**: `bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` > everything else.
+4. **Staleness**: oldest `updatedAt` first within the same tier — stale work counts.
 
 This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exist (next step) → loop ends immediately; report "backlog empty" and stop.
 
