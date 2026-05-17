@@ -5,7 +5,7 @@ argument-hint: [--repo owner/repo] [--label LABEL ...] [--concurrency N]
 
 # /do-work
 
-Burns down the issue backlog. Each iteration: pick a non-overlapping batch → dispatch K agents in parallel worktrees → wait for all → loop. Ends when no candidates remain. The loop runs in the main session; per-issue work is delegated.
+Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrency` agents in flight at all times. The instant any agent returns, the orchestrator reconciles its result and dispatches a replacement into the freed slot — no batched waits. Ends when the backlog and the in-flight set are both empty.
 
 ## Args
 
@@ -13,9 +13,20 @@ Burns down the issue backlog. Each iteration: pick a non-overlapping batch → d
 
 - **--repo owner/repo** (optional): target repo. Default: `gh repo view --json nameWithOwner -q .nameWithOwner`. If not in a repo, ask via `AskUserQuestion`.
 - **--label LABEL** (optional, repeatable): only work on issues with all listed labels. Without it: any open candidate issue.
-- **--concurrency N** (optional, default `3`): max issues to work in parallel per iteration. Set to `1` for sequential.
+- **--concurrency N** (optional, default `3`): the size of the rolling worker pool — i.e. the number of agents the orchestrator keeps in flight at any moment. Set to `1` for sequential.
 
-## Loop
+## Orchestrator state
+
+Across the session, the orchestrator maintains four mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
+
+- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks", target: <#N or #M>, claimed_paths: [...], agent_id } }. Size is bounded by `--concurrency`.
+- **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths, touches_lockfile, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains.
+- **`failed_prs`**: queue of red PRs needing fix-checks-only work. Highest priority — drained before `ready_issues`.
+- **`raw_backlog`**: ranked list of issue numbers not yet scoped. Source for refilling `ready_issues`.
+
+When a slot opens, the dispatch order is always: `failed_prs` first, then `ready_issues` (subject to path-collision and lockfile rules).
+
+## Setup (run once)
 
 ### 1. Resolve repo + user
 
@@ -26,36 +37,7 @@ gh api user -q .login                                  # the gh-authenticated us
 
 Cache both for the session.
 
-### 2. PR triage — fix failing checks before new work
-
-Before picking any new issues, sweep your own open PRs in the target repo and unblock anything that's red. This is the **only place CI is watched** — issue-workers in normal mode push, enable auto-merge, snapshot state, and return without blocking on CI. So every PR that ends up red lands here. New failures may also have appeared since the last iteration (flaky tests, dependency updates, base-branch drift), so re-run this every loop.
-
-```bash
-gh pr list --repo <owner/repo> --state open --author @me \
-  --search '-label:ci-blocked -is:draft' \
-  --json number,title,headRefName,statusCheckRollup,mergeStateStatus \
-  --limit 100
-```
-
-Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` (or `state: FAILURE` / `ERROR` / `TIMED_OUT`). Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
-
-If the failing list is empty → skip to step 3.
-
-Otherwise dispatch one `app-audits:issue-worker` agent **per failing PR**, in parallel, with `isolation: "worktree"`. If the failing PRs exceed `--concurrency`, process in batches of `--concurrency`; within a batch, dispatch in parallel and block until all return before starting the next batch.
-
-Prompt template:
-
-> Fix failing CI checks on PR #<M> in `<owner/repo>` (branch `<headRefName>`) in **fix-checks-only mode**. The PR is already open — do NOT open a new one, do NOT change scope, do NOT modify the PR title/description, do NOT close the linked issue from this PR. Check out the branch (`gh pr checkout <M> --repo <owner/repo>`), then run only the fix-checks loop: pull failed logs (`gh run view <run-id> --repo <owner/repo> --log-failed`), reproduce locally if practical, fix the smallest thing, commit + push to the same branch, re-watch with `gh pr checks <M> --repo <owner/repo> --watch --interval 30`. Hard cap: 3 fix attempts. If checks are already green by the time you start, return `noop: already green`. If you can't fix in 3 attempts, return `blocked: <last failing check> — <last error excerpt>`.
-
-Reconcile returns:
-
-- **green** / **noop** → PR is fine, continue.
-- **blocked** → comment on the PR summarizing the blocker, add the `ci-blocked` label to the PR so it's skipped on subsequent iterations, continue.
-- **errored** (agent itself failed) → record and continue.
-
-After reconciliation, proceed to step 3 — even if some PRs ended up `ci-blocked`. The orchestrator's job is to keep moving; a human can intervene on persistently red PRs.
-
-### 3. Fetch + filter the backlog
+### 2. Fetch + rank the backlog
 
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 100 \
@@ -71,67 +53,123 @@ Client-side filter:
 - Drop issues whose body contains `Blocked by #N` where #N is still open.
 - Drop the issue if `gh pr list --search "in:body Closes #<N>"` returns an open PR (belt-and-suspenders against the `-linked:pr` qualifier).
 
-### 4. Rank the candidates
-
-Sort the surviving candidates by:
+Sort the survivors:
 
 1. **Priority label**: `P0` > `P1` > `P2` > unlabeled.
 2. **Type**: `bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` > everything else.
 3. **Staleness**: oldest `updatedAt` first within the same tier — stale work counts.
 
-If empty → loop ends; report "backlog empty" and stop.
+This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exist (next step) → loop ends immediately; report "backlog empty" and stop.
 
-### 5. Scoping pre-flight (parallel, read-only)
+### 3. Snapshot failing PRs
 
-Take the top `2 × concurrency` ranked candidates. For each, dispatch a short read-only scoping agent in parallel. Each agent reads the issue + does a quick `grep` / `Explore` pass and returns:
+```bash
+gh pr list --repo <owner/repo> --state open --author @me \
+  --search '-label:ci-blocked -is:draft' \
+  --json number,title,headRefName,statusCheckRollup,mergeStateStatus \
+  --limit 100
+```
+
+Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` / `state: FAILURE` / `ERROR` / `TIMED_OUT`. Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
+
+Each entry → push onto `failed_prs`. These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
+
+### 4. Initial scope pre-flight
+
+Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel (one message, multiple `Agent` tool calls — these are short-lived and *not* backgrounded, so block until all return). Each returns:
 
 ```
 { issue: N, files: ["path/a", "path/b", ...], touches_lockfile: bool }
 ```
 
-Treat `touches_lockfile: true` for issues that obviously edit `package.json`, `pnpm-lock.yaml`, `Gemfile.lock`, `go.sum`, `Cargo.lock`, migrations, or root build config. Use the issue body/title — don't over-investigate. Budget ~30s per scoping agent.
+`touches_lockfile: true` for issues that obviously edit `package.json`, `pnpm-lock.yaml`, `Gemfile.lock`, `go.sum`, `Cargo.lock`, migrations, or root build config. Use the issue body/title — don't over-investigate. Budget ~30s per scoping agent.
 
-### 6. Greedy-pack the batch
+Push the results onto `ready_issues` (preserving rank). Remove those issue numbers from `raw_backlog`.
 
-Walk the ranked list (best first), maintaining a batch and a `claimed_paths` set:
+### 5. Initial pool fill
 
-- Add the candidate if **no predicted file overlaps** anything in `claimed_paths` (compare both exact paths and parent-dir prefixes — `src/auth/login.ts` collides with `src/auth/`).
-- If `touches_lockfile`, only add when the batch is empty; then close the batch.
-- Stop when batch size hits `--concurrency` or the ranked list is exhausted.
+Dispatch up to `--concurrency` workers in parallel — one message with N background `Agent` calls (`run_in_background: true`, `subagent_type: "app-audits:issue-worker"`, `isolation: "worktree"`). For each slot, pick the next job using the **dispatch rules** below.
 
-Unbatched candidates roll over to the next iteration.
+Once the pool is full, **return control** — you'll be notified the moment any agent completes. Do not poll. Do not sleep.
 
-### 7. Self-assign the batch
+## Steady state (event-driven)
 
-For every issue in the batch:
+When an agent completes, the harness notifies you. Each notification is one orchestrator turn. In that turn:
 
-```bash
-gh issue edit <N> --repo <owner/repo> --add-assignee @me
-```
+### A. Reconcile the return
 
-Do this *before* dispatch so a concurrent `/do-work` or a re-fetch can't double-grab.
+The agent's last line tells you what happened.
 
-### 8. Dispatch in parallel
+For **issue work** (`shipped` / `blocked` / `errored`):
 
-Send one message with N `Agent` calls — `subagent_type: "app-audits:issue-worker"`, `isolation: "worktree"`, one issue per agent. Block until all return.
+- **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.
+- **blocked #<N>** — comment on the issue summarizing the blocker, add the `blocked` label, continue.
+- **errored** — record in the session log, continue.
 
-Prompt template:
+For **fix-checks work** (`green` / `noop` / `blocked`):
 
-> Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. Open a PR that closes the issue, enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery via step-2 PR triage on the next iteration. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue.
+- **green #<M>** / **noop: already green #<M>** — PR is fine, continue.
+- **blocked #<M> at fix-checks** — comment on the PR summarizing the blocker, add the `ci-blocked` label so it's skipped from now on, continue.
+- **errored** — record and continue.
 
-### 9. Reconcile returns and loop
+### B. Release the slot
 
-For each returned agent:
+Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
-- **shipped** (PR open, auto-merge enabled — checks may be `green`, `pending`, or `failing`) → record and continue. Don't act on `pending` or `failing` here; step 2 on the next iteration will pick up any PR that's red. `pending` PRs will either auto-merge when green or surface in step 2 once CI reports a failure.
-- **blocked** → comment on the issue summarizing the blocker, add the `blocked` label, continue.
-- **errored** (agent itself failed) → record in the session log, continue.
+### C. Dispatch a replacement (if work remains)
 
-After the batch is fully reconciled, loop to step 2 (re-triage PRs, then re-fetch the backlog). Loop ends only when step 4 returns zero candidates.
+Apply the **dispatch rules** to pick the next job. If a job is dispatched, the slot is filled again immediately. If no compatible job exists (e.g., backlog dry, or every remaining candidate collides with what's still in flight), leave the slot empty — the next completion will trigger another attempt.
+
+### D. Periodic refresh
+
+Every `--concurrency` completions (a full pool's worth), refresh queues in the background:
+
+1. **Failed-PR scan** — re-run the step-3 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
+2. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-2 backlog fetch to discover newly-opened issues.
+
+The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
+
+## Dispatch rules (used by step 5 and step C)
+
+When filling a slot, walk this decision tree:
+
+1. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim). Dispatch a fix-checks-only worker.
+
+   Prompt template:
+
+   > Fix failing CI checks on PR #<M> in `<owner/repo>` (branch `<headRefName>`) in **fix-checks-only mode**. The PR is already open — do NOT open a new one, do NOT change scope, do NOT modify the PR title/description, do NOT close the linked issue from this PR. Check out the branch (`gh pr checkout <M> --repo <owner/repo>`), then run the fix-loop: pull failed logs (`gh run view <run-id> --repo <owner/repo> --log-failed`), reproduce locally if practical, fix the smallest thing, commit + push to the same branch, re-watch with `gh pr checks <M> --repo <owner/repo> --watch --interval 30`. Hard cap: 3 fix attempts. If checks are already green by the time you start, return `noop: already green`. If you can't fix in 3 attempts, return `blocked: <last failing check> — <last error excerpt>`.
+
+2. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
+
+   - If the candidate `touches_lockfile`: dispatch only when `in_flight` is empty. While it runs, dispatch nothing else — other slots stay parked until it returns.
+   - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me`) **before** dispatching, to soft-lock against parallel `/do-work` instances. Then dispatch.
+
+   Prompt template:
+
+   > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. Open a PR that closes the issue, enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue.
+
+3. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths, retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster), wait for the colliding worker to return.
+
+4. **`ready_issues` empty but `raw_backlog` non-empty?** → trigger a scope-refill burst (step D's backlog refill) in this same turn, then retry from step 2 with the refilled queue.
+
+5. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
+
+Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`. The harness will notify you on completion — that drives the next iteration of the steady-state loop.
+
+## Termination
+
+The loop ends when **all of** the following are true at the same time:
+
+- `in_flight` is empty (no agents running),
+- `failed_prs` is empty,
+- `ready_issues` is empty,
+- `raw_backlog` is empty AND a fresh step-2 fetch returns zero new candidates.
+
+Run end-of-session drain → cleanup → summary.
 
 ## End-of-session drain
 
-Once step 4 returns zero candidates, some PRs you opened this session may still be `pending` CI. Don't terminate with red PRs hiding in flight.
+Once the termination conditions above are met, some PRs you opened this session may still be `pending` CI. Don't terminate with red PRs hiding in flight.
 
 Drain protocol:
 
@@ -141,8 +179,8 @@ Drain protocol:
      --search '-label:ci-blocked -is:draft' \
      --json number,statusCheckRollup --limit 100
    ```
-2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running step 2 (PR triage) each pass to catch newly-red PRs.
-3. After 15 min, stop draining and report whatever's still pending in the summary — the user can re-run `/do-work` later, which will sweep those PRs on its next step 2.
+2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running the step-3 failing-PR snapshot each pass. If newly-red PRs appear, dispatch fix-checks-only workers against them (subject to `--concurrency`) and continue draining until they too settle.
+3. After 15 min, stop draining and report whatever's still pending in the summary — the user can re-run `/do-work` later, which will sweep those PRs on its next setup pass.
 
 ## End-of-session cleanup
 
@@ -198,12 +236,15 @@ Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 - Don't work on issues assigned to other users — soft-lock via `gh api user` check.
 - Don't merge manually. Use `--auto`. Auto-merge waits for green.
 - Don't disable required checks or weaken branch protection to make a PR pass.
-- Don't loop on the same issue. Once the agent returns `blocked`, label it and skip.
+- Don't re-dispatch the same issue. Once the agent returns `blocked`, label it and never queue it again.
 - Don't fabricate acceptance criteria. The agent should infer reasonable ones from title + context; if even that's unclear, it returns `blocked`.
-- Don't batch two lockfile-touchers (or two issues hitting overlapping paths) into the same iteration — that's what step 6 is for.
-- Don't dispatch without `isolation: "worktree"` when concurrency > 1. Shared working tree + parallel agents = corrupted state.
-- Don't skip the scoping pre-flight to "save time" — one rebase from a missed collision costs more than the whole pre-flight.
-- Don't skip PR triage to "save time" — a red PR you opened last iteration won't auto-merge no matter how many new issues you ship. Clearing the red is the highest-leverage work in the loop.
+- Don't dispatch two workers whose `claimed_paths` overlap — the dispatch rules exist exactly to prevent this. Two agents touching the same files in parallel worktrees will collide on the same lines and produce merge conflicts neither can resolve.
+- Don't dispatch alongside a lockfile-toucher. While a lockfile worker runs, the rest of the pool parks. Resume normal dispatch only after it returns.
+- Don't dispatch without `run_in_background: true` and `isolation: "worktree"`. Background dispatch is what gives you the rolling pool; without it, the orchestrator blocks on each agent and loses the whole point of `--concurrency`. Worktree isolation prevents parallel checkouts from corrupting each other.
+- Don't poll for agent completion. The harness notifies you. Polling burns turns and cache.
+- Don't wait for the whole pool to drain before dispatching replacements. The instant any single slot opens, fill it (subject to dispatch rules). "Batched parallel" is the old design — it left two slots idle while one slow worker ran.
+- Don't skip the initial scope pre-flight to "save time" — one rebase from a missed collision costs more than the whole pre-flight.
+- Don't skip the periodic failed-PR refresh. New failures appear from flaky tests, base drift, and dependency updates; if you don't sweep, they sit red forever.
 - Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look.
 - Don't run end-of-session cleanup from inside a worktree — `git worktree remove` on your own checkout fails. Always run from the repo's primary working tree.
 - Don't cleanup branches by name or pattern — only by `[gone]` upstream. Anything else risks reaping open or blocked PRs the orchestrator didn't author.
