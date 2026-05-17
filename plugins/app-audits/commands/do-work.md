@@ -33,13 +33,12 @@ When a slot opens, the dispatch order is always: `failed_prs` first, then `ready
 ```bash
 gh repo view --json nameWithOwner -q .nameWithOwner   # if --repo omitted
 gh api user -q .login                                  # the gh-authenticated user
+gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name   # default branch (cached as <default-branch>)
 ```
 
-Cache both for the session.
+Cache all three for the session.
 
-### 2. Recover from prior session + ensure label exists
-
-Two short pre-flight tasks before fetching the backlog. Both use `<owner/repo>` and the gh-authenticated user from step 1.
+### 2. Ensure label exists + recover from prior session
 
 **2a. Ensure the `do-work` label exists** (idempotent — succeeds whether it's already there or not):
 
@@ -55,18 +54,14 @@ git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}'
 
 For each `do-work/issue-<N>` branch found, inspect its worktree state and act according to the table below. Track `salvaged_count` (worktrees that produced or kept an open PR) and `abandoned_count` (worktrees removed) — both default to 0 and feed into the end-of-session summary.
 
-For each branch, find its worktree path with `git worktree list | grep "\[<branch>\]"` and `cd` into it (or use `git -C <path>`).
-
 | Worktree state | How to detect | Action |
 |---|---|---|
 | No commits beyond base | `git rev-list --count origin/<default-branch>..HEAD` returns `0` | `git worktree remove --force <path>` → `git branch -D do-work/issue-<N>` → `gh issue edit <N> --repo <owner/repo> --remove-assignee @me`. `abandoned_count++`. Issue flows back into the backlog on the normal fetch (step 3). |
 | Only uncommitted edits, no commits | Same `rev-list` returns `0` but `git -C <path> status --porcelain` is non-empty | Same as above — partial WIP from an agent mid-edit is not coherent enough to push. `abandoned_count++`. |
-| Commits ahead, not pushed | `git rev-list --count origin/<default-branch>..HEAD` > 0 AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `git -C <path> push -u origin do-work/issue-<N>` → `gh pr list --repo <owner/repo> --head do-work/issue-<N> --json number --jq '.[0].number'`; if empty, `gh pr create --repo <owner/repo> --fill --label do-work` then `gh pr merge <M> --repo <owner/repo> --auto --squash --delete-branch`. `salvaged_count++`. |
+| Commits ahead, not pushed | `git rev-list --count origin/<default-branch>..HEAD` > 0 AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `git -C <path> push -u origin do-work/issue-<N>` → `gh pr list --repo <owner/repo> --head do-work/issue-<N> --json number --jq '.[0].number'`; if empty, `gh pr create --repo <owner/repo> --fill --label do-work` then enable auto-merge. `salvaged_count++`. |
 | Commits ahead, pushed, no PR open | Same `rev-list` > 0 AND `ls-remote` shows the branch AND `gh pr list --head` is empty | `gh pr create --repo <owner/repo> --fill --label do-work` then enable auto-merge. `salvaged_count++`. |
-| Commits ahead, pushed, PR open | `gh pr list --head` returns a PR number | `gh pr view <M> --repo <owner/repo> --json statusCheckRollup`. If any check is `FAILURE` / `ERROR` / `TIMED_OUT` → push `{number: <M>, ...}` onto `failed_prs` (it'll be picked up by the dispatch rules' fix-checks-only path). Otherwise leave alone — auto-merge will handle it. `salvaged_count++`. |
-| Branch is `[gone]` upstream | `git branch -v` shows `[gone]` next to the branch name | Standard end-of-session cleanup handles it later. Leave for now. |
-
-If `git worktree list` returns no `do-work/*` branches, this step is a no-op and both counters stay at 0.
+| Commits ahead, pushed, PR open | `gh pr list --head` returns a PR number | `gh pr view <M> --repo <owner/repo> --json statusCheckRollup`. If any check is `FAILURE` / `ERROR` / `TIMED_OUT` → push `{number: <M>, ...}` onto `failed_prs`. Otherwise leave alone — auto-merge will handle it. `salvaged_count++`. |
+| Branch is `[gone]` upstream | `git branch -v` shows `[gone]` next to the branch name | `(no-op — handled by end-of-session cleanup)` |
 
 **Inconsistency log (advisory)** — also run a one-line label cross-check:
 
@@ -74,7 +69,7 @@ If `git worktree list` returns no `do-work/*` branches, this step is a no-op and
 gh issue list --repo <owner/repo> --label do-work --assignee @me --state open --search '-linked:pr' --json number
 ```
 
-Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory line — don't auto-act on them in v1.
+Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory line — don't auto-act on them — log only.
 
 ### 3. Fetch + rank the backlog
 
@@ -111,7 +106,7 @@ gh pr list --repo <owner/repo> --state open --author @me \
 
 Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` / `state: FAILURE` / `ERROR` / `TIMED_OUT`. Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
 
-Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 2b may have already enqueued red PRs from salvaged orphan worktrees). These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
+Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 2b may already have enqueued some). These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
 
 ### 5. Initial scope pre-flight
 
