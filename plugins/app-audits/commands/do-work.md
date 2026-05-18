@@ -196,7 +196,7 @@ When filling a slot, walk this decision tree:
 
    Prompt template:
 
-   > Fix failing CI checks on PR #<M> in `<owner/repo>` (branch `<headRefName>`) in **fix-checks-only mode**. The PR is already open — do NOT open a new one, do NOT change scope, do NOT modify the PR title/description, do NOT close the linked issue from this PR. Check out the branch (`gh pr checkout <M> --repo <owner/repo>`), then run the fix-loop: pull failed logs (`gh run view <run-id> --repo <owner/repo> --log-failed`), reproduce locally if practical, fix the smallest thing, commit + push to the same branch, re-watch with `gh pr checks <M> --repo <owner/repo> --watch --interval 30`. Hard cap: 3 fix attempts. If checks are already green by the time you start, return `noop: already green`. If you can't fix in 3 attempts, return `blocked: <last failing check> — <last error excerpt>`.
+   > Fix failing CI checks on PR #<M> in `<owner/repo>` (branch `<headRefName>`) in **fix-checks-only mode**. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout` (it resolves to the cwd at call time and can silently switch the user's primary checkout's HEAD), and never `git switch` to the repo's default branch when you're done. The PR is already open — do NOT open a new one, do NOT change scope, do NOT modify the PR title/description, do NOT close the linked issue from this PR. Land on the PR's head branch with the safe two-step: `git fetch origin <headRefName> && git switch <headRefName>`. Then run the fix-loop: pull failed logs (`gh run view <run-id> --repo <owner/repo> --log-failed`), reproduce locally if practical, fix the smallest thing, commit + push to the same branch, re-watch with `gh pr checks <M> --repo <owner/repo> --watch --interval 30`. Hard cap: 3 fix attempts. If checks are already green by the time you start, return `noop: already green`. If you can't fix in 3 attempts, return `blocked: <last failing check> — <last error excerpt>`. **Leave your worktree on `<headRefName>` when you return — do not switch back to the default branch.**
 
 2. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
 
@@ -205,7 +205,7 @@ When filling a slot, walk this decision tree:
 
    Prompt template:
 
-   > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. Create your branch as `do-work/issue-<N>` — do not use any other name. Open a PR that closes the issue and pass `--label do-work` to `gh pr create`. Enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue.
+   > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. You are running inside an isolated git worktree — never `cd` outside it, and never `git switch` to the repo's default branch when you're done (that rule is for the user's primary checkout, not your worktree; parking on `[main]` locks the user's primary out of switching to main via git's one-worktree-per-branch rule). Create your branch as `do-work/issue-<N>` — do not use any other name. Open a PR that closes the issue and pass `--label do-work` to `gh pr create`. Enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue. **Leave your worktree on `do-work/issue-<N>` when you return — do not switch back to the default branch.**
 
 3. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths, retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster), wait for the colliding worker to return.
 
@@ -281,14 +281,23 @@ Run from the main checkout (not from inside any worktree). The `[gone]` upstream
    git branch -v | grep '\[gone\]' || echo "(nothing to clean)"
    ```
 
-3. For each `[gone]` branch, remove its worktree (if any) then delete the branch:
+3. For each `[gone]` branch, remove its worktree (if any) then delete the branch. Track deferred worktrees separately — the Claude Code harness holds `claude agent <id>` locks on every agent worktree until the user actually exits Claude Code, so `git worktree remove --force` will fail mid-session with `cannot remove a locked working tree`. That's expected; skip those and surface the count in the summary instead of trying to fight the lock:
    ```bash
+   reaped_worktrees=0
+   deferred_worktrees=0
+   reaped_branches=0
    git branch -v | grep '\[gone\]' | sed 's/^[+* ]//' | awk '{print $1}' | while read branch; do
      worktree=$(git worktree list | grep "\\[$branch\\]" | awk '{print $1}')
      if [ -n "$worktree" ] && [ "$worktree" != "$(git rev-parse --show-toplevel)" ]; then
-       git worktree remove --force "$worktree"
+       if git worktree remove --force "$worktree" 2>/dev/null; then
+         reaped_worktrees=$((reaped_worktrees + 1))
+       else
+         # Likely held by harness lock — skip; the branch stays around until the lock releases.
+         deferred_worktrees=$((deferred_worktrees + 1))
+         continue
+       fi
      fi
-     git branch -D "$branch"
+     git branch -D "$branch" && reaped_branches=$((reaped_branches + 1))
    done
    ```
 
@@ -297,7 +306,7 @@ Run from the main checkout (not from inside any worktree). The `[gone]` upstream
    git worktree prune
    ```
 
-Record the count of worktrees and branches removed; pipe it into the summary.
+Record `<reaped_worktrees>`, `<deferred_worktrees>`, and `<reaped_branches>`; pipe them into the summary. A non-zero `deferred_worktrees` is normal and only means "those will reap automatically next time `/do-work` runs in a fresh Claude Code session."
 
 ## End-of-session summary
 
@@ -312,7 +321,8 @@ Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pend
 In flight at exit: F (#C → PR #Z still pending CI after drain)
 Blocked: K (#P — <reason>, #Q — <reason>)
 Errored: J (#R — <agent error>)
-Cleaned up: <W> worktrees, <B> branches (merged + remote-deleted)
+Cleaned up: <reaped_worktrees> worktrees, <reaped_branches> branches (merged + remote-deleted)
+Deferred cleanup: <deferred_worktrees> worktrees (held by harness locks — reap on next /do-work in a fresh Claude Code session)
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
@@ -346,3 +356,5 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't claim a worktree whose branch doesn't match `do-work/*` during orphan triage. That branch is not yours — it could be a developer's WIP.
 - Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging.
 - Don't remove the `do-work` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist.
+- **Don't omit worktree-discipline language from any dispatched agent's prompt.** Both the issue-worker and fix-checks-only prompts above include the "you are in an isolated worktree, don't `cd` out, don't `gh pr checkout`, don't switch to main when done" preamble. If you author a new dispatch prompt template (e.g., for a one-off rebase or migration agent), copy that preamble in. Skipping it lets the agent silently corrupt the user's primary checkout (via `gh pr checkout` resolving the wrong cwd) or park a worktree on `[main]` (which blocks the user's `git switch main` until the worktree is reaped).
+- **Don't try to force-remove agent worktrees mid-session in the end-of-session cleanup.** The Claude Code harness holds an exclusive lock on each agent worktree (`lock reason: claude agent <id> (pid <N>)`) for the lifetime of the harness process — `git worktree remove --force` will fail with `cannot remove a locked working tree`. The lock only releases when the user actually exits Claude Code. If you see that error in step-3 of the cleanup block, log the count of deferred worktrees in the summary (`<W> worktrees deferred — held by harness locks, will release on next Claude Code restart`) and move on. The `[gone]` branches associated with those worktrees stay around until the next fresh session can reap them.
