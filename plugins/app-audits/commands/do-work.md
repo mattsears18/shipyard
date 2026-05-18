@@ -50,7 +50,42 @@ gh label create P1 --repo <owner/repo> --description "High — this cycle"      
 gh label create P2 --repo <owner/repo> --description "Normal"                     --color FBCA04 2>/dev/null || true
 ```
 
-**2b. Orphan worktree triage** — scan for `do-work/*` worktrees left behind by a prior killed session:
+**2b. Reap stale agent worktrees from dead Claude Code sessions.** The harness creates worktrees under `.claude/worktrees/agent-<id>/` and writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting, which is how orphans pile up across sessions. Before doing anything else, reap every agent worktree whose lock-holding PID is dead — they're owned by ghosts and can never be claimed legitimately. Skip ones owned by *live* PIDs (could be another active Claude Code instance):
+
+```bash
+reaped_stale=0
+deferred_stale=0
+for wt_dir in .git/worktrees/agent-*; do
+  [ -d "$wt_dir" ] || continue
+  name=$(basename "$wt_dir")
+  worktree_path=$(git worktree list --porcelain | awk -v n="$name" '/^worktree /{p=$2} /^branch /{b=$2} /^$/{if (p ~ n) print p}' | head -1)
+  [ -z "$worktree_path" ] && worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
+  [ -z "$worktree_path" ] && continue
+
+  lock_file="$wt_dir/locked"
+  if [ -f "$lock_file" ]; then
+    lock_pid=$(grep -oE '[0-9]+\)' "$lock_file" | tr -d ')' | head -1)
+    if [ -n "$lock_pid" ] && ps -p "$lock_pid" -o pid= >/dev/null 2>&1; then
+      # Lock-holding PID is alive — almost always another active Claude Code
+      # instance. Leave it. (If it's THIS session's PID re-entering /do-work
+      # on a stale worktree, that's a bug worth investigating, not papering
+      # over.)
+      deferred_stale=$((deferred_stale + 1))
+      continue
+    fi
+  fi
+
+  git worktree unlock "$worktree_path" 2>/dev/null
+  if git worktree remove --force "$worktree_path" 2>/dev/null; then
+    reaped_stale=$((reaped_stale + 1))
+  fi
+done
+git worktree prune
+```
+
+Record `reaped_stale` and `deferred_stale` — both surface in the end-of-session summary. A non-zero `deferred_stale` means another live Claude Code is currently using those worktrees; that's expected and not an error.
+
+**2c. Orphan worktree triage** — scan for `do-work/*` branches whose worktrees survived step 2b (because the agent that owned them is from the current process, or the lock was held by a still-live PID — i.e. those that ARE legitimate orphans from THIS session, not dead-process leftovers):
 
 ```bash
 git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||'
@@ -127,7 +162,7 @@ gh pr list --repo <owner/repo> --state open --author @me \
 
 Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` / `state: FAILURE` / `ERROR` / `TIMED_OUT`. Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
 
-Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 2b may already have enqueued some). These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
+Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 2c may already have enqueued some). These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
 
 ### 5. Initial scope pre-flight
 
@@ -269,7 +304,7 @@ Drain protocol:
 
 Each dispatched agent created a worktree and a local branch. After auto-merge fires with `--delete-branch`, the remote branch is gone but the local branch + worktree linger as dead weight in the main checkout. Reap them before the summary.
 
-Run from the main checkout (not from inside any worktree). The `[gone]` upstream marker is what makes this safe — only branches whose remote was deleted post-merge match. Open / blocked / in-flight PRs still have live remotes, so they're untouched.
+Run from the main checkout (not from inside any worktree).
 
 1. Prune stale remote refs so merged-and-deleted branches surface as `[gone]`:
    ```bash
@@ -278,35 +313,42 @@ Run from the main checkout (not from inside any worktree). The `[gone]` upstream
 
 2. Snapshot what's about to be reaped (for the summary):
    ```bash
-   git branch -v | grep '\[gone\]' || echo "(nothing to clean)"
+   git branch -v | grep '\[gone\]' || echo "(no gone branches)"
+   ls -d .claude/worktrees/agent-*/ 2>/dev/null || echo "(no agent worktrees)"
    ```
 
-3. For each `[gone]` branch, remove its worktree (if any) then delete the branch. Track deferred worktrees separately — the Claude Code harness holds `claude agent <id>` locks on every agent worktree until the user actually exits Claude Code, so `git worktree remove --force` will fail mid-session with `cannot remove a locked working tree`. That's expected; skip those and surface the count in the summary instead of trying to fight the lock:
+3. **Reap all agent worktrees from THIS session.** At shutdown every dispatched agent is done, regardless of lock state — the lock files are vestigial bookkeeping. Unlock + force-remove unconditionally. The startup-side reap (step 2b) handles the "another live Claude Code instance" corner case by liveness-checking the lock PID; here we don't need to, because we know our own agents are done:
+
    ```bash
    reaped_worktrees=0
-   deferred_worktrees=0
+   for wt_dir in .git/worktrees/agent-*; do
+     [ -d "$wt_dir" ] || continue
+     name=$(basename "$wt_dir")
+     worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
+     [ -z "$worktree_path" ] && continue
+     git worktree unlock "$worktree_path" 2>/dev/null
+     if git worktree remove --force "$worktree_path" 2>/dev/null; then
+       reaped_worktrees=$((reaped_worktrees + 1))
+     fi
+   done
+   git worktree prune
+   ```
+
+4. **Reap `[gone]` branches.** Worktrees that were attached to merged-then-deleted branches are already gone (step 3 cleared them); now delete the orphaned local branch refs. The `[gone]` upstream marker is what makes this safe — only branches whose remote was deleted post-merge match. Open / blocked / in-flight PRs still have live remotes, so they're untouched:
+
+   ```bash
    reaped_branches=0
    git branch -v | grep '\[gone\]' | sed 's/^[+* ]//' | awk '{print $1}' | while read branch; do
-     worktree=$(git worktree list | grep "\\[$branch\\]" | awk '{print $1}')
-     if [ -n "$worktree" ] && [ "$worktree" != "$(git rev-parse --show-toplevel)" ]; then
-       if git worktree remove --force "$worktree" 2>/dev/null; then
-         reaped_worktrees=$((reaped_worktrees + 1))
-       else
-         # Likely held by harness lock — skip; the branch stays around until the lock releases.
-         deferred_worktrees=$((deferred_worktrees + 1))
-         continue
-       fi
-     fi
-     git branch -D "$branch" && reaped_branches=$((reaped_branches + 1))
+     git branch -D "$branch" 2>/dev/null && reaped_branches=$((reaped_branches + 1))
    done
    ```
 
-4. Final consistency pass — drop any worktrees whose checkout directory was deleted out from under git:
+5. Final consistency pass — drop any worktrees whose checkout directory was deleted out from under git:
    ```bash
    git worktree prune
    ```
 
-Record `<reaped_worktrees>`, `<deferred_worktrees>`, and `<reaped_branches>`; pipe them into the summary. A non-zero `deferred_worktrees` is normal and only means "those will reap automatically next time `/do-work` runs in a fresh Claude Code session."
+Record `<reaped_worktrees>` and `<reaped_branches>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 2b.
 
 ## End-of-session summary
 
@@ -321,8 +363,8 @@ Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pend
 In flight at exit: F (#C → PR #Z still pending CI after drain)
 Blocked: K (#P — <reason>, #Q — <reason>)
 Errored: J (#R — <agent error>)
-Cleaned up: <reaped_worktrees> worktrees, <reaped_branches> branches (merged + remote-deleted)
-Deferred cleanup: <deferred_worktrees> worktrees (held by harness locks — reap on next /do-work in a fresh Claude Code session)
+Reaped from prior sessions: <reaped_stale> stale agent worktrees (dead-PID locks); <deferred_stale> live-PID worktrees left for the owning Claude Code instance
+Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
@@ -357,4 +399,5 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging.
 - Don't remove the `do-work` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist.
 - **Don't omit worktree-discipline language from any dispatched agent's prompt.** Both the issue-worker and fix-checks-only prompts above include the "you are in an isolated worktree, don't `cd` out, don't `gh pr checkout`, don't switch to main when done" preamble. If you author a new dispatch prompt template (e.g., for a one-off rebase or migration agent), copy that preamble in. Skipping it lets the agent silently corrupt the user's primary checkout (via `gh pr checkout` resolving the wrong cwd) or park a worktree on `[main]` (which blocks the user's `git switch main` until the worktree is reaped).
-- **Don't try to force-remove agent worktrees mid-session in the end-of-session cleanup.** The Claude Code harness holds an exclusive lock on each agent worktree (`lock reason: claude agent <id> (pid <N>)`) for the lifetime of the harness process — `git worktree remove --force` will fail with `cannot remove a locked working tree`. The lock only releases when the user actually exits Claude Code. If you see that error in step-3 of the cleanup block, log the count of deferred worktrees in the summary (`<W> worktrees deferred — held by harness locks, will release on next Claude Code restart`) and move on. The `[gone]` branches associated with those worktrees stay around until the next fresh session can reap them.
+- **Don't skip `git worktree unlock` before `git worktree remove --force` on agent worktrees.** The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. Without unlocking, the remove fails with `cannot remove a locked working tree`. Unlock first, THEN force-remove. This is what the startup (step 2b) and shutdown (step 3 of cleanup) blocks do.
+- **Don't reap a live-PID worktree at startup.** Step 2b's lock-PID liveness check is what prevents you from yanking a worktree out from under another active Claude Code instance running its own `/do-work`. At SHUTDOWN there's no liveness check (because the agents you dispatched are all done regardless), but at STARTUP you can't tell whose worktrees these are without checking the lock PID. Keep that check.
