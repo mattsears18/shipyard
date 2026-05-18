@@ -38,6 +38,7 @@ Every issue you file MUST also carry an `audit:<dimension>` label identifying wh
 | `pwa-auditor` | `audit:pwa` | `c5def5` |
 | `tech-debt-auditor` | `audit:tech-debt` | `c5def5` |
 | `testing-auditor` | `audit:testing` | `c5def5` |
+| `dx-auditor` | `audit:dx` | `c5def5` |
 
 **Auto-create your audit:* label if it doesn't exist** — this is the one exception to the "don't auto-create labels" rule, because the label is the agent's own metadata, not a repo-config decision. Do this once at the start of the run:
 
@@ -116,6 +117,10 @@ Examples:
 | Flaky test `Auth › refresh token retries` | `testing/flaky-test/auth-refresh-token-retries` |
 | Flaky job — `e2e.yml` retries on same SHA | `testing/flaky-job/e2e` |
 | Test runner doesn't upload JUnit artifacts | `testing/no-test-reporting` |
+| DX: missing Prettier config | `dx/tooling/missing-prettier` |
+| DX: missing CONTRIBUTING.md | `dx/onboarding/missing-contributing` |
+| DX: missing error tracking SDK | `dx/observability/missing-error-tracking` |
+| DX: missing CLAUDE.md | `dx/claude-code/missing-claude-md` |
 
 DON'T include in the key:
 - Timestamps, dates, version numbers
