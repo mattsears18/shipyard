@@ -651,3 +651,124 @@ has_health=$(grep -rE '(\/health|\/api\/health|\/status|\/healthz|\/ping)' \
 - [ ] Structured-logging library installed.
 - [ ] Logger instance exported from a shared module.
 - [ ] At least one entry point (request handler, job runner) uses the structured logger instead of `console.log` / `print`.
+
+## Claude Code — P2
+
+### `missing-claude-md`
+
+- **Category:** claude-code
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/claude-code/missing-claude-md`
+- **Needs triage:** no
+
+**Title:** `docs(dx): add CLAUDE.md`
+
+**Detect:**
+
+```bash
+ls CLAUDE.md .claude/CLAUDE.md 2>/dev/null
+```
+
+**Why it matters:** `CLAUDE.md` is the project's working memory for the assistant — coding style, build/test commands, idiosyncrasies, dos/don'ts. Without it, every Claude Code session starts from zero and re-asks the same questions.
+
+**Suggested approach:** Run `/init` (Claude Code's built-in initializer) on a clean checkout, then prune the output to the actually-useful 20–50 lines.
+
+**Acceptance:**
+- [ ] `CLAUDE.md` exists at repo root.
+- [ ] Covers project-specific patterns, build/test commands, and known gotchas.
+
+---
+
+### `missing-claude-settings`
+
+- **Category:** claude-code
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/claude-code/missing-claude-settings`
+- **Needs triage:** no
+
+**Title:** `chore(dx): add .claude/settings.json`
+
+**Detect:**
+
+```bash
+[ -f .claude/settings.json ]
+```
+
+**Why it matters:** Without `.claude/settings.json`, every Claude Code session re-prompts for permission on each common command. A per-repo allowlist eliminates the dialog spam.
+
+**Suggested approach:** Run `/fewer-permission-prompts` on a session that's already exercised the common workflow — it'll scan recent transcripts and propose a prioritized allowlist.
+
+**Acceptance:**
+- [ ] `.claude/settings.json` exists.
+- [ ] Permission allowlist covers the repo's common commands (test, lint, format).
+
+---
+
+### `missing-recommended-mcp`
+
+- **Category:** claude-code
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/claude-code/missing-recommended-mcp`
+- **Needs triage:** **yes** (which MCPs are appropriate is a judgment call)
+
+**Title:** `chore(dx): wire recommended MCP servers`
+
+**Detect (judgment-based — look for service signals without corresponding MCP config):**
+
+```bash
+mcp_present=$(jq -r '.mcpServers | keys[]?' .mcp.json 2>/dev/null)
+
+# Vercel
+[ -f vercel.json ] || grep -q '"vercel"' package.json 2>/dev/null
+vercel_signal=$?
+
+# Supabase
+grep -rE 'supabase' package.json pyproject.toml 2>/dev/null
+supabase_signal=$?
+
+# Sentry
+grep -rE '@sentry/|sentry-sdk' package.json pyproject.toml 2>/dev/null
+sentry_signal=$?
+
+echo "vercel=$vercel_signal supabase=$supabase_signal sentry=$sentry_signal mcp_present=$mcp_present"
+# Agent's job: file if at least one service signal AND that service's MCP not in mcp_present
+```
+
+**Why it matters:** MCP servers give Claude direct access to the repo's services — query Supabase rows, list Vercel deploys, browse Sentry issues. Without them, debugging means copy-pasting from dashboards into chat.
+
+**Suggested approach:** Audit the repo for services in active use, then add their MCPs to `.mcp.json`. Common picks: `vercel`, `supabase`, `sentry`, `chrome-devtools-mcp`, `figma`. Each provider has install docs.
+
+**Acceptance:**
+- [ ] `.mcp.json` exists.
+- [ ] Configures at least the MCP servers matching detected services.
+
+---
+
+### `missing-stop-hook`
+
+- **Category:** claude-code
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/claude-code/missing-stop-hook`
+- **Needs triage:** no
+
+**Title:** `chore(dx): add Claude Code Stop hook`
+
+**Detect:**
+
+```bash
+jq -e '.hooks.Stop' .claude/settings.json >/dev/null 2>&1 \
+  || jq -e '.hooks.Stop' .claude/settings.local.json >/dev/null 2>&1
+```
+
+**Why it matters:** A Stop hook runs at the end of every assistant turn — perfect for type-check or test gates. Without it, broken code can sit in the working tree across turns, eroding trust in "looks good."
+
+**Suggested approach:** Add a `Stop` hook in `.claude/settings.json` that runs the repo's type-checker or test suite (whichever is fastest). Keep it under 10 seconds.
+
+**Acceptance:**
+- [ ] `.claude/settings.json` has a `hooks.Stop` entry.
+- [ ] Hook runs the repo's type-checker or fast test suite.
+- [ ] Hook completes in under 10 seconds on a typical turn.
