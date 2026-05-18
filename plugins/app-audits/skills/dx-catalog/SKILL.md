@@ -499,3 +499,155 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 **Acceptance:**
 - [ ] Setup script or devcontainer present.
 - [ ] One command brings a fresh checkout to a runnable state.
+
+## Observability — P2
+
+### `missing-error-tracking`
+
+- **Category:** observability
+- **Severity:** P2
+- **Applies to:** js, ts, py
+- **Audit key:** `dx/observability/missing-error-tracking`
+- **Needs triage:** **yes** (vendor choice)
+
+**Title:** `feat(dx): add error tracking`
+
+**Detect (missing if no error-tracking SDK in dependencies):**
+
+```bash
+[ -f package.json ] && jq -er '.dependencies + .devDependencies | keys[]' package.json 2>/dev/null \
+  | grep -qE '^(@sentry/|@bugsnag/|@rollbar/|bugsnag|rollbar)' && echo "present"
+[ -f pyproject.toml ] && grep -qE '(sentry-sdk|bugsnag|rollbar)' pyproject.toml && echo "present"
+[ -f requirements.txt ] && grep -qE '^(sentry-sdk|bugsnag|rollbar)' requirements.txt && echo "present"
+```
+
+**Why it matters:** A shipping app without error tracking is flying blind — you find out about exceptions when a user mentions them in Slack, and the stack trace is already lost.
+
+**Suggested approach:** Pick a provider (Sentry is the default if no preference) and wire it in. Configure the DSN via env var. Confirm errors surface in the provider's dashboard after deploy.
+
+**Acceptance:**
+- [ ] Error-tracking SDK installed.
+- [ ] DSN configured via environment variable.
+- [ ] Test error confirmed in provider dashboard.
+
+---
+
+### `missing-analytics`
+
+- **Category:** observability
+- **Severity:** P2
+- **Applies to:** js, ts
+- **Audit key:** `dx/observability/missing-analytics`
+- **Needs triage:** **yes** (vendor choice)
+
+**Title:** `feat(dx): add product analytics`
+
+**Detect:**
+
+```bash
+[ -f package.json ] && jq -er '.dependencies + .devDependencies | keys[]' package.json 2>/dev/null \
+  | grep -qE '^(posthog-js|mixpanel|mixpanel-browser|@vercel/analytics|plausible|@amplitude/|amplitude-js|@segment/)' && echo "present"
+```
+
+**Why it matters:** Without product analytics, you ship features and have no idea if anyone uses them. Every roadmap argument becomes opinion vs. opinion.
+
+**Suggested approach:** Pick a provider (PostHog, Mixpanel, or Vercel Analytics are common defaults), install the SDK, and instrument the top 3-5 events that matter for your product's funnel.
+
+**Acceptance:**
+- [ ] Analytics SDK installed.
+- [ ] Page-view + at least 3 product events instrumented.
+- [ ] Events visible in the provider dashboard.
+
+---
+
+### `missing-feature-flags`
+
+- **Category:** observability
+- **Severity:** P2
+- **Applies to:** js, ts, py, go
+- **Audit key:** `dx/observability/missing-feature-flags`
+- **Needs triage:** **yes** (vendor choice)
+
+**Title:** `feat(dx): add feature-flag SDK`
+
+**Detect:**
+
+```bash
+[ -f package.json ] && jq -er '.dependencies + .devDependencies | keys[]' package.json 2>/dev/null \
+  | grep -qE '^(growthbook|@growthbook/|launchdarkly-js-client-sdk|launchdarkly-node-server-sdk|@vercel/flags|unleash-client)' && echo "present"
+[ -f pyproject.toml ] && grep -qE '(growthbook|launchdarkly|unleash)' pyproject.toml && echo "present"
+[ -f go.mod ] && grep -qE '(growthbook|launchdarkly|unleash)' go.mod && echo "present"
+```
+
+**Why it matters:** Feature flags decouple deploy from release. Without them, every risky change is a "land and hope" — and rollback means a fresh deploy.
+
+**Suggested approach:** Pick a provider (GrowthBook is open-source; LaunchDarkly is the SaaS default). Install the SDK, wire one boolean flag end-to-end as a smoke test, then start using flags for new features.
+
+**Acceptance:**
+- [ ] Feature-flag SDK installed and initialized.
+- [ ] At least one flag wired through the SDK.
+- [ ] Flag toggleable from the provider dashboard.
+
+---
+
+### `missing-health-endpoint`
+
+- **Category:** observability
+- **Severity:** P2
+- **Applies to:** js, ts, py, go, rb
+- **Audit key:** `dx/observability/missing-health-endpoint`
+- **Needs triage:** no
+
+**Title:** `feat(dx): add /health endpoint`
+
+**Detect (server app with no health route):**
+
+```bash
+# Heuristic: server frameworks → expect a health route
+has_server=$(grep -rE '(express\(\)|fastify\(\)|@fastify/|next/server|FastAPI\(|flask|gin\.New\(|gin\.Default\(|net/http)' \
+  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+  --include='*.py' --include='*.go' . 2>/dev/null | head -1)
+has_health=$(grep -rE '(\/health|\/api\/health|\/status|\/healthz|\/ping)' \
+  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+  --include='*.py' --include='*.go' . 2>/dev/null | head -1)
+[ -n "$has_server" ] && [ -z "$has_health" ] && echo "missing"
+```
+
+**Why it matters:** Uptime monitors, load balancers, and Kubernetes probes all need a cheap "is the app up" endpoint. Without one, they fall back to root or a brittle proxy, which masks real failures.
+
+**Suggested approach:** Add a `GET /health` route returning `200 {"status":"ok"}` with optional db-ping. Wire it into your uptime monitor (Better Uptime, UptimeRobot, etc.).
+
+**Acceptance:**
+- [ ] `/health` (or equivalent) endpoint returns 200.
+- [ ] Endpoint requires no auth.
+- [ ] Endpoint optionally verifies critical dependencies (DB ping).
+
+---
+
+### `missing-structured-logging`
+
+- **Category:** observability
+- **Severity:** P2
+- **Applies to:** js, ts, py
+- **Audit key:** `dx/observability/missing-structured-logging`
+- **Needs triage:** no
+
+**Title:** `feat(dx): adopt structured logging`
+
+**Detect:**
+
+```bash
+[ -f package.json ] && jq -er '.dependencies + .devDependencies | keys[]' package.json 2>/dev/null \
+  | grep -qE '^(pino|winston|bunyan|@datadog/browser-logs)' && echo "present"
+[ -f pyproject.toml ] && grep -qE '(structlog|loguru)' pyproject.toml && echo "present"
+[ -f requirements.txt ] && grep -qE '^(structlog|loguru)' requirements.txt && echo "present"
+```
+
+**Why it matters:** `console.log` and `print` stream unstructured text. Structured loggers emit JSON with levels and context, which makes log search and correlation actually work in any modern aggregator.
+
+**Suggested approach:** Adopt `pino` (js/ts) or `structlog` (py). Replace the top-level `console.log`/`print` calls with logger calls carrying contextual fields.
+
+**Acceptance:**
+- [ ] Structured-logging library installed.
+- [ ] Logger instance exported from a shared module.
+- [ ] At least one entry point (request handler, job runner) uses the structured logger instead of `console.log` / `print`.
