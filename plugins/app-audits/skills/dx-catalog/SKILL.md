@@ -278,3 +278,224 @@ fi
 **Acceptance:**
 - [ ] Dependabot or Renovate config file present.
 - [ ] Configured for the right package ecosystem (npm / pip / gomod / etc.).
+
+## Onboarding — P2
+
+### `missing-readme-quickstart`
+
+- **Category:** onboarding
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/onboarding/missing-readme-quickstart`
+- **Needs triage:** no
+
+**Title:** `docs(dx): add Quickstart section to README`
+
+**Detect (missing if README absent OR has no quickstart heading):**
+
+```bash
+if [ ! -f README.md ] && [ ! -f README.rst ] && [ ! -f README ]; then
+  echo "no-readme"
+else
+  grep -iE '^#+ +(install|quickstart|getting started|setup|usage)' README.md 2>/dev/null
+fi
+```
+
+**Why it matters:** A new contributor's first 60 seconds with the repo determines whether they get to a green local run or abandon. A quickstart section is the single highest-ROI doc.
+
+**Suggested approach:** Add an "Install" or "Quickstart" heading near the top of `README.md` with the literal commands to clone, install, and run the project locally.
+
+**Acceptance:**
+- [ ] `README.md` contains an Install/Quickstart/Getting Started heading.
+- [ ] Heading lists the exact commands (no placeholders).
+
+---
+
+### `missing-contributing`
+
+- **Category:** onboarding
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/onboarding/missing-contributing`
+- **Needs triage:** no
+
+**Title:** `docs(dx): add CONTRIBUTING.md`
+
+**Detect:**
+
+```bash
+ls CONTRIBUTING.md CONTRIBUTING.rst docs/CONTRIBUTING.md .github/CONTRIBUTING.md 2>/dev/null
+```
+
+**Why it matters:** External contributors need to know how to branch, test, and submit. Without `CONTRIBUTING.md`, every first-time PR re-asks the maintainer the same questions.
+
+**Suggested approach:** Add a `CONTRIBUTING.md` covering: branch naming, how to run tests locally, PR title conventions, and review/merge expectations.
+
+**Acceptance:**
+- [ ] `CONTRIBUTING.md` exists at one of the standard paths.
+- [ ] Document covers branching, testing, and PR conventions.
+
+---
+
+### `missing-env-example`
+
+- **Category:** onboarding
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/onboarding/missing-env-example`
+- **Needs triage:** no
+
+**Title:** `docs(dx): commit .env.example`
+
+**Detect (only file an issue if .env is referenced AND no .env.example exists):**
+
+```bash
+references_env=$(grep -rE '(process\.env\.|os\.getenv|os\.environ|ENV\[)' \
+  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+  --include='*.py' --include='*.rb' --include='*.go' . 2>/dev/null | head -1)
+has_example=$(ls .env.example .env.sample .env.template 2>/dev/null)
+[ -n "$references_env" ] && [ -z "$has_example" ] && echo "missing"
+```
+
+**Why it matters:** A new contributor pulls the repo, runs the install command, and the app explodes on missing env vars. Without `.env.example`, they have to grep the code to find out what to set.
+
+**Suggested approach:** Copy `.env` to `.env.example`, then redact every value (replace with placeholder like `CHANGEME` or a description of the value). Commit `.env.example`. Confirm `.env` itself is in `.gitignore`.
+
+**Acceptance:**
+- [ ] `.env.example` exists at repo root.
+- [ ] Lists every env var the code reads.
+- [ ] All values are placeholders (no real secrets).
+
+---
+
+### `missing-pr-template`
+
+- **Category:** onboarding
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/onboarding/missing-pr-template`
+- **Needs triage:** no
+
+**Title:** `docs(dx): add pull request template`
+
+**Detect:**
+
+```bash
+ls .github/PULL_REQUEST_TEMPLATE.md .github/pull_request_template.md \
+   .github/PULL_REQUEST_TEMPLATE/*.md 2>/dev/null
+```
+
+**Why it matters:** A PR template forces every author to answer the same three questions (what, why, test plan) before review, which compounds into faster cycle time.
+
+**Suggested approach:** Add `.github/PULL_REQUEST_TEMPLATE.md` with sections for Summary, Why, and Test Plan.
+
+**Acceptance:**
+- [ ] `.github/PULL_REQUEST_TEMPLATE.md` exists.
+- [ ] Template prompts for Summary, Why, and Test Plan (or equivalents).
+
+---
+
+### `missing-issue-templates`
+
+- **Category:** onboarding
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/onboarding/missing-issue-templates`
+- **Needs triage:** no
+
+**Title:** `docs(dx): add issue templates`
+
+**Detect:**
+
+```bash
+ls .github/ISSUE_TEMPLATE/*.md .github/ISSUE_TEMPLATE/*.yml .github/ISSUE_TEMPLATE/*.yaml 2>/dev/null
+```
+
+**Why it matters:** Issue templates raise the floor on bug reports — repro steps, expected vs. actual, environment. Without them, half of all issues land as "it doesn't work."
+
+**Suggested approach:** Add at least one Markdown or YAML template under `.github/ISSUE_TEMPLATE/` (e.g., `bug_report.md` and `feature_request.md`).
+
+**Acceptance:**
+- [ ] `.github/ISSUE_TEMPLATE/` has at least one template.
+- [ ] Template includes repro steps and expected/actual sections (for bugs).
+
+---
+
+### `missing-codeowners`
+
+- **Category:** onboarding
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/onboarding/missing-codeowners`
+- **Needs triage:** no
+
+**Title:** `chore(dx): add CODEOWNERS`
+
+**Detect (skip if solo repo — only 1 collaborator):**
+
+```bash
+collaborators=$(gh api "repos/<owner/repo>/collaborators" --jq 'length' 2>/dev/null || echo 0)
+[ "$collaborators" -le 1 ] && echo "solo-repo-skip"
+ls .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS 2>/dev/null
+```
+
+**Why it matters:** Without `CODEOWNERS`, PR review-assignment is manual every time, and code areas drift toward owner-of-the-week. The file is also enforceable via branch protection.
+
+**Suggested approach:** Add `.github/CODEOWNERS` mapping at minimum `*` to one or two trusted reviewers. Refine by path as the team grows.
+
+**Acceptance:**
+- [ ] `.github/CODEOWNERS` exists.
+- [ ] Wildcard rule (`*`) maps to at least one owner.
+- [ ] Branch protection requires review from CODEOWNERS (verify in repo settings).
+
+---
+
+### `missing-license`
+
+- **Category:** onboarding
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/onboarding/missing-license`
+- **Needs triage:** no
+
+**Title:** `docs(dx): add LICENSE file`
+
+**Detect:**
+
+```bash
+ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
+```
+
+**Why it matters:** A repo without an explicit license is "all rights reserved" — every outside contribution is legally ambiguous, and many orgs forbid using or even forking such repos.
+
+**Suggested approach:** Add a `LICENSE` file. MIT or Apache-2.0 are the most common defaults. Choose deliberately; the choice is hard to undo.
+
+**Acceptance:**
+- [ ] `LICENSE` (or similar) file exists at repo root.
+- [ ] License is one of: MIT, Apache-2.0, BSD-*, MPL-2.0, GPL-*, or another OSI-approved license.
+
+---
+
+### `missing-setup-script`
+
+- **Category:** onboarding
+- **Severity:** P2
+- **Applies to:** *(any)*
+- **Audit key:** `dx/onboarding/missing-setup-script`
+- **Needs triage:** no
+
+**Title:** `chore(dx): add setup script or devcontainer`
+
+**Detect:**
+
+```bash
+[ -d .devcontainer ] || [ -f scripts/setup.sh ] || [ -f bin/setup ] || [ -f Makefile ] || [ -f Justfile ]
+```
+
+**Why it matters:** "Clone → install → run" should be one command. Without a setup script or devcontainer, every new contributor reinvents the install sequence from the README and gets it slightly wrong.
+
+**Suggested approach:** Add `scripts/setup.sh` (or `bin/setup`) that runs the install + any one-time setup. Alternatively, a `.devcontainer/devcontainer.json` for Codespaces/VS Code.
+
+**Acceptance:**
+- [ ] Setup script or devcontainer present.
+- [ ] One command brings a fresh checkout to a runnable state.
