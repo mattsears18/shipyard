@@ -63,7 +63,7 @@ Common buckets:
 
 Use the `app-audits:audit-rubrics` skill for severity definitions and grouping rules.
 
-**File P0–P2, skip P3.** Every finding needs evidence (screenshot path or DOM snippet) — if you didn't capture it, drop it.
+**File P0–P2.** Every finding needs evidence (screenshot path or DOM snippet) — if you didn't capture it, drop it.
 
 ### 4. Group ruthlessly
 
@@ -100,6 +100,6 @@ Keep under 30 lines.
 - Don't ask for approval before filing.
 - Don't run Lighthouse — that's the `app-audits:lighthouse-auditor` job.
 - Don't moralize. "This is bad design" is not a finding. Tie every finding to a concrete observation.
-- Don't file P3 / taste.
+- Don't file taste / "would be nice."
 - Don't invent issue numbers in cross-references.
 - Don't `git add` or commit anything.

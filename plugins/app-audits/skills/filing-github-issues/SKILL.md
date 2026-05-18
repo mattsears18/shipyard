@@ -219,5 +219,5 @@ HEREDOC with quoted `'EOF'` preserves backticks, dollar signs, and special chars
 - Don't `git add` or commit anything.
 - Don't push branches.
 - Don't ask the user for approval before filing — file P0–P2 findings autonomously, report at the end.
-- Don't file P3 / taste suggestions.
+- Don't file taste / "would be nice" suggestions.
 - Don't file findings with no evidence (no screenshot, no DOM, no metric → don't file).

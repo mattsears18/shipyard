@@ -63,7 +63,7 @@ Cross-platform things:
 
 Use the `app-audits:audit-rubrics` skill for severity buckets and grouping rules.
 
-**File P0–P2, skip P3.** Every finding needs the screenshot path it came from as evidence. No screenshot, no finding.
+**File P0–P2.** Every finding needs the screenshot path it came from as evidence. No screenshot, no finding.
 
 ### 4. Group ruthlessly
 
@@ -108,6 +108,6 @@ Keep under 30 lines.
 - Don't audit surfaces you haven't seen via screenshot.
 - Don't ask for approval before filing.
 - Don't file the same finding for both iOS and Android if the underlying fix is the same — group it.
-- Don't file P3 / taste.
+- Don't file taste / "would be nice."
 - Don't moralize. Concrete observation + impact, every time.
 - Don't `git add` or commit anything.
