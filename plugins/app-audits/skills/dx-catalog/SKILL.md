@@ -279,6 +279,8 @@ fi
 - [ ] Dependabot or Renovate config file present.
 - [ ] Configured for the right package ecosystem (npm / pip / gomod / etc.).
 
+---
+
 ## Onboarding — P2
 
 ### `missing-readme-quickstart`
@@ -294,11 +296,7 @@ fi
 **Detect (missing if README absent OR has no quickstart heading):**
 
 ```bash
-if [ ! -f README.md ] && [ ! -f README.rst ] && [ ! -f README ]; then
-  echo "no-readme"
-else
-  grep -iE '^#+ +(install|quickstart|getting started|setup|usage)' README.md 2>/dev/null
-fi
+grep -iE '^#+ +(install|quickstart|getting started|setup|usage)' README.md README.rst README 2>/dev/null
 ```
 
 **Why it matters:** A new contributor's first 60 seconds with the repo determines whether they get to a green local run or abandon. A quickstart section is the single highest-ROI doc.
@@ -434,8 +432,12 @@ ls .github/ISSUE_TEMPLATE/*.md .github/ISSUE_TEMPLATE/*.yml .github/ISSUE_TEMPLA
 **Detect (skip if solo repo — only 1 collaborator):**
 
 ```bash
+# Exit early (claim "exists") if solo repo — no point recommending CODEOWNERS for 1 contributor
 collaborators=$(gh api "repos/<owner/repo>/collaborators" --jq 'length' 2>/dev/null || echo 0)
-[ "$collaborators" -le 1 ] && echo "solo-repo-skip"
+if [ "$collaborators" -le 1 ]; then
+  echo "solo-repo (no CODEOWNERS needed)"
+  exit 0
+fi
 ls .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS 2>/dev/null
 ```
 
@@ -499,6 +501,8 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 **Acceptance:**
 - [ ] Setup script or devcontainer present.
 - [ ] One command brings a fresh checkout to a runnable state.
+
+---
 
 ## Observability — P2
 
@@ -651,6 +655,8 @@ has_health=$(grep -rE '(\/health|\/api\/health|\/status|\/healthz|\/ping)' \
 - [ ] Structured-logging library installed.
 - [ ] Logger instance exported from a shared module.
 - [ ] At least one entry point (request handler, job runner) uses the structured logger instead of `console.log` / `print`.
+
+---
 
 ## Claude Code — P2
 
