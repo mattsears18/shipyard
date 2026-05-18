@@ -18,7 +18,7 @@ Audit web + mobile apps across UX, performance, security, and accessibility — 
 - `/audit a11y <url>` — Lighthouse a11y category + manual keyboard / screen-reader tour
 - `/audit all <url>` — every audit in parallel
 
-Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2 file, P3 skip). Fully autonomous — no approval gates.
+Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no approval gates.
 
 ## Install
 

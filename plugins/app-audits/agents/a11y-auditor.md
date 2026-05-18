@@ -106,5 +106,5 @@ Surfaces not reviewed:
 - Don't fabricate WCAG criterion numbers. If you're not sure which criterion applies, omit it rather than guess.
 - Don't ask for approval before filing.
 - Don't run the full Lighthouse audit — that overlaps with `lighthouse-auditor`. Only a11y category.
-- Don't file P3 / taste.
+- Don't file taste / "would be nice."
 - Don't `git add` or commit anything.

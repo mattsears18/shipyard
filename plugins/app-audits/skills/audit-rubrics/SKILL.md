@@ -1,6 +1,6 @@
 ---
 name: audit-rubrics
-description: Use when auditing any app to determine what to file vs skip — provides severity buckets (P0-P3), grouping rules, and "what NOT to file" defaults. Invoked by every agent in the `app-audits` plugin.
+description: Use when auditing any app to determine what to file vs skip — provides severity buckets (P0-P2), grouping rules, and "what NOT to file" defaults. Invoked by every agent in the `app-audits` plugin.
 ---
 
 # Audit Rubrics
@@ -14,9 +14,8 @@ Shared severity, grouping, and "what to skip" rules across audit types. The poin
 | **P0** | Broken or unusable. Untappable buttons, overlapping elements, contrast failures on primary actions, runtime errors on the golden path, exposed secrets, RCE vectors. | Yes, always |
 | **P1** | Significant friction or risk. Confusing affordances, hidden critical features, missing security headers, dark mode regressions, a11y failures on common flows, dependency CVEs without patches. | Yes |
 | **P2** | Polish or moderate risk. Spacing inconsistencies, copy improvements, visual hierarchy nits, low-severity CVEs with patches available, missing best-practices headers. | Yes |
-| **P3** | Taste or suggestion. Color refinements, animation ideas, "would be nice", subjective microcopy preferences. | **No** — default skip |
 
-**Default cutoff: file P0–P2, skip P3.** Volume kills tracker signal.
+**File P0–P2.** Taste / "would be nice" suggestions are not findings — volume kills tracker signal.
 
 ## Grouping rules
 
@@ -42,7 +41,7 @@ When two audit agents catch the same thing (e.g. Lighthouse a11y flags low contr
 
 ## What NOT to file
 
-- **P3 / taste.** "I'd use a more modern font." Not an issue.
+- **Taste / "would be nice."** "I'd use a more modern font." Not an issue.
 - **Findings with no evidence.** No screenshot, DOM snippet, metric, or file path → drop the finding.
 - **Platform-deprecation noise we can't fix.** Third-party cookies, future Chrome quirks not yet shipped.
 - **Test infrastructure unless asked.** Flaky E2E tests are a separate concern from product quality audits.

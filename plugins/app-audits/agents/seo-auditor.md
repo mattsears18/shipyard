@@ -70,7 +70,7 @@ Array.from(document.querySelectorAll('img')).map(i => ({src: i.src, alt: i.alt, 
 
 Findings:
 - Content images without `alt` attribute (P1)
-- Decorative images with non-empty alt (P3 — skip)
+- Decorative images with non-empty alt (skip)
 - Generic alt text (`"image"`, `"photo"`, filename) on content images (P2)
 
 ### 6. Internal link health

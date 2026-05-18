@@ -13,7 +13,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 - **--repo owner/repo** (optional): target repo. Default: `gh repo view --json nameWithOwner -q .nameWithOwner`. If not in a repo, ask via `AskUserQuestion`.
 - **--label LABEL** (optional, repeatable): only work on issues with all listed labels. Without it: any open candidate issue.
-- **--prioritize-label LABEL** (optional): if provided, issues carrying this label sort ahead of everything else in the backlog — they still pass through normal eligibility (assignee, blocked, linked-PR filters), but get a priority boost above the `P0/P1/P2` tiers. Issues without the label fall back to the normal ranking. Differs from `--label`, which **filters** the backlog rather than reordering it.
+- **--prioritize-label LABEL** (optional): if provided, issues carrying this label sort ahead of everything else in the backlog — they still pass through normal eligibility (assignee, blocked, linked-PR filters), but get a priority boost above the `P0`/`P1`/`P2` tiers. Issues without the label fall back to the normal ranking. Differs from `--label`, which **filters** the backlog rather than reordering it.
 - **--concurrency N** (optional, default `2`): the size of the rolling worker pool — i.e. the number of agents the orchestrator keeps in flight at any moment. Set to `1` for sequential.
 
 ## Orchestrator state
@@ -41,14 +41,13 @@ Cache all three for the session.
 
 ### 2. Ensure label exists + recover from prior session
 
-**2a. Ensure required labels exist** (idempotent — each command succeeds whether the label is already there or not). The `do-work` label is the session stamp; `P0`/`P1`/`P2`/`P3` are the priority tiers used both by the auto-triage in step 3 and the ranking step that follows it:
+**2a. Ensure required labels exist** (idempotent — each command succeeds whether the label is already there or not). The `do-work` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers used both by the auto-triage in step 3 and the ranking step that follows it:
 
 ```bash
 gh label create do-work --repo <owner/repo> --description "Worked on by /do-work" --color 5319E7 2>/dev/null || true
 gh label create P0 --repo <owner/repo> --description "Critical / release-blocker" --color B60205 2>/dev/null || true
 gh label create P1 --repo <owner/repo> --description "High — this cycle"          --color D93F0B 2>/dev/null || true
 gh label create P2 --repo <owner/repo> --description "Normal"                     --color FBCA04 2>/dev/null || true
-gh label create P3 --repo <owner/repo> --description "Low / nice-to-have"         --color 0E8A16 2>/dev/null || true
 ```
 
 **2b. Orphan worktree triage** — scan for `do-work/*` worktrees left behind by a prior killed session:
@@ -88,20 +87,19 @@ gh issue list --repo <owner/repo> --state open --limit 100 \
 
 Add `label:<L>` qualifiers for each `--label` arg.
 
-**Auto-triage priority labels.** Before ranking, ensure every fetched issue carries exactly one of `P0`/`P1`/`P2`/`P3`. For each issue whose `labels` array contains **none** of those four, judge severity from the title, body, and existing labels (`bug`, `security`, `a11y`, `perf`, `chore`, …) using the [audit-rubrics severity buckets](../skills/audit-rubrics/SKILL.md):
+**Auto-triage priority labels.** Before ranking, ensure every fetched issue carries exactly one of `P0`/`P1`/`P2`. For each issue whose `labels` array contains **none** of those three, judge severity from the title, body, and existing labels (`bug`, `security`, `a11y`, `perf`, `chore`, …) using the [audit-rubrics severity buckets](../skills/audit-rubrics/SKILL.md):
 
 - `P0` — broken or unusable: runtime errors on the golden path, exposed secrets, RCE vectors, contrast failures on primary actions
 - `P1` — significant friction or risk: confusing affordances, missing security headers, a11y failures on common flows, CVEs without patches
-- `P2` — polish or moderate risk: spacing nits, copy improvements, low-severity CVEs with patches available
-- `P3` — taste / suggestion: subjective microcopy, "would be nice" refinements
+- `P2` — polish or moderate risk: spacing nits, copy improvements, low-severity CVEs with patches available, plus anything that doesn't fit P0/P1 but still merits work
 
-When torn between two tiers, pick the lower-severity one — over-labeling `P0` poisons the priority signal for the rest of the session. Apply exactly one label per issue:
+When torn between two tiers, pick the lower-severity one — over-labeling `P0` poisons the priority signal for the rest of the session. Anything that would have been "taste / would-be-nice" doesn't get a priority label at all (and falls to the unlabeled tier at ranking time). Apply exactly one label per issue:
 
 ```bash
 gh issue edit <N> --repo <owner/repo> --add-label <Px>
 ```
 
-Skip any issue that already carries one or more `P0`/`P1`/`P2`/`P3` labels — preserve the human judgment that set them, even if you'd have picked a different tier. Don't remove existing priority labels, and don't add a second one. If multiple priority labels somehow coexist on the same issue, leave them alone (a human can clean up); ranking will use the highest one.
+Skip any issue that already carries one or more `P0`/`P1`/`P2` labels — preserve the human judgment that set them, even if you'd have picked a different tier. Don't remove existing priority labels, and don't add a second one. If multiple priority labels somehow coexist on the same issue, leave them alone (a human can clean up); ranking will use the highest one. Legacy `P3` labels from older sessions are treated as unlabeled — re-triage them to a P0/P1/P2 tier if you'd file them, otherwise leave them be.
 
 Client-side filter:
 
@@ -112,7 +110,7 @@ Client-side filter:
 Sort the survivors:
 
 1. **Prioritized label** (only if `--prioritize-label` was passed): issues carrying that label come first. Issues without it fall to the next tier.
-2. **Priority label**: `P0` > `P1` > `P2` > `P3` > unlabeled. Convention: `P0` = critical/release-blocker, `P1` = high (this cycle), `P2` = normal, `P3` = low / nice-to-have. After the step-3 auto-triage pass, the `unlabeled` tier should normally be empty — it remains as a safety net for issues triage somehow skipped. If an issue carries multiple priority labels, rank by the highest one present.
+2. **Priority label**: `P0` > `P1` > `P2` > unlabeled. Convention: `P0` = critical/release-blocker, `P1` = high (this cycle), `P2` = normal. After the step-3 auto-triage pass, the `unlabeled` tier should normally be empty — it remains as a safety net for issues triage somehow skipped, and as the fallback bucket for legacy `P3` labels. If an issue carries multiple priority labels, rank by the highest one present.
 3. **Type**: `bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` > everything else.
 4. **Staleness**: oldest `updatedAt` first within the same tier — stale work counts.
 

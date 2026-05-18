@@ -28,7 +28,7 @@ npm audit --json
 # or pnpm/yarn equivalent
 ```
 
-Categorize findings by severity (`critical` → P0, `high` → P1, `moderate` → P2, `low` → P3-skip). For each unique CVE in a direct or actively-used transitive dep, file one issue. Group multiples in the same package into one issue.
+Categorize findings by severity (`critical` → P0, `high` → P1, `moderate` → P2, `low` → skip). For each unique CVE in a direct or actively-used transitive dep, file one issue. Group multiples in the same package into one issue.
 
 Also check `functions/package.json` (Cloud Functions has its own dep tree).
 

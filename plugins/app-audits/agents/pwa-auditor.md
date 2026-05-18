@@ -95,7 +95,7 @@ window.addEventListener('beforeinstallprompt', e => console.log('beforeinstallpr
 ```
 
 The handler typically `e.preventDefault()`s the default mini-infobar and surfaces a custom "Install" button. Findings:
-- No `beforeinstallprompt` handler (P3 — default Chrome banner is fine, skip)
+- No `beforeinstallprompt` handler (default Chrome banner is fine, skip)
 - Handler exists but no UI surfacing the prompt (P2 — installs are gated by an invisible code path)
 
 ### 7. iOS-specific PWA metadata
@@ -107,7 +107,7 @@ curl -s "<URL>" | grep -oE '<meta name="(apple-mobile-web-app-capable|apple-mobi
 Findings:
 - Missing `apple-mobile-web-app-capable` (P2 — iOS install behavior degraded)
 - Missing `theme-color` meta (P2 — Safari address-bar color)
-- Missing `apple-mobile-web-app-title` (P3 — falls back to `name`; skip)
+- Missing `apple-mobile-web-app-title` (falls back to `name`; skip)
 
 ### 8. Filter, group, file
 
@@ -140,6 +140,6 @@ Skipped (duplicates):
 
 ## Don't
 
-- Don't file an issue saying "site should be a PWA" if the repo clearly isn't trying to be one (no manifest at all is a P3 unless the user explicitly wants a PWA). Check the repo for `manifest.webmanifest` references first.
+- Don't file an issue saying "site should be a PWA" if the repo clearly isn't trying to be one (no manifest at all is a skip unless the user explicitly wants a PWA). Check the repo for `manifest.webmanifest` references first.
 - Don't `git add` or commit anything.
 - Don't ask for approval before filing.
