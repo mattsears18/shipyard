@@ -39,9 +39,82 @@ gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name   # 
 
 Cache all three for the session.
 
-### 2. Ensure label exists + recover from prior session
+### 2. Backlog overview
 
-**2a. Ensure required labels exist** (idempotent — each command succeeds whether the label is already there or not). The `do-work` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers used both by the auto-triage in step 3 and the ranking step that follows it:
+Before any other setup, fetch every open issue and print an upfront summary of what will be worked on, what will be skipped, and why. The user reads this once at the start of the session and uses it to (a) calibrate expectations for how many issues this run will close, and (b) start unblocking the blocked work in parallel while the orchestrator runs. The summary is **informational only** — print it, then continue with step 3. No confirmation needed.
+
+Fetch the universe of open issues and the linked-PR subset:
+
+```bash
+gh issue list --repo <owner/repo> --state open --limit 200 \
+  --json number,title,labels,assignees,body
+
+gh issue list --repo <owner/repo> --state open --limit 200 \
+  --json number \
+  --search 'is:issue is:open linked:pr' \
+  --jq '[.[].number]'
+```
+
+Bucket each issue into exactly one category. Apply in order — first match wins so an issue lands in its most specific bucket:
+
+| # | Bucket | Criteria |
+|---|---|---|
+| 1 | **Assigned to others** | `assignees` contains a user other than `@me` |
+| 2 | **In flight** | issue number appears in the `linked:pr` set above |
+| 3 | **Won't fix** | carries `wontfix` |
+| 4 | **Discussion** | carries `discussion` |
+| 5 | **Needs triage / design** | carries `needs-triage` or `needs-design` |
+| 6 | **Blocked (label)** | carries `blocked` |
+| 7 | **Blocked (body reference)** | body matches `Blocked by #(\d+)` where that issue is still open (`gh issue view <N> --json state -q .state` returns `OPEN`) |
+| 8 | **Workable** | everything else — these are what /do-work will dispatch |
+
+For each issue in bucket 6 or 7, generate a one-line **unblock recommendation** describing what the human could do to unblock it. Use the issue body, labels, and (for body references) the blocker's title and state — but skim, don't deep-dive. One sentence per blocked issue is plenty. Examples:
+
+- Blocked by another open issue: `"#<N> blocked by #<M> (\"<M's title>\") — <action, e.g. 'land #M first', 'close #M as obsolete', or 'review the proposal in the latest comment'>"`
+- Blocked by an external dependency (SDK release, vendor input, design decision): describe the concrete action the user could take
+- `blocked` label set with no discernible blocker: `"unclear blocker — comment to clarify or remove the label"`
+
+The point is to give the user something **actionable** so they can start clearing blockers in parallel.
+
+Print the summary to the user in this shape:
+
+```
+/do-work backlog overview — <owner/repo>
+
+Workable (will be worked this session): <W>
+  By priority: P0=<n>  P1=<n>  P2=<n>  unlabeled=<n>
+  Top items: #<a>, #<b>, #<c>, ...
+
+Skipped (<S> total):
+  Blocked (label):        <n>  (#A, #B, ...)
+  Blocked (body):         <n>  (#C, ...)
+  Needs triage/design:    <n>  (#D, ...)
+  Discussion:             <n>  (#E, ...)
+  Won't fix:              <n>  (#F, ...)
+  In flight (open PR):    <n>  (#G → PR #H, ...)
+  Assigned to others:     <n>  (#I → @user, ...)
+
+Total open: <W + S>
+
+Unblock recommendations (work these in parallel while /do-work runs):
+  - #A: <recommendation>
+  - #C: <recommendation>
+  ...
+```
+
+Edge cases:
+
+- **`W == 0`** — print the summary anyway, then continue with setup. Step 4's filtered fetch will return empty and the loop will terminate cleanly. The summary still tells the user *why* there's nothing to work on (e.g., everything is blocked, or everything has a linked PR).
+- **No blocked issues** — omit the "Unblock recommendations" section entirely. Don't print an empty header.
+- **Priority labels not yet triaged** — the breakdown reflects current label state. Step 4's auto-triage pass labels the unlabeled survivors before dispatch, so `unlabeled=<n>` at preflight just shows how much triage will happen.
+- **Buckets with zero count** — omit those lines from the "Skipped" block; clutter is the enemy.
+- **Very large backlogs** (truncate the `(#A, #B, ...)` enumerations after ~10 numbers with `, +<K> more` so the summary stays readable).
+
+Then proceed immediately to step 3.
+
+### 3. Ensure label exists + recover from prior session
+
+**3a. Ensure required labels exist** (idempotent — each command succeeds whether the label is already there or not). The `do-work` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers used both by the auto-triage in step 4 and the ranking step that follows it:
 
 ```bash
 gh label create do-work --repo <owner/repo> --description "Worked on by /do-work" --color 5319E7 2>/dev/null || true
@@ -50,7 +123,7 @@ gh label create P1 --repo <owner/repo> --description "High — this cycle"      
 gh label create P2 --repo <owner/repo> --description "Normal"                     --color FBCA04 2>/dev/null || true
 ```
 
-**2b. Reap stale agent worktrees from dead Claude Code sessions.** The harness creates worktrees under `.claude/worktrees/agent-<id>/` and writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting, which is how orphans pile up across sessions. Before doing anything else, reap every agent worktree whose lock-holding PID is dead — they're owned by ghosts and can never be claimed legitimately. Skip ones owned by *live* PIDs (could be another active Claude Code instance).
+**3b. Reap stale agent worktrees from dead Claude Code sessions.** The harness creates worktrees under `.claude/worktrees/agent-<id>/` and writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting, which is how orphans pile up across sessions. Before doing anything else, reap every agent worktree whose lock-holding PID is dead — they're owned by ghosts and can never be claimed legitimately. Skip ones owned by *live* PIDs (could be another active Claude Code instance).
 
 This block is naturally repo-scoped: `.git/worktrees/` lives inside the current repo's `.git/`, so `git worktree list`, `git worktree unlock`, and `git worktree remove` only see this repo's worktrees. The `cd "$(git rev-parse --show-toplevel)"` at the start makes that scoping work even if the user invoked `/do-work` from a subdirectory of the repo:
 
@@ -88,7 +161,7 @@ git worktree prune
 
 Record `reaped_stale` and `deferred_stale` — both surface in the end-of-session summary. A non-zero `deferred_stale` means another live Claude Code is currently using those worktrees; that's expected and not an error.
 
-**2c. Orphan worktree triage** — scan for `do-work/*` branches whose worktrees survived step 2b (because the agent that owned them is from the current process, or the lock was held by a still-live PID — i.e. those that ARE legitimate orphans from THIS session, not dead-process leftovers):
+**3c. Orphan worktree triage** — scan for `do-work/*` branches whose worktrees survived step 3b (because the agent that owned them is from the current process, or the lock was held by a still-live PID — i.e. those that ARE legitimate orphans from THIS session, not dead-process leftovers):
 
 ```bash
 git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||'
@@ -100,7 +173,7 @@ All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh 
 
 | Worktree state | How to detect | Action |
 |---|---|---|
-| No commits beyond base | `git -C <path> rev-list --count origin/<default-branch>..HEAD` returns `0` | `git worktree remove --force <path>` → `git branch -D do-work/issue-<N>` → `gh issue edit <N> --repo <owner/repo> --remove-assignee @me`. `abandoned_count++`. Issue flows back into the backlog on the normal fetch (step 3). |
+| No commits beyond base | `git -C <path> rev-list --count origin/<default-branch>..HEAD` returns `0` | `git worktree remove --force <path>` → `git branch -D do-work/issue-<N>` → `gh issue edit <N> --repo <owner/repo> --remove-assignee @me`. `abandoned_count++`. Issue flows back into the backlog on the normal fetch (step 4). |
 | Only uncommitted edits, no commits | Same `rev-list` returns `0` but `git -C <path> status --porcelain` is non-empty | Same as above — partial WIP from an agent mid-edit is not coherent enough to push. `abandoned_count++`. |
 | Commits ahead, not pushed | `git -C <path> rev-list --count origin/<default-branch>..HEAD` > 0 AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `git -C <path> push -u origin do-work/issue-<N>` → `gh pr list --repo <owner/repo> --head do-work/issue-<N> --json number --jq '.[0].number'`; if empty, `(cd <path> && gh pr create --repo <owner/repo> --fill --label do-work)` then enable auto-merge. `salvaged_count++`. |
 | Commits ahead, pushed, no PR open | Same `rev-list` > 0 AND `ls-remote` shows the branch AND `gh pr list --head` is empty | `(cd <path> && gh pr create --repo <owner/repo> --fill --label do-work)` then enable auto-merge. `salvaged_count++`. |
@@ -115,7 +188,7 @@ gh issue list --repo <owner/repo> --label do-work --assignee @me --state open --
 
 Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory — don't auto-act.
 
-### 3. Fetch + rank the backlog
+### 4. Fetch + rank the backlog
 
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 100 \
@@ -148,13 +221,13 @@ Client-side filter:
 Sort the survivors:
 
 1. **Prioritized label** (only if `--prioritize-label` was passed): issues carrying that label come first. Issues without it fall to the next tier.
-2. **Priority label**: `P0` > `P1` > `P2` > unlabeled. Convention: `P0` = critical/release-blocker, `P1` = high (this cycle), `P2` = normal. After the step-3 auto-triage pass, the `unlabeled` tier should normally be empty — it remains as a safety net for issues triage somehow skipped, and as the fallback bucket for legacy `P3` labels. If an issue carries multiple priority labels, rank by the highest one present.
+2. **Priority label**: `P0` > `P1` > `P2` > unlabeled. Convention: `P0` = critical/release-blocker, `P1` = high (this cycle), `P2` = normal. After the step-4 auto-triage pass, the `unlabeled` tier should normally be empty — it remains as a safety net for issues triage somehow skipped, and as the fallback bucket for legacy `P3` labels. If an issue carries multiple priority labels, rank by the highest one present.
 3. **Type**: `bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` > everything else.
 4. **Staleness**: oldest `updatedAt` first within the same tier — stale work counts.
 
 This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exist (next step) → loop ends immediately; report "backlog empty" and stop.
 
-### 4. Snapshot failing PRs
+### 5. Snapshot failing PRs
 
 ```bash
 gh pr list --repo <owner/repo> --state open --author @me \
@@ -165,9 +238,9 @@ gh pr list --repo <owner/repo> --state open --author @me \
 
 Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` / `state: FAILURE` / `ERROR` / `TIMED_OUT`. Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
 
-Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 2c may already have enqueued some). These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
+Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 3c may already have enqueued some). These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
 
-### 5. Initial scope pre-flight
+### 6. Initial scope pre-flight
 
 Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel (one message, multiple `Agent` tool calls — these are short-lived and *not* backgrounded, so block until all return). Each returns:
 
@@ -179,7 +252,7 @@ Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping a
 
 Push the results onto `ready_issues` (preserving rank). Remove those issue numbers from `raw_backlog`.
 
-### 6. Initial pool fill
+### 7. Initial pool fill
 
 Dispatch up to `--concurrency` workers in parallel — one message with N background `Agent` calls (`run_in_background: true`, `subagent_type: "app-audits:issue-worker"`, `isolation: "worktree"`). For each slot, pick the next job using the **dispatch rules** below.
 
@@ -221,12 +294,12 @@ Otherwise, apply the **dispatch rules** to pick the next job. If a job is dispat
 
 Otherwise, every `--concurrency` completions (a full pool's worth), refresh queues in the background:
 
-1. **Failed-PR scan** — re-run the step-4 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
-2. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-3 backlog fetch to discover newly-opened issues.
+1. **Failed-PR scan** — re-run the step-5 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
+2. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-4 backlog fetch to discover newly-opened issues.
 
 The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
 
-## Dispatch rules (used by step 6 and step C)
+## Dispatch rules (used by step 7 and step C)
 
 When filling a slot, walk this decision tree:
 
@@ -282,7 +355,7 @@ The loop ends when **all of** the following are true at the same time:
 - `in_flight` is empty (no agents running),
 - `failed_prs` is empty,
 - `ready_issues` is empty,
-- `raw_backlog` is empty AND a fresh step-3 fetch returns zero new candidates.
+- `raw_backlog` is empty AND a fresh step-4 fetch returns zero new candidates.
 
 **Drain-mode termination**: when `draining = true` (see [Soft drain](#soft-drain)), the exit condition collapses to `in_flight` empty — `failed_prs` / `ready_issues` / `raw_backlog` are left as-is and rebuilt next session. The drain → cleanup → summary flow below still runs.
 
@@ -300,7 +373,7 @@ Drain protocol:
      --search '-label:ci-blocked -is:draft' \
      --json number,statusCheckRollup --limit 100
    ```
-2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running the step-4 failing-PR snapshot each pass. If newly-red PRs appear, dispatch fix-checks-only workers against them (subject to `--concurrency`) and continue draining until they too settle.
+2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running the step-5 failing-PR snapshot each pass. If newly-red PRs appear, dispatch fix-checks-only workers against them (subject to `--concurrency`) and continue draining until they too settle.
 3. After 15 min, stop draining and report whatever's still pending in the summary — the user can re-run `/do-work` later, which will sweep those PRs on its next setup pass.
 
 ## End-of-session cleanup
@@ -320,7 +393,7 @@ Run from the main checkout (not from inside any worktree).
    ls -d .claude/worktrees/agent-*/ 2>/dev/null || echo "(no agent worktrees)"
    ```
 
-3. **Reap all agent worktrees from THIS session.** At shutdown every dispatched agent is done, regardless of lock state — the lock files are vestigial bookkeeping. Unlock + force-remove unconditionally. The startup-side reap (step 2b) handles the "another live Claude Code instance" corner case by liveness-checking the lock PID; here we don't need to, because we know our own agents are done. The `cd "$(git rev-parse --show-toplevel)"` at the start scopes everything to the current repo, even if `/do-work` was invoked from a subdirectory:
+3. **Reap all agent worktrees from THIS session.** At shutdown every dispatched agent is done, regardless of lock state — the lock files are vestigial bookkeeping. Unlock + force-remove unconditionally. The startup-side reap (step 3b) handles the "another live Claude Code instance" corner case by liveness-checking the lock PID; here we don't need to, because we know our own agents are done. The `cd "$(git rev-parse --show-toplevel)"` at the start scopes everything to the current repo, even if `/do-work` was invoked from a subdirectory:
 
    ```bash
    cd "$(git rev-parse --show-toplevel)"
@@ -352,7 +425,7 @@ Run from the main checkout (not from inside any worktree).
    git worktree prune
    ```
 
-Record `<reaped_worktrees>` and `<reaped_branches>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 2b.
+Record `<reaped_worktrees>` and `<reaped_branches>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b.
 
 ## End-of-session summary
 
@@ -403,5 +476,5 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging.
 - Don't remove the `do-work` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist.
 - **Don't omit worktree-discipline language from any dispatched agent's prompt.** Both the issue-worker and fix-checks-only prompts above include the "you are in an isolated worktree, don't `cd` out, don't `gh pr checkout`, don't switch to main when done" preamble. If you author a new dispatch prompt template (e.g., for a one-off rebase or migration agent), copy that preamble in. Skipping it lets the agent silently corrupt the user's primary checkout (via `gh pr checkout` resolving the wrong cwd) or park a worktree on `[main]` (which blocks the user's `git switch main` until the worktree is reaped).
-- **Don't skip `git worktree unlock` before `git worktree remove --force` on agent worktrees.** The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. Without unlocking, the remove fails with `cannot remove a locked working tree`. Unlock first, THEN force-remove. This is what the startup (step 2b) and shutdown (step 3 of cleanup) blocks do.
-- **Don't reap a live-PID worktree at startup.** Step 2b's lock-PID liveness check is what prevents you from yanking a worktree out from under another active Claude Code instance running its own `/do-work`. At SHUTDOWN there's no liveness check (because the agents you dispatched are all done regardless), but at STARTUP you can't tell whose worktrees these are without checking the lock PID. Keep that check.
+- **Don't skip `git worktree unlock` before `git worktree remove --force` on agent worktrees.** The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. Without unlocking, the remove fails with `cannot remove a locked working tree`. Unlock first, THEN force-remove. This is what the startup (step 3b) and shutdown (step 3 of cleanup) blocks do.
+- **Don't reap a live-PID worktree at startup.** Step 3b's lock-PID liveness check is what prevents you from yanking a worktree out from under another active Claude Code instance running its own `/do-work`. At SHUTDOWN there's no liveness check (because the agents you dispatched are all done regardless), but at STARTUP you can't tell whose worktrees these are without checking the lock PID. Keep that check.
