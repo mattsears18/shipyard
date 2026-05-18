@@ -50,9 +50,12 @@ gh label create P1 --repo <owner/repo> --description "High — this cycle"      
 gh label create P2 --repo <owner/repo> --description "Normal"                     --color FBCA04 2>/dev/null || true
 ```
 
-**2b. Reap stale agent worktrees from dead Claude Code sessions.** The harness creates worktrees under `.claude/worktrees/agent-<id>/` and writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting, which is how orphans pile up across sessions. Before doing anything else, reap every agent worktree whose lock-holding PID is dead — they're owned by ghosts and can never be claimed legitimately. Skip ones owned by *live* PIDs (could be another active Claude Code instance):
+**2b. Reap stale agent worktrees from dead Claude Code sessions.** The harness creates worktrees under `.claude/worktrees/agent-<id>/` and writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting, which is how orphans pile up across sessions. Before doing anything else, reap every agent worktree whose lock-holding PID is dead — they're owned by ghosts and can never be claimed legitimately. Skip ones owned by *live* PIDs (could be another active Claude Code instance).
+
+This block is naturally repo-scoped: `.git/worktrees/` lives inside the current repo's `.git/`, so `git worktree list`, `git worktree unlock`, and `git worktree remove` only see this repo's worktrees. The `cd "$(git rev-parse --show-toplevel)"` at the start makes that scoping work even if the user invoked `/do-work` from a subdirectory of the repo:
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
 reaped_stale=0
 deferred_stale=0
 for wt_dir in .git/worktrees/agent-*; do
@@ -317,9 +320,10 @@ Run from the main checkout (not from inside any worktree).
    ls -d .claude/worktrees/agent-*/ 2>/dev/null || echo "(no agent worktrees)"
    ```
 
-3. **Reap all agent worktrees from THIS session.** At shutdown every dispatched agent is done, regardless of lock state — the lock files are vestigial bookkeeping. Unlock + force-remove unconditionally. The startup-side reap (step 2b) handles the "another live Claude Code instance" corner case by liveness-checking the lock PID; here we don't need to, because we know our own agents are done:
+3. **Reap all agent worktrees from THIS session.** At shutdown every dispatched agent is done, regardless of lock state — the lock files are vestigial bookkeeping. Unlock + force-remove unconditionally. The startup-side reap (step 2b) handles the "another live Claude Code instance" corner case by liveness-checking the lock PID; here we don't need to, because we know our own agents are done. The `cd "$(git rev-parse --show-toplevel)"` at the start scopes everything to the current repo, even if `/do-work` was invoked from a subdirectory:
 
    ```bash
+   cd "$(git rev-parse --show-toplevel)"
    reaped_worktrees=0
    for wt_dir in .git/worktrees/agent-*; do
      [ -d "$wt_dir" ] || continue
