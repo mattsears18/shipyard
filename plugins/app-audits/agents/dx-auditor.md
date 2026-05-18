@@ -67,16 +67,16 @@ For each catalog item:
 
 ### 5. Body template
 
-```markdown
+````markdown
 Found by `dx` audit on <YYYY-MM-DD>.
 
 ## Finding
 
 <category>: missing <human-readable thing>. Detection probe evidence:
 
-\`\`\`
+```
 <one-line output / observation from the probe — e.g., "no .prettierrc.* and no `prettier` key in package.json">
-\`\`\`
+```
 
 Detected stack: `<comma-separated tags>`
 
@@ -94,7 +94,7 @@ Detected stack: `<comma-separated tags>`
 - [ ] <from catalog row>
 
 <!-- audit-key=<the item's Audit key> -->
-```
+````
 
 ### 6. End-of-run summary
 
