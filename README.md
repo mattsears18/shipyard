@@ -113,36 +113,12 @@ plugins/
       enforce-worktree-isolation.sh
       report-plugin-error.sh
     scripts/
-      statusline.sh
       report-plugin-error.sh
       tests/
     assets/
       do-work-dashboard-updater.sh
       do-work-dashboard.example.html
 ```
-
-## Optional: main-CI statusline
-
-The `shipyard` plugin ships `scripts/statusline.sh` — a Claude Code statusline that polls the **last completed CI run on the default branch** for the cwd's GitHub repo and renders it in your status bar:
-
-- `main:✓` (green) — last completed run was a success
-- `main:✗ #<run-id>` (red) — last completed run failed; ID is the *earliest unfixed* red run (where the streak started)
-- `main:?` (dim) — not a GitHub repo, no completed runs yet, or `gh` not authed
-
-Pairs naturally with `/do-work` — when the orchestrator diverts a worker to fix main, the statusline shows you exactly why.
-
-Wire it up by adding to `~/.claude/settings.json` (global) or `.claude/settings.json` (per-project):
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh"
-  }
-}
-```
-
-The script caches each repo's status for 30s (override via `SHIPYARD_STATUSLINE_CACHE_TTL`), so it's a single `gh` call per repo per cache window — cheap to keep running.
 
 ## Optional: auto-file issues on skill/agent failure
 

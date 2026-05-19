@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.1.0 — 2026-05-19
+
+Removes the optional main-CI statusline feature. The script (`plugins/shipyard/scripts/statusline.sh`), its README section, and the `SHIPYARD_STATUSLINE_CACHE_TTL` env var reference are gone. Closes [#40](https://github.com/mattsears18/claude-plugins/issues/40).
+
+The feature wasn't working in practice and the maintenance cost of a broken-but-documented surface exceeded its value. The orchestrator-printed "status line" in `/do-work` (the `/do-work · <repo> · main:<emoji> · ...` header) is a different feature and is unchanged.
+
+Migration for anyone wiring the script into their Claude Code settings: drop the `statusLine` block from `~/.claude/settings.json` (or the per-project `.claude/settings.json`) that points at `${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh`. No data loss — the script's cache was a 30s file in `$TMPDIR` and clears itself.
+
 ### 1.0.1 — 2026-05-19
 
 Docs-only refresh of the root `README.md` after the `app-audits` → `shipyard` rename in 1.0.0. Closes [#39](https://github.com/mattsears18/claude-plugins/issues/39).
