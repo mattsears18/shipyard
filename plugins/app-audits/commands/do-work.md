@@ -25,7 +25,7 @@ Across the session, the orchestrator maintains six mental data structures. Hold 
 - **`failed_prs`**: queue of red PRs (authored by `@me`) needing fix-checks-only work. Drained after `divert_queue`, before `ready_issues`.
 - **`raw_backlog`**: ranked list of issue numbers not yet scoped. Source for refilling `ready_issues`.
 - **`divert_queue`**: at most two synthetic high-priority entries that *preempt* normal work — `fix-main-ci` (main's latest CI is red) and `fix-failing-prs-batch` (≥10 open red PRs across all authors). Drained BEFORE `failed_prs`. Repopulated by the divert-checks scan (step 4.5 at setup, step D in steady state). An entry is only repopulated when no in-flight slot is already working that diversion — never two workers on the same diversion.
-- **`main_ci`**: cached snapshot of `<default-branch>` CI — `{ status: "green" | "red" | "pending" | "unknown", earliest_red_run_id?: string, earliest_red_run_url?: string, earliest_red_sha?: string, checked_at: <timestamp> }`. Refreshed by the divert-checks scan; consumed by the status line and the divert dispatch templates.
+- **`main_ci`**: cached snapshot of `<default-branch>` CI — `{ status: "green" | "red" | "pending" | "unknown", earliest_red_run_id?: string, earliest_red_run_url?: string, earliest_red_sha?: string, checked_at: <timestamp> }`. Refreshed by the divert-checks scan; consumed by the dashboard and the divert dispatch templates.
 
 When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules).
 
@@ -37,7 +37,7 @@ Every `/do-work` session opens a self-contained HTML status dashboard at `/tmp/d
 2. **Background updater** — `${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard-updater.sh` polls `gh` every 10 seconds and rewrites dynamic bits of the HTML in place (open-issue / open-PR counts; pending → merged ✓ / closed badge flips). Static bits (worker cards, shipped-PR rows) the orchestrator updates on event.
 3. **Orchestrator** — me, on every notification (agent return, periodic refresh): re-write the worker-card section, append a new shipped-PR row, etc.
 
-The dashboard is the **rich** UI surface. The terminal CLI status line and state-change banners ([step 6.5](#65-status-line--state-change-banners-ui)) are the always-on terse equivalent for users not actively watching the browser. Both render the same underlying state — they don't disagree.
+The dashboard is the **only** UI surface for the session. All live state — repo health, in-flight workers, diversions, shipped PRs — renders in the browser. Don't try to mirror it in the CLI with status lines, banners, or other terminal styling; those have been removed (they were unreliable and noisy). When state changes that the user should know about, the dashboard is what reflects it.
 
 What the dashboard must include:
 
@@ -53,7 +53,7 @@ Use `${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard.example.html` as a structura
 
 The background updater (`assets/do-work-dashboard-updater.sh`) refreshes the Main CI tile and Failing PRs (all authors) tile every 10 seconds in place, so those stay live even between orchestrator turns. The diversion *banners* are orchestrator-owned — the updater leaves them alone, since whether a divert is `IN FLIGHT · SLOT N` vs `ENQUEUED · awaiting slot` is session state the script can't infer.
 
-### Launch sequence (run at end of step 1 below)
+### Launch sequence (executed by step 1.5 of setup)
 
 ```bash
 # (1) Write initial HTML to /tmp/do-work-dashboard.html — populate from session state
@@ -85,6 +85,20 @@ gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name   # 
 ```
 
 Cache all three for the session.
+
+### 1.5 Launch the live dashboard
+
+Now that `<owner/repo>` is known, immediately launch the live dashboard per the [Launch sequence](#launch-sequence-executed-by-step-15-of-setup) above. This is mandatory, not optional — the dashboard is the **only** UI surface for the session (the old CLI status line and state-change banners were removed) and the user expects it to open within the first few seconds of `/do-work` starting.
+
+Concretely, in this step:
+
+1. Write a minimal initial HTML to `/tmp/do-work-dashboard.html` — at this point you only have repo info; populate worker cards / shipped rows / counts as placeholders ("waiting for backlog…") and let later steps + the background updater fill them in.
+2. Run `open /tmp/do-work-dashboard.html` to surface it in the user's browser.
+3. Spawn the detached background updater with `nohup … </dev/null >/tmp/do-work-dashboard-updater.log 2>&1 & disown` — NOT `run_in_background: true`, because the harness will reap it.
+
+If any of those three calls fail, surface the failure to the user immediately — don't silently continue without a dashboard. The dashboard is *not* optional; if `/tmp` isn't writable or `open` fails, tell the user so they can diagnose (likely sandboxed environment).
+
+Then proceed to step 2. The dashboard will keep refilling itself as later setup steps land their data into the file.
 
 ### 2. Backlog overview
 
@@ -314,7 +328,7 @@ Cache `{ status, earliest_red_run_id, earliest_red_run_url, earliest_red_sha, ch
 - If `main_ci.status == "pending"` → don't enqueue; the next step-D refresh re-evaluates once a run completes.
 - If `main_ci.status == "unknown"` → don't enqueue.
 
-**Never** report `main_ci.status = "green"` on the basis of a single successful workflow run. The status line surface ("Main CI: 🟢 green") must derive from the per-workflow aggregate above. If you find yourself about to say "newest run X succeeded → main is green," stop — you skipped the per-workflow grouping. Run it first.
+**Never** treat `main_ci.status = "green"` as true on the basis of a single successful workflow run. The dashboard's Main CI tile must derive from the per-workflow aggregate above. If you find yourself about to conclude "newest run X succeeded → main is green," stop — you skipped the per-workflow grouping. Run it first.
 
 **4.5b — Failing-PR pileup.** Count open PRs across **all authors** whose check rollup contains a hard failure:
 
@@ -328,7 +342,7 @@ Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAI
 - If `failing_pr_count_all >= 10` → enqueue `{ kind: "fix-failing-prs-batch", target: "pr-pileup", failing_pr_numbers: [...] }` into `divert_queue` — unless one is already enqueued OR `in_flight`.
 - If `failing_pr_count_all < 10` → clear any `fix-failing-prs-batch` entry from `divert_queue`.
 
-Both checks are cheap (two `gh` calls) and the cached results power the status line in step 5.5. Don't re-run them per dispatch — only at setup and at step D's periodic refresh.
+Both checks are cheap (two `gh` calls) and the cached results power the dashboard's Main CI and Failing PRs tiles. Don't re-run them per dispatch — only at setup and at step D's periodic refresh.
 
 ### 5. Snapshot failing PRs
 
@@ -354,105 +368,6 @@ Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping a
 `touches_lockfile: true` for issues that obviously edit `package.json`, `pnpm-lock.yaml`, `Gemfile.lock`, `go.sum`, `Cargo.lock`, migrations, or root build config. Use the issue body/title — don't over-investigate. Budget ~30s per scoping agent.
 
 Push the results onto `ready_issues` (preserving rank). Remove those issue numbers from `raw_backlog`.
-
-### 6.5 Status line + state-change banners (UI)
-
-There are two UI surfaces — both unconditionally re-print whenever repo-health state changes, so the user never has to scroll back to figure out what's going on.
-
-#### Status line — one-line repo-health header
-
-Print before the initial pool fill, and again at the top of any turn where state visibly changed (a completion landed, a divert flipped, the failing-PR count crossed the threshold either way, or main flipped color). Format:
-
-```
-/do-work · <owner/repo> · main:<emoji> · in-flight: <n>/<concurrency> [<labels>] · failing PRs: <m> (@me: <k>)<divert-suffix>
-```
-
-Fields:
-
-- **main:** — `🟢 green`, `🔴 red (run <id>)`, `⏳ pending`, or `❔ unknown`. The run ID is `main_ci.earliest_red_run_id` when red.
-- **in-flight labels** — comma-separated, derived from each entry's `kind`/`target`: issue → `#N`, fix-checks → `fix-checks #M`, fix-main-ci → `⚠️ fix-main-ci`, fix-failing-prs-batch → `⚠️ fix-prs-batch`. Empty list → `[ ]`.
-- **failing PRs:** — the all-authors count from `failing_pr_count_all`. The `(@me: <k>)` parenthetical comes from `failed_prs.length + in_flight fix-checks count`. Append ` ⚠️` to the count when it's ≥ 10 (matches the divert threshold).
-- **divert-suffix** — when a divert is enqueued but not yet in flight, append ` · diverting: <kind>`. When already in flight, the `[ ]` labels already make that visible, no suffix needed.
-
-Examples:
-
-```
-/do-work · mattsears18/lightwork · main:🟢 · in-flight: 2/2 [#769, #768] · failing PRs: 3 (@me: 1)
-/do-work · mattsears18/lightwork · main:🔴 (run 18234567) · in-flight: 2/2 [⚠️ fix-main-ci, #769] · failing PRs: 12 ⚠️ (@me: 2) · diverting: fix-failing-prs-batch
-/do-work · mattsears18/lightwork · main:⏳ · in-flight: 0/2 [ ] · failing PRs: 0 (@me: 0)
-```
-
-When to print the status line: (a) startup, right before the initial pool fill; (b) any turn where `divert_queue` gained or lost an entry; (c) any turn where `main_ci.status` changed since the previous print; (d) any turn where `failing_pr_count_all` crossed the 10 threshold in either direction; (e) start of the end-of-session summary; (f) right after any state-change banner below.
-
-#### State-change banners — make divert events impossible to miss
-
-The status line is for at-a-glance state. **Banners** are for the moments where state CHANGES — they're a 3-line block with blank lines above and below, so they stand out from completion-reconcile logs. Print every time one of the trigger conditions fires; never suppress them.
-
-**Main flipped red → enqueueing a fix-main-ci diversion:**
-
-```
-
-⚠️  MAIN CI RED — diverting next available slot to fix
-   Earliest red run: <earliest_red_run_url>
-   Triggered at: <YYYY-MM-DDTHH:MM:SSZ>
-
-```
-
-**fix-main-ci dispatched (slot now in flight):**
-
-```
-
-🔧  DISPATCHED fix-main-ci on slot <id> — agent investigating <earliest_red_run_id>
-
-```
-
-**Main flipped back to green (red → green transition):**
-
-```
-
-✅  MAIN CI RESTORED — back to green at run <newest_green_run_id>
-
-```
-
-If a fix-main-ci diversion is in flight when this fires, also add: `   (in-flight fix-main-ci will finish naturally; result may already be redundant)`.
-
-**Failing-PR count crossed UP through 10 — enqueueing a fix-failing-prs-batch diversion:**
-
-```
-
-⚠️  FAILING PR PILEUP — <n> open PRs are red, threshold is 10
-   Sample: #<a>, #<b>, #<c>, ... (+ <k> more)
-   Diverting next available slot to investigate common root cause.
-
-```
-
-**fix-failing-prs-batch dispatched:**
-
-```
-
-🔧  DISPATCHED fix-failing-prs-batch on slot <id> — investigating <n> failing PRs
-
-```
-
-**Failing-PR count crossed DOWN through 10:**
-
-```
-
-✅  PR PILEUP CLEARED — <n> failing PRs remain (below 10 threshold)
-
-```
-
-**Diversion completed (any kind):**
-
-When a `fix-main-ci` or `fix-failing-prs-batch` worker returns, print a banner BEFORE the normal reconcile line:
-
-- `shipped` → `✅  DIVERSION RESOLVED — fix-main-ci shipped via PR #<M> (auto-merge enabled)`
-- `noop` → `➖  DIVERSION NO-OP — fix-main-ci: main already green by the time the agent started`
-- `blocked` → `🛑  DIVERSION BLOCKED — fix-main-ci: <reason>. No auto-retry; needs human attention.` (and the status line that follows will keep showing `main:🔴` until a human resolves it)
-
-**End-of-session — diversion summary block.** The end-of-session summary (below) carries a `Diversions:` block when `D > 0` — counts per kind, with shipped/noop/blocked breakdowns and PR numbers. That's how the user sees what diversions fired even if they weren't watching the session live.
-
-The rule of thumb is: banners are LOUD and one-shot (printed when the transition happens), the status line is the persistent at-a-glance view (re-printed whenever the underlying state changes). Both should appear together when a divert fires — banner first, then the updated status line immediately below it.
 
 ### 7. Initial pool fill
 
@@ -484,13 +399,13 @@ For **fix-main-ci work** (`shipped` / `noop` / `blocked`):
 
 - **shipped main-ci-fix via PR #<M>** — record. The diversion is "resolved" from the orchestrator's perspective the moment the PR is open with auto-merge; the next step-D refresh will detect main going green (and clear the divert flag) once the PR lands. Don't re-enqueue the diversion in the meantime — the in_flight slot is gone but the divert_queue check at step D guards against double-dispatch.
 - **noop: main already green** — main flipped green between divert dispatch and the agent's pre-flight. Record. Step D will repopulate if it goes red again.
-- **blocked main-ci-fix: <reason>** — log to the session summary. Do NOT auto-retry — back off and surface in the status line: `main:🔴 (run <id>) · diversion blocked: <reason>`. A human needs to intervene.
+- **blocked main-ci-fix: <reason>** — log to the session summary and reflect the unresolved state in the dashboard's Main CI tile (it stays red with the blocked reason in the sub-line). Do NOT auto-retry — back off. A human needs to intervene.
 
 For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
 
 - **shipped pr-batch-fix via PR #<M>** — record. Same single-shot pattern as fix-main-ci.
 - **noop: pileup already cleared** — the count dropped below 10 between dispatch and pre-flight (other PRs got merged or fixed). Record. Step D re-evaluates.
-- **blocked pr-batch-fix: <reason>** — log to summary, back off, surface in status line. No auto-retry.
+- **blocked pr-batch-fix: <reason>** — log to summary, back off, reflect in the dashboard's Failing PRs tile. No auto-retry.
 
 ### B. Release the slot
 
@@ -514,7 +429,7 @@ Otherwise, every `--concurrency` completions (a full pool's worth), refresh queu
 
 The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
 
-If the divert-checks refresh changed `main_ci.status`, `divert_queue` membership, or flipped `failing_pr_count_all` across the 10 threshold, also print the status line (see step 6.5) — this is one of the "things a human would care about changed" cases.
+If the divert-checks refresh changed `main_ci.status`, `divert_queue` membership, or flipped `failing_pr_count_all` across the 10 threshold, the dashboard's tiles (Main CI, Failing PRs) and any diversion banner element will reflect the new state on the next render — no CLI re-print needed.
 
 ## Dispatch rules (used by step 7 and step C)
 

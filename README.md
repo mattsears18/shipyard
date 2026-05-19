@@ -46,32 +46,7 @@ plugins/
     skills/
       filing-github-issues/SKILL.md
       audit-rubrics/SKILL.md
-    scripts/
-      statusline.sh
 ```
-
-## Optional: main-CI statusline
-
-The `app-audits` plugin ships `scripts/statusline.sh` — a Claude Code statusline that polls the **last completed CI run on the default branch** for the cwd's GitHub repo and renders it in your status bar:
-
-- `main:✓` (green) — last completed run was a success
-- `main:✗ #<run-id>` (red) — last completed run failed; ID is the *earliest unfixed* red run (where the streak started)
-- `main:?` (dim) — not a GitHub repo, no completed runs yet, or `gh` not authed
-
-Pairs naturally with `/do-work` — when the orchestrator diverts a worker to fix main, the statusline shows you exactly why.
-
-Wire it up by adding to `~/.claude/settings.json` (global) or `.claude/settings.json` (per-project):
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh"
-  }
-}
-```
-
-The script caches each repo's status for 30s (override via `APP_AUDITS_STATUSLINE_CACHE_TTL`), so it's a single `gh` call per repo per cache window — cheap to keep running.
 
 ## License
 
