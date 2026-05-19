@@ -3,7 +3,7 @@
 Personal [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by Matt Sears. The headliner is **`shipyard`** — an autonomous engineering loop that finds work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers in isolated git worktrees.
 
 <p align="center">
-  <img src="docs/images/shipyard-infographic.png" alt="Shipyard at a glance — autonomous engineering loop. Five stages (Sources → Refine + Review → Orchestrator → Workers → PR Pipeline) plus a &quot;What's been hardened&quot; footer band citing the safety properties (#34 worktree isolation, #26 no-hook-bypass, #23 always-dispatching, #29 pre-dispatch refresh, #24 user-feedback gating)." width="100%" />
+  <img src="docs/images/shipyard-infographic.svg" alt="Shipyard at a glance — autonomous engineering loop. Five stages (Sources → Refine + Review → Orchestrator → Workers → PR Pipeline) plus a &quot;What's been hardened&quot; footer band citing the safety properties (#34 worktree isolation, #26 no-hook-bypass, #23 always-dispatching, #29 pre-dispatch refresh, #24 user-feedback gating)." width="100%" />
 </p>
 
 *Shipyard at a glance — five stages of the autonomous engineering loop. Read the [How shipyard works](#shipyard) section below for details.*
