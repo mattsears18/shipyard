@@ -92,15 +92,19 @@ while true; do
       "$DASHBOARD"
   fi
 
-  # 3. Refresh Main CI tile — find the OVERALL status of the newest commit on the
-  # default branch. Each commit usually has multiple workflows (ci, release,
-  # claude-review, …); a single green run does NOT mean the commit is green.
-  # Fetch a wide window of recent runs, group by headSha, and aggregate per
-  # commit. The commit is green only when every observed workflow succeeded;
-  # any failure on the newest commit means red.
+  # 3. Refresh Main CI tile — show green only when every workflow on main has
+  # a successful most-recent COMPLETED run. The bug we're avoiding: filtering
+  # by `--status completed` hid in-progress workflows, which then let a sibling
+  # `Release Please` success on the newest commit mask a failing `CI` workflow.
+  # The fix: fetch ALL runs (any status) and aggregate PER WORKFLOW, not per
+  # commit. For each workflow on main, find its most recent COMPLETED run —
+  # that's the workflow's current health. Overall main is red if any workflow's
+  # most-recent-completed result is red, even if a sibling workflow already
+  # finished green on the newest commit or if the workflow's own newest run is
+  # still in progress.
   main_runs_json=$(gh run list --repo "$REPO" --branch "$DEFAULT_BRANCH" \
-    --status completed --limit 60 \
-    --json databaseId,conclusion,url,headSha,createdAt,workflowName 2>/dev/null)
+    --limit 60 \
+    --json databaseId,conclusion,status,url,headSha,createdAt,workflowName 2>/dev/null)
   if [ -n "$main_runs_json" ] && [ "$main_runs_json" != "[]" ]; then
     main_status_line=$(echo "$main_runs_json" | python3 -c "
 import json, sys
@@ -112,40 +116,40 @@ except Exception:
 if not runs:
     print('')
     sys.exit(0)
-# Order commits by first-seen (runs come back newest-first from gh).
-order = []
-by_sha = {}
-for r in runs:
-    sha = r.get('headSha') or ''
-    if not sha:
-        continue
-    if sha not in by_sha:
-        by_sha[sha] = []
-        order.append(sha)
-    by_sha[sha].append(r)
-newest_sha = order[0] if order else ''
-commit_runs = by_sha.get(newest_sha, [])
 RED = {'failure', 'timed_out', 'startup_failure', 'cancelled', 'action_required'}
 OK = {'success', 'skipped', 'neutral'}
-overall = 'green'
-red_run = None
-for r in commit_runs:
-    c = (r.get('conclusion') or '').lower()
+# Group runs by workflowName, keeping gh's newest-first order within each.
+by_wf = {}
+for r in runs:
+    wf = r.get('workflowName') or ''
+    by_wf.setdefault(wf, []).append(r)
+# For each workflow, classify by its most recent COMPLETED run.
+red_runs = []
+green_runs = []
+pending_workflows = 0
+for wf, wf_runs in by_wf.items():
+    wf_runs.sort(key=lambda r: r.get('createdAt') or '', reverse=True)
+    last_completed = next((r for r in wf_runs if (r.get('status') or '').lower() == 'completed'), None)
+    if last_completed is None:
+        pending_workflows += 1
+        continue
+    c = (last_completed.get('conclusion') or '').lower()
     if c in RED:
-        overall = 'red'
-        # Prefer the earliest red run on this commit for the link target.
-        if red_run is None or (r.get('createdAt') or '') < (red_run.get('createdAt') or ''):
-            red_run = r
-    elif c not in OK:
-        if overall != 'red':
-            overall = 'pending'
-if overall == 'red' and red_run is not None:
-    print(f\"red\t{red_run.get('databaseId','')}\")
-elif overall == 'green' and commit_runs:
-    # Use any run from the newest commit for the green tile's link.
-    print(f\"green\t{commit_runs[0].get('databaseId','')}\")
+        red_runs.append(last_completed)
+    elif c in OK:
+        green_runs.append(last_completed)
+    else:
+        pending_workflows += 1
+if red_runs:
+    # Most recent failing run wins the link target — that's the most actionable.
+    red_runs.sort(key=lambda r: r.get('createdAt') or '', reverse=True)
+    print(f\"red\t{red_runs[0].get('databaseId','')}\")
+elif pending_workflows > 0:
+    print('pending\t')
+elif green_runs:
+    print(f\"green\t{green_runs[0].get('databaseId','')}\")
 else:
-    print(f\"{overall}\t\")
+    print('unknown\t')
 " 2>/dev/null)
     main_conclusion=$(echo "$main_status_line" | cut -f1)
     main_run_id=$(echo "$main_status_line" | cut -f2)
