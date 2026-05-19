@@ -76,6 +76,41 @@ If the user's repo has a `docs/` directory and they've asked for the dashboard t
 
 ## Setup (run once)
 
+### 0.5 Move into the orchestrator's worktree
+
+**Before any other setup, the orchestrator MUST relocate every write into a dedicated worktree.** The user's primary checkout is strictly read-only for the rest of the session. This is the orchestrator-side counterpart of the "agents never `cd` outside their worktree" rule — the orchestrator is the bigger offender because it lives in the primary checkout for the entire session, and any edit (`Edit`, `Write`, `git commit`, `git reset`, `git branch <new>`, label setup that mutates the working dir, README/CHANGELOG/CLAUDE.md tweaks, `plugin.json` version bumps, etc.) would otherwise land on whatever branch the user happens to be sitting on.
+
+The hard rule: **after this step completes, every write goes through the orchestrator worktree**. Read-only operations (`git status`, `gh issue list`, `gh pr view`, `find`, `grep`, `git worktree list`, `gh run list`, label *existence* checks via `gh label list`, etc.) MAY still run in either checkout — they don't change state, so it doesn't matter which cwd they fire from. The constraint applies to writes only.
+
+Create (or reuse) the orchestrator's worktree under `.claude/worktrees/orchestrator-<session-id>` from the tip of the default branch. `<session-id>` is the current Claude Code session identifier — stable across the run, distinct from each dispatched agent's `<id>`, so the orchestrator and its agents never collide on worktree paths:
+
+```bash
+# Run this once from the user's primary checkout (the only write to .git/worktrees/ that the primary will see this session)
+cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
+ORCH_WT=".claude/worktrees/orchestrator-<session-id>"
+DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+
+# If a prior session left this exact path around, reuse it after refreshing to origin's tip.
+if [ -d "$ORCH_WT" ] && git worktree list --porcelain | grep -q "^worktree $(pwd)/$ORCH_WT$"; then
+  git -C "$ORCH_WT" fetch origin "$DEFAULT_BRANCH"
+  git -C "$ORCH_WT" checkout "$DEFAULT_BRANCH"
+  git -C "$ORCH_WT" reset --hard "origin/$DEFAULT_BRANCH"
+else
+  git fetch origin "$DEFAULT_BRANCH"
+  git worktree add "$ORCH_WT" "origin/$DEFAULT_BRANCH"
+fi
+```
+
+**From this point on, every subsequent `Bash` / `Edit` / `Write` tool call in the orchestrator's session runs with `<repo-root>/.claude/worktrees/orchestrator-<session-id>` as cwd.** Prepend `cd "$ORCH_WT" && ` (or pass `-C "$ORCH_WT"` to git) for any command whose effect lands on disk or on a branch ref. The user's primary checkout's HEAD MUST NOT change during this session — if you find yourself running a write-class command in the primary checkout, that's the bug this step exists to prevent. Back up, switch to the orchestrator worktree, retry.
+
+Why a dedicated worktree (vs. just "be careful with cwd"):
+
+1. **Race conditions with the user.** The user may be editing files in the primary checkout while `/do-work` is running. An orchestrator-side edit in the same tree can clobber unsaved work or land a commit on a branch the user didn't expect.
+2. **Branch confusion.** `git reset` (even `--keep` or `--soft`) moves HEAD. If the user runs `git status` mid-session and sees commits appear and disappear on the branch they were working on, that's actively misleading. A separate worktree means the user's `git status` answer is whatever they were doing before they ran `/do-work` — unchanged.
+3. **Symmetry with dispatched agents.** Agents are forbidden from `cd`'ing out of their worktree, from `gh pr checkout`, and from parking on the default branch. Worktree isolation is a property of the whole system, not just the leaves; the orchestrator holds itself to the same standard.
+
+End-of-session cleanup also runs from the orchestrator worktree, and reaps the orchestrator's own worktree last — see [End-of-session cleanup](#end-of-session-cleanup) below.
+
 ### 1. Resolve repo + user
 
 ```bash
@@ -697,9 +732,9 @@ Drain protocol:
 
 ## End-of-session cleanup
 
-Each dispatched agent created a worktree and a local branch. After auto-merge fires with `--delete-branch`, the remote branch is gone but the local branch + worktree linger as dead weight in the main checkout. Reap them before the summary.
+Each dispatched agent created a worktree and a local branch. After auto-merge fires with `--delete-branch`, the remote branch is gone but the local branch + worktree linger as dead weight in the repo's `.git/worktrees/` directory. Reap them before the summary.
 
-Run from the main checkout (not from inside any worktree).
+**Run from the orchestrator worktree** (`.claude/worktrees/orchestrator-<session-id>`, set up in step 0.5) — NOT from the user's primary checkout. The `cd "$(git rev-parse --show-toplevel)"` at the start of step 3 below scopes everything to the repo root regardless of which checkout you started in, but every write here (pruning refs, removing agent worktrees, deleting `[gone]` branches) still needs a non-stale git context, and the orchestrator worktree is the only context the orchestrator is allowed to write from this session. Reaping the orchestrator's own worktree happens last, after the user-facing summary prints — see step 6 below.
 
 1. Prune stale remote refs so merged-and-deleted branches surface as `[gone]`:
    ```bash
@@ -745,6 +780,21 @@ Run from the main checkout (not from inside any worktree).
    ```
 
 Record `<reaped_worktrees>` and `<reaped_branches>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b.
+
+6. **Reap the orchestrator's own worktree — last, after the summary prints.** Steps 1–5 cleaned up the dispatched-agent worktrees. The orchestrator worktree itself (`.claude/worktrees/orchestrator-<session-id>`, set up in step 0.5) is still around because the orchestrator was running inside it. After the user-facing [End-of-session summary](#end-of-session-summary) has printed — and only then; printing the summary from inside the orchestrator worktree is fine, but you can't remove the worktree you're still cwd'd into — reap it with the same unlock + force-remove dance used for agent worktrees. The only twist is that the cwd has to leave the orchestrator worktree first; jump back to the user's primary checkout (read-only at this point — we're not writing, we're just being somewhere `git worktree remove` can succeed from), then remove:
+
+   ```bash
+   # Capture both paths BEFORE we move
+   ORCH_WT_ABS="$(git -C "<repo-root>/.claude/worktrees/orchestrator-<session-id>" rev-parse --show-toplevel)"
+   PRIMARY_ABS="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"  # first entry = primary
+
+   cd "$PRIMARY_ABS"
+   git worktree unlock "$ORCH_WT_ABS" 2>/dev/null
+   git worktree remove --force "$ORCH_WT_ABS" 2>/dev/null
+   git worktree prune
+   ```
+
+   This is a read-only-effect operation on the primary checkout — `git worktree remove` modifies `.git/worktrees/` (which is shared metadata), not the primary's working tree or HEAD. The primary's HEAD never moves. If the remove fails (e.g., uncommitted edits the orchestrator made but never pushed — which would itself be a bug), surface that in the summary as `orchestrator worktree NOT reaped: <reason>` and leave it on disk for the next session's step 3b liveness-checked sweep to consider.
 
 ## End-of-session summary
 
@@ -821,7 +871,8 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't skip the initial scope pre-flight to "save time" — one rebase from a missed collision costs more than the whole pre-flight.
 - Don't skip the periodic failed-PR refresh. New failures appear from flaky tests, base drift, and dependency updates; if you don't sweep, they sit red forever.
 - Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look.
-- Don't run end-of-session cleanup from inside a worktree — `git worktree remove` on your own checkout fails. Always run from the repo's primary working tree.
+- **Don't write to the user's primary checkout under any circumstance.** After step 0.5, the orchestrator works exclusively in `.claude/worktrees/orchestrator-<session-id>`. The primary checkout is strictly read-only — read-only ops like `git status`, `gh issue list`, `find`, `grep`, `git worktree list` are fine in either cwd, but every write (`Edit`, `Write`, `git add`, `git commit`, `git branch <new>`, `git push`, `git reset`, `git checkout -B`, label/README/CHANGELOG/`plugin.json` edits, etc.) MUST land in the orchestrator worktree. If a write-class command ends up modifying the primary checkout's HEAD, working tree, or any tracked file in it, that's the exact failure mode step 0.5 was added to prevent — back up, switch to the orchestrator worktree, and retry.
+- Don't run end-of-session cleanup from the user's primary checkout — run it from the orchestrator worktree (set up in step 0.5). The cleanup steps that reap agent worktrees and `[gone]` branches are *writes*, and writes go through the orchestrator worktree like every other write this session. The one exception is step 6 of cleanup, which removes the orchestrator worktree itself: that step `cd`'s out of the orchestrator worktree just long enough to call `git worktree remove` (a metadata-only operation that doesn't touch the primary's HEAD or working tree). That's the only moment in the session where the orchestrator's cwd is the primary checkout, and it's deliberately read-only-effect.
 - Don't cleanup branches by name or pattern — only by `[gone]` upstream. Anything else risks reaping open or blocked PRs the orchestrator didn't author.
 - Don't claim a worktree whose branch doesn't match `do-work/*` during orphan triage. That branch is not yours — it could be a developer's WIP.
 - Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging.
