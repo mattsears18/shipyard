@@ -278,31 +278,43 @@ This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exis
 
 Two repo-health conditions can preempt all normal work. Run these checks at setup, repopulate `divert_queue`, then continue. The same checks re-run during the periodic refresh (step D).
 
-**4.5a — Main CI status.** Find the *earliest unfixed red commit* on `<default-branch>` — when the current red streak began. Fixing the symptom-of-the-day is less useful than fixing the root cause that's been blocking deploys since whenever.
+**4.5a — Main CI status.** Determine whether main is currently healthy by looking at *each workflow's* most-recent COMPLETED run on `<default-branch>`. Main is green only when every workflow's last completed run was a success. If any workflow's most-recent completed run was a failure (or cancelled / timed out), main is red — even if a sibling workflow finished green more recently, and even if a newer in-progress run might eventually flip the failing workflow back to green.
 
-**Reason this needs care:** every commit on `<default-branch>` typically has *multiple* workflow runs (e.g. `ci`, `release`, `claude-review`). A single `success` entry in `gh run list` proves only that ONE workflow passed on that SHA — a sibling workflow on the same SHA can be red. So the wrong question is "is the newest run green?" — the right question is "is the newest *commit* green across all its required workflows?" Evaluate at the **commit** granularity, never at the individual-run granularity.
+**Reason this needs care:** every commit on `<default-branch>` typically has *multiple* workflow runs (e.g. `ci`, `release`, `claude-review`). They run independently. A single `success` entry in `gh run list` proves only that ONE workflow passed — a sibling workflow on the same SHA, or the latest run of the *same* workflow, can still be red. So the wrong question is "is the newest run green?" — the right question is "for each workflow, is its most recent completed run green?" Evaluate at the **per-workflow** granularity.
+
+Two specific traps to avoid:
+
+- **Don't filter `--status completed` in the `gh run list` call.** Doing so hides in-progress workflows entirely. If `CI` is still running on the newest commit but `Release Please` already finished green, filtering completed-only leaves only the Release Please success visible — and the aggregator falsely concludes "main is green." Fetch all statuses and treat each one according to its `status` field.
+- **Don't aggregate across workflows on a single commit.** Workflow A finishing green on commit X tells you nothing about workflow B's status — they're independent. If you aggregate per-commit, a newly-pushed commit with `CI: in_progress` + `Release Please: success` looks "pending or green," which masks the prior `CI: failure` that's still the most recent known CI result.
 
 ```bash
-# Most recent 60 completed runs on the default branch — enough to cover ~10 commits worth of workflows
+# Most recent 60 runs on the default branch (any status — DO NOT filter --status completed)
 gh run list --repo <owner/repo> --branch <default-branch> \
-  --status completed --limit 60 \
-  --json databaseId,conclusion,displayTitle,headSha,url,createdAt,workflowName
+  --limit 60 \
+  --json databaseId,conclusion,status,displayTitle,headSha,url,createdAt,workflowName
 ```
 
-Compute per-commit overall status:
+Compute per-workflow status, then aggregate:
 
-1. Group runs by `headSha`, preserving the commit order from `git log origin/<default-branch> --first-parent -20 --format=%H` (so unrelated branch noise from `gh run list` doesn't shuffle the timeline).
-2. For each commit, aggregate its workflow conclusions: `red` if **any** required workflow has `conclusion == "failure" / "timed_out" / "startup_failure"`, `green` if **every** observed workflow is `success` (or `skipped` / `neutral`), `pending` if any required workflow is missing from the result set (its run hasn't completed yet — don't infer green from absence).
-3. Walk the per-commit timeline newest → oldest while overall is `red`. The last red commit before you hit a `green` (or before the list ends) is the *earliest unfixed red commit*. Pick the failing run on that commit with the most informative `displayTitle` as the canonical `earliest_red_run_*` for the divert template.
+1. Group runs by `workflowName`. Within each group, keep `gh`'s newest-first `createdAt` order.
+2. For each workflow, find its most recent run whose `status == "completed"`. That's the workflow's current health:
+   - `conclusion in {success, skipped, neutral}` → workflow is **green**
+   - `conclusion in {failure, timed_out, startup_failure, cancelled, action_required}` → workflow is **red**
+   - no completed run in the window (only `in_progress` / `queued` / `waiting` / `requested`) → workflow is **pending**
+3. Aggregate to a single `main_ci.status`:
+   - any workflow is **red** → `main_ci.status = "red"`. Use the *most recent* red run across all red workflows as `earliest_red_run_*` (most actionable for the fix-main-ci dispatch).
+   - else any workflow is **pending** → `main_ci.status = "pending"`
+   - else every workflow is **green** → `main_ci.status = "green"`
+   - else (no runs at all in the window) → `main_ci.status = "unknown"`
 
-Cache `{ status: "red", earliest_red_run_id, earliest_red_run_url, earliest_red_sha, checked_at: now }` in `main_ci`.
+Cache `{ status, earliest_red_run_id, earliest_red_run_url, earliest_red_sha, checked_at: now }` in `main_ci`.
 
-- If the newest *commit* is overall `green` → `main_ci.status = "green"`. Clear any `fix-main-ci` entry from `divert_queue`.
-- If the newest *commit* is overall `red` → `main_ci.status = "red"`. Enqueue `{ kind: "fix-main-ci", target: "main", earliest_red_run_id, earliest_red_run_url, earliest_red_sha }` into `divert_queue` — unless an entry is already in `divert_queue` OR an `in_flight` slot is already working `kind: "fix-main-ci"` (don't double-dispatch the diversion).
-- If the newest *commit* is overall `pending` (workflows still running) → `main_ci.status = "pending"`. Don't enqueue; the next step-D refresh re-evaluates once the runs complete.
-- If there are no completed runs yet (fresh repo) or `gh run list` errors → `main_ci.status = "unknown"`. Don't enqueue.
+- If `main_ci.status == "green"` → clear any `fix-main-ci` entry from `divert_queue`.
+- If `main_ci.status == "red"` → enqueue `{ kind: "fix-main-ci", target: "main", earliest_red_run_id, earliest_red_run_url, earliest_red_sha }` into `divert_queue` — unless an entry is already in `divert_queue` OR an `in_flight` slot is already working `kind: "fix-main-ci"` (don't double-dispatch the diversion).
+- If `main_ci.status == "pending"` → don't enqueue; the next step-D refresh re-evaluates once a run completes.
+- If `main_ci.status == "unknown"` → don't enqueue.
 
-**Never** report `main_ci.status = "green"` on the basis of a single successful workflow run. The status line surface ("Main CI: 🟢 green (newest run X succeeded)") must derive from the per-commit aggregate above, not from any individual run. If you find yourself about to say "newest run X succeeded → main is green," stop — you're skipping the aggregation step. Run the per-commit grouping first.
+**Never** report `main_ci.status = "green"` on the basis of a single successful workflow run. The status line surface ("Main CI: 🟢 green") must derive from the per-workflow aggregate above. If you find yourself about to say "newest run X succeeded → main is green," stop — you skipped the per-workflow grouping. Run it first.
 
 **4.5b — Failing-PR pileup.** Count open PRs across **all authors** whose check rollup contains a hard failure:
 
