@@ -18,14 +18,16 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 ## Orchestrator state
 
-Across the session, the orchestrator maintains four mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
+Across the session, the orchestrator maintains six mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
 
-- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks", target: <#N or #M>, claimed_paths: [...], agent_id } }. Size is bounded by `--concurrency`.
+- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: [...], agent_id } }. Size is bounded by `--concurrency`.
 - **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths, touches_lockfile, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains.
-- **`failed_prs`**: queue of red PRs needing fix-checks-only work. Highest priority — drained before `ready_issues`.
+- **`failed_prs`**: queue of red PRs (authored by `@me`) needing fix-checks-only work. Drained after `divert_queue`, before `ready_issues`.
 - **`raw_backlog`**: ranked list of issue numbers not yet scoped. Source for refilling `ready_issues`.
+- **`divert_queue`**: at most two synthetic high-priority entries that *preempt* normal work — `fix-main-ci` (main's latest CI is red) and `fix-failing-prs-batch` (≥10 open red PRs across all authors). Drained BEFORE `failed_prs`. Repopulated by the divert-checks scan (step 4.5 at setup, step D in steady state). An entry is only repopulated when no in-flight slot is already working that diversion — never two workers on the same diversion.
+- **`main_ci`**: cached snapshot of `<default-branch>` CI — `{ status: "green" | "red" | "pending" | "unknown", earliest_red_run_id?: string, earliest_red_run_url?: string, earliest_red_sha?: string, checked_at: <timestamp> }`. Refreshed by the divert-checks scan; consumed by the status line and the divert dispatch templates.
 
-When a slot opens, the dispatch order is always: `failed_prs` first, then `ready_issues` (subject to path-collision and lockfile rules).
+When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules).
 
 ## Setup (run once)
 
@@ -227,6 +229,39 @@ Sort the survivors:
 
 This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exist (next step) → loop ends immediately; report "backlog empty" and stop.
 
+### 4.5 Divert checks (main CI + PR pileup)
+
+Two repo-health conditions can preempt all normal work. Run these checks at setup, repopulate `divert_queue`, then continue. The same checks re-run during the periodic refresh (step D).
+
+**4.5a — Main CI status.** Find the *earliest unfixed red run* on `<default-branch>` — when the current red streak began. Fixing the symptom-of-the-day is less useful than fixing the root cause that's been blocking deploys since whenever:
+
+```bash
+# Most recent 30 completed runs on the default branch, newest first
+gh run list --repo <owner/repo> --branch <default-branch> \
+  --status completed --limit 30 \
+  --json databaseId,conclusion,displayTitle,headSha,url,createdAt
+```
+
+Walk the list newest → oldest while `conclusion == "failure"`. The last entry before you hit a `success` (or before the list ends) is the *earliest unfixed red run* — that's the one to fix. Cache `{ status: "red", earliest_red_run_id, earliest_red_run_url, earliest_red_sha, checked_at: now }` in `main_ci`.
+
+- If the newest completed run is `success` → `main_ci.status = "green"`. Clear any `fix-main-ci` entry from `divert_queue`.
+- If the newest completed run is `failure` → `main_ci.status = "red"`. Enqueue `{ kind: "fix-main-ci", target: "main", earliest_red_run_id, earliest_red_run_url, earliest_red_sha }` into `divert_queue` — unless an entry is already in `divert_queue` OR an `in_flight` slot is already working `kind: "fix-main-ci"` (don't double-dispatch the diversion).
+- If there are no completed runs yet (fresh repo) or `gh run list` errors → `main_ci.status = "unknown"`. Don't enqueue.
+
+**4.5b — Failing-PR pileup.** Count open PRs across **all authors** whose check rollup contains a hard failure:
+
+```bash
+gh pr list --repo <owner/repo> --state open --limit 200 \
+  --json number,title,author,headRefName,statusCheckRollup
+```
+
+Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` / `state: FAILURE` / `ERROR` / `TIMED_OUT`. Count distinct PR numbers → `failing_pr_count_all`. Cache the count and the matching PR numbers (`failing_prs_all_authors`).
+
+- If `failing_pr_count_all >= 10` → enqueue `{ kind: "fix-failing-prs-batch", target: "pr-pileup", failing_pr_numbers: [...] }` into `divert_queue` — unless one is already enqueued OR `in_flight`.
+- If `failing_pr_count_all < 10` → clear any `fix-failing-prs-batch` entry from `divert_queue`.
+
+Both checks are cheap (two `gh` calls) and the cached results power the status line in step 5.5. Don't re-run them per dispatch — only at setup and at step D's periodic refresh.
+
 ### 5. Snapshot failing PRs
 
 ```bash
@@ -238,7 +273,7 @@ gh pr list --repo <owner/repo> --state open --author @me \
 
 Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` / `state: FAILURE` / `ERROR` / `TIMED_OUT`. Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
 
-Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 3c may already have enqueued some). These are the highest-priority work items because a red PR you opened last session won't auto-merge no matter how many new issues you ship.
+Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 3c may already have enqueued some). These are the highest-priority work items *after* `divert_queue` because a red PR you opened last session won't auto-merge no matter how many new issues you ship. Note: this query is `@me`-scoped on purpose — `failed_prs` is for fix-checks work on PRs *you authored*. The all-authors count from step 4.5b feeds the divert decision, not this queue.
 
 ### 6. Initial scope pre-flight
 
@@ -251,6 +286,105 @@ Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping a
 `touches_lockfile: true` for issues that obviously edit `package.json`, `pnpm-lock.yaml`, `Gemfile.lock`, `go.sum`, `Cargo.lock`, migrations, or root build config. Use the issue body/title — don't over-investigate. Budget ~30s per scoping agent.
 
 Push the results onto `ready_issues` (preserving rank). Remove those issue numbers from `raw_backlog`.
+
+### 6.5 Status line + state-change banners (UI)
+
+There are two UI surfaces — both unconditionally re-print whenever repo-health state changes, so the user never has to scroll back to figure out what's going on.
+
+#### Status line — one-line repo-health header
+
+Print before the initial pool fill, and again at the top of any turn where state visibly changed (a completion landed, a divert flipped, the failing-PR count crossed the threshold either way, or main flipped color). Format:
+
+```
+/do-work · <owner/repo> · main:<emoji> · in-flight: <n>/<concurrency> [<labels>] · failing PRs: <m> (@me: <k>)<divert-suffix>
+```
+
+Fields:
+
+- **main:** — `🟢 green`, `🔴 red (run <id>)`, `⏳ pending`, or `❔ unknown`. The run ID is `main_ci.earliest_red_run_id` when red.
+- **in-flight labels** — comma-separated, derived from each entry's `kind`/`target`: issue → `#N`, fix-checks → `fix-checks #M`, fix-main-ci → `⚠️ fix-main-ci`, fix-failing-prs-batch → `⚠️ fix-prs-batch`. Empty list → `[ ]`.
+- **failing PRs:** — the all-authors count from `failing_pr_count_all`. The `(@me: <k>)` parenthetical comes from `failed_prs.length + in_flight fix-checks count`. Append ` ⚠️` to the count when it's ≥ 10 (matches the divert threshold).
+- **divert-suffix** — when a divert is enqueued but not yet in flight, append ` · diverting: <kind>`. When already in flight, the `[ ]` labels already make that visible, no suffix needed.
+
+Examples:
+
+```
+/do-work · mattsears18/lightwork · main:🟢 · in-flight: 2/2 [#769, #768] · failing PRs: 3 (@me: 1)
+/do-work · mattsears18/lightwork · main:🔴 (run 18234567) · in-flight: 2/2 [⚠️ fix-main-ci, #769] · failing PRs: 12 ⚠️ (@me: 2) · diverting: fix-failing-prs-batch
+/do-work · mattsears18/lightwork · main:⏳ · in-flight: 0/2 [ ] · failing PRs: 0 (@me: 0)
+```
+
+When to print the status line: (a) startup, right before the initial pool fill; (b) any turn where `divert_queue` gained or lost an entry; (c) any turn where `main_ci.status` changed since the previous print; (d) any turn where `failing_pr_count_all` crossed the 10 threshold in either direction; (e) start of the end-of-session summary; (f) right after any state-change banner below.
+
+#### State-change banners — make divert events impossible to miss
+
+The status line is for at-a-glance state. **Banners** are for the moments where state CHANGES — they're a 3-line block with blank lines above and below, so they stand out from completion-reconcile logs. Print every time one of the trigger conditions fires; never suppress them.
+
+**Main flipped red → enqueueing a fix-main-ci diversion:**
+
+```
+
+⚠️  MAIN CI RED — diverting next available slot to fix
+   Earliest red run: <earliest_red_run_url>
+   Triggered at: <YYYY-MM-DDTHH:MM:SSZ>
+
+```
+
+**fix-main-ci dispatched (slot now in flight):**
+
+```
+
+🔧  DISPATCHED fix-main-ci on slot <id> — agent investigating <earliest_red_run_id>
+
+```
+
+**Main flipped back to green (red → green transition):**
+
+```
+
+✅  MAIN CI RESTORED — back to green at run <newest_green_run_id>
+
+```
+
+If a fix-main-ci diversion is in flight when this fires, also add: `   (in-flight fix-main-ci will finish naturally; result may already be redundant)`.
+
+**Failing-PR count crossed UP through 10 — enqueueing a fix-failing-prs-batch diversion:**
+
+```
+
+⚠️  FAILING PR PILEUP — <n> open PRs are red, threshold is 10
+   Sample: #<a>, #<b>, #<c>, ... (+ <k> more)
+   Diverting next available slot to investigate common root cause.
+
+```
+
+**fix-failing-prs-batch dispatched:**
+
+```
+
+🔧  DISPATCHED fix-failing-prs-batch on slot <id> — investigating <n> failing PRs
+
+```
+
+**Failing-PR count crossed DOWN through 10:**
+
+```
+
+✅  PR PILEUP CLEARED — <n> failing PRs remain (below 10 threshold)
+
+```
+
+**Diversion completed (any kind):**
+
+When a `fix-main-ci` or `fix-failing-prs-batch` worker returns, print a banner BEFORE the normal reconcile line:
+
+- `shipped` → `✅  DIVERSION RESOLVED — fix-main-ci shipped via PR #<M> (auto-merge enabled)`
+- `noop` → `➖  DIVERSION NO-OP — fix-main-ci: main already green by the time the agent started`
+- `blocked` → `🛑  DIVERSION BLOCKED — fix-main-ci: <reason>. No auto-retry; needs human attention.` (and the status line that follows will keep showing `main:🔴` until a human resolves it)
+
+**End-of-session — diversion summary block.** The end-of-session summary (below) carries a `Diversions:` block when `D > 0` — counts per kind, with shipped/noop/blocked breakdowns and PR numbers. That's how the user sees what diversions fired even if they weren't watching the session live.
+
+The rule of thumb is: banners are LOUD and one-shot (printed when the transition happens), the status line is the persistent at-a-glance view (re-printed whenever the underlying state changes). Both should appear together when a divert fires — banner first, then the updated status line immediately below it.
 
 ### 7. Initial pool fill
 
@@ -278,6 +412,18 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 - **blocked #<M> at fix-checks** — comment on the PR summarizing the blocker, add the `ci-blocked` label so it's skipped from now on, continue.
 - **errored** — record and continue.
 
+For **fix-main-ci work** (`shipped` / `noop` / `blocked`):
+
+- **shipped main-ci-fix via PR #<M>** — record. The diversion is "resolved" from the orchestrator's perspective the moment the PR is open with auto-merge; the next step-D refresh will detect main going green (and clear the divert flag) once the PR lands. Don't re-enqueue the diversion in the meantime — the in_flight slot is gone but the divert_queue check at step D guards against double-dispatch.
+- **noop: main already green** — main flipped green between divert dispatch and the agent's pre-flight. Record. Step D will repopulate if it goes red again.
+- **blocked main-ci-fix: <reason>** — log to the session summary. Do NOT auto-retry — back off and surface in the status line: `main:🔴 (run <id>) · diversion blocked: <reason>`. A human needs to intervene.
+
+For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
+
+- **shipped pr-batch-fix via PR #<M>** — record. Same single-shot pattern as fix-main-ci.
+- **noop: pileup already cleared** — the count dropped below 10 between dispatch and pre-flight (other PRs got merged or fixed). Record. Step D re-evaluates.
+- **blocked pr-batch-fix: <reason>** — log to summary, back off, surface in status line. No auto-retry.
+
 ### B. Release the slot
 
 Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
@@ -294,22 +440,39 @@ Otherwise, apply the **dispatch rules** to pick the next job. If a job is dispat
 
 Otherwise, every `--concurrency` completions (a full pool's worth), refresh queues in the background:
 
-1. **Failed-PR scan** — re-run the step-5 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
-2. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-4 backlog fetch to discover newly-opened issues.
+1. **Divert-checks refresh** — re-run step 4.5 (main CI + all-authors failing PR count). Update `main_ci` and the `failing_pr_count_all` cache. Enqueue or clear `divert_queue` entries per the rules in step 4.5. This is the only place outside setup where diversions are evaluated.
+2. **Failed-PR scan (@me)** — re-run the step-5 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
+3. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-4 backlog fetch to discover newly-opened issues.
 
 The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
+
+If the divert-checks refresh changed `main_ci.status`, `divert_queue` membership, or flipped `failing_pr_count_all` across the 10 threshold, also print the status line (see step 6.5) — this is one of the "things a human would care about changed" cases.
 
 ## Dispatch rules (used by step 7 and step C)
 
 When filling a slot, walk this decision tree:
 
-1. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim). Dispatch a fix-checks-only worker.
+1. **`divert_queue` non-empty?** → pop the front entry. Path-collision rules don't apply (these are synthetic, not file-claimed). Dispatch a worker in the matching mode. Only one diverted worker per kind can be in flight at a time (step 4.5 / step D enforce this on enqueue).
+
+   **For `fix-main-ci`** — prompt template:
+
+   > Restore green main on `<owner/repo>` in **fix-main-ci mode**. The earliest unfixed red run on the default branch (`<default-branch>`) is `<earliest_red_run_url>` at SHA `<earliest_red_sha>` — that's where the red streak started, and that's the run whose failure logs you should triage first. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout`, and never `git switch` to the repo's default branch when you're done. Follow the `fix-main-ci mode` section in the issue-worker spec: pre-flight (re-confirm main is still red), pull failed logs, triage the failure category, branch as `do-work/fix-main-ci-<short-sha>`, ship ONE minimal PR labeled `do-work` with no `Closes #N` line (this is a synthetic divert — no issue to close), enable auto-merge, snapshot, return.
+   >
+   > Hard cap: do NOT open more than one PR. The orchestrator will re-dispatch on the next step-D refresh if main is still red. Do NOT touch anything beyond the minimum needed to land main back to green. Return values: `shipped main-ci-fix via PR #<M>`, `noop: main already green`, or `blocked main-ci-fix: <reason>`.
+
+   **For `fix-failing-prs-batch`** — prompt template:
+
+   > Investigate the failing-PR pileup on `<owner/repo>` in **fix-failing-prs-batch mode**. There are currently <failing_pr_count_all> open PRs across all authors with failing checks: <failing_pr_numbers>. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout`, and never `git switch` to the repo's default branch when you're done. Follow the `fix-failing-prs-batch mode` section in the issue-worker spec: pre-flight (re-confirm pileup), sample failing logs across up to 5 representative PRs, identify the **common root cause**, branch as `do-work/fix-pr-pileup-<short-timestamp>`, ship ONE PR that fixes at source (the other PRs go green on rebase), label `do-work`, no `Closes #N` line, enable auto-merge, snapshot, return.
+   >
+   > Hard cap: ONE PR. If the failures don't share a root cause, return `blocked pr-batch-fix: no common root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)`. If the pileup resolved itself, return `noop: pileup already cleared`. Otherwise `shipped pr-batch-fix via PR #<M>`. The orchestrator re-dispatches on the next step-D refresh if the pileup persists.
+
+2. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim). Dispatch a fix-checks-only worker.
 
    Prompt template:
 
    > Fix failing CI checks on PR #<M> in `<owner/repo>` (branch `<headRefName>`) in **fix-checks-only mode**. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout` (it resolves to the cwd at call time and can silently switch the user's primary checkout's HEAD), and never `git switch` to the repo's default branch when you're done. The PR is already open — do NOT open a new one, do NOT change scope, do NOT modify the PR title/description, do NOT close the linked issue from this PR. Land on the PR's head branch with the safe two-step: `git fetch origin <headRefName> && git switch <headRefName>`. Then run the fix-loop: pull failed logs (`gh run view <run-id> --repo <owner/repo> --log-failed`), reproduce locally if practical, fix the smallest thing, commit + push to the same branch, re-watch with `gh pr checks <M> --repo <owner/repo> --watch --interval 30`. Hard cap: 3 fix attempts. If checks are already green by the time you start, return `noop: already green`. If you can't fix in 3 attempts, return `blocked: <last failing check> — <last error excerpt>`. **Leave your worktree on `<headRefName>` when you return — do not switch back to the default branch.**
 
-2. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
+3. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
 
    - If the candidate `touches_lockfile`: dispatch only when `in_flight` is empty. While it runs, dispatch nothing else — other slots stay parked until it returns.
    - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label do-work`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `do-work` label.
@@ -318,11 +481,11 @@ When filling a slot, walk this decision tree:
 
    > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. You are running inside an isolated git worktree — never `cd` outside it, and never `git switch` to the repo's default branch when you're done (that rule is for the user's primary checkout, not your worktree; parking on `[main]` locks the user's primary out of switching to main via git's one-worktree-per-branch rule). Create your branch as `do-work/issue-<N>` — do not use any other name. Open a PR that closes the issue and pass `--label do-work` to `gh pr create`. Enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue. **Leave your worktree on `do-work/issue-<N>` when you return — do not switch back to the default branch.**
 
-3. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths, retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster), wait for the colliding worker to return.
+4. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths, retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster), wait for the colliding worker to return.
 
-4. **`ready_issues` empty but `raw_backlog` non-empty?** → trigger a scope-refill burst (step D's backlog refill) in this same turn, then retry from step 2 with the refilled queue.
+5. **`ready_issues` empty but `raw_backlog` non-empty?** → trigger a scope-refill burst (step D's backlog refill) in this same turn, then retry from step 3 with the refilled queue.
 
-5. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
+6. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
 
 Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`. The harness will notify you on completion — that drives the next iteration of the steady-state loop.
 
@@ -440,11 +603,17 @@ Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pend
 In flight at exit: F (#C → PR #Z still pending CI after drain)
 Blocked: K (#P — <reason>, #Q — <reason>)
 Errored: J (#R — <agent error>)
+Diversions: <D> dispatched
+  fix-main-ci: <d1> (<shipped/noop/blocked breakdown, with PR #s and block reasons>)
+  fix-failing-prs-batch: <d2> (<shipped/noop/blocked breakdown>)
+Final repo health: main:<emoji> · failing PRs (all authors): <m>
 Reaped from prior sessions: <reaped_stale> stale agent worktrees (dead-PID locks); <deferred_stale> live-PID worktrees left for the owning Claude Code instance
 Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
+
+Omit the `Diversions:` block entirely when `D == 0` — clutter is the enemy. The `Final repo health` line always prints; if a diversion is blocked at exit, that line surfaces the unresolved state (e.g. `main:🔴 · failing PRs (all authors): 12 ⚠️`) so the user knows what they're walking into.
 
 The lifetime line is sourced from two queries run just before printing the summary:
 
