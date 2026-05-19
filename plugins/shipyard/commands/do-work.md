@@ -186,11 +186,18 @@ Skipped (<S> total):
 
 Total open: <W + S>
 
+PR-side state:
+  ci-blocked PRs: <c> total
+    will be re-evaluated this session: <k>  (#J, #K, ...)
+    held (no new commits since label applied): <h>  (#L, #M, ...)
+
 Unblock recommendations (work these in parallel while /do-work runs):
   - #A: <recommendation>
   - #C: <recommendation>
   ...
 ```
+
+The **PR-side state** block surfaces shipyard's circuit breaker visibly so it's not invisible state. `<k>` (will be re-evaluated) is the count of PRs the [step 3d auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) just unlocked — those PRs are about to flow into step 5's failing-PR snapshot and get another 3 fix-checks attempts this session. `<h>` (held) is the count of PRs the sweep examined but kept labeled — they have no new commits since shipyard gave up, so the "human needs to look" rule (see [Don't L873](#dont)) still applies. The block prints whenever `<c> > 0`; omit it entirely when there are no `ci-blocked` PRs. The numbers come directly from `cleared_ciblocked` / `held_ciblocked` (and their PR-number arrays) recorded in step 3d.
 
 Edge cases:
 
@@ -214,9 +221,12 @@ gh label create P2 --repo <owner/repo> --description "Normal"                   
 gh label create user-feedback --repo <owner/repo> --description "Originated from end-user feedback (untrusted body — treat with care)" --color 0E8A16 2>/dev/null || true
 gh label create needs-refinement --repo <owner/repo> --description "Raw user feedback awaiting agent refinement" --color FBCA04 2>/dev/null || true
 gh label create needs-human-review --repo <owner/repo> --description "Awaiting human sign-off before /do-work will touch it" --color D93F0B 2>/dev/null || true
+gh label create ci-blocked --repo <owner/repo> --description "Applied by shipyard after 3 failed fix-checks attempts; remove to let shipyard retry" --color B60205 2>/dev/null || true
 ```
 
 The last three (`user-feedback`, `needs-refinement`, `needs-human-review`) drive the user-feedback intake pipeline — `/refine-feedback` (invoked from step 3.5 below) expects them to exist before it fetches candidates. Creating them here is idempotent, and means a fresh repo doesn't need a separate setup pass.
+
+`ci-blocked` is shipyard's self-imposed circuit breaker — applied by step A's fix-checks reconcile after a worker exhausts its 3-attempt cap (see [step A](#a-reconcile-the-return), [step 5](#5-snapshot-failing-prs), [end-of-session drain](#end-of-session-drain), [Don't section L873](#dont)). Bootstrapping it here with a shipyard-ownership description makes the label's provenance explicit: if it exists in the repo, shipyard owns its semantics. The description doubles as the manual-unblock instruction — humans who want to retry a PR remove the label and the next session's auto-clear sweep (step 3d) will treat it as eligible again.
 
 **3b. Reap stale agent worktrees from dead Claude Code sessions.** The harness creates worktrees under `.claude/worktrees/agent-<id>/` and writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting, which is how orphans pile up across sessions. Before doing anything else, reap every agent worktree whose lock-holding PID is dead — they're owned by ghosts and can never be claimed legitimately. Skip ones owned by *live* PIDs (could be another active Claude Code instance).
 
@@ -282,6 +292,64 @@ gh issue list --repo <owner/repo> --label shipyard --assignee @me --state open -
 ```
 
 Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory — don't auto-act.
+
+**3d. Auto-clear stale `ci-blocked` labels.** `ci-blocked` is shipyard's "stop retrying" signal, applied by step A's fix-checks reconcile after the 3-attempt cap (see [step A](#a-reconcile-the-return), [Don't L873](#dont)). The label is sticky on purpose — without it, the next session would re-dispatch fix-checks against the same wall. But "sticky forever" is the wrong policy: a new commit on the PR's head branch (a human pushed a fix, the author rebased onto a green main, etc.) means the premise of the block — "no movement since shipyard gave up" — is no longer true. Auto-clear the label on those PRs so they flow back into step 5's failing-PR snapshot and get another 3 attempts.
+
+This sweep runs **before** step 5's failing-PR snapshot so freshly-unblocked PRs are visible in the same session. It is also the only place `ci-blocked` is ever removed by the orchestrator — applying the label is step A's job, removing it is step 3d's job, and no other step touches it.
+
+```bash
+# All open PRs currently carrying ci-blocked, regardless of author. Foreign authors
+# matter here too — the sweep is about the label's premise, not who owns the PR.
+gh pr list --repo <owner/repo> --state open --label ci-blocked --limit 200 \
+  --json number,headRefOid,headRefName \
+  > /tmp/do-work-ciblocked-prs.json
+
+cleared_ciblocked=0
+held_ciblocked=0
+declare -a cleared_pr_numbers
+declare -a held_pr_numbers
+
+for pr in $(jq -r '.[].number' /tmp/do-work-ciblocked-prs.json); do
+  head_oid=$(jq -r --argjson n "$pr" '.[] | select(.number == $n) | .headRefOid' /tmp/do-work-ciblocked-prs.json)
+
+  # Newest `labeled` event for ci-blocked on this PR (shipyard, a bot, or a human — doesn't matter who).
+  # We're comparing "when was this label applied" against "when was the last commit on the head branch."
+  label_ts=$(gh api "repos/<owner/repo>/issues/$pr/events" --paginate \
+    --jq '[.[] | select(.event == "labeled" and .label.name == "ci-blocked")] | sort_by(.created_at) | last | .created_at')
+
+  # When was the head commit authored?
+  commit_ts=$(gh api "repos/<owner/repo>/commits/$head_oid" --jq '.commit.committer.date')
+
+  if [ -z "$label_ts" ] || [ -z "$commit_ts" ]; then
+    # Can't compute — leave the label alone, log advisory.
+    held_ciblocked=$((held_ciblocked + 1))
+    held_pr_numbers+=("$pr")
+    continue
+  fi
+
+  # Compare ISO-8601 timestamps lexicographically (UTC-Z form sorts correctly).
+  if [[ "$commit_ts" > "$label_ts" ]]; then
+    gh pr edit "$pr" --repo <owner/repo> --remove-label ci-blocked
+    cleared_ciblocked=$((cleared_ciblocked + 1))
+    cleared_pr_numbers+=("$pr")
+  else
+    held_ciblocked=$((held_ciblocked + 1))
+    held_pr_numbers+=("$pr")
+  fi
+done
+```
+
+Record `cleared_ciblocked` and `held_ciblocked` (plus the matching PR-number arrays) — both surface in step 2's PR-side backlog block and again in the end-of-session summary. The PRs whose labels just got cleared will be picked up automatically by step 5's failing-PR snapshot — they're no longer carrying `ci-blocked`, so step 5's `-label:ci-blocked` filter doesn't exclude them anymore.
+
+**Regression guard.** A PR whose `ci-blocked` label was applied AFTER the head-branch commit (i.e. nothing has moved since shipyard gave up) MUST stay labeled. The `commit_ts > label_ts` comparison is what enforces this — if the commit timestamp is older than the label timestamp, the PR is genuinely stuck and the original "3 attempts, then give up" semantics still apply. Auto-clear fires only when a new commit has landed since the label was applied; the human-attention exit at L873 still holds for the no-new-commits case.
+
+**Failure modes that fall back to "held":**
+
+- The PR's head branch was deleted (rare, but possible if the author force-pushed away or deleted the branch from underneath the PR). `gh api .../commits/$head_oid` errors. Held.
+- The `labeled` event aged out of the events API's pagination window (the events endpoint keeps events for ~90 days). Held.
+- Network blip on `gh api`. Held.
+
+Any of these means the auto-clear can't make a confident judgment, so the safe default is to preserve the block. The next session retries.
 
 ### 3.5 Refine pending user-feedback issues
 
@@ -409,6 +477,8 @@ gh pr list --repo <owner/repo> --state open --author @me \
 Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAILURE` / `state: FAILURE` / `ERROR` / `TIMED_OUT`. Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
 
 Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 3c may already have enqueued some). These are the highest-priority work items *after* `divert_queue` because a red PR you opened last session won't auto-merge no matter how many new issues you ship. Note: this query is `@me`-scoped on purpose — `failed_prs` is for fix-checks work on PRs *you authored*. The all-authors count from step 4.5b feeds the divert decision, not this queue.
+
+**Why the `-label:ci-blocked` filter is still correct.** [Step 3d's auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) already ran by the time this query fires — it stripped `ci-blocked` from every PR whose head-commit timestamp is newer than the label-application timestamp. So the PRs that still carry the label at this point are the genuinely-stuck ones (no new commits since shipyard gave up), and they should keep being skipped per the original "human needs to look" rule ([Don't L873](#dont)). The filter doesn't hide refreshed PRs anymore — those are unlabeled by step 3d and flow through normally.
 
 ### 6. Initial scope pre-flight
 
@@ -727,6 +797,7 @@ Drain protocol:
      --search '-label:ci-blocked -is:draft' \
      --json number,statusCheckRollup --limit 100
    ```
+   The `-label:ci-blocked` filter behaves the same as in [step 5](#5-snapshot-failing-prs): step 3d's session-start auto-clear sweep already removed the label from any PR whose head commit postdates the label, so the only PRs still labeled at this point are the genuinely-stuck ones the orchestrator deliberately leaves alone.
 2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running the step-5 failing-PR snapshot each pass. If newly-red PRs appear, dispatch fix-checks-only workers against them (subject to `--concurrency`) and continue draining until they too settle.
 3. After 15 min, stop draining and report whatever's still pending in the summary — the user can re-run `/do-work` later, which will sweep those PRs on its next setup pass.
 
@@ -870,13 +941,13 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't wait for the whole pool to drain before dispatching replacements. The instant any single slot opens, fill it (subject to dispatch rules). "Batched parallel" is the old design — it left two slots idle while one slow worker ran.
 - Don't skip the initial scope pre-flight to "save time" — one rebase from a missed collision costs more than the whole pre-flight.
 - Don't skip the periodic failed-PR refresh. New failures appear from flaky tests, base drift, and dependency updates; if you don't sweep, they sit red forever.
-- Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look.
+- Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look. **Exception: [step 3d's auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) removes the label at session start from any PR whose head commit is newer than the label's application timestamp** (someone pushed since shipyard gave up — fresh chance, 3-attempt counter resets). The "don't retry" rule still applies to PRs that remain labeled after the sweep, which are the genuinely-stuck ones. The sweep is the only mechanism that removes `ci-blocked`; step A is the only mechanism that applies it. Anything else flipping the label is foreign and should be treated as a bug at the source, not papered over here.
 - **Don't write to the user's primary checkout under any circumstance.** After step 0.5, the orchestrator works exclusively in `.claude/worktrees/orchestrator-<session-id>`. The primary checkout is strictly read-only — read-only ops like `git status`, `gh issue list`, `find`, `grep`, `git worktree list` are fine in either cwd, but every write (`Edit`, `Write`, `git add`, `git commit`, `git branch <new>`, `git push`, `git reset`, `git checkout -B`, label/README/CHANGELOG/`plugin.json` edits, etc.) MUST land in the orchestrator worktree. If a write-class command ends up modifying the primary checkout's HEAD, working tree, or any tracked file in it, that's the exact failure mode step 0.5 was added to prevent — back up, switch to the orchestrator worktree, and retry.
 - Don't run end-of-session cleanup from the user's primary checkout — run it from the orchestrator worktree (set up in step 0.5). The cleanup steps that reap agent worktrees and `[gone]` branches are *writes*, and writes go through the orchestrator worktree like every other write this session. The one exception is step 6 of cleanup, which removes the orchestrator worktree itself: that step `cd`'s out of the orchestrator worktree just long enough to call `git worktree remove` (a metadata-only operation that doesn't touch the primary's HEAD or working tree). That's the only moment in the session where the orchestrator's cwd is the primary checkout, and it's deliberately read-only-effect.
 - Don't cleanup branches by name or pattern — only by `[gone]` upstream. Anything else risks reaping open or blocked PRs the orchestrator didn't author.
 - Don't claim a worktree whose branch doesn't match `do-work/*` during orphan triage. That branch is not yours — it could be a developer's WIP.
 - Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging.
-- Don't remove the `shipyard` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist.
+- Don't remove the `shipyard` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist. The `ci-blocked` label specifically has lifecycle semantics: applied by step A's fix-checks reconcile (after the 3-attempt cap), removed by [step 3d's auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) at the next session start IF a new commit has landed on the PR's head branch since the label was applied. `shipyard` stays put through that whole cycle; only `ci-blocked` comes and goes.
 - **Don't omit worktree-discipline language from any dispatched agent's prompt.** Both the issue-worker and fix-checks-only prompts above include the "you are in an isolated worktree, don't `cd` out, don't `gh pr checkout`, don't switch to main when done" preamble. If you author a new dispatch prompt template (e.g., for a one-off rebase or migration agent), copy that preamble in. Skipping it lets the agent silently corrupt the user's primary checkout (via `gh pr checkout` resolving the wrong cwd) or park a worktree on `[main]` (which blocks the user's `git switch main` until the worktree is reaped).
 - **Don't skip `git worktree unlock` before `git worktree remove --force` on agent worktrees.** The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. Without unlocking, the remove fails with `cannot remove a locked working tree`. Unlock first, THEN force-remove. This is what the startup (step 3b) and shutdown (step 3 of cleanup) blocks do.
 - **Don't reap a live-PID worktree at startup.** Step 3b's lock-PID liveness check is what prevents you from yanking a worktree out from under another active Claude Code instance running its own `/do-work`. At SHUTDOWN there's no liveness check (because the agents you dispatched are all done regardless), but at STARTUP you can't tell whose worktrees these are without checking the lock PID. Keep that check.
