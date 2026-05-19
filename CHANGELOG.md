@@ -4,6 +4,10 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.2.1 — 2026-05-19
+
+Replaces the README's embedded infographic PNG (1920×1200, 161 KB) with an SVG export (735 KB, optimized via svgo). The SVG renders crisply at any DPI — eliminating the soft-text issue on retina / 4K displays. Figma exports text as outlined paths rather than `<text>` nodes, so the SVG is font-independent (no Inter dependency for viewers). Closes [#51](https://github.com/mattsears18/claude-plugins/issues/51).
+
 ### 1.2.0 — 2026-05-19
 
 **Breaking: the session-stamp label `do-work` was renamed to `shipyard`** to match the plugin's name. Every issue and PR `/do-work` touches now carries the `shipyard` label. Closes [#47](https://github.com/mattsears18/claude-plugins/issues/47).
