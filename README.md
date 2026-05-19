@@ -1,10 +1,15 @@
 # mattsears-plugins
 
-Personal [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by Matt Sears.
+Personal [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by Matt Sears. The headliner is **`shipyard`** — an autonomous engineering loop that finds work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers in isolated git worktrees.
 
-## What's in this repo
+## Quick start
 
-A growing set of Claude Code plugins for software engineering automation. Today the headliner is `shipyard` — an autonomous engineering loop that discovers work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers.
+```sh
+claude plugin marketplace add mattsears18/claude-plugins
+claude plugin install shipyard@mattsears-plugins
+```
+
+Restart Claude Code, then from inside any GitHub-connected repo run `/do-work --concurrency 4`. You'll see the backlog ranked, a live HTML dashboard open at `/tmp/do-work-dashboard.html`, and 4 parallel workers start opening PRs against your open issues — each with auto-merge armed, so green CI = merged.
 
 ## Plugins
 
@@ -31,6 +36,40 @@ An autonomous engineering loop for web + mobile app development. Three things it
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
 
+## How it works
+
+> Full visual infographic in [#37](https://github.com/mattsears18/claude-plugins/issues/37) (in progress). Until then, here's the conceptual flow.
+
+The loop has four phases, and the orchestrator drives them on every iteration of `/do-work`:
+
+1. **Inputs.** Issues arrive from two sources. The `/audit` family files them autonomously — a Lighthouse pass on a live URL, a Chrome DevTools tour, a security sweep, an a11y audit, etc. — each finding becomes a labeled GitHub issue with severity (`P0`/`P1`/`P2`). Separately, your app's feedback form posts raw user reports via a backend proxy that opens issues carrying `user-feedback` + `needs-refinement`.
+
+2. **Refine.** `/refine-feedback` reads each raw user-feedback issue, classifies it (`already-done` / `decline` / `legitimate`), preserves the original text in a pinned comment, and rewrites the body to look like a normal engineering ticket — acceptance criteria, repro steps, suggested approach. The refined issue carries `needs-human-review`. No code-modifying agent will touch it until that label is removed.
+
+3. **Human review.** You scan the refined backlog, drop `needs-human-review` from the ones you want shipped, and run `/do-work`. This is the only required human step. Everything before it (audits filing, feedback refining) and everything after (dispatch, fix-up, merge) is autonomous.
+
+4. **Orchestrator → workers → PR.** `/do-work` ranks the eligible backlog, then keeps `--concurrency` workers in flight at all times. Each worker is dispatched into an isolated git worktree on a deterministic branch (`do-work/issue-<N>`), implements the smallest change that satisfies the acceptance criteria, opens a PR that closes the issue, and enables auto-merge with squash. Green CI = merged = the next worker slot opens. When CI goes red, an in-progress PR fails its checks, or the default branch breaks, the orchestrator diverts a worker to fix it before resuming normal backlog work.
+
+The result: you write issues (or let `/audit` write them), you sign off on the user-feedback ones, and the rest of the chain runs without you.
+
+## What's been hardened
+
+A non-exhaustive list of safety properties the orchestrator and workers carry today. Each bullet links to the PR or issue where the property landed:
+
+- The orchestrator never goes idle while workable backlog or open `@me` PRs remain — a structured invariant line prints every turn so going-quiet-with-work-left is detectable ([#23](https://github.com/mattsears18/claude-plugins/issues/23)).
+- User feedback enters via a backend-mediated intake and is refined + human-gated before any code-modifying agent runs against it ([#24](https://github.com/mattsears18/claude-plugins/issues/24)).
+- Workers are forbidden from `git commit --no-verify` and equivalent hook bypasses, enforced both at the prompt and at the `Bash` permission layer in `plugin.json` ([#26](https://github.com/mattsears18/claude-plugins/issues/26)).
+- The orchestrator re-checks the backlog before every dispatch — issues filed mid-session don't have to wait for a periodic refresh to be picked up ([#29](https://github.com/mattsears18/claude-plugins/issues/29)).
+- Issue-worker dispatches are pinned to `isolation: "worktree"` via a `PreToolUse` hook. Workers operate in a dedicated worktree and never touch the user's primary checkout's HEAD ([#34](https://github.com/mattsears18/claude-plugins/issues/34)).
+
+## See it in action
+
+Every PR opened by `/do-work` carries the `do-work` label. The repo's own merged history is the living demo:
+
+[**All `do-work`-labeled closed PRs →**](https://github.com/mattsears18/claude-plugins/pulls?q=is%3Apr+is%3Aclosed+label%3Ado-work)
+
+Each one was opened, fixed-up through CI failures (if any), and merged without a human touching the keyboard between issue triage and PR review.
+
 ## Install
 
 ```sh
@@ -38,7 +77,7 @@ claude plugin marketplace add mattsears18/claude-plugins
 claude plugin install shipyard@mattsears-plugins
 ```
 
-Restart Claude Code after install. `/audit` should now be available.
+Restart Claude Code after install. `/audit`, `/refine-feedback`, and `/do-work` will be available.
 
 ## Layout
 
@@ -47,18 +86,39 @@ Restart Claude Code after install. `/audit` should now be available.
 plugins/
   shipyard/
     .claude-plugin/plugin.json
-    commands/audit.md
+    commands/
+      audit.md
+      do-work.md
+      refine-feedback.md
     agents/
-      lighthouse-auditor.md
-      web-ux-auditor.md
-      mobile-ux-auditor.md
-      security-auditor.md
       a11y-auditor.md
+      dx-auditor.md
+      issue-worker.md
+      lighthouse-auditor.md
+      mobile-ux-auditor.md
+      privacy-auditor.md
+      pwa-auditor.md
+      release-readiness-auditor.md
+      security-auditor.md
+      seo-auditor.md
+      tech-debt-auditor.md
+      testing-auditor.md
+      web-ux-auditor.md
     skills/
-      filing-github-issues/SKILL.md
       audit-rubrics/SKILL.md
+      dx-catalog/SKILL.md
+      filing-github-issues/SKILL.md
+    hooks/
+      hooks.json
+      enforce-worktree-isolation.sh
+      report-plugin-error.sh
     scripts/
       statusline.sh
+      report-plugin-error.sh
+      tests/
+    assets/
+      do-work-dashboard-updater.sh
+      do-work-dashboard.example.html
 ```
 
 ## Optional: main-CI statusline
