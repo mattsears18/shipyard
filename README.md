@@ -2,13 +2,23 @@
 
 Personal [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by Matt Sears.
 
+## What's in this repo
+
+A growing set of Claude Code plugins for software engineering automation. Today the headliner is `app-audits` — an autonomous engineering loop that discovers work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers.
+
+> The `app-audits` plugin is being renamed to `shipyard` — see [#25](https://github.com/mattsears18/claude-plugins/issues/25). The "audits" framing no longer fits what the plugin does.
+
 ## Plugins
 
 ### `app-audits`
 
-Audit web + mobile apps across UX, performance, security, and accessibility — autonomously files GitHub issues for every finding.
+An autonomous engineering loop for web + mobile app development. Three things it does:
 
-**Surfaces:**
+1. **Finds work** — `/audit` runs deep audits across UX, performance, security, accessibility, DX, privacy, PWA readiness, release readiness, SEO, tech debt, and testing, and autonomously files GitHub issues for every finding.
+2. **Refines work** — `/refine-feedback` ingests raw user-feedback issues (filed into the repo by your app's feedback form via a backend proxy), classifies them (already-done / decline / legitimate), preserves the original text in a comment, and rewrites the body to be implementation-ready. Gated by a `needs-human-review` label so no code-modifying agent runs until a human signs off.
+3. **Does work** — `/do-work` orchestrates a rolling pool of parallel issue-workers, each in an isolated git worktree. It dispatches up to `--concurrency` workers at once, opens PRs with auto-merge, and gracefully handles failing checks, red main CI, and PR pileups via specialized diversion workers.
+
+**Slash commands:**
 
 - `/audit lighthouse <url>` — perf / SEO / best-practices / agentic browsing via Lighthouse
 - `/audit web-ux <url>` — live tour via Chrome DevTools MCP
@@ -16,9 +26,12 @@ Audit web + mobile apps across UX, performance, security, and accessibility — 
 - `/audit ux <url>` — web-ux + mobile-ux in parallel
 - `/audit security <url>` — deps, secrets in git, Firebase rules, headers, mobile manifests
 - `/audit a11y <url>` — Lighthouse a11y category + manual keyboard / screen-reader tour
+- `/audit dx` — developer-experience catalog (lints, hooks, observability, contributor docs, etc.)
 - `/audit all <url>` — every audit in parallel
+- `/refine-feedback` — process raw user-feedback issues (classify, preserve, rewrite, sign-off gate)
+- `/do-work` — burn down the issue backlog with a rolling pool of parallel workers
 
-Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no approval gates.
+Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
 
 ## Install
 
