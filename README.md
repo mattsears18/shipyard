@@ -4,13 +4,11 @@ Personal [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by M
 
 ## What's in this repo
 
-A growing set of Claude Code plugins for software engineering automation. Today the headliner is `app-audits` — an autonomous engineering loop that discovers work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers.
-
-> The `app-audits` plugin is being renamed to `shipyard` — see [#25](https://github.com/mattsears18/claude-plugins/issues/25). The "audits" framing no longer fits what the plugin does.
+A growing set of Claude Code plugins for software engineering automation. Today the headliner is `shipyard` — an autonomous engineering loop that discovers work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers.
 
 ## Plugins
 
-### `app-audits`
+### `shipyard`
 
 An autonomous engineering loop for web + mobile app development. Three things it does:
 
@@ -37,7 +35,7 @@ Each audit runs in an isolated subagent, files its own issues using the shared `
 
 ```sh
 claude plugin marketplace add mattsears18/claude-plugins
-claude plugin install app-audits@mattsears-plugins
+claude plugin install shipyard@mattsears-plugins
 ```
 
 Restart Claude Code after install. `/audit` should now be available.
@@ -47,7 +45,7 @@ Restart Claude Code after install. `/audit` should now be available.
 ```
 .claude-plugin/marketplace.json
 plugins/
-  app-audits/
+  shipyard/
     .claude-plugin/plugin.json
     commands/audit.md
     agents/
@@ -65,7 +63,7 @@ plugins/
 
 ## Optional: main-CI statusline
 
-The `app-audits` plugin ships `scripts/statusline.sh` — a Claude Code statusline that polls the **last completed CI run on the default branch** for the cwd's GitHub repo and renders it in your status bar:
+The `shipyard` plugin ships `scripts/statusline.sh` — a Claude Code statusline that polls the **last completed CI run on the default branch** for the cwd's GitHub repo and renders it in your status bar:
 
 - `main:✓` (green) — last completed run was a success
 - `main:✗ #<run-id>` (red) — last completed run failed; ID is the *earliest unfixed* red run (where the streak started)
@@ -84,11 +82,11 @@ Wire it up by adding to `~/.claude/settings.json` (global) or `.claude/settings.
 }
 ```
 
-The script caches each repo's status for 30s (override via `APP_AUDITS_STATUSLINE_CACHE_TTL`), so it's a single `gh` call per repo per cache window — cheap to keep running.
+The script caches each repo's status for 30s (override via `SHIPYARD_STATUSLINE_CACHE_TTL`), so it's a single `gh` call per repo per cache window — cheap to keep running.
 
 ## Optional: auto-file issues on skill/agent failure
 
-The `app-audits` plugin can automatically file a GitHub issue against `mattsears18/claude-plugins` whenever one of its own skills or agents appears to have failed during your session. The point: real failures become structured bug reports without anyone having to type one up.
+The `shipyard` plugin can automatically file a GitHub issue against `mattsears18/claude-plugins` whenever one of its own skills or agents appears to have failed during your session. The point: real failures become structured bug reports without anyone having to type one up.
 
 It is **opt-in** — nothing is filed unless you set:
 
@@ -96,9 +94,9 @@ It is **opt-in** — nothing is filed unless you set:
 export CLAUDE_PLUGINS_AUTOREPORT=1
 ```
 
-Once enabled, hooks (`PostToolUse` on `Task|Agent` and `SubagentStop`) invoke `plugins/app-audits/scripts/report-plugin-error.sh`. That script:
+Once enabled, hooks (`PostToolUse` on `Task|Agent` and `SubagentStop`) invoke `plugins/shipyard/scripts/report-plugin-error.sh`. That script:
 
-1. **Detects** failure signals — `is_error: true`, `error:` / `stderr:` fields, or `blocked:` / `Error:` / `Traceback (...)` / `Fatal:` markers in the agent output. Only acts on subagents/skills whose name starts with `app-audits:`.
+1. **Detects** failure signals — `is_error: true`, `error:` / `stderr:` fields, or `blocked:` / `Error:` / `Traceback (...)` / `Fatal:` markers in the agent output. Only acts on subagents/skills whose name starts with `shipyard:`.
 2. **Scrubs secrets** — GitHub PATs (`ghp_…`), Anthropic / OpenAI keys (`sk-ant-…`, `sk-…`), AWS access keys, `Authorization:` / `Bearer …` headers, email addresses, `$HOME` paths, and any 40+ char hex blob.
 3. **Builds a signature** from the skill/agent name + a digit-normalized error excerpt, then **searches open `auto-reported` issues** for a match. If found → adds a comment with the new occurrence. If not → files a fresh issue with `auto-reported` and `bug` labels.
 4. **Never breaks your session** — the helper traps errors and always exits 0. The hook runs the helper detached in the background so reports don't block the foreground.
@@ -127,9 +125,9 @@ Every auto-report has these sections:
 ### Try it out (dry run)
 
 ```sh
-echo '{"tool_name":"Agent","tool_input":{"subagent_type":"app-audits:issue-worker","prompt":"work issue 1"},"tool_response":{"is_error":true,"error":"Error: gh api 404"}}' \
+echo '{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:issue-worker","prompt":"work issue 1"},"tool_response":{"is_error":true,"error":"Error: gh api 404"}}' \
   | CLAUDE_PLUGINS_AUTOREPORT=1 CLAUDE_PLUGINS_AUTOREPORT_DRY=1 \
-    bash plugins/app-audits/scripts/report-plugin-error.sh
+    bash plugins/shipyard/scripts/report-plugin-error.sh
 ```
 
 You'll get a JSON blob with the `title`, `body`, `labels`, `signature`, and `who` that *would* have been filed.
@@ -137,7 +135,7 @@ You'll get a JSON blob with the `title`, `body`, `labels`, `signature`, and `who
 ### Test suite
 
 ```sh
-bash plugins/app-audits/scripts/tests/report-plugin-error.test.sh
+bash plugins/shipyard/scripts/tests/report-plugin-error.test.sh
 ```
 
 ### Follow-ups

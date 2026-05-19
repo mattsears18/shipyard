@@ -8,13 +8,13 @@
   },
   "plugins": [
     {
-      "name": "app-audits",
-      "description": "Audit web + mobile apps across UX, performance, security, and accessibility — autonomously files GitHub issues for every finding.",
+      "name": "shipyard",
+      "description": "Autonomous engineering loop: audits surface work, /do-work refines and dispatches, parallel workers in isolated worktrees ship the fixes.",
       "author": {
         "name": "Matt Sears"
       },
-      "category": "quality",
-      "source": "./plugins/app-audits"
+      "category": "engineering",
+      "source": "./plugins/shipyard"
     }
   ]
 }
