@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.1.1 — 2026-05-19
+
+Embeds the Shipyard infographic (technical version, 1600×900) above the fold in the root `README.md`. Closes [#43](https://github.com/mattsears18/claude-plugins/issues/43).
+
+- Adds `docs/images/shipyard-infographic.png` — a five-stage diagram of the autonomous engineering loop (Sources → Refine + Review → Orchestrator → Workers → PR Pipeline).
+- Inserts a centered `<img>` block in `README.md` immediately after the intro paragraph, with a one-line caption linking to the `#shipyard` section for the prose walkthrough.
+- No code changes; plugin behavior is unchanged from 1.1.0.
+
 ### 1.1.0 — 2026-05-19
 
 Removes the optional main-CI statusline feature. The script (`plugins/shipyard/scripts/statusline.sh`), its README section, and the `SHIPYARD_STATUSLINE_CACHE_TTL` env var reference are gone. Closes [#40](https://github.com/mattsears18/claude-plugins/issues/40).
