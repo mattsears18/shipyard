@@ -607,13 +607,40 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 **Detect (server app with no health route):**
 
 ```bash
-# Heuristic: server frameworks → expect a health route
-has_server=$(grep -rE '(express\(\)|fastify\(\)|@fastify/|next/server|FastAPI\(|flask|gin\.New\(|gin\.Default\(|net/http)' \
-  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+# Heuristic: server frameworks → expect a health route.
+# Detects: express/fastify/Next.js (next/server), FastAPI/Flask, Gin/net/http,
+# Firebase Functions v2 (onRequest/onCall/onSchedule from firebase-functions),
+# AWS Lambda (exports.handler / export const handler / export {async,} function handler),
+# Cloudflare Workers (a method-style fetch handler: `fetch(req|request: …)` inside `export default {…}`),
+# Next.js App Router (app/**/route.{ts,tsx,js,jsx,mjs}),
+# Next.js Pages Router (pages/api/**).
+has_server=$(grep -rE '(express\(\)|fastify\(\)|@fastify/|next/server|FastAPI\(|flask|gin\.New\(|gin\.Default\(|net/http|firebase-functions|onRequest\(|onCall\(|onSchedule\(|exports\.handler[[:space:]]*=|export[[:space:]]+(const|async[[:space:]]+function|function)[[:space:]]+handler\b|^[[:space:]]*(async[[:space:]]+)?fetch[[:space:]]*\([[:space:]]*(req|request)[[:space:]]*[:,)])' \
+  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.mjs' --include='*.cjs' \
   --include='*.py' --include='*.go' . 2>/dev/null | head -1)
-has_health=$(grep -rE '(\/health|\/api\/health|\/status|\/healthz|\/ping)' \
-  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+# Next.js App Router / Pages Router by path convention (no import string needed).
+if [ -z "$has_server" ]; then
+  has_server=$(find . -type f \( \
+      -path '*/app/*/route.ts'  -o -path '*/app/*/route.tsx' \
+   -o -path '*/app/*/route.js'  -o -path '*/app/*/route.jsx' \
+   -o -path '*/app/*/route.mjs' -o -path '*/pages/api/*' \
+    \) 2>/dev/null | head -1)
+fi
+# Health endpoint: explicit /health-style routes, a Firebase-style callable named
+# health/healthz/ping exported via onRequest/onCall, or a Next.js route file
+# located at app/health/route.* or pages/api/health* (path is the route).
+has_health=$(grep -rE '(/health|/api/health|/status|/healthz|/ping|\b(health|healthz|ping)[[:space:]]*=[[:space:]]*on(Request|Call)\()' \
+  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.mjs' --include='*.cjs' \
   --include='*.py' --include='*.go' . 2>/dev/null | head -1)
+if [ -z "$has_health" ]; then
+  has_health=$(find . -type f \( \
+      -path '*/app/health/route.*'  -o -path '*/app/healthz/route.*' \
+   -o -path '*/app/status/route.*'  -o -path '*/app/ping/route.*' \
+   -o -path '*/app/api/health/route.*' -o -path '*/app/api/healthz/route.*' \
+   -o -path '*/app/api/status/route.*' -o -path '*/app/api/ping/route.*' \
+   -o -path '*/pages/api/health*'   -o -path '*/pages/api/healthz*' \
+   -o -path '*/pages/api/status*'   -o -path '*/pages/api/ping*' \
+    \) 2>/dev/null | head -1)
+fi
 [ -n "$has_server" ] && [ -z "$has_health" ] && echo "missing"
 ```
 
