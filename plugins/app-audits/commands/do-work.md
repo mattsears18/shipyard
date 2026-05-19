@@ -29,6 +29,47 @@ Across the session, the orchestrator maintains six mental data structures. Hold 
 
 When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules).
 
+## Live dashboard
+
+Every `/do-work` session opens a self-contained HTML status dashboard at `/tmp/do-work-dashboard.html` and spawns a 10-second background updater. Three layers of refresh combine to make the page feel live:
+
+1. **Browser reload** — the dashboard sets `<meta http-equiv="refresh" content="10">` so the open tab reloads every 10 seconds.
+2. **Background updater** — `${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard-updater.sh` polls `gh` every 10 seconds and rewrites dynamic bits of the HTML in place (open-issue / open-PR counts; pending → merged ✓ / closed badge flips). Static bits (worker cards, shipped-PR rows) the orchestrator updates on event.
+3. **Orchestrator** — me, on every notification (agent return, periodic refresh): re-write the worker-card section, append a new shipped-PR row, etc.
+
+The dashboard is the **rich** UI surface. The terminal CLI status line and state-change banners ([step 6.5](#65-status-line--state-change-banners-ui)) are the always-on terse equivalent for users not actively watching the browser. Both render the same underlying state — they don't disagree.
+
+What the dashboard must include:
+
+- **Stat tiles** — shipped (this session), in-flight, total tokens spent (sum of completed agents' `<total_tokens>`), repo-wide open issues, repo-wide open PRs, pool utilization (`N / concurrency`). Each tile that references a GitHub list is a clickable link.
+- **Main CI health tile** — `<emoji>` green / red / pending / unknown, with the *earliest unfixed red run* linked when red (matches `main_ci` cached state). The tile turns red and pulses when a `fix-main-ci` diversion is in flight.
+- **In-flight workers** — one card per slot showing: slot label, issue number linked to GitHub, title, priority pill (`P0`/`P1`/`P2` / `unlabeled`), files-touched, branch name, PR link (or `pending — running` text). When a lockfile-toucher is active, show the other slots as parked. **For diversion slots** (`fix-main-ci` / `fix-failing-prs-batch`), the card shows the diversion kind as the title, a `⚠️ DIVERSION` pill in place of priority, and the linked context (the earliest red run URL or the failing-PR list).
+- **Diversion banner row** — when `divert_queue` has an enqueued-but-not-yet-dispatched entry OR an in-flight diversion slot exists, render a full-width banner at the top of the page (above the worker cards): `⚠️ Main CI red — diverting to fix` or `⚠️ <n> failing PRs — diverting to find common root cause`. Banner clears the moment the diversion ships, no-ops, or resolves via main going green / pileup clearing.
+- **Shipped this session** — one row per completed agent showing: issue → PR title (linked) → token count → status badge (`merged ✓`, `pending`, `failing`, `closed`). Diversion ships render with a distinct `⚠️ DIVERSION` row badge so they don't visually merge with normal issue work. All clickable.
+- **Noop'd / stale-closed** — pill row of issues that returned without a PR (already-fixed-on-main, duplicate, etc.).
+- **Backlog peek** — top of queue with priority pills.
+
+Use `${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard.example.html` as a structural reference for the dark-themed layout (CSS variables, gradient backdrop, pulsing live-dot, two-row stats with Repo Health + This Session, diversion banners, diversion-flavored worker cards, DIVERT-tagged shipped rows). Copy its structure and substitute fresh session data.
+
+The background updater (`assets/do-work-dashboard-updater.sh`) refreshes the Main CI tile and Failing PRs (all authors) tile every 10 seconds in place, so those stay live even between orchestrator turns. The diversion *banners* are orchestrator-owned — the updater leaves them alone, since whether a divert is `IN FLIGHT · SLOT N` vs `ENQUEUED · awaiting slot` is session state the script can't infer.
+
+### Launch sequence (run at end of step 1 below)
+
+```bash
+# (1) Write initial HTML to /tmp/do-work-dashboard.html — populate from session state
+# (2) Open in browser
+open /tmp/do-work-dashboard.html
+
+# (3) Spawn the 10s updater in background
+"${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard-updater.sh" \
+  --repo <owner/repo> \
+  --dashboard /tmp/do-work-dashboard.html &
+```
+
+Use `run_in_background: true` on the `Bash` tool call so the updater detaches cleanly.
+
+If the user's repo has a `docs/` directory and they've asked for the dashboard to live in-repo as well, pass `--mirror /path/to/repo/docs/do-work-dashboard.html` to the updater so each refresh also writes to that path.
+
 ## Setup (run once)
 
 ### 1. Resolve repo + user

@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="refresh" content="10" />
+  <title>/do-work · live</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0c10;
+      --bg-elev: #11151c;
+      --bg-elev-2: #161b24;
+      --border: #1f2630;
+      --border-strong: #2a3340;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --text-faint: #5b6470;
+      --accent: #6ee7b7;
+      --accent-glow: #6ee7b733;
+      --warn: #fbbf24;
+      --error: #f87171;
+      --info: #60a5fa;
+      --purple: #a78bfa;
+      --pending: #fbbf2422;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.5; }
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, var(--accent-glow), transparent),
+        radial-gradient(ellipse 60% 40% at 90% 90%, #6366f122, transparent),
+        var(--bg);
+      background-attachment: fixed;
+    }
+    main { max-width: 1280px; margin: 0 auto; padding: 32px 28px 64px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 24px; border-bottom: 1px solid var(--border); margin-bottom: 32px; }
+    h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+    h1 .slash { color: var(--accent); font-weight: 500; }
+    h1 .meta { color: var(--text-dim); font-weight: 400; font-size: 13px; margin-left: 12px; }
+    .live { display: inline-flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); animation: pulse 1.8s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.8); } }
+
+    .grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+    section {
+      background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    section h2 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-dim);
+      font-weight: 600;
+      margin: 0 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    section h2 .count { background: var(--border-strong); color: var(--text); padding: 2px 8px; border-radius: 999px; font-size: 11px; letter-spacing: 0; text-transform: none; font-weight: 600; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+    .stat {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .stat .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 8px; }
+    .stat .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .stat.accent .value { color: var(--accent); }
+    .stat.warn .value { color: var(--warn); }
+    .stat.info .value { color: var(--info); }
+
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 12px 0; border-bottom: 1px solid var(--border); display: flex; gap: 14px; align-items: flex-start; }
+    li:last-child { border-bottom: none; }
+
+    .agent { padding: 16px 18px 14px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; position: relative; overflow: hidden; }
+    .agent::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--info); }
+    .agent.running::before { background: linear-gradient(180deg, var(--accent), var(--info)); animation: shimmer 2.5s ease-in-out infinite; }
+    @keyframes shimmer { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .agent .row1 { display: flex; align-items: center; gap: 12px; }
+    .agent .slot { font-family: 'SF Mono', ui-monospace, monospace; font-size: 10px; color: var(--text-faint); letter-spacing: 0.05em; }
+    .agent .num { font-family: 'SF Mono', 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
+    .agent .num a { color: var(--accent); text-decoration: none; }
+    .agent .num a:hover { text-decoration: underline; }
+    .agent .title { flex: 1; color: var(--text); font-size: 13px; font-weight: 500; }
+    .agent .pill { font-size: 10px; padding: 3px 9px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; background: var(--pending); color: var(--warn); white-space: nowrap; }
+    .agent .pill.tier-p1 { background: #f8717122; color: var(--error); }
+    .agent .pill.tier-p2 { background: #fbbf2422; color: var(--warn); }
+    .agent .pill.tier-p3 { background: #6ee7b722; color: var(--accent); }
+    .agent .meta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--text-dim); align-items: center; }
+    .agent .meta .k { color: var(--text-faint); margin-right: 5px; }
+    .agent .meta code { color: var(--text); background: var(--bg-elev-2); padding: 2px 6px; border-radius: 4px; font-size: 10px; }
+    .agent .meta .pr-pending { color: var(--warn); }
+    .agent .meta .pr-open a { color: var(--info); text-decoration: none; }
+    .agent .meta .pr-open a:hover { text-decoration: underline; }
+    .agent .meta .tokens { color: var(--purple); }
+    .tok { font-variant-numeric: tabular-nums; color: var(--text); }
+    .pr .tokens { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; padding: 0 4px; border-left: 1px solid var(--border); }
+    .pr .tokens .tok { color: var(--purple); }
+
+    .pr { padding: 12px 14px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; display: flex; gap: 12px; align-items: center; }
+    .pr .num { font-family: 'SF Mono', ui-monospace, monospace; font-weight: 600; font-size: 12px; }
+    .pr .num a { color: var(--accent); text-decoration: none; }
+    .pr .num a:hover { text-decoration: underline; }
+    .pr .title { flex: 1; font-size: 13px; }
+    .pr .title a { color: var(--text); text-decoration: none; }
+    .pr .title a:hover { color: var(--accent); }
+    .pr .check-state { font-size: 10px; padding: 3px 10px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .pr .check-state a { text-decoration: none; color: inherit; }
+    .pr .check-state a:hover { text-decoration: underline; }
+    .check-state.pending { background: var(--pending); color: var(--warn); }
+    .check-state.green { background: #6ee7b722; color: var(--accent); }
+    .check-state.failing { background: #f8717122; color: var(--error); }
+    .check-state.merged { background: #a78bfa22; color: var(--purple); }
+
+    .noop { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-elev); font-size: 11px; color: var(--text-dim); margin: 2px 4px 2px 0; font-variant-numeric: tabular-nums; }
+    .noop .num { color: var(--text); font-weight: 500; font-family: 'SF Mono', ui-monospace, monospace; font-size: 10px; }
+
+    /* Diversion-specific styling — loud and unmistakable */
+    .divert-banner {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      padding: 16px 20px;
+      border-radius: 12px;
+      border: 1px solid var(--error);
+      background: linear-gradient(90deg, #f8717122 0%, #f871710a 60%, transparent 100%);
+      box-shadow: 0 0 24px #f8717122, inset 0 0 0 1px #f8717133;
+      margin-bottom: 24px;
+      animation: divert-pulse 2.2s ease-in-out infinite;
+    }
+    .divert-banner.warn {
+      border-color: var(--warn);
+      background: linear-gradient(90deg, #fbbf2422 0%, #fbbf240a 60%, transparent 100%);
+      box-shadow: 0 0 24px #fbbf2422, inset 0 0 0 1px #fbbf2433;
+    }
+    @keyframes divert-pulse {
+      0%, 100% { box-shadow: 0 0 24px #f8717122, inset 0 0 0 1px #f8717133; }
+      50% { box-shadow: 0 0 36px #f8717155, inset 0 0 0 1px #f8717155; }
+    }
+    .divert-banner .icon { font-size: 22px; }
+    .divert-banner .body { flex: 1; }
+    .divert-banner .title { font-size: 14px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+    .divert-banner .sub { font-size: 12px; color: var(--text-dim); }
+    .divert-banner .sub a { color: var(--info); text-decoration: none; }
+    .divert-banner .sub a:hover { text-decoration: underline; }
+    .divert-banner .status { font-size: 11px; padding: 4px 10px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; background: var(--error); color: #fff; white-space: nowrap; }
+    .divert-banner.warn .status { background: var(--warn); color: var(--bg); }
+
+    /* Diversion-flavored worker card (override of .agent) */
+    .agent.divert::before { background: var(--error); animation: shimmer 1.4s ease-in-out infinite; }
+    .agent.divert .pill.divert { background: #f8717133; color: var(--error); }
+    .agent.divert.warn::before { background: var(--warn); }
+    .agent.divert.warn .pill.divert { background: #fbbf2433; color: var(--warn); }
+
+    /* Main-CI stat tile color states */
+    .stat.ci-green .value { color: var(--accent); }
+    .stat.ci-red .value { color: var(--error); }
+    .stat.ci-red { border-color: #f8717155; box-shadow: 0 0 14px #f8717122; }
+    .stat.ci-pending .value { color: var(--warn); }
+    .stat.ci-unknown .value { color: var(--text-faint); }
+    .stat .value a { color: inherit; text-decoration: none; }
+    .stat .value a:hover { text-decoration: underline; }
+    .stat .sub { font-size: 10px; color: var(--text-faint); margin-top: 6px; line-height: 1.4; }
+    .stat .sub code { font-size: 10px; }
+    .stat.failing-prs-pileup { border-color: #fbbf2455; box-shadow: 0 0 14px #fbbf2422; }
+    .stat.failing-prs-pileup .value { color: var(--warn); }
+
+    /* Diversion check-state badge in shipped row */
+    .check-state.divert { background: #f8717122; color: var(--error); }
+    .pr .divert-tag { font-size: 10px; padding: 2px 8px; border-radius: 999px; background: #f8717122; color: var(--error); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-right: 8px; }
+
+    /* Two-row stats layout */
+    .stats-section + .stats-section { margin-top: 12px; }
+    .stats-section .label-strip { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-faint); margin-bottom: 6px; font-weight: 600; }
+
+    footer { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 11px; display: flex; justify-content: space-between; }
+    code { font-family: 'SF Mono', ui-monospace, monospace; font-size: 12px; color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><span class="slash">/</span>do-work <span class="meta">mattsears18/lightwork · concurrency 3</span></h1>
+    <div class="live"><span class="dot"></span><span id="ts">live</span> · auto-refresh 10s</div>
+  </header>
+
+  <!--
+    Diversion banners — render at the top of <main> whenever a divert is enqueued or in flight.
+    When neither divert is active, omit both <div class="divert-banner"> blocks entirely.
+    The orchestrator rewrites this region on every state-change.
+  -->
+  <div class="divert-banner" id="divert-main-ci">
+    <span class="icon">⚠️</span>
+    <div class="body">
+      <div class="title">Main CI red — diverting a worker to fix</div>
+      <div class="sub">
+        Earliest unfixed red run on <code>main</code>:
+        <a href="https://github.com/mattsears18/lightwork/actions/runs/26069702951" target="_blank">run #26069702951</a>
+        · went red 1h 23m ago
+        · commit <a href="https://github.com/mattsears18/lightwork/commit/abc1234" target="_blank"><code>abc1234</code></a>
+        · "fix(test): tighten coverage thresholds"
+      </div>
+    </div>
+    <span class="status">IN FLIGHT · SLOT 1</span>
+  </div>
+
+  <div class="divert-banner warn" id="divert-pr-pileup">
+    <span class="icon">⚠️</span>
+    <div class="body">
+      <div class="title">12 failing PRs (all authors) — investigating common root cause</div>
+      <div class="sub">
+        Sample failing PRs:
+        <a href="https://github.com/mattsears18/lightwork/pull/612" target="_blank">#612</a>,
+        <a href="https://github.com/mattsears18/lightwork/pull/615" target="_blank">#615</a>,
+        <a href="https://github.com/mattsears18/lightwork/pull/620" target="_blank">#620</a>,
+        <a href="https://github.com/mattsears18/lightwork/pull/623" target="_blank">#623</a>,
+        <a href="https://github.com/mattsears18/lightwork/pull/628" target="_blank">#628</a>
+        · +7 more
+        · pileup detected 18m ago
+      </div>
+    </div>
+    <span class="status">ENQUEUED · awaiting slot</span>
+  </div>
+
+  <!-- Repo-health stats (always visible — these are the at-a-glance vitals) -->
+  <div class="stats-section">
+    <div class="label-strip">Repo health</div>
+    <div class="stats" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="stat ci-red">
+        <div class="label">Main CI</div>
+        <div class="value">✗ <a href="https://github.com/mattsears18/lightwork/actions/runs/26069702951" target="_blank">#26069702951</a></div>
+        <div class="sub">earliest red run · 1h 23m ago · <code>abc1234</code></div>
+      </div>
+      <div class="stat failing-prs-pileup">
+        <div class="label">Failing PRs · all authors</div>
+        <div class="value">12 <span style="font-size: 14px; color: var(--text-faint);">(@me: 2)</span></div>
+        <div class="sub">⚠️ threshold (10) crossed — divert active</div>
+      </div>
+      <div class="stat">
+        <div class="label">Open PRs · repo</div>
+        <div class="value"><a href="https://github.com/mattsears18/lightwork/pulls" target="_blank">17</a></div>
+      </div>
+      <div class="stat">
+        <div class="label">Open issues · repo</div>
+        <div class="value"><a href="https://github.com/mattsears18/lightwork/issues" target="_blank">44</a></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Session stats — what THIS /do-work run has done -->
+  <div class="stats-section">
+    <div class="label-strip">This session</div>
+    <div class="stats" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="stat accent">
+        <div class="label">Shipped</div>
+        <div class="value">12 <span style="font-size: 14px; color: var(--text-faint);">(+1 divert)</span></div>
+      </div>
+      <div class="stat info">
+        <div class="label">In-flight</div>
+        <div class="value">3 <span style="font-size: 14px; color: var(--text-faint);">/ 3</span></div>
+      </div>
+      <div class="stat">
+        <div class="label">Total tokens</div>
+        <div class="value" style="color: var(--purple); font-size: 22px;">1.58<span style="font-size: 13px; color: var(--text-faint);">M</span></div>
+      </div>
+      <div class="stat">
+        <div class="label">Diversions · dispatched</div>
+        <div class="value" style="color: var(--error);">2 <span style="font-size: 13px; color: var(--text-faint);">(1 shipped, 1 in flight)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <section>
+      <h2>In flight <span class="count">3</span></h2>
+
+      <!--
+        Diversion worker card — red left-border, DIVERSION pill, linked context.
+        Slot 1 here is working the fix-main-ci divert that triggered the banner above.
+      -->
+      <div class="agent running divert">
+        <div class="row1">
+          <span class="slot">SLOT 1</span>
+          <span class="num" style="color: var(--error);">⚠️ fix-main-ci</span>
+          <span class="title">Restoring green main — fix earliest red run #26069702951</span>
+          <span class="pill divert">DIVERSION</span>
+        </div>
+        <div class="meta">
+          <span><span class="k">red run</span><a class="pr-open" href="https://github.com/mattsears18/lightwork/actions/runs/26069702951" target="_blank"><code>#26069702951</code></a></span>
+          <span><span class="k">sha</span><code>abc1234</code> "fix(test): tighten coverage thresholds"</span>
+          <span><span class="k">branch</span><code>do-work/fix-main-ci-abc1234</code></span>
+          <span><span class="k">PR</span><span class="pr-pending">pending — running</span></span>
+        </div>
+      </div>
+
+      <div class="agent running">
+        <div class="row1">
+          <span class="slot">SLOT 2</span>
+          <span class="num"><a href="https://github.com/mattsears18/lightwork/issues/553" target="_blank">#553</a></span>
+          <span class="title">feat(screenshots): runtime guard for over-long captions</span>
+          <span class="pill tier-p2">P2 feat</span>
+        </div>
+        <div class="meta">
+          <span><span class="k">files</span><code>scripts/screenshots*.ts</code> · <code>store.config.js</code></span>
+          <span><span class="k">branch</span><code>do-work/issue-553</code></span>
+          <span><span class="k">PR</span><span class="pr-pending">pending — running</span></span>
+        </div>
+      </div>
+
+      <div class="agent running">
+        <div class="row1">
+          <span class="slot">SLOT 3</span>
+          <span class="num"><a href="https://github.com/mattsears18/lightwork/issues/274" target="_blank">#274</a></span>
+          <span class="title">feat(notifications): launch push properly — granular toggles, perm banner</span>
+          <span class="pill" style="background: var(--border-strong); color: var(--text-dim);">unlabeled</span>
+        </div>
+        <div class="meta">
+          <span><span class="k">files</span><code>app/preferences.tsx</code> · <code>functions/src/send-push.ts</code> · <code>lib/types.ts</code> · <code>firestore.rules</code></span>
+          <span><span class="k">branch</span><code>do-work/issue-274</code></span>
+          <span><span class="k">PR</span><span class="pr-pending">pending — running</span></span>
+        </div>
+      </div>
+
+      <h2 style="margin-top: 28px;">Shipped this session <span class="count">12</span></h2>
+
+      <!--
+        Diversion ship row — DIVERSION tag prepended so it visually stands apart
+        from normal issue ships. Same data shape (PR link + tokens + check-state badge).
+        For fix-failing-prs-batch the title would be "fix(ci): unstick 12 failing PRs — <root cause>".
+      -->
+      <div class="pr">
+        <div class="num"><span class="divert-tag">⚠️ DIVERT</span></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/611" target="_blank">fix(ci): restore green main — revert flaky coverage threshold bump</a></div>
+        <div class="tokens"><span class="tok">52K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/611" target="_blank">PR #611 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/506" target="_blank">#506</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/593" target="_blank">ci(release): queue eas build before pushing store metadata</a></div>
+        <div class="tokens"><span class="tok">73K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/593" target="_blank">PR #593 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/537" target="_blank">#537</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/594" target="_blank">test(rules): pair dataExports/{uid} firestore rule with assertFails cases</a></div>
+        <div class="tokens"><span class="tok">84K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/594" target="_blank">PR #594 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/584" target="_blank">#584</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/595" target="_blank">docs(ci): document testIgnore ↔ coverage-guard duplication</a></div>
+        <div class="tokens"><span class="tok">72K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/595" target="_blank">PR #595 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/585" target="_blank">#585</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/596" target="_blank">docs(claude): document E2E gate must be required check</a></div>
+        <div class="tokens"><span class="tok">66K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/596" target="_blank">PR #596 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/536" target="_blank">#536</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/598" target="_blank">test(functions): exportMyData + appleNotifications coverage (22 cases)</a></div>
+        <div class="tokens"><span class="tok">137K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/598" target="_blank">PR #598 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/539" target="_blank">#539</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/599" target="_blank">test(e2e): LINK-4..LINK-12 cross-provider auth-linking (9 specs)</a></div>
+        <div class="tokens"><span class="tok">143K</span> tok</div>
+        <div class="check-state pending"><a href="https://github.com/mattsears18/lightwork/pull/599" target="_blank">PR #599 · pending</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/317" target="_blank">#317</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/602" target="_blank">test(web): pin lazy App Check init with regression guard</a></div>
+        <div class="tokens"><span class="tok">88K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/602" target="_blank">PR #602 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/504" target="_blank">#504</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/603" target="_blank">ci(release): per-platform fingerprint compare against last-shipped binary</a></div>
+        <div class="tokens"><span class="tok">159K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/603" target="_blank">PR #603 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/501" target="_blank">#501</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/604" target="_blank">feat(push): tap-deeplink, foreground handler, signout cleanup</a></div>
+        <div class="tokens"><span class="tok">157K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/604" target="_blank">PR #604 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/281" target="_blank">#281</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/605" target="_blank">feat(profile): pin 280-char bio constraint in firestore.rules</a></div>
+        <div class="tokens"><span class="tok">110K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/605" target="_blank">PR #605 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/383" target="_blank">#383</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/607" target="_blank">docs(claude): sync android-changelog poll cap to 30 min + follow-up #606</a></div>
+        <div class="tokens"><span class="tok">59K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/607" target="_blank">PR #607 · merged ✓</a></div>
+      </div>
+
+      <div class="pr">
+        <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/495" target="_blank">#495</a></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/608" target="_blank">chore(styling): converge on StyleSheet+Colors, rip NativeWind (path 3)</a></div>
+        <div class="tokens"><span class="tok">131K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/608" target="_blank">PR #608 · merged ✓</a></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Noop'd · already on main <span class="count">4</span></h2>
+      <div style="margin-bottom: 24px;">
+        <span class="noop"><span class="num">#551</span> screenshots-as-release-assets (PR #550 · 13bceaea)</span>
+        <span class="noop"><span class="num">#586</span> coverage guard <code>find</code> (PR #588)</span>
+        <span class="noop"><span class="num">#587</span> drift step <code>continue-on-error</code> (PR #588)</span>
+        <span class="noop"><span class="num">#583</span> drift workflow lookup by name (PR #588)</span>
+      </div>
+
+      <h2>Backlog top of queue <span class="count">~30 left</span></h2>
+      <ul>
+        <li><span style="color: var(--error); font-family: ui-monospace, monospace; min-width: 50px;">P1</span><div><strong>#281</strong> feat(profile): stats, member-since, view-other-user — large feature</div></li>
+        <li><span style="color: var(--warn); font-family: ui-monospace, monospace; min-width: 50px;">P2</span><div><strong>#495</strong> chore(styling): converge on single styling convention <span style="color: var(--text-faint); font-size: 11px;">(needs human decision)</span></div></li>
+        <li><span style="color: var(--text-dim); font-family: ui-monospace, monospace; min-width: 50px;">—</span><div><strong>#290</strong> feat(ipad): properly support iPad</div></li>
+        <li><span style="color: var(--text-dim); font-family: ui-monospace, monospace; min-width: 50px;">—</span><div><strong>#289</strong> feat(onboarding): interactive tooltip overlays</div></li>
+        <li><span style="color: var(--text-dim); font-family: ui-monospace, monospace; min-width: 50px;">—</span><div><strong>#274</strong> feat(notifications): launch push properly — granular toggles</div></li>
+        <li><span style="color: var(--text-dim); font-family: ui-monospace, monospace; min-width: 50px;">—</span><div>… more unprioritized (P3 label removed — was non-standard)</div></li>
+      </ul>
+      <div style="margin-top: 16px; padding: 10px 12px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; color: var(--text-dim); font-size: 11px;">
+        <span style="color: var(--accent);">●</span> P3 label removed repo-wide — 35 issues moved to unlabeled-priority pool. Convention now: P0 / P1 / P2 only.
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <span>worker pool · 2 / 3 slots in use</span>
+    <span>auto-refresh every 10s · dashboard regenerated on each agent return</span>
+  </footer>
+</main>
+<script>
+  const ts = document.getElementById('ts');
+  const t = new Date();
+  ts.textContent = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+</script>
+</body>
+</html>
