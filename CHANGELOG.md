@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.0.1 — 2026-05-19
+
+Docs-only refresh of the root `README.md` after the `app-audits` → `shipyard` rename in 1.0.0. Closes [#39](https://github.com/mattsears18/claude-plugins/issues/39).
+
+- Adds a **Quick start** above-the-fold section with copy-pasteable install + first `/do-work` invocation.
+- Adds a **How it works** section with a prose walkthrough of the autonomous engineering loop (inputs → refine → human review → orchestrator → workers → PR → auto-merge). Links to [#37](https://github.com/mattsears18/claude-plugins/issues/37) for the in-progress Figma infographic.
+- Adds a **What's been hardened** section listing safety properties that have actually shipped, each linked to its issue: idle prevention ([#23](https://github.com/mattsears18/claude-plugins/issues/23)), user-feedback intake ([#24](https://github.com/mattsears18/claude-plugins/issues/24)), `--no-verify` guards ([#26](https://github.com/mattsears18/claude-plugins/issues/26)), pre-dispatch backlog re-check ([#29](https://github.com/mattsears18/claude-plugins/issues/29)), orchestrator worktree isolation ([#34](https://github.com/mattsears18/claude-plugins/issues/34)).
+- Adds a **See it in action** section linking to the filtered list of `do-work`-labeled merged PRs as living proof.
+- Updates the **Layout** file tree to match the current `plugins/shipyard/` structure (commands/agents/skills/hooks/scripts/assets).
+- No behavior changes; plugin code, hooks, and commands are unchanged from 1.0.0.
+
 ### 1.0.0 — 2026-05-19
 
 **Breaking: plugin renamed from `app-audits` → `shipyard`.** Every slug under the old prefix moves to the new one (`shipyard:do-work`, `shipyard:audit`, `shipyard:issue-worker`, `shipyard:lighthouse-auditor`, `shipyard:security-auditor`, `shipyard:dx-auditor`, etc.). Closes [#25](https://github.com/mattsears18/claude-plugins/issues/25).
