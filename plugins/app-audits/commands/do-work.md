@@ -464,6 +464,17 @@ Once the pool is full, **return control** — you'll be notified the moment any 
 
 When an agent completes, the harness notifies you. Each notification is one orchestrator turn. In that turn:
 
+### Turn contract (read this first, every turn)
+
+Every steady-state turn — without exception — has the shape `reconcile → release → dispatch (or prove idle) → invariant line`. The dispatch step is what was missing in the bug that motivated this section: the orchestrator was firing step A (reconcile), then drifting into a "recap" sentence ("Goal: ... Next: watch returns and refill the pool ...") and ending the turn without firing step C. That recap sentence IS the bug — narrating future intent in prose lets the model conclude its turn gracefully without ever issuing the `Agent` tool call that would actually fill the freed slot.
+
+Therefore, on every notification turn, the LAST thing you do is exactly one of these two — never anything else, never a "Next: …" narration, never a status recap, never an "I'll watch for returns and refill" promise:
+
+1. **Issue one or more `Agent` tool calls** to fill freed slots (the normal case), then print the invariant line below the tool call(s).
+2. **Print the structured idle-proof line** (defined in step E) showing that EVERY queue is empty and EVERY slot is either in flight or legitimately parked.
+
+If you find yourself about to write "Next, I'll …" or "Now watching for completions …" or any recap sentence describing what *will* happen, stop — that sentence is the failure mode. Delete it and dispatch instead, or print the idle-proof line and nothing else. Future intent is encoded by the tool call itself; there is no value in narrating it.
+
 ### A. Reconcile the return
 
 The agent's last line tells you what happened.
@@ -496,11 +507,18 @@ For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
 
 Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
-### C. Dispatch a replacement (if work remains)
+### C. Dispatch a replacement (if work remains) — MANDATORY ACTION
 
-**Drain guard:** if `draining = true`, skip — the slot stays empty until in-flight empties and the loop terminates.
+**This step is non-optional and non-deferrable.** Whenever a slot is freed by step B, this step MUST resolve in the same turn — to either an `Agent` tool call (the freed slot is refilled) or an explicit, structured idle-proof (step E below). There is no third option. "I'll dispatch on the next notification" / "the merge train will catch up" / "watching for completions" are all the bug — they leave step C unresolved and end the turn with `in_flight < concurrency` while work remains in the queues. That is the exact failure mode this command was rewritten to prevent.
 
-Otherwise, apply the **dispatch rules** to pick the next job. If a job is dispatched, the slot is filled again immediately. If no compatible job exists (e.g., backlog dry, or every remaining candidate collides with what's still in flight), leave the slot empty — the next completion will trigger another attempt.
+**Drain guard:** if `draining = true`, skip the dispatch attempt entirely — the slot stays empty until in-flight empties and the loop terminates. (Step E still prints, with `draining=true` noted, so the invariant remains visible.)
+
+Otherwise, apply the **dispatch rules** to pick the next job:
+
+- **Job found** → issue the `Agent` tool call **in this turn**, not later. The `run_in_background: true` agent call IS the dispatch — there is no separate "will dispatch" state. Multiple slots freed by step B (e.g., two completion notifications batched into one turn, or a slot opened by step B alongside a slot newly freed by a divert clearing) are filled with parallel `Agent` calls in the same message.
+- **No compatible job (paths all collide, lockfile-toucher parking, backlog dry but other queues have work)** → record *why* the slot stays empty. The reason string feeds into step E's invariant line. Examples: `parked (all ready_issues collide with in_flight paths)`, `parked (lockfile-toucher #N is in flight)`, `parked (queues empty pending step-D refresh)`.
+
+If no compatible job exists this turn, the next completion will trigger another attempt — but only because step E will have logged the exact reason the slot was left idle, so subsequent turns can verify the condition still holds.
 
 ### D. Periodic refresh
 
@@ -515,6 +533,28 @@ Otherwise, every `--concurrency` completions (a full pool's worth), refresh queu
 The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
 
 If the divert-checks refresh changed `main_ci.status`, `divert_queue` membership, or flipped `failing_pr_count_all` across the 10 threshold, also print the status line (see step 6.5) — this is one of the "things a human would care about changed" cases.
+
+### E. Invariant line (end of every steady-state turn)
+
+After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. It exists for one reason: to make idle drift detectable in the transcript. Whenever you find yourself ending a turn without one of these lines, you have skipped step C — go back and fix it.
+
+**Steady-state format** (after a normal dispatch turn):
+
+```
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k>
+```
+
+**Idle-proof format** (used ONLY when step C produced no dispatch AND `in_flight < concurrency`):
+
+```
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · idle_reason="<reason>"
+```
+
+The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight drains)`, `draining=true`, `lockfile-toucher #N in flight (other slots parked)`, `all ready_issues collide with in_flight paths`, or a concrete diagnostic string. Vague reasons ("waiting for completions", "merge train draining", "nothing to do right now") are NOT acceptable — they're the recap pattern in disguise. If you can't name the queue-level reason the slot is empty, you haven't actually checked the queues; go back and check.
+
+**Self-check before ending the turn:** if the invariant line shows `in_flight < concurrency` AND `ready_issues + failed_prs + divert_queue + raw_backlog > 0` AND `dispatched_this_turn == 0`, that is a **programming error in the orchestrator's own turn** — the dispatch step (C) failed without a valid reason. Don't end the turn. Re-run step C, find what was skipped, dispatch, and re-emit the invariant line. Common causes: (a) you drafted a recap sentence and ended the turn before issuing the `Agent` tool call; (b) you reconciled the completion but forgot the freed slot needs filling; (c) you mistakenly believed "auto-merge will handle it" justifies skipping new dispatches (it does not — see the [Don't](#dont) section).
+
+The invariant line is the single source of truth for "did this turn do its job?" If it's missing, the turn is incomplete.
 
 ## Dispatch rules (used by step 7 and step C)
 
@@ -701,6 +741,29 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - **Don't go idle while `raw_backlog` or `ready_issues` has items.** When in-flight workers all return but the queues still hold work, the merge train auto-draining prior PRs is irrelevant to your loop. Your job is to dispatch new workers into the freed slots, not to wait for auto-merge to land prior PRs. Pool drained + backlog non-empty = you are failing to do your job. Refill the pool on the same turn the last completion notification arrives.
 - **Don't conflate "pool drained" with "session complete."** Two independent processes are running: (1) the dispatch loop that fills `--concurrency` slots from the backlog, and (2) the merge train that lands open PRs as their checks turn green. The merge train continues without you. The dispatch loop dies if you stop dispatching. Treat them as orthogonal — never use "the train will drain on its own" or "auto-merge handles it from here" as a justification to stop dispatching new work.
 - **Don't ever ask the user "should I keep working, summarize, park, or stop?"** Termination is mechanical (see [Termination](#termination)). As long as ANY of `in_flight` / `failed_prs` / `ready_issues` / `raw_backlog` / `divert_queue` is non-empty, you keep dispatching. Drafting a question about whether to continue, summarize, or idle is itself the bug — delete it and dispatch instead. The only user input that ends the loop early is the explicit `stop` / `drain` / `/do-work stop` phrase from [Soft drain](#soft-drain); soft framings like "you can stop if you want" or "deep idle is fine" do not change behavior.
+- **Don't emit recap / "Next: …" narration in lieu of dispatching.** The orchestrator's failure mode is to summarize the situation in prose ("Currently 2 workers in flight; a dozen PRs are awaiting CI auto-merge. Next: watch returns and refill the pool from the remaining backlog issues.") and then end the turn without issuing the `Agent` tool call that would actually refill the pool. The recap *sentence itself* is the bug — it gives the model a graceful exit from a turn whose dispatch obligation hasn't been met. Forbidden phrasings include: "Next, I'll watch for …", "Waiting for completions to refill …", "The merge train will drain on its own …", "Will refill the pool from the backlog as agents return …". Every one of these is a description of behavior the harness already provides (notifications on completion); narrating it is pure overhead AND it tricks the model into thinking the turn is done. The correct shape of a turn that frees a slot is: tool call → invariant line. The correct shape of a turn that legitimately can't dispatch is: structured `[invariant] ... idle_reason="..."` line, nothing else. No prose between them, no prose after them, no "Next:" sentence anywhere.
+
+  Contrasting example — DO NOT do this:
+
+  ```
+  Slot 3 freed by #769 shipping. Pool: 2/8 in flight.
+  Goal: drain the lightwork backlog via /do-work with 8 parallel agents.
+  Next: watch returns and refill the pool from the remaining backlog issues.
+  ```
+
+  DO this instead:
+
+  ```
+  [Agent tool call dispatching slot 3 with next ready_issue]
+  [Agent tool call dispatching slots 4-8 with next ready_issues (if also free)]
+  [invariant] in_flight=8/8 · ready_issues=27 · failed_prs=1 · divert_queue=0 · raw_backlog=12 · dispatched_this_turn=6
+  ```
+
+  Or, if every queue really is empty and `in_flight` is also empty:
+
+  ```
+  [invariant] in_flight=0/8 · ready_issues=0 · failed_prs=0 · divert_queue=0 · raw_backlog=0 · dispatched_this_turn=0 · idle_reason="all queues empty (terminating after in_flight drains)"
+  ```
 - Don't work on issues assigned to other users — soft-lock via `gh api user` check.
 - Don't merge manually. Use `--auto`. Auto-merge waits for green.
 - Don't disable required checks or weaken branch protection to make a PR pass.
