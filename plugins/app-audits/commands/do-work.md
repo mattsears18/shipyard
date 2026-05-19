@@ -545,10 +545,12 @@ Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
 **Drain guard:** if `draining = true`, skip the dispatch attempt entirely — the slot stays empty until in-flight empties and the loop terminates. (Step E still prints, with `draining=true` noted, so the invariant remains visible.)
 
+**Lightweight backlog re-check (run before path-collision walking, every dispatch).** Before consulting `ready_issues` or `raw_backlog`, run the step-4 backlog fetch — a single `gh issue list` with the same filter (`--state open`, `-linked:pr`, the standard label exclusions, plus any `--label` qualifiers passed at invocation). Diff the result against the union of `in_flight` + `ready_issues` + `raw_backlog` + issues previously closed this session. Append any net-new issue numbers to `raw_backlog` in priority order (same ranking rules as step 4). This is the cheap pass that makes new candidates *visible* the moment a slot opens — without it, issues filed mid-session sit invisible until the next periodic Step D refresh, which can be many completions away on a wide pool. **Skip the auto-triage label-stamping and the full scope pre-flight at this stage** — those still run on the periodic Step D refresh. The cheap pass just appends raw issue numbers; their `claimed_paths` get scoped lazily when they reach the head of `ready_issues` (via the standard scope-refill burst at rule 5 of the dispatch rules). If the `gh` call errors transiently (rate limit, network blip), proceed with the queues as-is for this dispatch and let the next completion retry — never block dispatch on a refill failure.
+
 Otherwise, apply the **dispatch rules** to pick the next job:
 
 - **Job found** → issue the `Agent` tool call **in this turn**, not later. The `run_in_background: true` agent call IS the dispatch — there is no separate "will dispatch" state. Multiple slots freed by step B (e.g., two completion notifications batched into one turn, or a slot opened by step B alongside a slot newly freed by a divert clearing) are filled with parallel `Agent` calls in the same message.
-- **No compatible job (paths all collide, lockfile-toucher parking, backlog dry but other queues have work)** → record *why* the slot stays empty. The reason string feeds into step E's invariant line. Examples: `parked (all ready_issues collide with in_flight paths)`, `parked (lockfile-toucher #N is in flight)`, `parked (queues empty pending step-D refresh)`.
+- **No compatible job (paths all collide, lockfile-toucher parking, backlog dry but other queues have work)** → record *why* the slot stays empty. The reason string feeds into step E's invariant line. Examples: `parked (all ready_issues collide with in_flight paths)`, `parked (lockfile-toucher #N is in flight)`, `parked (all queues empty after backlog re-check)`.
 
 If no compatible job exists this turn, the next completion will trigger another attempt — but only because step E will have logged the exact reason the slot was left idle, so subsequent turns can verify the condition still holds.
 
@@ -560,7 +562,7 @@ Otherwise, every `--concurrency` completions (a full pool's worth), refresh queu
 
 1. **Divert-checks refresh** — re-run step 4.5 (main CI + all-authors failing PR count). Update `main_ci` and the `failing_pr_count_all` cache. Enqueue or clear `divert_queue` entries per the rules in step 4.5. This is the only place outside setup where diversions are evaluated.
 2. **Failed-PR scan (@me)** — re-run the step-5 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
-3. **Backlog refill** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. If `raw_backlog` itself runs low (< `2 × concurrency`), re-run the step-4 backlog fetch to discover newly-opened issues.
+3. **Scope refill + auto-triage pass** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. Discovery of newly-opened issues now happens per-dispatch in step C's lightweight backlog re-check, so this sub-step no longer needs to re-run the full step-4 fetch for discovery — it's purely a scope-refill. The periodic auto-triage label-stamping (step 4's P0/P1/P2 pass on any newly-discovered untriaged issues sitting in `raw_backlog`) also runs here, since step C deliberately skips it to stay cheap.
 
 The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
 
@@ -633,7 +635,7 @@ When filling a slot, walk this decision tree:
 
 4. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths, retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster), wait for the colliding worker to return.
 
-5. **`ready_issues` empty but `raw_backlog` non-empty?** → trigger a scope-refill burst (step D's backlog refill) in this same turn, then retry from step 3 with the refilled queue.
+5. **`ready_issues` empty but `raw_backlog` non-empty?** → trigger a scope-refill burst (step D's scope refill) in this same turn, then retry from step 3 with the refilled queue. Note that step C's lightweight backlog re-check has already topped up `raw_backlog` with any net-new issues filed since the last dispatch, so this rule fires whenever discovery succeeded but scoping hasn't caught up.
 
 6. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
 
