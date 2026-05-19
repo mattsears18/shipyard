@@ -1,6 +1,6 @@
 {
   "name": "app-audits",
-  "version": "0.14.1",
+  "version": "0.14.2",
   "description": "Audit web + mobile apps across UX, performance, security, accessibility, and more — autonomously files GitHub issues for every finding, and burns them down with /do-work.",
   "author": {
     "name": "Matt Sears",

@@ -581,12 +581,16 @@ Substring matching is deliberately avoided. Phrases like "don't stop yet" or "I'
 
 ## Termination
 
+**Termination is mechanical, not discretionary. Never ask the user whether to continue.** The pool draining is NOT the termination signal. When all in-flight workers return but `raw_backlog` / `ready_issues` / `failed_prs` / `divert_queue` still have entries, the correct next action is to dispatch up to `--concurrency` new workers on the very next turn — not to summarize, not to wrap up, not to ask "want me to keep working or park?", not to idle. The only signal that ends the loop early is a literal `stop` / `drain` / `/do-work stop` user message (see [Soft drain](#soft-drain)) — anything softer ("you can stop if you want", "deep idle is fine", "I'm going to bed") is conversational noise that the orchestrator ignores while work remains.
+
 The loop ends when **all of** the following are true at the same time:
 
 - `in_flight` is empty (no agents running),
 - `failed_prs` is empty,
 - `ready_issues` is empty,
 - `raw_backlog` is empty AND a fresh step-4 fetch returns zero new candidates.
+
+If any one of those is non-empty, the loop has NOT terminated — fill the pool from the highest-priority queue and return control. The merge train continuing to drain prior PRs on its own is independent of your dispatch loop; auto-merge will land them whether you're orchestrating new work or not, so "the train will drain on its own" is never a reason to stop dispatching. Pool empty + backlog non-empty = keep dispatching, full stop.
 
 **Drain-mode termination**: when `draining = true` (see [Soft drain](#soft-drain)), the exit condition collapses to `in_flight` empty — `failed_prs` / `ready_issues` / `raw_backlog` are left as-is and rebuilt next session. The drain → cleanup → summary flow below still runs.
 
@@ -694,6 +698,9 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 
 ## Don't
 
+- **Don't go idle while `raw_backlog` or `ready_issues` has items.** When in-flight workers all return but the queues still hold work, the merge train auto-draining prior PRs is irrelevant to your loop. Your job is to dispatch new workers into the freed slots, not to wait for auto-merge to land prior PRs. Pool drained + backlog non-empty = you are failing to do your job. Refill the pool on the same turn the last completion notification arrives.
+- **Don't conflate "pool drained" with "session complete."** Two independent processes are running: (1) the dispatch loop that fills `--concurrency` slots from the backlog, and (2) the merge train that lands open PRs as their checks turn green. The merge train continues without you. The dispatch loop dies if you stop dispatching. Treat them as orthogonal — never use "the train will drain on its own" or "auto-merge handles it from here" as a justification to stop dispatching new work.
+- **Don't ever ask the user "should I keep working, summarize, park, or stop?"** Termination is mechanical (see [Termination](#termination)). As long as ANY of `in_flight` / `failed_prs` / `ready_issues` / `raw_backlog` / `divert_queue` is non-empty, you keep dispatching. Drafting a question about whether to continue, summarize, or idle is itself the bug — delete it and dispatch instead. The only user input that ends the loop early is the explicit `stop` / `drain` / `/do-work stop` phrase from [Soft drain](#soft-drain); soft framings like "you can stop if you want" or "deep idle is fine" do not change behavior.
 - Don't work on issues assigned to other users — soft-lock via `gh api user` check.
 - Don't merge manually. Use `--auto`. Auto-merge waits for green.
 - Don't disable required checks or weaken branch protection to make a PR pass.
