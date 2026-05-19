@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.1.3 — 2026-05-19
+
+Adds a new root-`README.md` section — **"Plays well with everything that files GitHub issues"** — placed between **See it in action** and **Install**. Closes [#48](https://github.com/mattsears18/claude-plugins/issues/48).
+
+- Frames shipyard as the back half of a self-healing loop: anything that auto-files GitHub issues (Sentry, Datadog, Dependabot, GHAS/CodeQL, customer-support integrations, your own infra) becomes work shipyard can do.
+- Includes an illustrative Sentry round-trip walkthrough (exception → Sentry-filed issue → `/do-work` picks it up → PR with `Closes #N` → auto-merge → Sentry issue closes). Called out as illustrative, not a case study.
+- Keeps honest caveats: upstream issue quality matters, user feedback still flows through `/refine-feedback` + human gate, not everything is auto-fixable, label hygiene at the auto-filer matters for ranking.
+- No code changes; plugin behavior is unchanged from 1.1.2.
+
 ### 1.1.2 — 2026-05-19
 
 - docs: refresh embedded README infographic with full footer band
