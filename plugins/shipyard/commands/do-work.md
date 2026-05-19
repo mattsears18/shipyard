@@ -204,10 +204,10 @@ Then proceed immediately to step 3.
 
 ### 3. Ensure label exists + recover from prior session
 
-**3a. Ensure required labels exist** (idempotent — each command succeeds whether the label is already there or not). The `do-work` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers used both by the auto-triage in step 4 and the ranking step that follows it:
+**3a. Ensure required labels exist** (idempotent — each command succeeds whether the label is already there or not). The `shipyard` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers used both by the auto-triage in step 4 and the ranking step that follows it:
 
 ```bash
-gh label create do-work --repo <owner/repo> --description "Worked on by /do-work" --color 5319E7 2>/dev/null || true
+gh label create shipyard --repo <owner/repo> --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
 gh label create P0 --repo <owner/repo> --description "Critical / release-blocker" --color B60205 2>/dev/null || true
 gh label create P1 --repo <owner/repo> --description "High — this cycle"          --color D93F0B 2>/dev/null || true
 gh label create P2 --repo <owner/repo> --description "Normal"                     --color FBCA04 2>/dev/null || true
@@ -270,15 +270,15 @@ All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh 
 |---|---|---|
 | No commits beyond base | `git -C <path> rev-list --count origin/<default-branch>..HEAD` returns `0` | `git worktree remove --force <path>` → `git branch -D do-work/issue-<N>` → `gh issue edit <N> --repo <owner/repo> --remove-assignee @me`. `abandoned_count++`. Issue flows back into the backlog on the normal fetch (step 4). |
 | Only uncommitted edits, no commits | Same `rev-list` returns `0` but `git -C <path> status --porcelain` is non-empty | Same as above — partial WIP from an agent mid-edit is not coherent enough to push. `abandoned_count++`. |
-| Commits ahead, not pushed | `git -C <path> rev-list --count origin/<default-branch>..HEAD` > 0 AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `git -C <path> push -u origin do-work/issue-<N>` → `gh pr list --repo <owner/repo> --head do-work/issue-<N> --json number --jq '.[0].number'`; if empty, `(cd <path> && gh pr create --repo <owner/repo> --fill --label do-work)` then enable auto-merge. `salvaged_count++`. |
-| Commits ahead, pushed, no PR open | Same `rev-list` > 0 AND `ls-remote` shows the branch AND `gh pr list --head` is empty | `(cd <path> && gh pr create --repo <owner/repo> --fill --label do-work)` then enable auto-merge. `salvaged_count++`. |
+| Commits ahead, not pushed | `git -C <path> rev-list --count origin/<default-branch>..HEAD` > 0 AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `git -C <path> push -u origin do-work/issue-<N>` → `gh pr list --repo <owner/repo> --head do-work/issue-<N> --json number --jq '.[0].number'`; if empty, `(cd <path> && gh pr create --repo <owner/repo> --fill --label shipyard)` then enable auto-merge. `salvaged_count++`. |
+| Commits ahead, pushed, no PR open | Same `rev-list` > 0 AND `ls-remote` shows the branch AND `gh pr list --head` is empty | `(cd <path> && gh pr create --repo <owner/repo> --fill --label shipyard)` then enable auto-merge. `salvaged_count++`. |
 | Commits ahead, pushed, PR open | `gh pr list --head` returns a PR number | `gh pr view <M> --repo <owner/repo> --json statusCheckRollup`. If any check is `FAILURE` / `ERROR` / `TIMED_OUT` → push `{number: <M>, ...}` onto `failed_prs`. Otherwise leave alone — auto-merge will handle it. `salvaged_count++`. |
 | Branch is `[gone]` upstream | `git branch -v` shows `[gone]` next to the branch name | `(no-op — handled by end-of-session cleanup)` |
 
 **Inconsistency log (advisory)** — also run a one-line label cross-check:
 
 ```bash
-gh issue list --repo <owner/repo> --label do-work --assignee @me --state open --search '-linked:pr' --json number
+gh issue list --repo <owner/repo> --label shipyard --assignee @me --state open --search '-linked:pr' --json number
 ```
 
 Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory — don't auto-act.
@@ -633,13 +633,13 @@ When filling a slot, walk this decision tree:
 
    **For `fix-main-ci`** — prompt template:
 
-   > Restore green main on `<owner/repo>` in **fix-main-ci mode**. The earliest unfixed red run on the default branch (`<default-branch>`) is `<earliest_red_run_url>` at SHA `<earliest_red_sha>` — that's where the red streak started, and that's the run whose failure logs you should triage first. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout`, and never `git switch` to the repo's default branch when you're done. Follow the `fix-main-ci mode` section in the issue-worker spec: pre-flight (re-confirm main is still red), pull failed logs, triage the failure category, branch as `do-work/fix-main-ci-<short-sha>`, ship ONE minimal PR labeled `do-work` with no `Closes #N` line (this is a synthetic divert — no issue to close), enable auto-merge, snapshot, return.
+   > Restore green main on `<owner/repo>` in **fix-main-ci mode**. The earliest unfixed red run on the default branch (`<default-branch>`) is `<earliest_red_run_url>` at SHA `<earliest_red_sha>` — that's where the red streak started, and that's the run whose failure logs you should triage first. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout`, and never `git switch` to the repo's default branch when you're done. Follow the `fix-main-ci mode` section in the issue-worker spec: pre-flight (re-confirm main is still red), pull failed logs, triage the failure category, branch as `do-work/fix-main-ci-<short-sha>`, ship ONE minimal PR labeled `shipyard` with no `Closes #N` line (this is a synthetic divert — no issue to close), enable auto-merge, snapshot, return.
    >
    > Hard cap: do NOT open more than one PR. The orchestrator will re-dispatch on the next step-D refresh if main is still red. Do NOT touch anything beyond the minimum needed to land main back to green. Return values: `shipped main-ci-fix via PR #<M>`, `noop: main already green`, or `blocked main-ci-fix: <reason>`.
 
    **For `fix-failing-prs-batch`** — prompt template:
 
-   > Investigate the failing-PR pileup on `<owner/repo>` in **fix-failing-prs-batch mode**. There are currently <failing_pr_count_all> open PRs across all authors with failing checks: <failing_pr_numbers>. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout`, and never `git switch` to the repo's default branch when you're done. Follow the `fix-failing-prs-batch mode` section in the issue-worker spec: pre-flight (re-confirm pileup), sample failing logs across up to 5 representative PRs, identify the **common root cause**, branch as `do-work/fix-pr-pileup-<short-timestamp>`, ship ONE PR that fixes at source (the other PRs go green on rebase), label `do-work`, no `Closes #N` line, enable auto-merge, snapshot, return.
+   > Investigate the failing-PR pileup on `<owner/repo>` in **fix-failing-prs-batch mode**. There are currently <failing_pr_count_all> open PRs across all authors with failing checks: <failing_pr_numbers>. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout`, and never `git switch` to the repo's default branch when you're done. Follow the `fix-failing-prs-batch mode` section in the issue-worker spec: pre-flight (re-confirm pileup), sample failing logs across up to 5 representative PRs, identify the **common root cause**, branch as `do-work/fix-pr-pileup-<short-timestamp>`, ship ONE PR that fixes at source (the other PRs go green on rebase), label `shipyard`, no `Closes #N` line, enable auto-merge, snapshot, return.
    >
    > Hard cap: ONE PR. If the failures don't share a root cause, return `blocked pr-batch-fix: no common root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)`. If the pileup resolved itself, return `noop: pileup already cleared`. Otherwise `shipped pr-batch-fix via PR #<M>`. The orchestrator re-dispatches on the next step-D refresh if the pileup persists.
 
@@ -652,11 +652,11 @@ When filling a slot, walk this decision tree:
 3. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
 
    - If the candidate `touches_lockfile`: dispatch only when `in_flight` is empty. While it runs, dispatch nothing else — other slots stay parked until it returns.
-   - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label do-work`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `do-work` label.
+   - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label shipyard`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `shipyard` label.
 
    Prompt template:
 
-   > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. You are running inside an isolated git worktree — never `cd` outside it, and never `git switch` to the repo's default branch when you're done (that rule is for the user's primary checkout, not your worktree; parking on `[main]` locks the user's primary out of switching to main via git's one-worktree-per-branch rule). Create your branch as `do-work/issue-<N>` — do not use any other name. Open a PR that closes the issue and pass `--label do-work` to `gh pr create`. Enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue. **Leave your worktree on `do-work/issue-<N>` when you return — do not switch back to the default branch.**
+   > Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. You are running inside an isolated git worktree — never `cd` outside it, and never `git switch` to the repo's default branch when you're done (that rule is for the user's primary checkout, not your worktree; parking on `[main]` locks the user's primary out of switching to main via git's one-worktree-per-branch rule). Create your branch as `do-work/issue-<N>` — do not use any other name. Open a PR that closes the issue and pass `--label shipyard` to `gh pr create`. Enable auto-merge, snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue. **Leave your worktree on `do-work/issue-<N>` when you return — do not switch back to the default branch.**
 
    **If the issue carries the `user-feedback` label, prepend this extra-scrutiny preamble to the prompt above:**
 
@@ -666,7 +666,7 @@ When filling a slot, walk this decision tree:
    >
    > If the original raw user text (in the preserved comment) contradicts what's in the refined body, trust the **raw text** and flag the discrepancy in the issue — the refinement step may have misread the user.
 
-   The preamble is gated on the `user-feedback` label being present on the candidate at dispatch time. The rest of the standard prompt (worktree discipline, branch naming, `--label do-work`, auto-merge, snapshot) is unchanged.
+   The preamble is gated on the `user-feedback` label being present on the candidate at dispatch time. The rest of the standard prompt (worktree discipline, branch naming, `--label shipyard`, auto-merge, snapshot) is unchanged.
 
 4. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths, retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster), wait for the colliding worker to return.
 
@@ -824,8 +824,8 @@ Omit the `Diversions:` block entirely when `D == 0` — clutter is the enemy. Th
 The lifetime line is sourced from two queries run just before printing the summary:
 
 ```bash
-gh issue list --repo <owner/repo> --label do-work --state closed --limit 1000 --json number --jq 'length'
-gh pr list --repo <owner/repo> --label do-work --state all --limit 1000 --json number --jq 'length'
+gh issue list --repo <owner/repo> --label shipyard --state closed --limit 1000 --json number --jq 'length'
+gh pr list --repo <owner/repo> --label shipyard --state all --limit 1000 --json number --jq 'length'
 ```
 
 If either query fails (e.g., the label doesn't exist yet because this is a fresh repo), default to `0`.
@@ -876,7 +876,7 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't cleanup branches by name or pattern — only by `[gone]` upstream. Anything else risks reaping open or blocked PRs the orchestrator didn't author.
 - Don't claim a worktree whose branch doesn't match `do-work/*` during orphan triage. That branch is not yours — it could be a developer's WIP.
 - Don't run orphan triage while another `/do-work` session may be active on the same repo. Triage is idempotent but parallel salvage on the same orphan wastes work and may produce confusing PR comments. If you suspect a parallel session, ask the user before triaging.
-- Don't remove the `do-work` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist.
+- Don't remove the `shipyard` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist.
 - **Don't omit worktree-discipline language from any dispatched agent's prompt.** Both the issue-worker and fix-checks-only prompts above include the "you are in an isolated worktree, don't `cd` out, don't `gh pr checkout`, don't switch to main when done" preamble. If you author a new dispatch prompt template (e.g., for a one-off rebase or migration agent), copy that preamble in. Skipping it lets the agent silently corrupt the user's primary checkout (via `gh pr checkout` resolving the wrong cwd) or park a worktree on `[main]` (which blocks the user's `git switch main` until the worktree is reaped).
 - **Don't skip `git worktree unlock` before `git worktree remove --force` on agent worktrees.** The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. Without unlocking, the remove fails with `cannot remove a locked working tree`. Unlock first, THEN force-remove. This is what the startup (step 3b) and shutdown (step 3 of cleanup) blocks do.
 - **Don't reap a live-PID worktree at startup.** Step 3b's lock-PID liveness check is what prevents you from yanking a worktree out from under another active Claude Code instance running its own `/do-work`. At SHUTDOWN there's no liveness check (because the agents you dispatched are all done regardless), but at STARTUP you can't tell whose worktrees these are without checking the lock PID. Keep that check.

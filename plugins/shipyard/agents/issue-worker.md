@@ -128,7 +128,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
    git push -u origin do-work/fix-main-ci-<short-sha>
 
    gh pr create --repo <owner/repo> \
-     --label do-work \
+     --label shipyard \
      --title "fix(ci): restore green main — <one-line root cause>" \
      --body "$(cat <<'EOF'
    Restores green CI on `<default-branch>`. Earliest unfixed red run: <earliest_red_run_url> at <earliest_red_sha>.
@@ -197,7 +197,7 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
    git push -u origin do-work/fix-pr-pileup-<short-timestamp>
 
    gh pr create --repo <owner/repo> \
-     --label do-work \
+     --label shipyard \
      --title "fix(ci): unstick <N> failing PRs — <one-line root cause>" \
      --body "$(cat <<'EOF'
    Fixes the common root cause behind <N> currently-failing PRs. The affected PRs will go green when rebased.
@@ -297,7 +297,7 @@ git commit -m "<conventional commit title referencing the issue>"
 git push -u origin do-work/issue-<N>
 
 gh pr create --repo <owner/repo> \
-  --label do-work \
+  --label shipyard \
   --title "<conventional commit title>" \
   --body "$(cat <<'EOF'
 Closes #<N>

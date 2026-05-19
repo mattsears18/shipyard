@@ -4,6 +4,48 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.2.0 — 2026-05-19
+
+**Breaking: the session-stamp label `do-work` was renamed to `shipyard`** to match the plugin's name. Every issue and PR `/do-work` touches now carries the `shipyard` label. Closes [#47](https://github.com/mattsears18/claude-plugins/issues/47).
+
+The plugin is named `shipyard`. The slash command is `/shipyard:do-work`. The agent is `shipyard:issue-worker`. The lone outlier was the label, which still referenced the old slug — confusing in the orchestrator's end-of-session summary ("PRs opened with do-work label (lifetime)") and out of step with the rest of the rename.
+
+What changed inside the plugin tree:
+
+- `plugins/shipyard/commands/do-work.md` — step 3a now creates the `shipyard` label (with description `"Worked on by /shipyard:do-work"`); all dispatch-template `--label do-work` references → `--label shipyard`; the self-assign line in dispatch rule #3 (`--add-label do-work`) → `--add-label shipyard`; the orphan-triage `gh issue list --label do-work` filter → `--label shipyard`; the end-of-session lifetime queries → `--label shipyard`; the "Don't remove the `do-work` label" rule → "Don't remove the `shipyard` label".
+- `plugins/shipyard/agents/issue-worker.md` — the three `--label do-work` references inside the in-spec PR-creation snippets (normal mode, fix-main-ci mode, fix-failing-prs-batch mode) all flip to `--label shipyard`.
+
+What did NOT change (deliberately):
+
+- The branch convention `do-work/issue-<N>` (and `do-work/fix-main-ci-<short-sha>` / `do-work/fix-pr-pileup-<short-timestamp>`) — branches are a separate decision. If we want to flip those too, that's a separate follow-up.
+- The slash command name `/do-work` (full slug `/shipyard:do-work`).
+- The refinement-agent sentinel `<!-- do-work-refinement-agent -->` — that's an idempotency marker, not a label.
+- Historical references in CHANGELOG entries describing past work.
+
+**Migration for users with external automation keyed on the `do-work` label.** Rename the existing label in place — this preserves all associations with closed issues and merged PRs:
+
+```bash
+gh label edit do-work --repo <your-owner/your-repo> \
+  --name shipyard \
+  --description "Worked on by /shipyard:do-work"
+```
+
+If your `gh` version doesn't support `gh label edit --name`, fall back to create-new + add-to-all + delete-old:
+
+```bash
+gh label create shipyard --repo <your-owner/your-repo> \
+  --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
+for n in $(gh issue list --repo <your-owner/your-repo> --label do-work --state all --limit 1000 --json number --jq '.[].number'); do
+  gh issue edit "$n" --repo <your-owner/your-repo> --add-label shipyard
+done
+for n in $(gh pr list --repo <your-owner/your-repo> --label do-work --state all --limit 1000 --json number --jq '.[].number'); do
+  gh pr edit "$n" --repo <your-owner/your-repo> --add-label shipyard
+done
+gh label delete do-work --repo <your-owner/your-repo> --confirm
+```
+
+External dashboards, GitHub Actions, or scripts that filter PRs/issues by `label:do-work` need to flip to `label:shipyard`. The `/do-work` command's step-3a label-create block is already idempotent — it will create the new `shipyard` label on first run in any repo, so users don't need to do the migration step manually unless they have historical `do-work`-labeled issues/PRs they want to preserve.
+
 ### 1.1.3 — 2026-05-19
 
 Adds a new root-`README.md` section — **"Plays well with everything that files GitHub issues"** — placed between **See it in action** and **Install**. Closes [#48](https://github.com/mattsears18/claude-plugins/issues/48).
