@@ -4,6 +4,10 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.1.2 — 2026-05-19
+
+- docs: refresh embedded README infographic with full footer band
+
 ### 1.1.1 — 2026-05-19
 
 Embeds the Shipyard infographic (technical version, 1600×900) above the fold in the root `README.md`. Closes [#43](https://github.com/mattsears18/claude-plugins/issues/43).
