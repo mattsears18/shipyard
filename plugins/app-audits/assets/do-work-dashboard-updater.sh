@@ -92,17 +92,65 @@ while true; do
       "$DASHBOARD"
   fi
 
-  # 3. Refresh Main CI tile — find latest completed run on default branch.
-  # If green, write "✓ green". If red, write "✗ #<run-id>" linked.
-  # The orchestrator handles the divert-banner; we just keep the tile fresh.
-  main_run_json=$(gh run list --repo "$REPO" --branch "$DEFAULT_BRANCH" \
-    --status completed --limit 1 \
-    --json databaseId,conclusion,url 2>/dev/null)
-  if [ -n "$main_run_json" ] && [ "$main_run_json" != "[]" ]; then
-    main_conclusion=$(echo "$main_run_json" | python3 -c "import json,sys; r=json.load(sys.stdin); print(r[0].get('conclusion','') if r else '')" 2>/dev/null || echo "")
-    main_run_id=$(echo "$main_run_json" | python3 -c "import json,sys; r=json.load(sys.stdin); print(r[0].get('databaseId','') if r else '')" 2>/dev/null || echo "")
+  # 3. Refresh Main CI tile — find the OVERALL status of the newest commit on the
+  # default branch. Each commit usually has multiple workflows (ci, release,
+  # claude-review, …); a single green run does NOT mean the commit is green.
+  # Fetch a wide window of recent runs, group by headSha, and aggregate per
+  # commit. The commit is green only when every observed workflow succeeded;
+  # any failure on the newest commit means red.
+  main_runs_json=$(gh run list --repo "$REPO" --branch "$DEFAULT_BRANCH" \
+    --status completed --limit 60 \
+    --json databaseId,conclusion,url,headSha,createdAt,workflowName 2>/dev/null)
+  if [ -n "$main_runs_json" ] && [ "$main_runs_json" != "[]" ]; then
+    main_status_line=$(echo "$main_runs_json" | python3 -c "
+import json, sys
+try:
+    runs = json.load(sys.stdin)
+except Exception:
+    print('')
+    sys.exit(0)
+if not runs:
+    print('')
+    sys.exit(0)
+# Order commits by first-seen (runs come back newest-first from gh).
+order = []
+by_sha = {}
+for r in runs:
+    sha = r.get('headSha') or ''
+    if not sha:
+        continue
+    if sha not in by_sha:
+        by_sha[sha] = []
+        order.append(sha)
+    by_sha[sha].append(r)
+newest_sha = order[0] if order else ''
+commit_runs = by_sha.get(newest_sha, [])
+RED = {'failure', 'timed_out', 'startup_failure', 'cancelled', 'action_required'}
+OK = {'success', 'skipped', 'neutral'}
+overall = 'green'
+red_run = None
+for r in commit_runs:
+    c = (r.get('conclusion') or '').lower()
+    if c in RED:
+        overall = 'red'
+        # Prefer the earliest red run on this commit for the link target.
+        if red_run is None or (r.get('createdAt') or '') < (red_run.get('createdAt') or ''):
+            red_run = r
+    elif c not in OK:
+        if overall != 'red':
+            overall = 'pending'
+if overall == 'red' and red_run is not None:
+    print(f\"red\t{red_run.get('databaseId','')}\")
+elif overall == 'green' and commit_runs:
+    # Use any run from the newest commit for the green tile's link.
+    print(f\"green\t{commit_runs[0].get('databaseId','')}\")
+else:
+    print(f\"{overall}\t\")
+" 2>/dev/null)
+    main_conclusion=$(echo "$main_status_line" | cut -f1)
+    main_run_id=$(echo "$main_status_line" | cut -f2)
     case "$main_conclusion" in
-      success)
+      green)
         # Replace the entire <div class="stat ci-*"> block for Main CI with a green one.
         # We use a python-driven replacement to avoid sed multi-line headaches.
         python3 - "$DASHBOARD" "$main_run_id" "$REPO_URL" <<'PYEOF'
@@ -128,7 +176,7 @@ html = re.sub(
 path.write_text(html)
 PYEOF
         ;;
-      failure|cancelled|timed_out)
+      red)
         python3 - "$DASHBOARD" "$main_run_id" "$REPO_URL" <<'PYEOF'
 import re, sys, pathlib
 path = pathlib.Path(sys.argv[1])
@@ -140,6 +188,29 @@ new_tile = (
     f'        <div class="label">Main CI</div>\n'
     f'        <div class="value">✗ <a href="{repo_url}/actions/runs/{run_id}" target="_blank">#{run_id}</a></div>\n'
     f'        <div class="sub">earliest red run · see banner above</div>\n'
+    f'      </div>'
+)
+html = re.sub(
+    r'<div class="stat ci-(green|red|pending|unknown)">\s*<div class="label">Main CI</div>.*?</div>\s*</div>',
+    new_tile,
+    html,
+    count=1,
+    flags=re.DOTALL,
+)
+path.write_text(html)
+PYEOF
+        ;;
+      pending)
+        python3 - "$DASHBOARD" "$REPO_URL" <<'PYEOF'
+import re, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+repo_url = sys.argv[2]
+html = path.read_text()
+new_tile = (
+    f'<div class="stat ci-pending">\n'
+    f'        <div class="label">Main CI</div>\n'
+    f'        <div class="value">⏳ <a href="{repo_url}/actions" target="_blank">pending</a></div>\n'
+    f'        <div class="sub">workflows still running on newest commit</div>\n'
     f'      </div>'
 )
 html = re.sub(
