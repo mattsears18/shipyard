@@ -19,8 +19,14 @@ When the orchestrator's dispatch prompt specifies a branch name (e.g., `do-work/
 
 ## Inputs (from orchestrator)
 
-- Issue number `#N` — OR — PR number `#M` in **fix-checks-only mode** (the orchestrator sends this when triaging open PRs with failing CI).
-- Target repo `<owner/repo>`
+The orchestrator dispatches you in one of four modes — the prompt makes the mode unambiguous:
+
+- **Normal mode** — issue number `#N`. Full issue → PR lifecycle (steps 0–8 below).
+- **Fix-checks-only mode** — PR number `#M`. Repair failing CI on an existing PR; no new PR, no scope expansion.
+- **Fix-main-ci mode** — repo-level diversion. Investigate the earliest unfixed red run on the default branch, open ONE PR with a minimal fix. No issue # to close.
+- **Fix-failing-prs-batch mode** — repo-level diversion. ≥10 open PRs across all authors are red. Find the common root cause, open ONE PR to fix at source.
+
+Target repo `<owner/repo>` is always provided.
 
 ## Fix-checks-only mode (PR triage)
 
@@ -64,6 +70,145 @@ On failure:
 6. Re-watch checks.
 
 **Hard cap: 3 fix attempts.** After the 3rd failure, return `blocked #<M> at fix-checks: <last failing check> — <last error excerpt>`. The orchestrator will label the PR `ci-blocked` and move on. Do not let one PR consume the session.
+
+## Fix-main-ci mode (repo-level diversion)
+
+The orchestrator sends this when the **earliest unfixed red run** on the default branch needs fixing. The prompt gives you `<earliest_red_run_id>`, `<earliest_red_run_url>`, `<earliest_red_sha>`, and the default branch name.
+
+The single highest-leverage action is: identify the root cause and ship the smallest possible fix on its own PR. You do NOT close any issue and you do NOT batch multiple fixes — one PR, one root cause.
+
+1. **Pre-flight: re-confirm main is still red.** State drifts between dispatch and you starting. Run:
+   ```bash
+   gh run list --repo <owner/repo> --branch <default-branch> --status completed --limit 1 \
+     --json conclusion,databaseId
+   ```
+   If `conclusion == "success"` → return `noop: main already green`. Don't open a PR.
+
+2. **Pull failed logs from the earliest red run:**
+   ```bash
+   gh run view <earliest_red_run_id> --repo <owner/repo> --log-failed
+   ```
+   The earliest red run gives you the *first* failure mode — the one most likely to be the root cause, not a downstream symptom. Newer red runs may have cascading failures that go away once you fix the earliest one.
+
+3. **Triage the failure.** Categorize before fixing:
+   - **Code regression** — a commit broke a test or build. Fix the code.
+   - **Test infrastructure** — flaky CI, expired secret, broken external service. If the root cause is structural (the underlying infra needs human intervention to fix — rotate a secret, ask the vendor, upgrade a runner image), return `blocked main-ci-fix: <reason>`. Don't paper over it.
+   - **Snapshot/fixture drift** — accept the snapshot update IF you can verify the new output is actually correct from the diff. Otherwise return `blocked`.
+   - **Dependency update** — pin or patch the bad version with a comment explaining why.
+
+4. **Sync + branch.** You're already in your isolated worktree:
+   ```bash
+   git fetch origin
+   git checkout -B do-work/fix-main-ci-<short-sha> origin/<default-branch>
+   ```
+   `<short-sha>` is the first 7 chars of `<earliest_red_sha>` so the branch name is deterministic across re-dispatches.
+
+5. **Implement the smallest fix.** No drive-by refactors. If the test suite has changed since the red run, run it locally to confirm your fix actually addresses the right failure.
+
+6. **Commit + push + PR:**
+   ```bash
+   git add <specific paths>
+   git commit -m "fix(ci): restore green main — <one-line root cause>"
+   git push -u origin do-work/fix-main-ci-<short-sha>
+
+   gh pr create --repo <owner/repo> \
+     --label do-work \
+     --title "fix(ci): restore green main — <one-line root cause>" \
+     --body "$(cat <<'EOF'
+   Restores green CI on `<default-branch>`. Earliest unfixed red run: <earliest_red_run_url> at <earliest_red_sha>.
+
+   ## Root cause
+   <2-3 sentences>
+
+   ## Fix
+   <what changed and why this is minimal>
+
+   ## Test plan
+   - [ ] CI on this PR is green
+   - [ ] Manual reproduction: <if applicable>
+   EOF
+   )"
+   ```
+   No `Closes #N` line — this is a synthetic divert, not tied to an issue.
+
+7. **Enable auto-merge, snapshot, return.** Same as normal mode (steps 6–7 below).
+
+8. **Return one line:**
+   - `shipped main-ci-fix via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
+   - `noop: main already green` — pre-flight (step 1) found green.
+   - `blocked main-ci-fix: <reason>` — structural failure or root cause requires human judgment.
+
+## Fix-failing-prs-batch mode (repo-level diversion)
+
+The orchestrator sends this when ≥10 open PRs across all authors have failing checks. The prompt gives you the list of failing PR numbers. Your job is to find the **common root cause** (almost always one of: dep update, snapshot drift, flake, base drift, infra regression) and fix it at source so the other PRs go green on rebase.
+
+1. **Pre-flight: re-confirm the pileup.**
+   ```bash
+   gh pr list --repo <owner/repo> --state open --limit 200 \
+     --json number,statusCheckRollup | \
+     jq '[.[] | select(.statusCheckRollup[]? | select(.conclusion=="FAILURE" or .conclusion=="ERROR" or .conclusion=="TIMED_OUT" or .state=="FAILURE" or .state=="ERROR" or .state=="TIMED_OUT"))] | length'
+   ```
+   If count < 10 → return `noop: pileup already cleared`. Don't open a PR.
+
+2. **Sample failing logs** — up to 5 PRs (representative mix: oldest, newest, a few middle). For each, grab the failing-check name and a 20-line log excerpt:
+   ```bash
+   gh pr checks <pr-num> --repo <owner/repo> --json name,state,conclusion,link
+   gh run view <run-id> --repo <owner/repo> --log-failed | head -200
+   ```
+
+3. **Identify the common root cause.** Look for:
+   - Same error message / stack frame across multiple PRs
+   - Same failing test name across multiple PRs
+   - Same job name failing (e.g., all Lint failures point to a tool version mismatch)
+   - All PRs based on the same SHA that's stale relative to a fixed main
+   - All PRs affected by the same dependency in `package-lock.json` / `pnpm-lock.yaml`
+
+   If the failures DON'T share a root cause (it's actually N unrelated bugs), return `blocked pr-batch-fix: no common root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)`. The orchestrator's fix-checks-only flow handles per-PR failures one at a time; that's the right mechanism when there's no shared cause.
+
+4. **Sync + branch:**
+   ```bash
+   git fetch origin
+   git checkout -B do-work/fix-pr-pileup-<short-timestamp> origin/<default-branch>
+   ```
+   `<short-timestamp>` is `$(date +%Y%m%d-%H%M)` so the branch is unique per dispatch.
+
+5. **Implement the source-level fix.** This is almost always small (re-pin a dep, update a snapshot baseline, fix a fixture, repair a CI config). If it isn't small, you've probably misdiagnosed — back up and re-triage.
+
+6. **Commit + push + PR:**
+   ```bash
+   git add <specific paths>
+   git commit -m "fix(ci): unstick <N> failing PRs — <one-line root cause>"
+   git push -u origin do-work/fix-pr-pileup-<short-timestamp>
+
+   gh pr create --repo <owner/repo> \
+     --label do-work \
+     --title "fix(ci): unstick <N> failing PRs — <one-line root cause>" \
+     --body "$(cat <<'EOF'
+   Fixes the common root cause behind <N> currently-failing PRs. The affected PRs will go green when rebased.
+
+   ## Root cause
+   <2-3 sentences>
+
+   ## Affected PRs (motivating sample)
+   - #<a>, #<b>, #<c>, ... (full list in dispatch context)
+
+   ## Fix
+   <what changed and why it addresses the shared failure>
+
+   ## Test plan
+   - [ ] CI on this PR is green
+   - [ ] Rebasing one affected PR onto this fix produces green CI on that PR
+   EOF
+   )"
+   ```
+   No `Closes #N` — this is a synthetic divert.
+
+7. **Enable auto-merge, snapshot, return.** Same as normal mode.
+
+8. **Return one line:**
+   - `shipped pr-batch-fix via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
+   - `noop: pileup already cleared` — count fell below 10 between dispatch and pre-flight.
+   - `blocked pr-batch-fix: <reason>` — no common root cause, or the fix is too large for one PR.
 
 Everything below describes the full issue → PR lifecycle for normal (issue-driven) mode.
 
