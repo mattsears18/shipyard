@@ -60,13 +60,17 @@ The background updater (`assets/do-work-dashboard-updater.sh`) refreshes the Mai
 # (2) Open in browser
 open /tmp/do-work-dashboard.html
 
-# (3) Spawn the 10s updater in background
-"${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard-updater.sh" \
+# (3) Spawn the 10s updater fully detached from the harness
+nohup "${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard-updater.sh" \
   --repo <owner/repo> \
-  --dashboard /tmp/do-work-dashboard.html &
+  --dashboard /tmp/do-work-dashboard.html \
+  </dev/null >/tmp/do-work-dashboard-updater.log 2>&1 &
+disown
 ```
 
-Use `run_in_background: true` on the `Bash` tool call so the updater detaches cleanly.
+**Do NOT use `run_in_background: true` for this call.** Harness-tracked background Bash tasks are reaped after a few minutes (exit 144 = SIGURG-style reap), which kills the updater mid-session. The `nohup` + `</dev/null >…log 2>&1 &` + `disown` combination fully detaches the process from the harness so it survives the entire `/do-work` run. Call it as a regular foreground `Bash` — it returns instantly because the `&` puts the real work in a detached child.
+
+If the harness ever does reap the updater anyway (you'll see the "Spawn 10s dashboard updater" tile go red with exit 144), respawn it the same way. The dashboard file on disk is the source of truth — a respawn just resumes refreshing it. Confirm liveness by checking `ps -p <PID>` against the PID printed to stdout by the launch.
 
 If the user's repo has a `docs/` directory and they've asked for the dashboard to live in-repo as well, pass `--mirror /path/to/repo/docs/do-work-dashboard.html` to the updater so each refresh also writes to that path.
 
