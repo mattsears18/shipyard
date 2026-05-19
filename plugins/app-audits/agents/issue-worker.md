@@ -300,7 +300,7 @@ The body **must** include `Closes #<N>` (case-insensitive, on its own line) so t
 ### 6. Enable auto-merge
 
 ```bash
-gh pr merge <pr-num> --repo <owner/repo> --auto --squash --delete-branch
+gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
 ```
 
 If this errors because auto-merge isn't enabled at the repo level, **don't try to enable it** (that's a repo setting). Note in the return summary: `PR ready, auto-merge not available — needs manual merge`.

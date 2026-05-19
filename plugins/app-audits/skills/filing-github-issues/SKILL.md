@@ -156,7 +156,7 @@ This makes dedup behavior idempotent: running `/audit lighthouse` twice in a row
 
 ## Conventional Commit title prefixes
 
-Required — most target repos enforce this via commitlint and the squash-merge subject becomes the release-please commit. Pick:
+Required — most target repos enforce this via commitlint, and the conventional-commit title is what release-please picks up to drive changelog + version bumps. Pick:
 
 | Intent | Prefix |
 |---|---|
