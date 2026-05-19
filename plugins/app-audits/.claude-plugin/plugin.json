@@ -9,5 +9,13 @@
   "homepage": "https://github.com/mattsears18/claude-plugins",
   "repository": "https://github.com/mattsears18/claude-plugins",
   "license": "MIT",
-  "keywords": ["audit", "lighthouse", "ux", "security", "accessibility", "github-issues"]
+  "keywords": ["audit", "lighthouse", "ux", "security", "accessibility", "github-issues"],
+  "permissions": {
+    "deny": [
+      "Bash(git commit *--no-verify*)",
+      "Bash(git push *--no-verify*)",
+      "Bash(git commit *--no-gpg-sign*)",
+      "Bash(git commit *--no-commit-hooks*)"
+    ]
+  }
 }
