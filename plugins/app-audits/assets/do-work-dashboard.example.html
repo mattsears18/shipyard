@@ -123,6 +123,62 @@
     .noop { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-elev); font-size: 11px; color: var(--text-dim); margin: 2px 4px 2px 0; font-variant-numeric: tabular-nums; }
     .noop .num { color: var(--text); font-weight: 500; font-family: 'SF Mono', ui-monospace, monospace; font-size: 10px; }
 
+    /* Diversion-specific styling — loud and unmistakable */
+    .divert-banner {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      padding: 16px 20px;
+      border-radius: 12px;
+      border: 1px solid var(--error);
+      background: linear-gradient(90deg, #f8717122 0%, #f871710a 60%, transparent 100%);
+      box-shadow: 0 0 24px #f8717122, inset 0 0 0 1px #f8717133;
+      margin-bottom: 24px;
+      animation: divert-pulse 2.2s ease-in-out infinite;
+    }
+    .divert-banner.warn {
+      border-color: var(--warn);
+      background: linear-gradient(90deg, #fbbf2422 0%, #fbbf240a 60%, transparent 100%);
+      box-shadow: 0 0 24px #fbbf2422, inset 0 0 0 1px #fbbf2433;
+    }
+    @keyframes divert-pulse {
+      0%, 100% { box-shadow: 0 0 24px #f8717122, inset 0 0 0 1px #f8717133; }
+      50% { box-shadow: 0 0 36px #f8717155, inset 0 0 0 1px #f8717155; }
+    }
+    .divert-banner .icon { font-size: 22px; }
+    .divert-banner .body { flex: 1; }
+    .divert-banner .title { font-size: 14px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+    .divert-banner .sub { font-size: 12px; color: var(--text-dim); }
+    .divert-banner .sub a { color: var(--info); text-decoration: none; }
+    .divert-banner .sub a:hover { text-decoration: underline; }
+    .divert-banner .status { font-size: 11px; padding: 4px 10px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; background: var(--error); color: #fff; white-space: nowrap; }
+    .divert-banner.warn .status { background: var(--warn); color: var(--bg); }
+
+    /* Diversion-flavored worker card (override of .agent) */
+    .agent.divert::before { background: var(--error); animation: shimmer 1.4s ease-in-out infinite; }
+    .agent.divert .pill.divert { background: #f8717133; color: var(--error); }
+    .agent.divert.warn::before { background: var(--warn); }
+    .agent.divert.warn .pill.divert { background: #fbbf2433; color: var(--warn); }
+
+    /* Main-CI stat tile color states */
+    .stat.ci-green .value { color: var(--accent); }
+    .stat.ci-red .value { color: var(--error); }
+    .stat.ci-red { border-color: #f8717155; box-shadow: 0 0 14px #f8717122; }
+    .stat.ci-pending .value { color: var(--warn); }
+    .stat.ci-unknown .value { color: var(--text-faint); }
+    .stat .value a { color: inherit; text-decoration: none; }
+    .stat .value a:hover { text-decoration: underline; }
+    .stat .sub { font-size: 10px; color: var(--text-faint); margin-top: 6px; line-height: 1.4; }
+    .stat .sub code { font-size: 10px; }
+    .stat.failing-prs-pileup { border-color: #fbbf2455; box-shadow: 0 0 14px #fbbf2422; }
+    .stat.failing-prs-pileup .value { color: var(--warn); }
+
+    /* Diversion check-state badge in shipped row */
+    .check-state.divert { background: #f8717122; color: var(--error); }
+    .pr .divert-tag { font-size: 10px; padding: 2px 8px; border-radius: 999px; background: #f8717122; color: var(--error); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-right: 8px; }
+
+    /* Two-row stats layout */
+    .stats-section + .stats-section { margin-top: 12px; }
+    .stats-section .label-strip { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-faint); margin-bottom: 6px; font-weight: 600; }
+
     footer { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 11px; display: flex; justify-content: space-between; }
     code { font-family: 'SF Mono', ui-monospace, monospace; font-size: 12px; color: var(--accent); }
   </style>
@@ -134,47 +190,111 @@
     <div class="live"><span class="dot"></span><span id="ts">live</span> · auto-refresh 10s</div>
   </header>
 
-  <div class="stats" style="grid-template-columns: repeat(6, 1fr);">
-    <div class="stat accent">
-      <div class="label">Shipped · session</div>
-      <div class="value">12</div>
+  <!--
+    Diversion banners — render at the top of <main> whenever a divert is enqueued or in flight.
+    When neither divert is active, omit both <div class="divert-banner"> blocks entirely.
+    The orchestrator rewrites this region on every state-change.
+  -->
+  <div class="divert-banner" id="divert-main-ci">
+    <span class="icon">⚠️</span>
+    <div class="body">
+      <div class="title">Main CI red — diverting a worker to fix</div>
+      <div class="sub">
+        Earliest unfixed red run on <code>main</code>:
+        <a href="https://github.com/mattsears18/lightwork/actions/runs/26069702951" target="_blank">run #26069702951</a>
+        · went red 1h 23m ago
+        · commit <a href="https://github.com/mattsears18/lightwork/commit/abc1234" target="_blank"><code>abc1234</code></a>
+        · "fix(test): tighten coverage thresholds"
+      </div>
     </div>
-    <div class="stat info">
-      <div class="label">In-flight</div>
-      <div class="value">3</div>
+    <span class="status">IN FLIGHT · SLOT 1</span>
+  </div>
+
+  <div class="divert-banner warn" id="divert-pr-pileup">
+    <span class="icon">⚠️</span>
+    <div class="body">
+      <div class="title">12 failing PRs (all authors) — investigating common root cause</div>
+      <div class="sub">
+        Sample failing PRs:
+        <a href="https://github.com/mattsears18/lightwork/pull/612" target="_blank">#612</a>,
+        <a href="https://github.com/mattsears18/lightwork/pull/615" target="_blank">#615</a>,
+        <a href="https://github.com/mattsears18/lightwork/pull/620" target="_blank">#620</a>,
+        <a href="https://github.com/mattsears18/lightwork/pull/623" target="_blank">#623</a>,
+        <a href="https://github.com/mattsears18/lightwork/pull/628" target="_blank">#628</a>
+        · +7 more
+        · pileup detected 18m ago
+      </div>
     </div>
-    <div class="stat">
-      <div class="label">Total tokens</div>
-      <div class="value" style="color: var(--purple); font-size: 22px;">1.58<span style="font-size: 13px; color: var(--text-faint);">M</span></div>
+    <span class="status">ENQUEUED · awaiting slot</span>
+  </div>
+
+  <!-- Repo-health stats (always visible — these are the at-a-glance vitals) -->
+  <div class="stats-section">
+    <div class="label-strip">Repo health</div>
+    <div class="stats" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="stat ci-red">
+        <div class="label">Main CI</div>
+        <div class="value">✗ <a href="https://github.com/mattsears18/lightwork/actions/runs/26069702951" target="_blank">#26069702951</a></div>
+        <div class="sub">earliest red run · 1h 23m ago · <code>abc1234</code></div>
+      </div>
+      <div class="stat failing-prs-pileup">
+        <div class="label">Failing PRs · all authors</div>
+        <div class="value">12 <span style="font-size: 14px; color: var(--text-faint);">(@me: 2)</span></div>
+        <div class="sub">⚠️ threshold (10) crossed — divert active</div>
+      </div>
+      <div class="stat">
+        <div class="label">Open PRs · repo</div>
+        <div class="value"><a href="https://github.com/mattsears18/lightwork/pulls" target="_blank">17</a></div>
+      </div>
+      <div class="stat">
+        <div class="label">Open issues · repo</div>
+        <div class="value"><a href="https://github.com/mattsears18/lightwork/issues" target="_blank">44</a></div>
+      </div>
     </div>
-    <div class="stat">
-      <div class="label">Open PRs (repo)</div>
-      <div class="value"><a href="https://github.com/mattsears18/lightwork/pulls" target="_blank" style="color: inherit; text-decoration: none;">2</a></div>
-    </div>
-    <div class="stat">
-      <div class="label">Open issues (repo)</div>
-      <div class="value"><a href="https://github.com/mattsears18/lightwork/issues" target="_blank" style="color: inherit; text-decoration: none;">44</a></div>
-    </div>
-    <div class="stat">
-      <div class="label">Pool</div>
-      <div class="value" style="font-size: 22px;">3<span style="font-size: 14px; color: var(--text-faint);"> / 3</span></div>
+  </div>
+
+  <!-- Session stats — what THIS /do-work run has done -->
+  <div class="stats-section">
+    <div class="label-strip">This session</div>
+    <div class="stats" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="stat accent">
+        <div class="label">Shipped</div>
+        <div class="value">12 <span style="font-size: 14px; color: var(--text-faint);">(+1 divert)</span></div>
+      </div>
+      <div class="stat info">
+        <div class="label">In-flight</div>
+        <div class="value">3 <span style="font-size: 14px; color: var(--text-faint);">/ 3</span></div>
+      </div>
+      <div class="stat">
+        <div class="label">Total tokens</div>
+        <div class="value" style="color: var(--purple); font-size: 22px;">1.58<span style="font-size: 13px; color: var(--text-faint);">M</span></div>
+      </div>
+      <div class="stat">
+        <div class="label">Diversions · dispatched</div>
+        <div class="value" style="color: var(--error);">2 <span style="font-size: 13px; color: var(--text-faint);">(1 shipped, 1 in flight)</span></div>
+      </div>
     </div>
   </div>
 
   <div class="grid">
     <section>
-      <h2>In flight <span class="count">2</span></h2>
+      <h2>In flight <span class="count">3</span></h2>
 
-      <div class="agent running">
+      <!--
+        Diversion worker card — red left-border, DIVERSION pill, linked context.
+        Slot 1 here is working the fix-main-ci divert that triggered the banner above.
+      -->
+      <div class="agent running divert">
         <div class="row1">
           <span class="slot">SLOT 1</span>
-          <span class="num"><a href="https://github.com/mattsears18/lightwork/issues/538" target="_blank">#538</a></span>
-          <span class="title">test(ci): wire Maestro mobile flows into CI (Android first)</span>
-          <span class="pill tier-p1">P1 bug</span>
+          <span class="num" style="color: var(--error);">⚠️ fix-main-ci</span>
+          <span class="title">Restoring green main — fix earliest red run #26069702951</span>
+          <span class="pill divert">DIVERSION</span>
         </div>
         <div class="meta">
-          <span><span class="k">files</span><code>.github/workflows/mobile-e2e.yml</code> (new) · <code>CLAUDE.md</code></span>
-          <span><span class="k">branch</span><code>do-work/issue-538</code></span>
+          <span><span class="k">red run</span><a class="pr-open" href="https://github.com/mattsears18/lightwork/actions/runs/26069702951" target="_blank"><code>#26069702951</code></a></span>
+          <span><span class="k">sha</span><code>abc1234</code> "fix(test): tighten coverage thresholds"</span>
+          <span><span class="k">branch</span><code>do-work/fix-main-ci-abc1234</code></span>
           <span><span class="k">PR</span><span class="pr-pending">pending — running</span></span>
         </div>
       </div>
@@ -207,7 +327,19 @@
         </div>
       </div>
 
-      <h2 style="margin-top: 28px;">Shipped this session <span class="count">11</span></h2>
+      <h2 style="margin-top: 28px;">Shipped this session <span class="count">12</span></h2>
+
+      <!--
+        Diversion ship row — DIVERSION tag prepended so it visually stands apart
+        from normal issue ships. Same data shape (PR link + tokens + check-state badge).
+        For fix-failing-prs-batch the title would be "fix(ci): unstick 12 failing PRs — <root cause>".
+      -->
+      <div class="pr">
+        <div class="num"><span class="divert-tag">⚠️ DIVERT</span></div>
+        <div class="title"><a href="https://github.com/mattsears18/lightwork/pull/611" target="_blank">fix(ci): restore green main — revert flaky coverage threshold bump</a></div>
+        <div class="tokens"><span class="tok">52K</span> tok</div>
+        <div class="check-state merged"><a href="https://github.com/mattsears18/lightwork/pull/611" target="_blank">PR #611 · merged ✓</a></div>
+      </div>
 
       <div class="pr">
         <div class="num"><a href="https://github.com/mattsears18/lightwork/issues/506" target="_blank">#506</a></div>
