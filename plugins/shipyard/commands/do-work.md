@@ -1130,6 +1130,103 @@ gh pr list --repo <owner/repo> --label shipyard --state all --limit 1000 --json 
 
 If either query fails (e.g., the label doesn't exist yet because this is a fresh repo), default to `0`.
 
+## Write the consolidated report to disk
+
+After emitting the chat summary, persist the same content to `./.shipyard/do-work/<YYYY-MM-DD>-do-work-session.md` so it survives the session. Mirrors the `/shipyard:audit` report-writer (see [`commands/audit.md`](./audit.md) → "Write the consolidated report to disk") under the same `.shipyard/` convention — `/shipyard:audit` writes to `.shipyard/audits/`, `/shipyard:do-work` writes to `.shipyard/do-work/`. Don't skip this step — the data is already in your context; the cost of writing it is one tool call and the value of having it on disk is large (the chat summary scrolls out of context the moment compaction fires).
+
+**Skip the write when** the session shipped nothing, filed no shipyard improvement issues, AND reaped no agent worktrees beyond pure housekeeping — heuristic: `shipped_count + filed_count + reaped_worktrees == 0`. Also skip when the user invoked `/do-work` and immediately drained out (e.g., typed `stop` right after the backlog overview) without shipping anything (`shipped_count == 0`). No-op runs don't need a report — the chat summary already captures everything worth saying.
+
+1. **Create the directory if missing**, scoped to the host repo's working directory:
+
+   ```bash
+   mkdir -p .shipyard/do-work
+   ```
+
+   Do NOT `git add` it and do NOT amend the host repo's `.gitignore`. The directory is meant to stay local — the host repo decides whether to track `.shipyard/` via its own ignore rules. No PR is ever opened for the report itself.
+
+2. **Compute the target path.** Base name is `<YYYY-MM-DD>-do-work-session.md` using today's date in the local timezone. If that file already exists (rerun same day), suffix `-2`, `-3`, etc. until a free path is found — don't clobber the prior session's report:
+
+   ```bash
+   base="$(date +%Y-%m-%d)-do-work-session"
+   path=".shipyard/do-work/${base}.md"
+   n=2
+   while [ -e "$path" ]; do path=".shipyard/do-work/${base}-${n}.md"; n=$((n+1)); done
+   ```
+
+3. **Write the report** using the `Write` tool. Mirror the chat summary's content plus a metadata header. Every section is data the orchestrator already has at termination time (`in_flight`, `failed_prs`, `ready_issues`, `session_prs`, the running shipped count, the lifetime-totals query results, the cleanup counts, the divert-checks cache). The change is just to serialize that state to disk in addition to printing it. Recommended layout:
+
+   ```markdown
+   # /shipyard:do-work session — <owner/repo> — <YYYY-MM-DD>
+
+   - **Repo:** <owner/repo>
+   - **Started:** <ISO8601 UTC>
+   - **Ended:** <ISO8601 UTC>
+   - **Duration:** <H>h<M>m
+   - **Concurrency:** <--concurrency N> (soft-collision cap: <N>)
+   - **PRs merged this session:** <merged_count>
+   - **Issues shipped this session:** <shipped_count>
+   - **Lifetime via /do-work:** <I> issues closed, <P> PRs opened (repo-wide)
+
+   ## Headline numbers
+
+   - PRs merged: <merged_count>
+   - Issues shipped: <shipped_count>
+   - Issues filed (shipyard improvement, see §6): <filed_count>
+   - Diversions dispatched: <D> (fix-main-ci: <d1>, fix-failing-prs-batch: <d2>)
+   - Drain phase: exited via `<reason>` in <elapsed_min> min
+
+   ## Backlog shape
+
+   | Phase | Workable | Blocked | Needs-triage | In flight |
+   |---|---|---|---|---|
+   | Start | <s_w> | <s_b> | <s_t> | <s_i> |
+   | Mid-session deltas | +<m_w_added> from concurrent /audit runs | … | … | peak <m_i_peak>/<concurrency> |
+   | End | <e_w> | <e_b> | <e_t> | <e_i> still open |
+
+   ## What shipped
+
+   | Issue | PR | Title | Final state |
+   |---|---|---|---|
+   | #<N> | #<M> | <title> | merged |
+   | #<N> | #<M> | <title> | ci-blocked |
+   | … | … | … | … |
+
+   ## Notable cross-PR conflicts
+
+   - `<path>` — touched by <k> in-flight PRs (#<a>, #<b>, #<c>); resolved via <auto-rebase / manual / land-order serialization>. <one-line "chronic re-DIRTY source" note if it kept coming back>
+
+   ## Mid-session phenomena
+
+   - <anything weird worth remembering — long-running fix-checks, flake cascades, agent misbehavior, premature-termination near-misses, divert events, soft-collision cap reached>
+
+   ## Shipyard improvement issues filed
+
+   | Issue | Title | Severity | Link |
+   |---|---|---|---|
+   | #<n> | <title> | P<0–2> | https://github.com/mattsears18/claude-plugins/issues/<n> |
+
+   (These are gaps in the orchestrator itself surfaced by the session — filed against `mattsears18/claude-plugins` per the [global memory rule](https://github.com/mattsears18/claude-plugins/blob/main/CLAUDE.md). Omit the section entirely when none were filed this session.)
+
+   ## User-action follow-ups
+
+   - <thing that blocks full value-delivery and needs a human — Secret Manager values, Vercel env vars, ci-blocked PRs needing review, manual-gate release PRs, blocked-rebase PRs surfaced by the drain>
+
+   ## End-of-session cleanup
+
+   - Reaped this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches
+   - Deferred (still-running PIDs): <deferred_live>
+   - Reaped from prior sessions: <reaped_stale> stale worktrees; <deferred_stale> live-PID worktrees left for the owning Claude Code instance
+   - Final `git worktree list` shape: <n> worktrees (primary + orchestrator + <m> agent worktrees deferred)
+   ```
+
+   Omit sections that have no content (e.g. zero diversions → drop the line; no cross-PR conflicts → drop the entire "Notable cross-PR conflicts" section; no shipyard improvement issues filed → drop §6 entirely). Don't pad with empty bullets — empty rows are noise. The shape is "everything the chat summary said, plus context the chat summary elided for brevity."
+
+4. **Surface the path in chat** as the last line of your reply so the user sees where it landed:
+
+   > Report saved: `.shipyard/do-work/<filename>.md`
+
+If the orchestrator's working directory isn't a git repo or `.shipyard/` can't be created (read-only filesystem, permissions), report the failure inline (`Report could not be saved: <reason>`) and continue — don't block the chat summary on it. The report is a side-effect, not a contract; the chat summary is the source of truth and runs unconditionally.
+
 ## Don't
 
 - **Don't go idle while `raw_backlog` or `ready_issues` has items.** When in-flight workers all return but the queues still hold work, the merge train auto-draining prior PRs is irrelevant to your loop. Your job is to dispatch new workers into the freed slots, not to wait for auto-merge to land prior PRs. Pool drained + backlog non-empty = you are failing to do your job. Refill the pool on the same turn the last completion notification arrives.

@@ -4,6 +4,20 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.4 — 2026-05-20
+
+Adds an end-of-session report writer to `/shipyard:do-work` so the consolidated summary survives past the chat transcript. Closes [#65](https://github.com/mattsears18/claude-plugins/issues/65).
+
+Mirrors the `/shipyard:audit` report-writer that shipped in [1.2.4 / PR #69](https://github.com/mattsears18/claude-plugins/pull/69) under the same `.shipyard/` convention — `/shipyard:audit` writes to `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md`, `/shipyard:do-work` now writes to `.shipyard/do-work/<YYYY-MM-DD>-do-work-session.md`. Previously the end-of-session summary lived only in the chat transcript, which gets ejected when context compacts or the user closes the session.
+
+- **New "Write the consolidated report to disk" section in `plugins/shipyard/commands/do-work.md`.** Appended after the existing "End-of-session summary" section, before the "Don't" section. Same shape as the audit report-writer: `mkdir -p .shipyard/do-work`, compute a same-day-suffix-safe filename (`-2`, `-3`, ... if the base path exists), write the report via `Write`, and surface the saved path as the final chat line.
+- **Skip rule.** No-op sessions don't write a report. Heuristic: `shipped_count + filed_count + reaped_worktrees == 0`, OR the user drained out immediately after the backlog overview with `shipped_count == 0`. The chat summary still prints; only the disk write is skipped.
+- **Report content shape.** Eight sections — headline numbers, backlog shape (start/mid/end buckets), what shipped (issue → PR table), notable cross-PR conflicts, mid-session phenomena, shipyard improvement issues filed (linking back to `mattsears18/claude-plugins`), user-action follow-ups, end-of-session cleanup counts. Every value is data the orchestrator already has at termination time (`in_flight`, `failed_prs`, `ready_issues`, `session_prs`, lifetime-totals query results, cleanup counts, divert-checks cache) — the change is just to serialize that state to disk in addition to printing it. Empty sections are omitted, not padded.
+- **No tracked-file changes.** The report directory stays local — `.shipyard/do-work/` is not added to the host repo's `.gitignore` automatically, and no PR is ever opened for the report itself. Matches the `.shipyard/audits/` convention.
+- **Failure modes.** Read-only filesystem or permissions errors surface as `Report could not be saved: <reason>` inline and don't block the chat summary. The report is a side-effect; the chat summary is the source of truth and runs unconditionally.
+
+Motivating session: the 2026-05-19 `mattsears18/lightwork` run that shipped 100 PRs / 42+ issues. The end-of-session summary I generated for that run was 10.9 KB — substantial enough that having it on disk (`./.shipyard/do-work/2026-05-19-do-work-session.md` in the host repo) gives the user a durable record once the chat history is gone.
+
 ### 1.3.3 — 2026-05-20
 
 Makes the LOCKFILE rule in `/shipyard:do-work`'s dispatch logic **section-aware** so multiple workers touching disjoint `package.json` sections (e.g., `overrides` vs `dependencies` vs `scripts`) can co-run. Closes [#59](https://github.com/mattsears18/claude-plugins/issues/59).
