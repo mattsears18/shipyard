@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.7 — 2026-05-20
+
+Makes the live dashboard launch + per-turn rewrite enforceable in `/shipyard:do-work` so the orchestrator can no longer silently skip them across an entire session. Closes [#78](https://github.com/mattsears18/claude-plugins/issues/78).
+
+- **New numbered step 1.5 in `plugins/shipyard/commands/do-work.md`.** The launch recipe — initial HTML write, `open /tmp/do-work-dashboard.html`, `nohup`-detached updater spawn — was hoisted out of the prose "Launch sequence" subsection of the "Live dashboard" section and into its own numbered Setup step ("1.5 Launch the live dashboard") between step 1 and step 2. The new step is marked "non-optional" inline; an explicit pre-step-2 confirmation block lists the three expected post-conditions (file exists, `open` issued, updater PID printed or graceful-degradation advisory logged).
+- **New step B.5 in the steady-state turn contract.** Inserted between step B and step C, so the turn shape is now `reconcile → release → dashboard rewrite → dispatch (or prove idle) → invariant line`. The step enumerates exactly which sections the orchestrator owns (worker cards, shipped-this-session rows, noop'd pills, diversion banner, session-counter stat tiles) and forbids touching updater-owned sections (Main CI tile, Failing PRs all-authors tile, repo-wide open-issue / open-PR counts).
+- **Invariant line gains a `dashboard=<state>` token.** Both steady-state and idle-proof formats now end with `dashboard=<state>` where `<state>` is one of `rewritten` / `noop` / `degraded`. A missing `dashboard=` token means step B.5 was skipped — same contract violation as a missing invariant line itself.
+
+Motivating sessions: multiple recent `/do-work` runs where the user verified `ls /tmp/do-work-dashboard.html` returned "no such file" and `ps aux | grep do-work-dashboard-updater` returned no process, despite the spec mandating both. The hoist + B.5 + invariant token together make a skipped dashboard impossible to hide from the transcript.
+
 ### 1.3.6 — 2026-05-20
 
 Augments `/shipyard:do-work`'s step 2 backlog overview with **inline action-recommendation sub-rows** alongside the existing raw bucket counts, so stale-skipped issues surface with concrete next steps the human can act on instead of being buried in counts. Closes [#75](https://github.com/mattsears18/claude-plugins/issues/75).
