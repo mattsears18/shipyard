@@ -46,6 +46,16 @@ Build each agent prompt like:
 
 > Audit `<URL or repo>` for `<audit-type>` and file GitHub issues in `<owner/repo>`. Use the shared `shipyard:filing-github-issues` skill for filing conventions and `shipyard:audit-rubrics` for severity/grouping. File P0–P2 findings autonomously — no approval gates. Return a one-paragraph summary of what was filed.
 
+## Pre-dispatch: create the screenshots directory
+
+Before dispatching any visual-evidence auditor (`web-ux`, `a11y`, `mobile-ux`), create the per-run screenshots directory so the agents can route output there without re-checking:
+
+```bash
+mkdir -p ".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
+```
+
+This directory is a sibling to the `<YYYY-MM-DD>-shipyard-audit.md` report this command writes after the run, and is the orchestrator's promise to the auditors: the path exists and is safe to write into. Auditors save screenshots there with stable, finding-keyed filenames (e.g. `login.png`, `modal-focus-trap.png`), embed them via relative path in issue bodies (`![](./.shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png)`), and delete any unreferenced screenshots before returning. The user-visible effect is that `git status` after `/shipyard:audit` no longer shows stray PNGs in the repo root — all audit artifacts live under `.shipyard/` and stay out of the host repo's tracked tree (unless the host repo opts to commit them via its own `.gitignore` rules).
+
 ## End-of-run summary
 
 Once all agents return, present a consolidated summary:

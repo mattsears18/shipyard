@@ -25,7 +25,7 @@ For each surface:
 
 1. `new_page` or `navigate_page` to reach it
 2. `take_snapshot` to read the DOM tree + interactive affordances
-3. `take_screenshot` to see what the user sees
+3. `take_screenshot` to see what the user sees — **save it to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<route-or-finding-id>.png`, never to the repo root or any working directory.** The orchestrator promises the parent directory exists before dispatch (sibling to the consolidated `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md` report). If `take_screenshot` only accepts a `filePath` argument, pass the full relative path explicitly; if it auto-names, immediately `mv` the output into the target directory before continuing the tour. Use a short, stable slug (e.g. `login.png`, `register-audit.png`, `marketing-narrow.png`) so cross-links in issue bodies stay readable.
 4. Note findings in scratch notes
 
 **Default surfaces to tour** (adapt to the app):
@@ -73,9 +73,25 @@ One issue per coherent PR-scope. Same spacing inconsistency across five surfaces
 
 Use the `shipyard:filing-github-issues` skill for filing conventions. Conventional Commits titles. Include screenshot path or DOM snippet in every body.
 
+Embed screenshots via relative path so the issue body renders the image inline when viewed in a checked-out repo: `![](./.shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png)`. The path is also a click-through reference for anyone browsing on github.com.
+
 Default labels: `bug` (P0/P1 visual breaks), `enhancement` (missing/improvable surfaces), plus `web` and `design` / `a11y` where those labels exist in the repo.
 
-### 6. Return summary
+### 6. Clean up unreferenced screenshots
+
+After all issues are filed, delete any screenshot you captured that did NOT end up referenced in an issue body. The signal-to-noise rule is the same as for findings: if it didn't earn a place in an issue, it's residue. Use the issue bodies you just filed as the source of truth — anything in `.shipyard/audits/<YYYY-MM-DD>/screenshots/` that isn't named in at least one filed issue gets `rm`'d. Don't touch screenshots from prior dates; only this run's directory is yours to clean.
+
+```bash
+# List screenshots you kept (mentioned in issue bodies); delete the rest from today's screenshots dir.
+DIR=".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
+[ -d "$DIR" ] || exit 0
+# After filing, for each file in $DIR, check whether any filed issue's body referenced it.
+# If not, remove it. (The orchestrator-level report will list which screenshots were retained.)
+```
+
+Never delete files from the repo root or any other working directory — the routing in step 1 means there shouldn't be any audit screenshots outside `.shipyard/audits/<YYYY-MM-DD>/screenshots/` in the first place. If you find one (the tool ignored a `filePath` arg, or you forgot to `mv` it), move it into the correct directory before deciding whether it's referenced.
+
+### 7. Return summary
 
 ```
 Web UX audit of <URL>:
@@ -90,6 +106,10 @@ Skipped (duplicates):
 
 Surfaces not reviewed:
 - <surface> (reason)
+
+Screenshots retained:
+- .shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png → #NNN
+- <count> unreferenced screenshots deleted
 ```
 
 Keep under 30 lines.
@@ -103,3 +123,5 @@ Keep under 30 lines.
 - Don't file taste / "would be nice."
 - Don't invent issue numbers in cross-references.
 - Don't `git add` or commit anything.
+- Don't save screenshots to the repo root or any working directory other than `.shipyard/audits/<YYYY-MM-DD>/screenshots/`. They leak into `git status` and the user has to clean them up by hand.
+- Don't leave unreferenced screenshots behind. If a screenshot didn't earn a place in an issue body, delete it before returning.
