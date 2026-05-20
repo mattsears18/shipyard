@@ -33,6 +33,35 @@ Three rules, no exceptions:
 
 When the orchestrator's dispatch prompt specifies a branch name (e.g., `do-work/issue-<N>`), use that exact name. Do not invent a slug.
 
+## Detect-my-worktree-was-reaped escape hatch
+
+The orchestrator's end-of-session cleanup reaps `.claude/worktrees/agent-*` directories. It now liveness-checks the lock-holding PID before reaping (see `commands/do-work.md` end-of-session step 3), so a still-running agent's worktree should normally be deferred. But defense in depth: an agent whose worktree IS reaped mid-run must NOT silently fall through to operating in the primary checkout or in some foreign worktree — that's exactly the silent corruption the worktree-isolation rules exist to prevent.
+
+**Before every git/gh operation in this template, verify your worktree is still on disk.** Save your worktree path once at session start:
+
+```bash
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+echo "$WORKTREE_PATH" > /tmp/issue-worker-cwd-$$
+```
+
+Then before each git/gh write — `git fetch`, `git checkout`, `git commit`, `git push`, `gh pr create`, `gh pr merge`, `gh issue edit` — run:
+
+```bash
+if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+  # My worktree was reaped (directory gone) OR my cwd was relocated under me
+  # (git now reports a different toplevel). Either way, continuing here would
+  # mean operating in the primary checkout or a foreign worktree. Exit
+  # cleanly with the escape-hatch return string.
+  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  echo "blocked: my worktree was reaped while I was running — work was abandoned (last push: ${LAST_PUSH:-none})"
+  exit 0
+fi
+```
+
+The exact return string is load-bearing: the orchestrator's step A reconcile parses `blocked: my worktree was reaped while I was running` as a distinct outcome (no `ci-blocked` label, no retry — the work product if any is already in the remote branch from a prior `git push`, and the reaped agent can't follow up). Do NOT try to `cd` to a different worktree, do NOT try to recreate your worktree, do NOT try to operate in the primary checkout — exit immediately. The orchestrator (or the next session's step 3c orphan triage) will salvage any pushed commits.
+
+The `<SHA if any>` part should be the short SHA of your most recent commit if you got that far. If you hadn't committed yet, write `none`. Either way the work product is what's pushed to the remote, not what's in your reaped worktree.
+
 ## Inputs (from orchestrator)
 
 The orchestrator dispatches you in one of four modes — the prompt makes the mode unambiguous:
@@ -368,3 +397,4 @@ When blocked → return:
 - **Don't `cd` outside your worktree.** Your cwd is the worktree at dispatch — keep it that way. `cd /Users/...something-else` will silently re-target subsequent git/gh commands at whatever working tree is at that path, which can be the user's primary checkout.
 - **Don't use `gh pr checkout`.** It resolves the cwd at call time and switches that working tree's HEAD without warning. Use `git fetch origin <branch>` + `git switch <branch>` instead — those won't escape the cwd's git context.
 - **Don't `git switch main`** (or the repo's default branch) when your work is done. The "switch back to main" rule is for the user's primary checkout, not your isolated worktree. Parking your worktree on `[main]` blocks the user's primary from `git switch main`. Leave your worktree on your work branch.
+- **Don't try to recover from a reaped worktree by relocating.** If `test -d "$WORKTREE_PATH"` returns false (your worktree got reaped while you were running — the #64 failure mode), the only correct action is to return `blocked: my worktree was reaped while I was running — work was abandoned (last push: <SHA>)` and exit. Do NOT `cd` to the primary checkout, do NOT `cd` to another agent worktree, do NOT recreate your worktree, do NOT try to push from somewhere else. The orchestrator's step A reconcile knows how to handle that specific return string; anything else corrupts state. See the "Detect-my-worktree-was-reaped escape hatch" section above for the exact pattern.

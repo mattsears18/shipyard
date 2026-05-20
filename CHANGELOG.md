@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.2.7 — 2026-05-20
+
+Hardens worktree teardown so the orchestrator never reaps a still-running agent's worktree, and gives the issue-worker template an explicit escape hatch if it ever happens anyway. Closes [#64](https://github.com/mattsears18/claude-plugins/issues/64).
+
+- **End-of-session cleanup step 3 now liveness-checks before reaping.** Previously the shutdown reap was unconditional — "at shutdown every dispatched agent is done, regardless of lock state." That assumption was load-bearing on correct termination logic, and the premature-termination bug (#57) demonstrated the failure mode: cleanup fired while a dispatched fix-checks agent was mid-rebase, its worktree got force-removed, and the agent returned later with `blocked: assigned worktree ... was cleaned up mid-session`. The fix mirrors step 3b's startup-time PID liveness check on the shutdown side: parse the lock file at `.git/worktrees/agent-<id>/locked`, `ps -p <pid>` it, and skip the reap entirely if the PID is alive. A new `<deferred_live>` counter surfaces in the end-of-session summary so the user sees when this defensive path triggered (which is itself a signal that termination ran early).
+- **Issue-worker template gains a "detect-my-worktree-was-reaped" escape hatch.** New section in `plugins/shipyard/agents/issue-worker.md` instructing the worker to capture its worktree path at session start, then verify both directory existence and `git rev-parse --show-toplevel` consistency before every git/gh write. If the worktree is gone, the worker returns `blocked: my worktree was reaped while I was running — work was abandoned (last push: <SHA>)` and exits immediately — never tries to `cd` to the primary checkout, never tries to operate in a foreign worktree. The exact return string is load-bearing for step A's reconcile parsing.
+- **New `Don't` entry on the worker side.** "Don't try to recover from a reaped worktree by relocating" — captures the silent-corruption failure mode that worktree isolation exists to prevent.
+
+Discovered after a `mattsears18/lightwork` session in which `/do-work` terminated early (#57), the end-of-session reap ran, and the previously-dispatched fix-checks agent for PR #954 returned ~2 minutes later with its worktree gone. The agent had pushed a real fix (commit `b986129`) before the reap — the work survived on the remote — but it couldn't follow up to enable auto-merge because its workspace was gone. Combined with #57's fix this closes the whole class: termination no longer fires early, and even if it does, the worktree-side liveness check + worker-side escape hatch keep the failure recoverable.
+
 ### 1.2.6 — 2026-05-20
 
 Routes visual-evidence auditor screenshots to a known subdirectory under `.shipyard/audits/` so they stop cluttering the repo root with untracked PNGs after every `/shipyard:audit` run. Closes [#68](https://github.com/mattsears18/claude-plugins/issues/68).

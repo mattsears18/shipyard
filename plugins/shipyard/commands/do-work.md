@@ -863,16 +863,32 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    ls -d .claude/worktrees/agent-*/ 2>/dev/null || echo "(no agent worktrees)"
    ```
 
-3. **Reap all agent worktrees from THIS session.** At shutdown every dispatched agent is done, regardless of lock state — the lock files are vestigial bookkeeping. Unlock + force-remove unconditionally. The startup-side reap (step 3b) handles the "another live Claude Code instance" corner case by liveness-checking the lock PID; here we don't need to, because we know our own agents are done. The `cd "$(git rev-parse --show-toplevel)"` at the start scopes everything to the current repo, even if `/do-work` was invoked from a subdirectory:
+3. **Reap all agent worktrees from THIS session — defense in depth: liveness-check the lock-holding PID first.** The original assumption was "at shutdown every dispatched agent is done, regardless of lock state" — that holds only if termination is correct. The premature-termination bug (#57) demonstrated the corner case: cleanup can fire while a dispatched agent is still in flight, and unconditionally reaping its worktree yanks the floor out from under a worker that may have already pushed real work and just hasn't returned yet. So mirror step 3b's startup-time liveness check here too: if the lock file at `.git/worktrees/agent-<id>/locked` names a still-alive PID, skip that worktree and surface it in `<deferred_live>` for the user's summary. Only reap worktrees whose lock-holding PID is dead (the agent has actually exited). The reaped-but-still-running agent path is also covered defensively from the worker side — see the [issue-worker agent template](../agents/issue-worker.md) "detect-my-worktree-was-reaped" escape hatch — but the orchestrator's job is to not put workers in that position in the first place. The `cd "$(git rev-parse --show-toplevel)"` at the start scopes everything to the current repo, even if `/do-work` was invoked from a subdirectory:
 
    ```bash
    cd "$(git rev-parse --show-toplevel)"
    reaped_worktrees=0
+   deferred_live=0
    for wt_dir in .git/worktrees/agent-*; do
      [ -d "$wt_dir" ] || continue
      name=$(basename "$wt_dir")
      worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
      [ -z "$worktree_path" ] && continue
+
+     lock_file="$wt_dir/locked"
+     if [ -f "$lock_file" ]; then
+       lock_pid=$(grep -oE '[0-9]+\)' "$lock_file" | tr -d ')' | head -1)
+       if [ -n "$lock_pid" ] && ps -p "$lock_pid" -o pid= >/dev/null 2>&1; then
+         # Lock-holding PID is still alive — a dispatched agent is still
+         # running. Don't reap. Either the orchestrator's termination logic
+         # ran early (the #64 / #57 failure mode), or the agent is genuinely
+         # still working. Either way, yanking its worktree out from under it
+         # destroys in-flight or unpushed work product. Defer.
+         deferred_live=$((deferred_live + 1))
+         continue
+       fi
+     fi
+
      git worktree unlock "$worktree_path" 2>/dev/null
      if git worktree remove --force "$worktree_path" 2>/dev/null; then
        reaped_worktrees=$((reaped_worktrees + 1))
@@ -895,7 +911,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    git worktree prune
    ```
 
-Record `<reaped_worktrees>` and `<reaped_branches>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b.
+Record `<reaped_worktrees>`, `<reaped_branches>`, and `<deferred_live>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b. A non-zero `<deferred_live>` is a signal worth surfacing — it means an agent was still running when end-of-session cleanup fired, which is the #57 / #64 failure mode (termination declared too early). The worktree survives so the next session's step 3b sweep can finish reaping once the PID is actually dead.
 
 6. **Reap the orchestrator's own worktree — last, after the summary prints.** Steps 1–5 cleaned up the dispatched-agent worktrees. The orchestrator worktree itself (`.claude/worktrees/orchestrator-<session-id>`, set up in step 0.5) is still around because the orchestrator was running inside it. After the user-facing [End-of-session summary](#end-of-session-summary) has printed — and only then; printing the summary from inside the orchestrator worktree is fine, but you can't remove the worktree you're still cwd'd into — reap it with the same unlock + force-remove dance used for agent worktrees. The only twist is that the cwd has to leave the orchestrator worktree first; jump back to the user's primary checkout (read-only at this point — we're not writing, we're just being somewhere `git worktree remove` can succeed from), then remove:
 
@@ -931,7 +947,7 @@ Diversions: <D> dispatched
 Drain phase: exited via <reason>; <elapsed_min> min; final session_prs state — merged: <m>, ci-blocked: <c>, still pending: <p>
 Final repo health: main:<emoji> · failing PRs (all authors): <m>
 Reaped from prior sessions: <reaped_stale> stale agent worktrees (dead-PID locks); <deferred_stale> live-PID worktrees left for the owning Claude Code instance
-Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches
+Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches; <deferred_live> still-running agent worktrees deferred (next session will sweep)
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
@@ -999,4 +1015,4 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't remove the `shipyard` label on block, abandon, or any other outcome. It is write-once. Adding `blocked` / `ci-blocked` alongside it is how block state is signaled — they coexist. The `ci-blocked` label specifically has lifecycle semantics: applied by step A's fix-checks reconcile (after the 3-attempt cap), removed by [step 3d's auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) at the next session start IF a new commit has landed on the PR's head branch since the label was applied. `shipyard` stays put through that whole cycle; only `ci-blocked` comes and goes.
 - **Don't omit worktree-discipline language from any dispatched agent's prompt.** Both the issue-worker and fix-checks-only prompts above include the "you are in an isolated worktree, don't `cd` out, don't `gh pr checkout`, don't switch to main when done" preamble. If you author a new dispatch prompt template (e.g., for a one-off rebase or migration agent), copy that preamble in. Skipping it lets the agent silently corrupt the user's primary checkout (via `gh pr checkout` resolving the wrong cwd) or park a worktree on `[main]` (which blocks the user's `git switch main` until the worktree is reaped).
 - **Don't skip `git worktree unlock` before `git worktree remove --force` on agent worktrees.** The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. Without unlocking, the remove fails with `cannot remove a locked working tree`. Unlock first, THEN force-remove. This is what the startup (step 3b) and shutdown (step 3 of cleanup) blocks do.
-- **Don't reap a live-PID worktree at startup.** Step 3b's lock-PID liveness check is what prevents you from yanking a worktree out from under another active Claude Code instance running its own `/do-work`. At SHUTDOWN there's no liveness check (because the agents you dispatched are all done regardless), but at STARTUP you can't tell whose worktrees these are without checking the lock PID. Keep that check.
+- **Don't reap a live-PID worktree — at startup OR at shutdown.** Step 3b's lock-PID liveness check prevents you from yanking a worktree out from under another active Claude Code instance running its own `/do-work`. End-of-session cleanup step 3 (this session's agents) now ALSO liveness-checks, because the premature-termination failure mode (#57 / #64) demonstrated that "at shutdown every dispatched agent is done" was wishful — termination logic can fire early, and a still-running agent that gets its worktree reaped loses any unpushed work and ends up trying to operate in the primary checkout or a foreign worktree. Always check the lock PID before unlocking / removing. Skip live-PID worktrees in both paths; only reap when the lock-holding PID is genuinely dead.
