@@ -167,27 +167,28 @@ For each issue in bucket 6 or 7, generate a one-line **unblock recommendation** 
 
 The point is to give the user something **actionable** so they can start clearing blockers in parallel.
 
-Print the summary to the user in this shape:
+Print the summary to the user in this shape. The bucket table is a **markdown table** — one row per non-zero bucket, in the order listed below. The table renders cleanly in any chat/terminal client that supports markdown and lets the eye compare counts column-aligned instead of scanning indented bullets:
 
 ```
 /do-work backlog overview — <owner/repo>
 
-Workable (will be worked this session): <W>
-  By priority: P0=<n>  P1=<n>  P2=<n>  unlabeled=<n>
-  Top items: #<a>, #<b>, #<c>, ...
+By priority: P0=<n>  P1=<n>  P2=<n>  unlabeled=<n>
+Top workable items: #<a>, #<b>, #<c>, ...
 
-Skipped (<S> total):
-  Blocked (label):        <n>  (#A, #B, ...)
-  Blocked (body):         <n>  (#C, ...)
-  Needs triage/design:    <n>  (#D, ...)
-  Awaiting refinement:    <n>  (#R, ...)
-  Awaiting human review:  <n>  (#H, ...)
-  Discussion:             <n>  (#E, ...)
-  Won't fix:              <n>  (#F, ...)
-  In flight (open PR):    <n>  (#G → PR #H, ...)
-  Assigned to others:     <n>  (#I → @user, ...)
+| Why skipped | # | Issues |
+|---|---|---|
+| **Workable** (will be worked this session) | <W> | #<a>, #<b>, #<c>, +<K> more |
+| `blocked` label | <n> | #A, #B, ... |
+| Blocked (body reference) | <n> | #C, ... |
+| `needs-triage` / `needs-design` | <n> | #D, ... |
+| Awaiting refinement | <n> | #R, ... |
+| Awaiting human review | <n> | #H, ... |
+| Discussion | <n> | #E, ... |
+| Won't fix | <n> | #F, ... |
+| In flight (open PR) | <n> | #G → PR #H, ... |
+| Assigned to others | <n> | #I → @user, ... |
 
-Total open: <W + S>
+Total open: <W + S>  (workable: <W>, skipped: <S>)
 
 Auto-cleared this session:
   blocked labels:   <cleared_blocked> issue(s)  (#X, #Y, ...)
@@ -204,17 +205,25 @@ Unblock recommendations (work these in parallel while /do-work runs):
   ...
 ```
 
+**Bucket-table rules:**
+
+- One row per non-zero bucket — omit any row whose count is `0`. The **Workable** row prints even when `<W> == 0` so the user can see at a glance that nothing is workable this session.
+- Row order: `Workable` first, then `Blocked (label)`, `Blocked (body reference)`, `Needs-triage/design`, `Awaiting refinement`, `Awaiting human review`, `Discussion`, `Won't fix`, `In flight`, `Assigned to others`. The order mirrors the bucketing precedence in the table above so the most-actionable buckets sit near the top.
+- The **Issues** column lists the bucket's issue numbers (comma-separated, with arrow-targets like `#G → PR #H` or `#I → @user` for `In flight` / `Assigned to others`). Truncate after **10 numbers** with `, +<K> more` where `<K>` is the count of omitted numbers — same truncation rule as the pre-1.3.5 bullet-list shape, just applied per row.
+- The `Total open: <W + S>` summary line stays below the table for at-a-glance verification that the row counts sum to the universe size.
+- The `By priority` and `Top workable items` lines move **above** the table so the priority breakdown is the first thing the user sees — the table itself is the bucket breakdown.
+
 The **PR-side state** block surfaces shipyard's circuit breaker visibly so it's not invisible state. `<k>` (will be re-evaluated) is the count of PRs the [step 3d.1 auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) just unlocked — those PRs are about to flow into step 5's failing-PR snapshot and get another 3 fix-checks attempts this session. `<h>` (held) is the count of PRs the sweep examined but kept labeled — they have no new commits since shipyard gave up, so the "human needs to look" rule (see [Don't L873](#dont)) still applies. The block prints whenever `<c> > 0`; omit it entirely when there are no `ci-blocked` PRs. The numbers come directly from `cleared_ciblocked` / `held_ciblocked` (and their PR-number arrays) recorded in step 3d.1.
 
 The **Auto-cleared this session** block (above PR-side state) surfaces step 3d.2's `blocked`-label sweep. `cleared_blocked` is the count of issues whose `Blocked by #N` body references all resolved to closed blockers — the label was removed and they flow back into the workable queue this session. `held_blocked` is the count of issues the sweep examined but kept labeled (no body reference to scan, or at least one referenced blocker still open). The block prints only when either count is > 0 — omit entirely when there's no `blocked` activity worth reporting. Numbers come from `cleared_blocked` / `held_blocked` (and their issue-number arrays) recorded in step 3d.2.
 
 Edge cases:
 
-- **`W == 0`** — print the summary anyway, then continue with setup. Step 4's filtered fetch will return empty and the loop will terminate cleanly. The summary still tells the user *why* there's nothing to work on (e.g., everything is blocked, or everything has a linked PR).
+- **`W == 0`** — print the summary anyway, then continue with setup. Step 4's filtered fetch will return empty and the loop will terminate cleanly. The summary still tells the user *why* there's nothing to work on (e.g., everything is blocked, or everything has a linked PR). The **Workable** row stays in the table with `<W> = 0`; every other zero-count row is omitted per the bucket-table rules above.
 - **No blocked issues** — omit the "Unblock recommendations" section entirely. Don't print an empty header.
 - **Priority labels not yet triaged** — the breakdown reflects current label state. Step 4's auto-triage pass labels the unlabeled survivors before dispatch, so `unlabeled=<n>` at preflight just shows how much triage will happen.
-- **Buckets with zero count** — omit those lines from the "Skipped" block; clutter is the enemy.
-- **Very large backlogs** (truncate the `(#A, #B, ...)` enumerations after ~10 numbers with `, +<K> more` so the summary stays readable).
+- **Buckets with zero count** — omit those rows from the bucket table (except `Workable`, which always prints). Clutter is the enemy.
+- **Very large backlogs** — per-row Issues column truncates after ~10 numbers with `, +<K> more`. See bucket-table rules above.
 
 Then proceed immediately to step 3.
 
@@ -1092,10 +1101,24 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, and `<deferred_live>`; pipe th
 
 ## End-of-session summary
 
-When the loop ends (drain completes or times out, and cleanup has run), report:
+When the loop ends (drain completes or times out, and cleanup has run), report. Lead with a **bucket table** in the same shape as step 2's backlog overview so the user can compare end-state to start-state at a glance — the table shows the **remaining open** issues partitioned by skip reason, plus a `Workable` row carrying the remaining workable count (and a reason if 0). Then print the existing flat summary lines below it:
 
 ```
-/do-work session:
+/do-work session — <owner/repo>
+
+| Why skipped | # | Issues |
+|---|---|---|
+| **Workable** (remaining after session) | <W_end> | <#<a>, #<b>, +<K> more — OR reason text if 0> |
+| `blocked` label | <n> | #A, #B, ... |
+| Blocked (body reference) | <n> | #C, ... |
+| `needs-triage` / `needs-design` | <n> | #D, ... |
+| Awaiting refinement | <n> | #R, ... |
+| Awaiting human review | <n> | #H, ... |
+| Discussion | <n> | #E, ... |
+| Won't fix | <n> | #F, ... |
+| In flight (open PR) | <n> | #G → PR #H, ... |
+| Assigned to others | <n> | #I → @user, ... |
+
 Recovered from prior session: <salvaged_count> salvaged (PRs created/kept), <abandoned_count> abandoned
 Advisory: <A> labeled+assigned issues with no worktree and no PR (#<N>, ...)  # omit line if A == 0
 Issues processed: N
@@ -1114,6 +1137,18 @@ Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
+
+**End-of-session bucket-table rules** (same shape as step 2 with one addition):
+
+- Source the row data from a fresh `gh issue list --repo <owner/repo> --state open --limit 200 --json number,title,labels,assignees,body` call run just before printing the summary — the universe has drifted since step 2 (PRs merged, new issues filed, labels removed by sweeps), so re-bucket against the live state rather than reusing step 2's snapshot.
+- One row per non-zero bucket. The **Workable** row always prints, even when `<W_end> == 0`. When `<W_end> == 0`, the Issues column carries a short **reason** instead of issue numbers — pick the dominant cause from end-state counts:
+  - `everything shipped this session` — `shipped_count > 0` AND every other bucket is 0 or already-skipped.
+  - `everything left is blocked` — `blocked-label + blocked-body > 0` AND no other workable-eligible issues remain.
+  - `everything left needs triage/design or refinement/review` — those buckets dominate the residual.
+  - `everything left is in flight` — every remaining open issue has a linked PR.
+  - `nothing matches the workable filter` — fallback when none of the above applies cleanly (multiple skip categories combined).
+- Row order, per-row truncation (10 numbers + `, +<K> more`), and the `Workable`-always-prints rule match step 2's bucket-table rules exactly — keep the two shapes consistent so users can diff them mentally.
+- Print the bucket table FIRST, above the existing flat lines, so it's the first thing the user sees when the session wraps. The flat lines below the table carry the per-PR detail (shipped issue → PR mappings, blocked reasons, drain state) that doesn't fit a bucket-by-bucket view.
 
 The `Drain phase` line reports how the [end-of-session drain](#end-of-session-drain) terminated. `<reason>` is one of: `all PRs settled` (every `session_prs` entry merged, ci-blocked, rebase-blocked, or pending-with-no-movement), `no forward progress for 5 polls`, `120-min ceiling`, or `second stop signal — drain skipped`. `<elapsed_min>` is wall-clock minutes in the drain phase (0 when the second-stop trigger skipped it). The merged / ci-blocked / rebase-blocked / still-pending counts are the final partition of `session_prs` — they always sum to `|session_prs|`, so the user can see at-a-glance whether the session left anything red on the board.
 
