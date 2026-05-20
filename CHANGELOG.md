@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.2.5 — 2026-05-20
+
+Adds a `PreToolUse` guard against an agent editing files outside its own worktree. Closes [#60](https://github.com/mattsears18/claude-plugins/issues/60).
+
+The companion hook (`enforce-worktree-isolation.sh`) blocks the dispatch side — refusing any `shipyard:issue-worker` dispatch missing `isolation: "worktree"`. That ensures every worker gets a worktree but doesn't constrain what the worker does once it's running. In a real session, a worker accidentally wrote into the user's primary checkout's `CLAUDE.md`, then caught the drift on the next `git status` and reverted. The next case might not self-catch.
+
+- **New hook `plugins/shipyard/hooks/enforce-edit-scope.sh`.** PreToolUse, matchers `Edit|Write|MultiEdit|NotebookEdit`. Decision: when the hook's `cwd` is inside `.claude/worktrees/agent-<id>/`, the target `file_path` (resolved against `cwd` if relative) MUST resolve to a path inside that worktree. Otherwise exit 2 with a clear stderr explaining the violation and the fix. Edits in the orchestrator's own worktree (`orchestrator-<...>`), bare primary-checkout sessions, and Read/Bash/etc. fall through transparently — the hook only constrains workers, only on write tools.
+- **Defensive defaults.** Malformed JSON, missing fields, exotic OS paths — every error path falls through to "allowed." A blocking hook that misfires would break every edit in every worker; we'd rather miss an occasional out-of-scope write than wall up the whole fleet. Walks parts of the cwd path manually (no symlink resolution) so a symlinked worktree root doesn't get rewritten to the underlying mount.
+- **Test suite at `plugins/shipyard/hooks/tests/enforce-edit-scope.test.sh`.** 29 cases — in-worktree writes (root + nested), out-of-worktree writes to the primary checkout / sibling agent worktree / unrelated sibling repo, non-edit tools, relative path resolution including `../../../` escapes, malformed-payload safety, and the orchestrator-worktree fall-through. Mirrors the pattern in `scripts/tests/report-plugin-error.test.sh` — pure bash + python3, no external dependencies.
+- **`commands/do-work.md` "Don't" extended.** The existing `Don't dispatch without isolation: "worktree"` entry now documents both hooks side-by-side — the dispatch-side guard and the new file-side guard — with the fix-it advice for each block message.
+
 ### 1.2.4 — 2026-05-20
 
 Adds an automatic post-run report-writer to `/shipyard:audit` so the consolidated summary survives the session. Closes [#66](https://github.com/mattsears18/claude-plugins/issues/66).
