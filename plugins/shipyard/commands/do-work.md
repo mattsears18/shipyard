@@ -20,7 +20,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 Across the session, the orchestrator maintains seven mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
 
-- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: [...], agent_id } }. Size is bounded by `--concurrency`.
+- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-rebase" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: [...], agent_id } }. Size is bounded by `--concurrency`. The `fix-rebase` kind is drain-only — it is never dispatched outside the [end-of-session drain](#end-of-session-drain) phase.
 - **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths, touches_lockfile, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains.
 - **`failed_prs`**: queue of red PRs (authored by `@me`) needing fix-checks-only work. Drained after `divert_queue`, before `ready_issues`.
 - **`raw_backlog`**: ranked list of issue numbers not yet scoped. Source for refilling `ready_issues`.
@@ -643,6 +643,13 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 - **blocked #<M> at fix-checks** — comment on the PR summarizing the blocker, add the `ci-blocked` label so it's skipped from now on, continue. The label is the drain phase's signal that this PR is "settled — human needs to look" and shouldn't keep the drain alive forever.
 - **errored** — record and continue.
 
+For **fix-rebase work** (`rebased` / `noop` / `blocked`) — dispatched only by the [end-of-session drain](#end-of-session-drain):
+
+- **rebased #<M>** — the agent force-pushed a rebased branch onto current main. PR is no longer DIRTY; CI will re-run on the new head and auto-merge will fire when green. Record. The next drain poll snapshot will reflect the transition out of DIRTY naturally — no extra reconcile work needed here. (PR is already in `session_prs` from whenever it was first opened — no re-add needed.)
+- **noop: not dirty (<reason>)** — by the time the agent started, the PR was no longer in DIRTY state (auto-merge already landed it, mergeStateStatus settled to CLEAN, or new check failures appeared). Record and continue. If the reason hints at new failures (the agent saw `FAILURE` in the rollup and bailed because rebase is the wrong tool), the drain's normal per-poll red-PR scan will catch it on the next tick and route it through fix-checks instead — no extra action needed.
+- **blocked rebase #<M>: <reason>** — non-trivial conflict, head branch moved during the rebase, or some deterministic failure. Add a one-line PR comment: `Drain-phase auto-rebase blocked: <reason>. Needs manual rebase.` Do NOT add `ci-blocked` — the PR isn't stuck on checks, it's stuck on stale base; a human can resolve the rebase and the next session will pick it up if it's still DIRTY. Surface in the end-of-session summary as a still-DIRTY PR.
+- **errored** — record and continue.
+
 For **fix-main-ci work** (`shipped` / `noop` / `blocked`):
 
 - **shipped main-ci-fix via PR #<M>** — record. **Append `<M>` to `session_prs`.** The diversion is "resolved" from the orchestrator's perspective the moment the PR is open with auto-merge; the next step-D refresh will detect main going green (and clear the divert flag) once the PR lands. Don't re-enqueue the diversion in the meantime — the in_flight slot is gone but the divert_queue check at step D guards against double-dispatch.
@@ -736,6 +743,12 @@ When filling a slot, walk this decision tree:
 
    > Fix failing CI checks on PR #<M> in `<owner/repo>` (branch `<headRefName>`) in **fix-checks-only mode**. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout` (it resolves to the cwd at call time and can silently switch the user's primary checkout's HEAD), and never `git switch` to the repo's default branch when you're done. The PR is already open — do NOT open a new one, do NOT change scope, do NOT modify the PR title/description, do NOT close the linked issue from this PR. Land on the PR's head branch with the safe two-step: `git fetch origin <headRefName> && git switch <headRefName>`. Then run the fix-loop: pull failed logs (`gh run view <run-id> --repo <owner/repo> --log-failed`), reproduce locally if practical, fix the smallest thing, commit + push to the same branch, re-watch with `gh pr checks <M> --repo <owner/repo> --watch --interval 30`. Hard cap: 3 fix attempts. **`green #<M>` means a full CI run completed and passed AFTER your final push — not "pushed and queued."** If checks are still `PENDING` / `IN_PROGRESS` when you'd otherwise be ready to return, keep watching until the rollup resolves; returning `green` on a pending rollup violates the contract and the orchestrator will downgrade it to `pending` anyway (and log an advisory). If checks are already green by the time you start, return `noop: already green`. If you can't fix in 3 attempts, return `blocked: <last failing check> — <last error excerpt>`. **Leave your worktree on `<headRefName>` when you return — do not switch back to the default branch.**
 
+   **For `fix-rebase` dispatches (drain-phase only — see [end-of-session drain](#end-of-session-drain)):** the same `failed_prs`-style branch-targeted dispatch shape, but a different prompt template and a different return contract.
+
+   Prompt template:
+
+   > Rebase PR #<M> in `<owner/repo>` (branch `<headRefName>`) onto current `<default-branch>` in **fix-rebase mode**. The drain-phase snapshot found this PR with `mergeStateStatus: DIRTY` and no failing checks — it's just stale relative to a freshly-advanced main, and auto-merge won't fire until it's rebased. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout`, and never `git switch` to the repo's default branch when you're done. Land on the PR's head branch with the safe two-step: `git fetch origin <headRefName> && git switch <headRefName>`. Then follow the `fix-rebase mode` section in the issue-worker spec: pre-flight to confirm DIRTY is still the state, `git fetch origin <default-branch> && git rebase origin/<default-branch>`, **trivial-conflict-or-bail policy** for conflicts (additive CHANGELOG/docs/CI matrix appends auto-resolve; anything semantic bails with `blocked rebase`), `git push --force-with-lease`, return. Do NOT touch the PR title / body / labels. Do NOT manually `gh pr merge` — auto-merge was armed when the PR was opened and rebasing doesn't un-arm it. Do NOT `--watch` checks. One rebase attempt per dispatch. Return values: `rebased #<M>`, `noop: not dirty (<reason>)`, or `blocked rebase #<M>: <reason>`. **Leave your worktree on `<headRefName>` when you return.**
+
 3. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
 
    - If the candidate `touches_lockfile`: dispatch only when `in_flight` is empty. While it runs, dispatch nothing else — other slots stay parked until it returns.
@@ -812,47 +825,53 @@ The drain phase keeps the orchestrator alive past the dispatch loop's end, watch
 
 **Initial snapshot.** Capture the set of PRs the orchestrator opened this session (`session_prs` — track this from step A's `shipped` reconciles throughout the run). These are the PRs whose status determines drain termination. Pre-existing PRs the orchestrator only fixed via fix-checks count too (they're authored by `@me` and shipyard touched them this session). PRs from other authors don't.
 
+Also initialize `rebase_blocked_prs = {}` — the per-session set of PR numbers that returned `blocked rebase` from a fix-rebase dispatch. Membership is one-shot per session (a PR that blocks on rebase once doesn't get re-dispatched within the same session, even if it stays DIRTY), and the set counts toward the drain's "settled" definition so a non-trivially-conflicted PR doesn't keep the drain alive indefinitely.
+
 Open-PR query for the drain loop:
 
 ```bash
 gh pr list --repo <owner/repo> --state open --author @me \
   --search '-is:draft' \
-  --json number,statusCheckRollup,mergeStateStatus,labels --limit 200
+  --json number,statusCheckRollup,mergeStateStatus,headRefName,headRefOid,labels --limit 200
 ```
 
 This intentionally **does NOT filter `-label:ci-blocked`** — ci-blocked PRs need to be counted as "settled" so they don't keep the drain open forever, and they need to be visible to the snapshot so the per-poll counts are accurate.
+
+`mergeStateStatus` and `headRefName` / `headRefOid` are required for the `D_dirty` set below (drain-phase fix-rebase dispatch) — `mergeStateStatus == "DIRTY"` is the signal that a PR is stale relative to current main but otherwise healthy, and the head-branch identifiers are passed into the fix-rebase prompt template. The fields are also cheap — adding them to an existing query doesn't change the call count.
 
 **Per-poll bookkeeping.** Every 60s, snapshot the open PRs and compute:
 
 - `O` = open PRs in `session_prs` (not yet merged or closed)
 - `M_since_last` = PRs that merged or closed since the previous poll (delta vs. the previous `O`)
 - `R_new` = PRs whose rollup contains a hard failure (`FAILURE` / `ERROR` / `TIMED_OUT`) AND are NOT carrying `ci-blocked` AND are not already in `in_flight` or `failed_prs`
+- `D_dirty` = PRs whose `mergeStateStatus == "DIRTY"` AND have **no** hard-failure check (rollup is fully `SUCCESS` / `SKIPPED` / `NEUTRAL` / `PENDING` / `IN_PROGRESS` / `QUEUED`) AND are NOT in `in_flight` AND have not already had a fix-rebase attempt blocked this session (`blocked rebase` is one-shot per dispatch per session — track in `rebase_blocked_prs`)
 - `B` = PRs carrying `ci-blocked` (these are "settled — human needs to look")
 - `P_settled` = PRs whose rollup is fully `PENDING` / `IN_PROGRESS` / `QUEUED` AND whose `headRefOid` hasn't changed since the previous poll (auto-merge waiting on long-running checks)
 
-A PR is **settled** when any of: it's merged/closed, it's labeled `ci-blocked`, or all its checks are pending AND the head commit hasn't moved AND `P_settled` has been true for it across the last 5 polls (i.e. no churn).
+A PR is **settled** when any of: it's merged/closed, it's labeled `ci-blocked`, it has had a `blocked rebase` return this session (membership in `rebase_blocked_prs`), or all its checks are pending AND the head commit hasn't moved AND `P_settled` has been true for it across the last 5 polls (i.e. no churn).
 
 **Per-poll actions.**
 
 1. If `R_new > 0`: push the newly-red PRs onto `failed_prs` (deduped) and dispatch fix-checks-only workers against them — same `--concurrency` cap, same 3-attempt rule, same `ci-blocked` stamp on exhaustion that step A enforces. Drain runs the same dispatcher logic step C uses, just with `failed_prs` as the only queue that's still drainable (no new issue work, no diverts; `divert_queue` is intentionally NOT re-evaluated during drain — a red main mid-drain becomes next session's problem because dispatching a fix-main-ci agent here would extend the session indefinitely).
-2. Update the rolling 5-poll window of `M_since_last` values and the in-flight fix-checks worker count.
-3. Print one drain status line per poll:
+2. If `D_dirty > 0`: dispatch a fix-rebase worker for each, **subject to the `--concurrency` cap** (combined fix-checks + fix-rebase in-flight count must not exceed `--concurrency`). Fix-checks dispatches in action 1 above take priority — a red PR is more urgent than a stale base. After filling the pool with fix-checks workers, any remaining slots dispatch fix-rebase workers from the `D_dirty` set (lowest PR number first, so dispatch order is deterministic across re-dispatches). Each fix-rebase dispatch is **one-shot per PR per session**: if the worker returns `blocked rebase #<M>: <reason>`, add `<M>` to `rebase_blocked_prs` and do NOT re-dispatch this session even if the PR is still DIRTY at the next poll. The drain's settled definition above counts `rebase_blocked_prs` membership as settled so the PR doesn't keep the drain alive forever.
+3. Update the rolling 5-poll window of `M_since_last` values and the in-flight worker counts (fix-checks + fix-rebase combined).
+4. Print one drain status line per poll:
    ```
-   [drain] open=<O> merged_this_poll=<M_since_last> newly_red=<R_new> ci_blocked=<B> in_flight_fix_checks=<n> · elapsed=<MM:SS>
+   [drain] open=<O> merged_this_poll=<M_since_last> newly_red=<R_new> dirty=<D_dirty> ci_blocked=<B> rebase_blocked=<|rebase_blocked_prs|> in_flight=<n>(fix-checks=<a>, fix-rebase=<b>) · elapsed=<MM:SS>
    ```
 
 **Termination criterion (forward-progress rule).** Drain continues as long as **any** of these is true:
 
 - A merge or close happened in the last 5 polls (`sum(M_since_last) > 0` over the trailing 5-min window), OR
-- Any fix-checks worker is in flight, OR
-- Any PR has had a rollup state transition in the last 5 polls (pending → green/failure, head-commit change, etc.)
+- Any fix-checks OR fix-rebase worker is in flight, OR
+- Any PR has had a rollup state transition in the last 5 polls (pending → green/failure, head-commit change, `mergeStateStatus` transition including DIRTY → CLEAN after a rebase, etc.)
 
 Drain terminates when **all** of the following are true for 5 consecutive polls (i.e. 5 min of zero forward progress):
 
 - No PR has merged or closed.
-- No fix-checks worker is in flight.
+- No fix-checks or fix-rebase worker is in flight.
 - No rollup state has changed.
-- Every PR in `session_prs` is either (a) merged/closed, (b) `ci-blocked`, or (c) pending with no head-commit movement.
+- Every PR in `session_prs` is either (a) merged/closed, (b) `ci-blocked`, (c) in `rebase_blocked_prs` (one-shot rebase attempt was non-trivial), or (d) pending with no head-commit movement.
 
 **Hard ceiling: 120 min.** As a safety net against degenerate cases (a 90-minute test suite, a runaway CI loop), drain forcibly exits at the 120-min mark even if forward progress is still observable. Surface this in the summary as `drain exited at 120-min ceiling — <n> PRs still pending`. The 120-min number is deliberately generous — for normal sessions (10–20 PRs draining over 30–60 min wall-clock) the no-progress rule fires first and the ceiling never triggers.
 
@@ -958,7 +977,8 @@ Errored: J (#R — <agent error>)
 Diversions: <D> dispatched
   fix-main-ci: <d1> (<shipped/noop/blocked breakdown, with PR #s and block reasons>)
   fix-failing-prs-batch: <d2> (<shipped/noop/blocked breakdown>)
-Drain phase: exited via <reason>; <elapsed_min> min; final session_prs state — merged: <m>, ci-blocked: <c>, still pending: <p>
+Drain phase: exited via <reason>; <elapsed_min> min; final session_prs state — merged: <m>, ci-blocked: <c>, rebase-blocked: <r>, still pending: <p>
+Drain-phase rebases: <rebased_count> succeeded (#A, #B, ...), <rebase_blocked_count> blocked (#C — <reason>, ...)
 Final repo health: main:<emoji> · failing PRs (all authors): <m>
 Reaped from prior sessions: <reaped_stale> stale agent worktrees (dead-PID locks); <deferred_stale> live-PID worktrees left for the owning Claude Code instance
 Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches; <deferred_live> still-running agent worktrees deferred (next session will sweep)
@@ -966,7 +986,9 @@ Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
 
-The `Drain phase` line reports how the [end-of-session drain](#end-of-session-drain) terminated. `<reason>` is one of: `all PRs settled` (every `session_prs` entry merged, ci-blocked, or pending-with-no-movement), `no forward progress for 5 polls`, `120-min ceiling`, or `second stop signal — drain skipped`. `<elapsed_min>` is wall-clock minutes in the drain phase (0 when the second-stop trigger skipped it). The merged / ci-blocked / still-pending counts are the final partition of `session_prs` — they always sum to `|session_prs|`, so the user can see at-a-glance whether the session left anything red on the board.
+The `Drain phase` line reports how the [end-of-session drain](#end-of-session-drain) terminated. `<reason>` is one of: `all PRs settled` (every `session_prs` entry merged, ci-blocked, rebase-blocked, or pending-with-no-movement), `no forward progress for 5 polls`, `120-min ceiling`, or `second stop signal — drain skipped`. `<elapsed_min>` is wall-clock minutes in the drain phase (0 when the second-stop trigger skipped it). The merged / ci-blocked / rebase-blocked / still-pending counts are the final partition of `session_prs` — they always sum to `|session_prs|`, so the user can see at-a-glance whether the session left anything red on the board.
+
+The `Drain-phase rebases` line reports the outcomes of fix-rebase dispatches issued during the drain. `<rebased_count>` is the number of PRs that successfully rebased onto a freshly-advanced main and were force-pushed (they then re-entered the merge train and the rest of the drain monitored them like any other green-or-pending PR). `<rebase_blocked_count>` is the size of `rebase_blocked_prs` — PRs whose rebase hit a non-trivial conflict, a force-with-lease rejection, or some other deterministic failure. Each blocked PR is one-shot per session: the orchestrator does not retry within the same session, but the next session's drain phase will re-evaluate. Omit this line entirely when both counts are zero (no DIRTY PRs were dispatched against during the drain — clutter is the enemy).
 
 Omit the `Diversions:` block entirely when `D == 0` — clutter is the enemy. The `Final repo health` line always prints; if a diversion is blocked at exit, that line surfaces the unresolved state (e.g. `main:🔴 · failing PRs (all authors): 12 ⚠️`) so the user knows what they're walking into.
 
@@ -1022,6 +1044,8 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't skip the periodic failed-PR refresh. New failures appear from flaky tests, base drift, and dependency updates; if you don't sweep, they sit red forever.
 - Don't retry a `ci-blocked` PR — that label exists so the orchestrator stops banging on the same wall. A human needs to look. **Exception: [step 3d's auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) removes the label at session start from any PR whose head commit is newer than the label's application timestamp** (someone pushed since shipyard gave up — fresh chance, 3-attempt counter resets). The "don't retry" rule still applies to PRs that remain labeled after the sweep, which are the genuinely-stuck ones. The sweep is the only mechanism that removes `ci-blocked`; step A is the only mechanism that applies it. Anything else flipping the label is foreign and should be treated as a bug at the source, not papered over here.
 - **Don't accept a `green #<M>` return from a fix-checks-only worker without verifying the rollup.** The agent's `green` claim is supposed to mean "a full CI run completed and passed after my fix" — but ad-hoc dispatch prompts (or a worker that drifted from the canonical template) can return `green` after merely pushing and queueing the rebuild. Trusting that silently leaves a red PR in `session_prs` looking settled, and the drain phase will skip it because it's not in `failed_prs` either. The fix is the trust-but-verify spot-check in [step A's fix-checks reconcile](#a-reconcile-the-return) — one cheap `gh pr view <M> --json statusCheckRollup` call, then downgrade to `pending` (any rollup state still `PENDING` / `IN_PROGRESS`) or `failing` (any rollup state hard-failed). Never skip the spot-check as an optimization. Closes the failure mode from [#56](https://github.com/mattsears18/claude-plugins/issues/56).
+- **Don't dispatch fix-rebase outside the end-of-session drain.** The fix-rebase mode is intentionally drain-only — it exists to keep the merge train flowing past base-drift hiccups while the orchestrator is winding down. Steady-state dispatch never produces a DIRTY PR (a freshly-shipped PR is always on a fresh branch). The only place DIRTY PRs accumulate is during the drain, when a long sequence of merges advances main faster than open PRs can rebase onto it. Dispatching fix-rebase mid-session would either (a) churn branches that auto-merge was about to rebase anyway, or (b) interfere with a fix-checks worker that is mid-flight on the same branch. Limit to the drain.
+- **Don't retry a `blocked rebase` PR within the same session.** Each PR gets exactly one fix-rebase dispatch per drain. A blocked outcome means a human (or the next session, after main advances further) needs to handle it; re-dispatching within the same session would just produce the same conflict. The `rebase_blocked_prs` set is the membership check; it also counts toward the drain's "settled" definition so a stuck PR doesn't keep the drain alive indefinitely. Closes the failure mode from [#61](https://github.com/mattsears18/claude-plugins/issues/61) where the drain previously had no DIRTY-PR handling at all.
 - **Don't write to the user's primary checkout under any circumstance.** After step 0.5, the orchestrator works exclusively in `.claude/worktrees/orchestrator-<session-id>`. The primary checkout is strictly read-only — read-only ops like `git status`, `gh issue list`, `find`, `grep`, `git worktree list` are fine in either cwd, but every write (`Edit`, `Write`, `git add`, `git commit`, `git branch <new>`, `git push`, `git reset`, `git checkout -B`, label/README/CHANGELOG/`plugin.json` edits, etc.) MUST land in the orchestrator worktree. If a write-class command ends up modifying the primary checkout's HEAD, working tree, or any tracked file in it, that's the exact failure mode step 0.5 was added to prevent — back up, switch to the orchestrator worktree, and retry.
 - Don't run end-of-session cleanup from the user's primary checkout — run it from the orchestrator worktree (set up in step 0.5). The cleanup steps that reap agent worktrees and `[gone]` branches are *writes*, and writes go through the orchestrator worktree like every other write this session. The one exception is step 6 of cleanup, which removes the orchestrator worktree itself: that step `cd`'s out of the orchestrator worktree just long enough to call `git worktree remove` (a metadata-only operation that doesn't touch the primary's HEAD or working tree). That's the only moment in the session where the orchestrator's cwd is the primary checkout, and it's deliberately read-only-effect.
 - Don't cleanup branches by name or pattern — only by `[gone]` upstream. Anything else risks reaping open or blocked PRs the orchestrator didn't author.
