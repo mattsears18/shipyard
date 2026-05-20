@@ -20,7 +20,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 ## Orchestrator state
 
-Across the session, the orchestrator maintains seven mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
+Across the session, the orchestrator maintains eight mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
 
 - **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-rebase" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: { hard: [...], soft: [...] }, agent_id } }. Size is bounded by `--concurrency`. The `fix-rebase` kind is drain-only — it is never dispatched outside the [end-of-session drain](#end-of-session-drain) phase. `claimed_paths.hard` and `claimed_paths.soft` partition the paths a worker is touching by collision tier — see the [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c) for the tier definitions and the soft-collision cap.
 - **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths: { hard: [...], soft: [...] }, lockfile_sections, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains. `lockfile_sections` is the set of `package.json` (or equivalent root-manifest) sections the candidate is expected to touch — `overrides`, `dependencies`, `devDependencies`, `scripts`, `engines`, `config`, etc. — and replaces the older boolean `touches_lockfile` flag. Empty set means the candidate is not a lockfile-toucher and the section-aware collision rule below is a no-op for it.
@@ -29,8 +29,9 @@ Across the session, the orchestrator maintains seven mental data structures. Hol
 - **`divert_queue`**: at most two synthetic high-priority entries that *preempt* normal work — `fix-main-ci` (main's latest CI is red) and `fix-failing-prs-batch` (≥10 open red PRs across all authors). Drained BEFORE `failed_prs`. Repopulated by the divert-checks scan (step 4.5 at setup, step D in steady state). An entry is only repopulated when no in-flight slot is already working that diversion — never two workers on the same diversion.
 - **`main_ci`**: cached snapshot of `<default-branch>` CI — `{ status: "green" | "red" | "pending" | "unknown", earliest_red_run_id?: string, earliest_red_run_url?: string, earliest_red_sha?: string, checked_at: <timestamp> }`. Refreshed by the divert-checks scan; consumed by the status line and the divert dispatch templates.
 - **`session_prs`**: set of PR numbers this session opened or fix-checks-touched. Populated by step A's reconcile (every `shipped` or fix-checks-touch appends `<M>`). Read by the [end-of-session drain](#end-of-session-drain) to decide what to watch and when to exit. The drain doesn't terminate until every entry is either merged/closed, `ci-blocked`, or settled (pending with no head-commit movement across a 5-poll window).
+- **`deferred_issues`**: list of `{ issue: N, reason: "..." }` entries for issues the [scope pre-flight](#6-initial-scope-pre-flight) flagged as not-shippable-by-a-single-worker (multi-PR migration, SDK upgrade, external decision required, etc.). The orchestrator posts the reason as a comment on the issue, drops the issue from `raw_backlog`, and never dispatches a worker against it this session. Surfaced in the end-of-session summary's `Deferred:` block.
 
-When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules).
+When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules). `deferred_issues` is **not** part of the dispatch order — deferred entries never become work for this session.
 
 ## Live dashboard
 
@@ -612,19 +613,37 @@ Each entry → push onto `failed_prs`, **deduped against entries already in `fai
 
 ### 6. Initial scope pre-flight
 
-Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel (one message, multiple `Agent` tool calls — these are short-lived and *not* backgrounded, so block until all return). Each returns:
+Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel (one message, multiple `Agent` tool calls — these are short-lived and *not* backgrounded, so block until all return). Each returns **one of two shapes**:
+
+**Ready shape** (default — the candidate is shippable as a single-worker dispatch):
 
 ```
 { issue: N, files: ["path/a", "path/b", ...], lockfile_sections: ["overrides", "dependencies", ...] }
 ```
 
-`lockfile_sections` is the set of root-manifest sections the candidate will touch — typically the top-level keys in `package.json` (`overrides`, `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `scripts`, `engines`, `config`, `workspaces`, `resolutions`, `pnpm`, etc.). For non-`package.json` lockfile-class files (`Gemfile`, `go.mod`, `Cargo.toml`, `requirements.txt`, generated SQL migrations, root build config like `vite.config.ts` / `tsconfig.json`) use the filename as the section token (e.g., `"go.mod"`, `"Cargo.toml"`, `"migrations"`) so the section-collision check has a stable key to compare against — these are coarser-grained than `package.json` sections but the principle is the same: disjoint claims co-run, overlapping claims park. Return an **empty array** for issues that don't touch any lockfile-class file. Use the issue body/title — don't over-investigate. Budget ~30s per scoping agent.
+**Deferred shape** (the scope agent read the issue + code and concluded the fix isn't ship-able as a single `shipyard:issue-worker` dispatch — multi-PR migration, SDK upgrade, external decision, infrastructure provisioning, etc.):
+
+```
+{ issue: N, deferred: "<one-paragraph reason the orchestrator should tell the human>" }
+```
+
+Scoping-agent prompt instruction: *If your read of the issue + codebase suggests the fix isn't a single-worker job — multi-PR migration, SDK upgrade, external decision (legal/design), infrastructure provisioning — return the deferred shape with a one-paragraph `deferred` value explaining what the orchestrator should tell the human. Don't try to bin-pack a multi-PR effort into a single dispatch; the worker will just return `blocked` after burning agent time. When in doubt — default to ready; deferred is for clear multi-PR / external-input cases, not "this might be hard."*
+
+`lockfile_sections` (ready shape only) is the set of root-manifest sections the candidate will touch — typically the top-level keys in `package.json` (`overrides`, `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `scripts`, `engines`, `config`, `workspaces`, `resolutions`, `pnpm`, etc.). For non-`package.json` lockfile-class files (`Gemfile`, `go.mod`, `Cargo.toml`, `requirements.txt`, generated SQL migrations, root build config like `vite.config.ts` / `tsconfig.json`) use the filename as the section token (e.g., `"go.mod"`, `"Cargo.toml"`, `"migrations"`) so the section-collision check has a stable key to compare against — these are coarser-grained than `package.json` sections but the principle is the same: disjoint claims co-run, overlapping claims park. Return an **empty array** for issues that don't touch any lockfile-class file. Use the issue body/title — don't over-investigate. Budget ~30s per scoping agent.
 
 The boolean `touches_lockfile` flag from the older spec is replaced by `lockfile_sections` being non-empty. The orchestrator never re-derives the boolean; rule logic always reads the array directly so the section-aware check can fire.
 
-**Partition each `files` array into `{ hard: [...], soft: [...] }`** by matching each path against the soft-collision glob set defined in the [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c) (default + any `--soft-collision-path` extensions). Paths that match a soft-collision glob go into `soft`; everything else goes into `hard`. The orchestrator does the partitioning — scoping agents return raw paths; they don't need to know about the tier distinction. Cache the partitioned result as the candidate's `claimed_paths`.
+**Handling each returned entry:**
 
-Push the results onto `ready_issues` (preserving rank). Remove those issue numbers from `raw_backlog`.
+- **Ready entries** — partition each `files` array into `{ hard: [...], soft: [...] }` by matching each path against the soft-collision glob set defined in the [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c) (default + any `--soft-collision-path` extensions). Paths that match a soft-collision glob go into `soft`; everything else goes into `hard`. The orchestrator does the partitioning — scoping agents return raw paths; they don't need to know about the tier distinction. Cache the partitioned result as the candidate's `claimed_paths`. Push onto `ready_issues` (preserving rank).
+- **Deferred entries** — do NOT push onto `ready_issues` and do NOT dispatch a worker. Instead:
+  1. Post a comment on the issue: `Scope-preflight diagnosis (not auto-fixable as a single worker): <deferred reason>`. Use `gh issue comment <N> --repo <owner/repo> --body "..."`. If the comment fails (rate limit, permission), log an advisory and continue — don't block the pre-flight pass on a single comment failure.
+  2. Append the entry `{ issue: N, reason: "<deferred reason>" }` to a session-level `deferred_issues` list (a new piece of orchestrator state — initialize as `[]` at startup alongside `ready_issues` / `raw_backlog`). This feeds the end-of-session summary's `Deferred:` block (see [End-of-session summary](#end-of-session-summary)).
+  3. **Do not** add a label, do not close the issue, do not assign to a human. The issue stays open with the diagnosis comment — the human reads the comment and decides what to do (open a multi-PR plan, escalate, defer to a sprint, etc.).
+
+Remove every processed issue number from `raw_backlog` regardless of which shape was returned (ready *or* deferred) — both are "done" from the scoping pass's perspective.
+
+The same handling applies anywhere scoping runs (step 6 initial pre-flight + step D's scope refill + step C rule 5's refill burst). A scoping agent's return contract is identical across those call sites; the orchestrator branches on `deferred` presence the same way each time.
 
 ### 6.5 Status line + state-change banners (UI)
 
@@ -862,7 +881,7 @@ Otherwise, every `--concurrency` completions (a full pool's worth), refresh queu
 
 1. **Divert-checks refresh** — re-run step 4.5 (main CI + all-authors failing PR count). Update `main_ci` and the `failing_pr_count_all` cache. Enqueue or clear `divert_queue` entries per the rules in step 4.5. This is the only place outside setup where diversions are evaluated.
 2. **Failed-PR scan (@me)** — re-run the step-5 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
-3. **Scope refill + auto-triage pass** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Append results to `ready_issues`. Discovery of newly-opened issues now happens per-dispatch in step C's lightweight backlog re-check, so this sub-step no longer needs to re-run the full step-4 fetch for discovery — it's purely a scope-refill. The periodic auto-triage label-stamping (step 4's P0/P1/P2 pass on any newly-discovered untriaged issues sitting in `raw_backlog`) also runs here, since step C deliberately skips it to stay cheap.
+3. **Scope refill + auto-triage pass** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Apply the same per-entry handling as the [initial scope pre-flight](#6-initial-scope-pre-flight): ready entries get partitioned + appended to `ready_issues`; deferred entries get a diagnosis comment posted on the issue, appended to `deferred_issues`, and dropped from `raw_backlog` without ever reaching `ready_issues`. Discovery of newly-opened issues now happens per-dispatch in step C's lightweight backlog re-check, so this sub-step no longer needs to re-run the full step-4 fetch for discovery — it's purely a scope-refill. The periodic auto-triage label-stamping (step 4's P0/P1/P2 pass on any newly-discovered untriaged issues sitting in `raw_backlog`) also runs here, since step C deliberately skips it to stay cheap.
 
 The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
 
@@ -1183,6 +1202,7 @@ Issues processed: N
 Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pending], ...)
 In flight at exit: F (#C → PR #Z still pending CI after drain)
 Blocked: K (#P — <reason>, #Q — <reason>)
+Deferred: <Df> (#P — <first sentence of reason>, #Q — <first sentence of reason>, ...)
 Errored: J (#R — <agent error>)
 Diversions: <D> dispatched
   fix-main-ci: <d1> (<shipped/noop/blocked breakdown, with PR #s and block reasons>)
@@ -1213,6 +1233,8 @@ The `Drain phase` line reports how the [end-of-session drain](#end-of-session-dr
 The `Drain-phase rebases` line reports the outcomes of fix-rebase dispatches issued during the drain. `<rebased_count>` is the number of PRs that successfully rebased onto a freshly-advanced main and were force-pushed (they then re-entered the merge train and the rest of the drain monitored them like any other green-or-pending PR). `<rebase_blocked_count>` is the size of `rebase_blocked_prs` — PRs whose rebase hit a non-trivial conflict, a force-with-lease rejection, or some other deterministic failure. Each blocked PR is one-shot per session: the orchestrator does not retry within the same session, but the next session's drain phase will re-evaluate. Omit this line entirely when both counts are zero (no DIRTY PRs were dispatched against during the drain — clutter is the enemy).
 
 Omit the `Diversions:` block entirely when `D == 0` — clutter is the enemy. The `Final repo health` line always prints; if a diversion is blocked at exit, that line surfaces the unresolved state (e.g. `main:🔴 · failing PRs (all authors): 12 ⚠️`) so the user knows what they're walking into.
+
+Omit the `Deferred:` line entirely when `deferred_issues` is empty. When non-empty, render one `#N — <first sentence of reason>` per entry (truncate the reason at the first sentence boundary or 80 chars, whichever comes first, so the line stays scannable). The full reason is already posted as a comment on each issue, so the summary line is just a pointer; clicking through to the issue gives the human the complete diagnosis. Deferred issues stay open and unassigned — the user decides whether to escalate, open a multi-PR plan, or defer to a sprint after reading the in-issue diagnosis.
 
 The lifetime line is sourced from two queries run just before printing the summary:
 
