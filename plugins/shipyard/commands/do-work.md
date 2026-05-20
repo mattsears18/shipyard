@@ -189,6 +189,10 @@ Skipped (<S> total):
 
 Total open: <W + S>
 
+Auto-cleared this session:
+  blocked labels:   <cleared_blocked> issue(s)  (#X, #Y, ...)
+  held blocked:     <held_blocked> issue(s)  (#Z, ...)
+
 PR-side state:
   ci-blocked PRs: <c> total
     will be re-evaluated this session: <k>  (#J, #K, ...)
@@ -200,7 +204,9 @@ Unblock recommendations (work these in parallel while /do-work runs):
   ...
 ```
 
-The **PR-side state** block surfaces shipyard's circuit breaker visibly so it's not invisible state. `<k>` (will be re-evaluated) is the count of PRs the [step 3d auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) just unlocked — those PRs are about to flow into step 5's failing-PR snapshot and get another 3 fix-checks attempts this session. `<h>` (held) is the count of PRs the sweep examined but kept labeled — they have no new commits since shipyard gave up, so the "human needs to look" rule (see [Don't L873](#dont)) still applies. The block prints whenever `<c> > 0`; omit it entirely when there are no `ci-blocked` PRs. The numbers come directly from `cleared_ciblocked` / `held_ciblocked` (and their PR-number arrays) recorded in step 3d.
+The **PR-side state** block surfaces shipyard's circuit breaker visibly so it's not invisible state. `<k>` (will be re-evaluated) is the count of PRs the [step 3d.1 auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) just unlocked — those PRs are about to flow into step 5's failing-PR snapshot and get another 3 fix-checks attempts this session. `<h>` (held) is the count of PRs the sweep examined but kept labeled — they have no new commits since shipyard gave up, so the "human needs to look" rule (see [Don't L873](#dont)) still applies. The block prints whenever `<c> > 0`; omit it entirely when there are no `ci-blocked` PRs. The numbers come directly from `cleared_ciblocked` / `held_ciblocked` (and their PR-number arrays) recorded in step 3d.1.
+
+The **Auto-cleared this session** block (above PR-side state) surfaces step 3d.2's `blocked`-label sweep. `cleared_blocked` is the count of issues whose `Blocked by #N` body references all resolved to closed blockers — the label was removed and they flow back into the workable queue this session. `held_blocked` is the count of issues the sweep examined but kept labeled (no body reference to scan, or at least one referenced blocker still open). The block prints only when either count is > 0 — omit entirely when there's no `blocked` activity worth reporting. Numbers come from `cleared_blocked` / `held_blocked` (and their issue-number arrays) recorded in step 3d.2.
 
 Edge cases:
 
@@ -296,9 +302,9 @@ gh issue list --repo <owner/repo> --label shipyard --assignee @me --state open -
 
 Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory — don't auto-act.
 
-**3d. Auto-clear stale `ci-blocked` labels.** `ci-blocked` is shipyard's "stop retrying" signal, applied by step A's fix-checks reconcile after the 3-attempt cap (see [step A](#a-reconcile-the-return), [Don't L873](#dont)). The label is sticky on purpose — without it, the next session would re-dispatch fix-checks against the same wall. But "sticky forever" is the wrong policy: a new commit on the PR's head branch (a human pushed a fix, the author rebased onto a green main, etc.) means the premise of the block — "no movement since shipyard gave up" — is no longer true. Auto-clear the label on those PRs so they flow back into step 5's failing-PR snapshot and get another 3 attempts.
+**3d.1. Auto-clear stale `ci-blocked` labels.** `ci-blocked` is shipyard's "stop retrying" signal, applied by step A's fix-checks reconcile after the 3-attempt cap (see [step A](#a-reconcile-the-return), [Don't L873](#dont)). The label is sticky on purpose — without it, the next session would re-dispatch fix-checks against the same wall. But "sticky forever" is the wrong policy: a new commit on the PR's head branch (a human pushed a fix, the author rebased onto a green main, etc.) means the premise of the block — "no movement since shipyard gave up" — is no longer true. Auto-clear the label on those PRs so they flow back into step 5's failing-PR snapshot and get another 3 attempts.
 
-This sweep runs **before** step 5's failing-PR snapshot so freshly-unblocked PRs are visible in the same session. It is also the only place `ci-blocked` is ever removed by the orchestrator — applying the label is step A's job, removing it is step 3d's job, and no other step touches it.
+This sweep runs **before** step 5's failing-PR snapshot so freshly-unblocked PRs are visible in the same session. It is also the only place `ci-blocked` is ever removed by the orchestrator — applying the label is step A's job, removing it is step 3d.1's job, and no other step touches it.
 
 ```bash
 # All open PRs currently carrying ci-blocked, regardless of author. Foreign authors
@@ -353,6 +359,82 @@ Record `cleared_ciblocked` and `held_ciblocked` (plus the matching PR-number arr
 - Network blip on `gh api`. Held.
 
 Any of these means the auto-clear can't make a confident judgment, so the safe default is to preserve the block. The next session retries.
+
+**3d.2. Auto-clear stale `blocked` labels.** The `blocked` label is shipyard's "wait for #N to land" signal — applied either by a human or by step A's reconcile when an agent returns `blocked: <reason>` (see the `Notes` block in this repo's `CLAUDE.md`). It is never auto-removed today, which means an issue carrying `Blocked by #886, #887, #888` in its body stays labeled forever even after all three blockers merge — and step 4's `-label:blocked` filter then silently hides it from every subsequent session's workable queue. The user has to notice and remove the label by hand.
+
+The same auto-clear pattern as `ci-blocked` works here, just with a different condition: instead of "head commit newer than label timestamp," the rule is "every `Blocked by #N` reference in the body resolves to a closed issue." This sweep runs immediately after the `ci-blocked` sweep, before step 4's backlog fetch, so freshly-unblocked issues land in the workable bucket the same session they become unblocked.
+
+```bash
+# All open issues currently carrying the `blocked` label.
+gh issue list --repo <owner/repo> --state open --label blocked --limit 200 \
+  --json number,body \
+  > /tmp/do-work-blocked-issues.json
+
+cleared_blocked=0
+held_blocked=0
+declare -a cleared_blocked_numbers
+declare -a held_blocked_numbers
+
+for n in $(jq -r '.[].number' /tmp/do-work-blocked-issues.json); do
+  body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body' /tmp/do-work-blocked-issues.json)
+
+  # Extract every `Blocked by #N` reference (case-insensitive, all matches).
+  # The grep pattern catches `Blocked by #123`, `blocked by #45, #67, #89`, etc.
+  blockers=$(printf '%s' "$body" | grep -oiE 'blocked by[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)' \
+    | grep -oE '#[0-9]+' \
+    | tr -d '#' \
+    | sort -u)
+
+  if [ -z "$blockers" ]; then
+    # No `Blocked by #N` reference in body — can't make a judgment. Hold.
+    held_blocked=$((held_blocked + 1))
+    held_blocked_numbers+=("$n")
+    continue
+  fi
+
+  # Check each referenced blocker's state. If ANY is OPEN (or unresolvable), hold.
+  all_closed=true
+  closed_list=""
+  for b in $blockers; do
+    state=$(gh issue view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null || echo "")
+    if [ -z "$state" ]; then
+      # Could be a PR (gh issue view fails on PR numbers) — try gh pr view.
+      state=$(gh pr view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null || echo "")
+    fi
+    case "$state" in
+      CLOSED|MERGED)
+        closed_list="${closed_list:+$closed_list, }#$b"
+        ;;
+      *)
+        all_closed=false
+        break
+        ;;
+    esac
+  done
+
+  if $all_closed; then
+    gh issue edit "$n" --repo <owner/repo> --remove-label blocked
+    gh issue comment "$n" --repo <owner/repo> \
+      --body "Auto-cleared \`blocked\` — all referenced blockers ($closed_list) are now closed."
+    cleared_blocked=$((cleared_blocked + 1))
+    cleared_blocked_numbers+=("$n")
+  else
+    held_blocked=$((held_blocked + 1))
+    held_blocked_numbers+=("$n")
+  fi
+done
+```
+
+Record `cleared_blocked` and `held_blocked` (plus the matching issue-number arrays) — both surface in step 2's backlog overview when either is > 0, and again in the end-of-session summary. The issues whose labels just got cleared will be picked up automatically by step 4's backlog fetch — they're no longer carrying `blocked`, so step 4's `-label:blocked` filter doesn't exclude them anymore.
+
+**Held cases — when the sweep deliberately doesn't clear:**
+
+- **No `Blocked by #N` reference in body.** The label is set but the body doesn't say what's blocking. Could be a human-applied label with the rationale in a comment thread, could be a free-form "waiting on Apple to ship X" gate. Either way, no mechanical signal to act on — hold.
+- **Any referenced blocker is still OPEN.** The premise still holds; don't clear.
+- **Secondary gates past the `Blocked by` line.** The body might say "Blocked by #881. Also don't start until Phase B has shipped AND there's a calendar month of organic-traffic data." This sweep only looks at the `Blocked by` reference; the secondary gate is a soft condition that's hard to detect mechanically. False-positives here are recoverable — the human re-adds `blocked`, or the issue worker returns `blocked` after scoping. The cost of occasionally surfacing a still-soft-gated issue is far lower than the cost of leaving truly-unblocked issues invisible.
+- **Unresolvable reference.** The `Blocked by #N` reference points to an issue/PR that `gh issue view` and `gh pr view` both error on (deleted, in a different repo, mistyped). Treat as "not all closed" — hold.
+
+The asymmetry with `ci-blocked` is deliberate: `ci-blocked`'s premise is mechanical ("no new commits since the label was applied"), so the timestamp comparison is the right tool. `blocked`'s premise is referential ("a specific other issue must close first"), so a body-reference scan is the right tool. Same shape, different signal.
 
 ### 3.5 Refine pending user-feedback issues
 
