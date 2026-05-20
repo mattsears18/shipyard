@@ -56,3 +56,70 @@ Once all agents return, present a consolidated summary:
 - **Out of scope / surfaces not reviewed** (so the user can ask for follow-ups)
 
 Do not file any issues from the main session — that's each agent's job. The main session orchestrates and reports.
+
+## Write the consolidated report to disk
+
+After emitting the chat summary, persist the same content to `./.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md` so it survives the session. Don't skip this step — the data is already in your context; the cost of writing it is one tool call and the value of having it on disk is large.
+
+1. **Create the directory if missing**, scoped to the host repo's working directory:
+
+   ```bash
+   mkdir -p .shipyard/audits
+   ```
+
+   Do NOT `git add` it. The directory is meant to stay local — the host repo decides whether to track `.shipyard/` via its own `.gitignore`.
+
+2. **Compute the target path.** Base name is `<YYYY-MM-DD>-shipyard-audit.md` using today's date in the local timezone. If that file already exists (rerun same day), suffix `-2`, `-3`, etc. until a free path is found — don't clobber. Suggested check:
+
+   ```bash
+   base="$(date +%Y-%m-%d)-shipyard-audit"
+   path=".shipyard/audits/${base}.md"
+   n=2
+   while [ -e "$path" ]; do path=".shipyard/audits/${base}-${n}.md"; n=$((n+1)); done
+   ```
+
+3. **Write the report** using the `Write` tool. Mirror the same structure the chat summary emitted, plus a metadata header. Recommended layout:
+
+   ```markdown
+   # Shipyard audit — <target URL or owner/repo> — <YYYY-MM-DD>
+
+   - **Target:** <URL or owner/repo>
+   - **Branch / SHA:** <branch>@<short-sha> (if known)
+   - **Audit type(s):** <type list, e.g. `all` or `lighthouse, security, a11y`>
+   - **Dispatched agents:** <agent slugs, comma-separated>
+   - **Total issues filed:** <count>
+
+   ## Per-audit verdict
+
+   | Audit | Verdict | Filed |
+   |---|---|---|
+   | <audit> | <one-line verdict> | <count> |
+
+   ## Issues filed
+
+   ### <audit-name>
+
+   - [#<n>] <title> — <severity> — <issue URL>
+
+   ## Highest-signal findings
+
+   1. <cross-cutting item 1>
+   2. <cross-cutting item 2>
+   ...
+
+   ## Surfaces NOT reviewed
+
+   - <surface or dimension not covered, with a one-line reason or follow-up suggestion>
+
+   ## Process notes
+
+   - <agent failures, partial returns, skipped dispatches, e.g. "lighthouse-auditor returned a grouping but didn't file via gh">
+   ```
+
+   Omit sections that have no content (e.g. no skipped audits → drop "Surfaces NOT reviewed"). Don't pad — empty bullets are noise.
+
+4. **Surface the path in chat** as the last line of your reply so the user sees where it landed:
+
+   > Report saved: `.shipyard/audits/<filename>.md`
+
+If the working directory isn't a git repo or `.shipyard/` can't be created (read-only filesystem, permissions), report the failure inline (`Report could not be saved: <reason>`) and continue — don't block the chat summary on it.

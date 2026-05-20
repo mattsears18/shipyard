@@ -4,6 +4,18 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.2.4 — 2026-05-20
+
+Adds an automatic post-run report-writer to `/shipyard:audit` so the consolidated summary survives the session. Closes [#66](https://github.com/mattsears18/claude-plugins/issues/66).
+
+- **New "Write the consolidated report to disk" section** in `plugins/shipyard/commands/audit.md`, appended after the existing "End-of-run summary" section. The orchestrator now persists the same content it emits in chat to `./.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md` after dispatching its agents and synthesizing the verdict.
+- **Same-day collision handling.** If the target file already exists (rerun same day), the writer suffixes `-2`, `-3`, etc. until a free path is found — never clobbers a prior report.
+- **No `git add`.** The `.shipyard/` directory is meant to stay local; the host repo decides whether to track it via its own `.gitignore`. Mirrors the convention already used for `.claude/` and `.husky/`.
+- **Failure-mode guidance.** If the working directory isn't a git repo or `.shipyard/` can't be created (read-only FS, permissions), the writer reports the failure inline rather than blocking the chat summary.
+- **Chat output adds a final "Report saved: …" line** so the user sees where the file landed without having to ask.
+
+Discovered after a `mattsears18/lightwork` `/shipyard:audit all` run that dispatched 12 agents in parallel; the orchestrator produced a great chat summary, then the user asked for a saved report and the main session had to manually rebuild the same markdown table because the original synthesis had already aged out of context. The asymmetry — a complete report exists in the orchestrator's head for ~30 seconds and then is thrown away — was the motivating cost.
+
 ### 1.2.3 — 2026-05-20
 
 Replaces the end-of-session drain's hard 15-min cap with a no-forward-progress termination criterion so `/shipyard:do-work` keeps monitoring the merge train until every session PR is genuinely settled. Closes [#57](https://github.com/mattsears18/claude-plugins/issues/57) and [#58](https://github.com/mattsears18/claude-plugins/issues/58).
