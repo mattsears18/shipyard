@@ -81,9 +81,21 @@ Title prefixes:
 - `fix(a11y,ios):` / `fix(a11y,android):` for accessibility issues
 - `feat(ios):` / `feat(android):` for missing states / surfaces
 
-Embed the screenshot path in every body: `Evidence: \`store-assets/screenshots/ios/03-task-detail.png\``.
+Embed the screenshot path in every body: `Evidence: \`store-assets/screenshots/ios/03-task-detail.png\``. These paths reference files already committed to the host repo — don't copy them anywhere.
 
-### 6. Return summary
+**If you ever produce a derived screenshot** (annotated overlay, cropped detail, side-by-side comparison) **save it to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<finding-id>.png`, never to the repo root or any working directory.** The orchestrator promises the parent directory exists before dispatch (sibling to the consolidated `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md` report). Embed via relative path: `![](./.shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png)`. Don't dump derived assets next to the source screenshots in `store-assets/` — that directory is for committed store assets, not audit artifacts.
+
+### 6. Clean up unreferenced derived screenshots
+
+If you produced derived screenshots in step 5, delete any that did NOT end up referenced in an issue body before returning. Only touch `.shipyard/audits/<YYYY-MM-DD>/screenshots/` from this run — never `store-assets/` (those are committed source-of-truth files) and never prior dates.
+
+```bash
+DIR=".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
+[ -d "$DIR" ] || exit 0
+# For each file in $DIR, check whether any filed issue's body referenced it. If not, remove it.
+```
+
+### 7. Return summary
 
 ```
 Mobile UX audit (iOS + Android, N screenshots reviewed):
@@ -111,3 +123,5 @@ Keep under 30 lines.
 - Don't file taste / "would be nice."
 - Don't moralize. Concrete observation + impact, every time.
 - Don't `git add` or commit anything.
+- Don't save derived screenshots (overlays, crops, comparisons) to the repo root, to `store-assets/`, or any working directory other than `.shipyard/audits/<YYYY-MM-DD>/screenshots/`. They leak into `git status` and the user has to clean them up by hand.
+- Don't leave unreferenced derived screenshots behind. If you generated one and it didn't earn a place in an issue body, delete it before returning.

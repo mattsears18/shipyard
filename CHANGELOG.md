@@ -4,6 +4,20 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.2.6 — 2026-05-20
+
+Routes visual-evidence auditor screenshots to a known subdirectory under `.shipyard/audits/` so they stop cluttering the repo root with untracked PNGs after every `/shipyard:audit` run. Closes [#68](https://github.com/mattsears18/claude-plugins/issues/68).
+
+- **New routing rule in `plugins/shipyard/agents/web-ux-auditor.md` and `plugins/shipyard/agents/a11y-auditor.md`.** Every `take_screenshot` call must save to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<route-or-finding-id>.png` — never to the repo root or any working directory. If the tool only accepts a `filePath` argument, the auditor passes the full relative path explicitly; if it auto-names, the auditor immediately `mv`s the output into the target directory before continuing the tour.
+- **Embedding via relative path.** Issue bodies now reference screenshots with `![](./.shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png)` so the markdown renders the image inline when viewed in a checked-out repo and is a click-through reference on github.com.
+- **Cleanup-unreferenced-screenshots step.** After all issues are filed, each auditor walks `.shipyard/audits/<YYYY-MM-DD>/screenshots/` and deletes any file that didn't end up cited in an issue body. The "no evidence, no finding" rule already filtered out screenshots without a home; this filters out the inverse — screenshots that were captured during exploration but didn't make it into a final issue. The audit run's directory is the only one each auditor is allowed to clean (never prior dates, never `store-assets/`).
+- **Return-summary additions.** Each auditor's end-of-run summary now reports retained screenshots (`<path> → #NNN`) and the count of unreferenced screenshots that were deleted, so the orchestrator's consolidated report can list which evidence survives the session.
+- **Mobile-ux gets a derived-screenshot clause.** `mobile-ux-auditor` primarily reads committed store screenshots from `store-assets/screenshots/{ios,android}/`, so its evidence path is unchanged. But if it ever produces a derived screenshot (annotated overlay, cropped detail, side-by-side comparison), that derived asset goes under `.shipyard/audits/<YYYY-MM-DD>/screenshots/` like the other agents — explicitly NOT next to the source files in `store-assets/`, which are committed canonical assets.
+- **Pre-dispatch directory creation in `plugins/shipyard/commands/audit.md`.** `/shipyard:audit` now `mkdir -p`s `.shipyard/audits/<YYYY-MM-DD>/screenshots/` before dispatching any visual-evidence auditor, so the auditors can write without re-checking. This is the orchestrator's promise the auditors rely on.
+- **New `Don't` rules.** Each visual-evidence agent gets two new entries: "Don't save screenshots to the repo root or any working directory other than the per-run screenshots dir" and "Don't leave unreferenced screenshots behind."
+
+Discovered after a `mattsears18/lightwork` `/shipyard:audit all` run left four screenshots in the repo root (`lw-forgot-password.png`, `lw-login-audit.png`, `lw-marketing-full.png`, `lw-register-audit.png`, ~770 KB total) — never referenced by any committed code, never embedded in the issues they supported, never moved or deleted by the audit's own cleanup. The user had to `git status` and `rm` them by hand. Same general theme as #57 (premature termination cleanup gap), different surface.
+
 ### 1.2.5 — 2026-05-20
 
 Adds a `PreToolUse` guard against an agent editing files outside its own worktree. Closes [#60](https://github.com/mattsears18/claude-plugins/issues/60).

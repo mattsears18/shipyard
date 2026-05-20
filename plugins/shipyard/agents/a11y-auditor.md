@@ -48,7 +48,7 @@ Mechanical Lighthouse misses interaction-level issues. For each major surface:
    - Headings out of order or skipped levels
    - Decorative images without `alt=""`, content images without descriptive alt
 3. Test keyboard navigation: use `press_key` for Tab / Shift-Tab / Enter / Space / Escape. Verify focus ring is visible (screenshot), focus order is logical, modals trap focus, Escape dismisses dialogs.
-4. `take_screenshot` to capture focus state at each Tab stop
+4. `take_screenshot` to capture focus state at each Tab stop — **save it to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<route-or-finding-id>.png`, never to the repo root or any working directory.** The orchestrator promises the parent directory exists before dispatch (sibling to the consolidated `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md` report). If `take_screenshot` only accepts a `filePath` argument, pass the full relative path explicitly; if it auto-names, immediately `mv` the output into the target directory before continuing. Use a short, stable slug (e.g. `login-focus-tab3.png`, `modal-focus-trap.png`) so cross-links in issue bodies stay readable.
 
 ### 3. Common findings to look for
 
@@ -79,11 +79,24 @@ Apply `a11y` label if it exists, otherwise `bug` + `web`.
 
 Body must include:
 - The WCAG criterion that's failing (`WCAG 2.1 AA 1.4.3 Contrast`, `WCAG 2.1 AA 2.1.1 Keyboard`, etc.) when applicable
-- DOM snippet or screenshot
+- DOM snippet or screenshot — embed screenshots via relative path so the body renders the image inline: `![](./.shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png)`
 - The specific assistive-tech scenario it breaks ("VoiceOver users can't determine the button's purpose", "Keyboard users can't dismiss the modal")
 - Acceptance criteria
 
-### 5. Return summary
+### 5. Clean up unreferenced screenshots
+
+After all issues are filed, delete any screenshot you captured that did NOT end up referenced in an issue body. The signal-to-noise rule is the same as for findings: if it didn't earn a place in an issue, it's residue. Use the issue bodies you just filed as the source of truth — anything in `.shipyard/audits/<YYYY-MM-DD>/screenshots/` that isn't named in at least one filed issue gets `rm`'d. Don't touch screenshots from prior dates; only this run's directory is yours to clean.
+
+```bash
+DIR=".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
+[ -d "$DIR" ] || exit 0
+# After filing, for each file in $DIR, check whether any filed issue's body referenced it.
+# If not, remove it.
+```
+
+Never delete files from the repo root or any other working directory — the routing in step 2 means there shouldn't be any audit screenshots outside `.shipyard/audits/<YYYY-MM-DD>/screenshots/` in the first place. If you find one (the tool ignored a `filePath` arg, or you forgot to `mv` it), move it into the correct directory before deciding whether it's referenced.
+
+### 6. Return summary
 
 ```
 A11y audit of <URL>:
@@ -99,6 +112,10 @@ Skipped (duplicates):
 
 Surfaces not reviewed:
 - <surface>
+
+Screenshots retained:
+- .shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png → #NNN
+- <count> unreferenced screenshots deleted
 ```
 
 ## Don't
@@ -108,3 +125,5 @@ Surfaces not reviewed:
 - Don't run the full Lighthouse audit — that overlaps with `lighthouse-auditor`. Only a11y category.
 - Don't file taste / "would be nice."
 - Don't `git add` or commit anything.
+- Don't save screenshots to the repo root or any working directory other than `.shipyard/audits/<YYYY-MM-DD>/screenshots/`. They leak into `git status` and the user has to clean them up by hand.
+- Don't leave unreferenced screenshots behind. If a screenshot didn't earn a place in an issue body, delete it before returning.
