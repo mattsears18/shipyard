@@ -15,13 +15,15 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 - **--label LABEL** (optional, repeatable): only work on issues with all listed labels. Without it: any open candidate issue.
 - **--prioritize-label LABEL** (optional): if provided, issues carrying this label sort ahead of everything else in the backlog — they still pass through normal eligibility (assignee, blocked, linked-PR filters), but get a priority boost above the `P0`/`P1`/`P2` tiers. Issues without the label fall back to the normal ranking. Differs from `--label`, which **filters** the backlog rather than reordering it.
 - **--concurrency N** (optional, default `2`): the size of the rolling worker pool — i.e. the number of agents the orchestrator keeps in flight at any moment. Set to `1` for sequential.
+- **--soft-collision-concurrency N** (optional, default `3`): the cap on how many in-flight workers may simultaneously claim any **soft-collision** path (additive docs files — see [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c)). Set to `1` to opt out of soft-collision tiering entirely (every path collision becomes hard). Set higher to allow more parallelism on docs-heavy backlogs at the cost of more merge-conflict resolution work for the orchestrator at PR-land time.
+- **--soft-collision-path GLOB** (optional, repeatable): extend the default soft-collision path set with additional globs. Defaults to a curated set of additive docs files (see [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c)); these add on top, they don't replace.
 
 ## Orchestrator state
 
 Across the session, the orchestrator maintains seven mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
 
-- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-rebase" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: [...], agent_id } }. Size is bounded by `--concurrency`. The `fix-rebase` kind is drain-only — it is never dispatched outside the [end-of-session drain](#end-of-session-drain) phase.
-- **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths, touches_lockfile, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains.
+- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-rebase" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: { hard: [...], soft: [...] }, agent_id } }. Size is bounded by `--concurrency`. The `fix-rebase` kind is drain-only — it is never dispatched outside the [end-of-session drain](#end-of-session-drain) phase. `claimed_paths.hard` and `claimed_paths.soft` partition the paths a worker is touching by collision tier — see the [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c) for the tier definitions and the soft-collision cap.
+- **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths: { hard: [...], soft: [...] }, touches_lockfile, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains.
 - **`failed_prs`**: queue of red PRs (authored by `@me`) needing fix-checks-only work. Drained after `divert_queue`, before `ready_issues`.
 - **`raw_backlog`**: ranked list of issue numbers not yet scoped. Source for refilling `ready_issues`.
 - **`divert_queue`**: at most two synthetic high-priority entries that *preempt* normal work — `fix-main-ci` (main's latest CI is red) and `fix-failing-prs-batch` (≥10 open red PRs across all authors). Drained BEFORE `failed_prs`. Repopulated by the divert-checks scan (step 4.5 at setup, step D in steady state). An entry is only repopulated when no in-flight slot is already working that diversion — never two workers on the same diversion.
@@ -491,6 +493,8 @@ Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping a
 
 `touches_lockfile: true` for issues that obviously edit `package.json`, `pnpm-lock.yaml`, `Gemfile.lock`, `go.sum`, `Cargo.lock`, migrations, or root build config. Use the issue body/title — don't over-investigate. Budget ~30s per scoping agent.
 
+**Partition each `files` array into `{ hard: [...], soft: [...] }`** by matching each path against the soft-collision glob set defined in the [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c) (default + any `--soft-collision-path` extensions). Paths that match a soft-collision glob go into `soft`; everything else goes into `hard`. The orchestrator does the partitioning — scoping agents return raw paths; they don't need to know about the tier distinction. Cache the partitioned result as the candidate's `claimed_paths`.
+
 Push the results onto `ready_issues` (preserving rank). Remove those issue numbers from `raw_backlog`.
 
 ### 6.5 Status line + state-change banners (UI)
@@ -499,10 +503,10 @@ There are two UI surfaces — both unconditionally re-print whenever repo-health
 
 #### Status line — one-line repo-health header
 
-Print before the initial pool fill, and again at the top of any turn where state visibly changed (a completion landed, a divert flipped, the failing-PR count crossed the threshold either way, or main flipped color). Format:
+Print before the initial pool fill, and again at the top of any turn where state visibly changed (a completion landed, a divert flipped, the failing-PR count crossed the threshold either way, main flipped color, or a soft-collision claim count changed). Format:
 
 ```
-/do-work · <owner/repo> · main:<emoji> · in-flight: <n>/<concurrency> [<labels>] · failing PRs: <m> (@me: <k>)<divert-suffix>
+/do-work · <owner/repo> · main:<emoji> · in-flight: <n>/<concurrency> [<labels>] · failing PRs: <m> (@me: <k>)<soft-suffix><divert-suffix>
 ```
 
 Fields:
@@ -510,17 +514,21 @@ Fields:
 - **main:** — `🟢 green`, `🔴 red (run <id>)`, `⏳ pending`, or `❔ unknown`. The run ID is `main_ci.earliest_red_run_id` when red.
 - **in-flight labels** — comma-separated, derived from each entry's `kind`/`target`: issue → `#N`, fix-checks → `fix-checks #M`, fix-main-ci → `⚠️ fix-main-ci`, fix-failing-prs-batch → `⚠️ fix-prs-batch`. Empty list → `[ ]`.
 - **failing PRs:** — the all-authors count from `failing_pr_count_all`. The `(@me: <k>)` parenthetical comes from `failed_prs.length + in_flight fix-checks count`. Append ` ⚠️` to the count when it's ≥ 10 (matches the divert threshold).
+- **soft-suffix** — when one or more soft-collision paths are claimed by in-flight workers, append ` · [soft: <path>×<n>, <path>×<n>, ...]` listing each distinct claimed soft path and how many in-flight workers are holding it. Order by claim count desc, then alphabetical. Bracket and brackets are part of the surface (visually similar to the in-flight labels). Append ` ⚠️` to any path whose count equals `--soft-collision-concurrency` (the cap — next claimer on that path will park). Omit the suffix entirely when no soft-collision claims are active.
 - **divert-suffix** — when a divert is enqueued but not yet in flight, append ` · diverting: <kind>`. When already in flight, the `[ ]` labels already make that visible, no suffix needed.
 
 Examples:
 
 ```
 /do-work · mattsears18/lightwork · main:🟢 · in-flight: 2/2 [#769, #768] · failing PRs: 3 (@me: 1)
+/do-work · mattsears18/claude-plugins · main:🟢 · in-flight: 3/4 [#63, #65, #67] · failing PRs: 0 (@me: 0) · [soft: plugins/shipyard/commands/do-work.md×3 ⚠️, CHANGELOG.md×3 ⚠️]
 /do-work · mattsears18/lightwork · main:🔴 (run 18234567) · in-flight: 2/2 [⚠️ fix-main-ci, #769] · failing PRs: 12 ⚠️ (@me: 2) · diverting: fix-failing-prs-batch
 /do-work · mattsears18/lightwork · main:⏳ · in-flight: 0/2 [ ] · failing PRs: 0 (@me: 0)
 ```
 
-When to print the status line: (a) startup, right before the initial pool fill; (b) any turn where `divert_queue` gained or lost an entry; (c) any turn where `main_ci.status` changed since the previous print; (d) any turn where `failing_pr_count_all` crossed the 10 threshold in either direction; (e) start of the end-of-session summary; (f) right after any state-change banner below.
+The soft-suffix is the human's signal that merge conflicts may surface at PR-land time on those paths. When a count hits the cap (` ⚠️`), the orchestrator is also one step away from parking — and the user can decide whether to bump `--soft-collision-concurrency` mid-session (next-session-only, the cap isn't hot-reloadable today) or let dispatch park.
+
+When to print the status line: (a) startup, right before the initial pool fill; (b) any turn where `divert_queue` gained or lost an entry; (c) any turn where `main_ci.status` changed since the previous print; (d) any turn where `failing_pr_count_all` crossed the 10 threshold in either direction; (e) start of the end-of-session summary; (f) right after any state-change banner below; (g) any turn where a soft-collision claim count crossed `--soft-collision-concurrency` (entering or leaving the cap) on any path.
 
 #### State-change banners — make divert events impossible to miss
 
@@ -679,7 +687,7 @@ Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 Otherwise, apply the **dispatch rules** to pick the next job:
 
 - **Job found** → issue the `Agent` tool call **in this turn**, not later. The `run_in_background: true` agent call IS the dispatch — there is no separate "will dispatch" state. Multiple slots freed by step B (e.g., two completion notifications batched into one turn, or a slot opened by step B alongside a slot newly freed by a divert clearing) are filled with parallel `Agent` calls in the same message.
-- **No compatible job (paths all collide, lockfile-toucher parking, backlog dry but other queues have work)** → record *why* the slot stays empty. The reason string feeds into step E's invariant line. Examples: `parked (all ready_issues collide with in_flight paths)`, `parked (lockfile-toucher #N is in flight)`, `parked (all queues empty after backlog re-check)`.
+- **No compatible job (paths all collide, lockfile-toucher parking, backlog dry but other queues have work)** → record *why* the slot stays empty. The reason string feeds into step E's invariant line. Examples: `parked (all ready_issues collide with in_flight paths)`, `parked (lockfile-toucher #N is in flight)`, `parked (all ready_issues blocked by soft-cap on CLAUDE.md, ×3 active)`, `parked (all queues empty after backlog re-check)`.
 
 If no compatible job exists this turn, the next completion will trigger another attempt — but only because step E will have logged the exact reason the slot was left idle, so subsequent turns can verify the condition still holds.
 
@@ -713,7 +721,7 @@ After A → B → C → D, the **last thing emitted in the turn** is a single-li
 [invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · idle_reason="<reason>"
 ```
 
-The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight drains)`, `draining=true`, `lockfile-toucher #N in flight (other slots parked)`, `all ready_issues collide with in_flight paths`, or a concrete diagnostic string. Vague reasons ("waiting for completions", "merge train draining", "nothing to do right now") are NOT acceptable — they're the recap pattern in disguise. If you can't name the queue-level reason the slot is empty, you haven't actually checked the queues; go back and check.
+The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight drains)`, `draining=true`, `lockfile-toucher #N in flight (other slots parked)`, `all ready_issues collide with in_flight paths`, `all ready_issues blocked by soft-cap on <path> (×<N> active)`, or a concrete diagnostic string. Vague reasons ("waiting for completions", "merge train draining", "nothing to do right now") are NOT acceptable — they're the recap pattern in disguise. If you can't name the queue-level reason the slot is empty, you haven't actually checked the queues; go back and check.
 
 **Self-check before ending the turn:** if the invariant line shows `in_flight < concurrency` AND `ready_issues + failed_prs + divert_queue + raw_backlog > 0` AND `dispatched_this_turn == 0`, that is a **programming error in the orchestrator's own turn** — the dispatch step (C) failed without a valid reason. Don't end the turn. Re-run step C, find what was skipped, dispatch, and re-emit the invariant line. Common causes: (a) you drafted a recap sentence and ended the turn before issuing the `Agent` tool call; (b) you reconciled the completion but forgot the freed slot needs filling; (c) you mistakenly believed "auto-merge will handle it" justifies skipping new dispatches (it does not — see the [Don't](#dont) section).
 
@@ -749,9 +757,32 @@ When filling a slot, walk this decision tree:
 
    > Rebase PR #<M> in `<owner/repo>` (branch `<headRefName>`) onto current `<default-branch>` in **fix-rebase mode**. The drain-phase snapshot found this PR with `mergeStateStatus: DIRTY` and no failing checks — it's just stale relative to a freshly-advanced main, and auto-merge won't fire until it's rebased. You are running inside an isolated git worktree — never `cd` outside it, never use `gh pr checkout`, and never `git switch` to the repo's default branch when you're done. Land on the PR's head branch with the safe two-step: `git fetch origin <headRefName> && git switch <headRefName>`. Then follow the `fix-rebase mode` section in the issue-worker spec: pre-flight to confirm DIRTY is still the state, `git fetch origin <default-branch> && git rebase origin/<default-branch>`, **trivial-conflict-or-bail policy** for conflicts (additive CHANGELOG/docs/CI matrix appends auto-resolve; anything semantic bails with `blocked rebase`), `git push --force-with-lease`, return. Do NOT touch the PR title / body / labels. Do NOT manually `gh pr merge` — auto-merge was armed when the PR was opened and rebasing doesn't un-arm it. Do NOT `--watch` checks. One rebase attempt per dispatch. Return values: `rebased #<M>`, `noop: not dirty (<reason>)`, or `blocked rebase #<M>: <reason>`. **Leave your worktree on `<headRefName>` when you return.**
 
-3. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight` (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`).
+3. **`ready_issues` non-empty?** → scan from the head for the first entry whose `claimed_paths` **don't collide** with any entry in `in_flight`, per the two-tier collision rule below.
 
-   - If the candidate `touches_lockfile`: dispatch only when `in_flight` is empty. While it runs, dispatch nothing else — other slots stay parked until it returns.
+   **Two collision tiers.** Path claims are partitioned into two buckets, with different parallelism rules:
+
+   - **Hard collision (park rule).** Source files where parallel edits clobber the same lines — `app.json`, `firestore.rules`, `vercel.json`, most `.ts/.tsx/.js/.jsx/.py/.go/.rs` source, generated SQL migrations, build configs (`vite.config.ts`, `next.config.js`, `tsconfig.json`, `pyproject.toml`, etc.). Existing rule applies: if any candidate `hard` path matches (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`) any in-flight `hard` OR `soft` path, the candidate is blocked. Park the slot until the colliding worker returns.
+   - **Soft collision (capped concurrency).** Append-style files where edits land in independent sections and merge conflicts are trivially human-resolvable at PR-land time. Default soft-collision glob set:
+     - `CHANGELOG.md`
+     - `CLAUDE.md`
+     - `README.md`
+     - `E2E_TESTS.md`
+     - `docs/**/*.md`
+     - `plugins/*/commands/*.md` and `plugins/*/agents/*.md` and `plugins/*/skills/**/SKILL.md` (spec markdown — append-style across sessions running on the shipyard plugin repo itself, so the meta-bottleneck doesn't park most slots)
+     - any glob passed via `--soft-collision-path` (additive — extends the default set, never replaces it)
+
+     A candidate may claim a soft path even if other in-flight workers already claim the same soft path, up to `--soft-collision-concurrency` simultaneous claimers per **distinct path** (default `3`). Count distinct paths individually: if two in-flight workers both claim `CLAUDE.md`, a third worker claiming only `CLAUDE.md` is OK (3/3); a fourth worker claiming `CLAUDE.md` parks. A worker claiming `CLAUDE.md` AND `CHANGELOG.md` consumes one slot in each path's counter, not one combined slot. **Soft paths never collide with hard paths of the same file** — they are evaluated against the soft cap, not the hard-collision rule. (In practice nothing in the default soft set is also in the hard set, because the soft set is exhaustively additive-docs paths. If a user's `--soft-collision-path` extension somehow overlaps a hard-natured path, the soft tier wins for that path — that's the user's stated intent. Pick globs carefully.)
+
+   Walk the candidate's paths. Compute compatibility:
+   - Any `candidate.hard ∈ in_flight.hard ∪ in_flight.soft` (with parent-dir prefix matching) → hard collision → candidate is blocked.
+   - Any `candidate.soft` whose **current in-flight claim count** is already `≥ --soft-collision-concurrency` → soft cap exhausted → candidate is blocked.
+   - Otherwise → candidate is compatible. Dispatch.
+
+   When a candidate is blocked by soft-cap exhaustion (but not by any hard collision), the next ready candidate may still be compatible — keep walking the queue instead of parking the slot. Soft caps are per-path, so a candidate touching `README.md` may be eligible even when `CLAUDE.md` is saturated.
+
+   When a worker returns, its slot's `claimed_paths.hard` and `claimed_paths.soft` are both released — decrement the soft-cap counters for every soft path the slot was holding.
+
+   - If the candidate `touches_lockfile`: dispatch only when `in_flight` is empty. While it runs, dispatch nothing else — other slots stay parked until it returns. (The lockfile rule supersedes the soft-collision rule: a lockfile-toucher never co-runs with anything, soft or hard.)
    - Otherwise: self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label shipyard`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `shipyard` label.
 
    Prompt template:
@@ -768,7 +799,7 @@ When filling a slot, walk this decision tree:
 
    The preamble is gated on the `user-feedback` label being present on the candidate at dispatch time. The rest of the standard prompt (worktree discipline, branch naming, `--label shipyard`, auto-merge, snapshot) is unchanged.
 
-4. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths, retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster), wait for the colliding worker to return.
+4. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths (hard release OR soft-cap decrement), retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster on a hard path), wait for the colliding worker to return. The soft-cap path makes parking strictly less likely than under the old all-hard regime, so this case fires less often than it used to.
 
 5. **`ready_issues` empty but `raw_backlog` non-empty?** → trigger a scope-refill burst (step D's scope refill) in this same turn, then retry from step 3 with the refilled queue. Note that step C's lightweight backlog re-check has already topped up `raw_backlog` with any net-new issues filed since the last dispatch, so this rule fires whenever discovery succeeded but scoping hasn't caught up.
 
@@ -1035,7 +1066,8 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 - Don't disable required checks or weaken branch protection to make a PR pass.
 - Don't re-dispatch the same issue. Once the agent returns `blocked`, label it and never queue it again.
 - Don't fabricate acceptance criteria. The agent should infer reasonable ones from title + context; if even that's unclear, it returns `blocked`.
-- Don't dispatch two workers whose `claimed_paths` overlap — the dispatch rules exist exactly to prevent this. Two agents touching the same files in parallel worktrees will collide on the same lines and produce merge conflicts neither can resolve.
+- Don't dispatch two workers whose `claimed_paths.hard` overlap — the dispatch rules exist exactly to prevent this. Two agents touching the same source files in parallel worktrees will collide on the same lines and produce merge conflicts neither can resolve. The soft-collision tier (see [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c)) intentionally relaxes this for additive docs paths up to `--soft-collision-concurrency` simultaneous claimers — that's a different rule, not a license to ignore the hard-path version.
+- **Don't expect agents to resolve cross-worker merge conflicts on soft-collision paths — the orchestrator owns that.** When two or more in-flight workers both edit, say, `CLAUDE.md` (one of the default soft-collision paths), their PRs will likely conflict at merge time because GitHub's merge queue applies the second PR's changes onto a `CLAUDE.md` the first PR already modified. The agents have no visibility into each other's worktrees — they can't pre-resolve. The orchestrator is the only actor that knows both claims existed. Before clicking merge (or letting auto-merge land) on the **second** soft-collision PR for a given path, the orchestrator MUST inspect `mergeStateStatus` — if it's `DIRTY` or has a `UNSTABLE` merge conflict on a soft-collision file, dispatch a fix-rebase worker for it (drain-style — see [`fix-rebase` mode](#dispatch-rules-used-by-step-7-and-step-c)) which will rebase onto the just-landed main and force-push. The fix-rebase worker's trivial-conflict-or-bail policy already handles additive CHANGELOG/CLAUDE.md/docs conflicts, so this should resolve cleanly without human intervention in 95%+ of cases. If the rebase bails with `blocked rebase`, that's the orchestrator's signal to drop the PR into the end-of-session summary as still-DIRTY with a "soft-collision conflict on `<path>` — needs manual merge" note. **Do NOT** ask agents to coordinate with each other (they can't) and do NOT serialize all soft-collision dispatches (that defeats the whole point of the tier).
 - Don't dispatch alongside a lockfile-toucher. While a lockfile worker runs, the rest of the pool parks. Resume normal dispatch only after it returns.
 - Don't dispatch without `run_in_background: true` and `isolation: "worktree"`. Background dispatch is what gives you the rolling pool; without it, the orchestrator blocks on each agent and loses the whole point of `--concurrency`. Worktree isolation prevents parallel checkouts from corrupting each other — and prevents agents from silently moving the user's primary checkout's HEAD when they run `git switch` / `git rebase` / `gh pr checkout`. Two `PreToolUse` hooks defend the contract: (1) [`plugins/shipyard/hooks/enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) hard-blocks any `shipyard:issue-worker` dispatch missing `isolation: "worktree"` — if you see that block, the fix is always: add `isolation: "worktree"` to the Agent call and retry. (2) [`plugins/shipyard/hooks/enforce-edit-scope.sh`](../hooks/enforce-edit-scope.sh) hard-blocks any `Edit` / `Write` / `MultiEdit` / `NotebookEdit` call from a worker whose `cwd` is inside `.claude/worktrees/agent-<id>/` and whose `file_path` resolves outside that worktree (matches the user's primary checkout, a sibling agent's worktree, or any other path) — closes [#60](https://github.com/mattsears18/claude-plugins/issues/60), where an in-session agent silently wrote into the primary checkout's `CLAUDE.md` before catching it. If a worker sees that block, the fix is to rewrite the path to live under the worktree root (or use Read for inspection — Read is not gated). Neither hook accepts a workaround; don't try to engineer around them.
 - Don't poll for agent completion. The harness notifies you. Polling burns turns and cache.
