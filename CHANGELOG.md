@@ -4,6 +4,20 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.2.3 — 2026-05-20
+
+Replaces the end-of-session drain's hard 15-min cap with a no-forward-progress termination criterion so `/shipyard:do-work` keeps monitoring the merge train until every session PR is genuinely settled. Closes [#57](https://github.com/mattsears18/claude-plugins/issues/57) and [#58](https://github.com/mattsears18/claude-plugins/issues/58).
+
+- **New `session_prs` orchestrator-state set.** Tracks PR numbers this session opened or fix-checks-touched. Populated by step A's reconcile on every `shipped` return (issue, fix-main-ci, fix-failing-prs-batch) and read by the end-of-session drain to decide what to watch and when to exit. Listed as the seventh data structure in the "Orchestrator state" section.
+- **`End-of-session drain` section fully rewritten.** Replaces the old "poll every 60s for up to 15 min" rule with per-poll bookkeeping (`O` open, `M_since_last` merged, `R_new` newly-red, `B` ci-blocked, `P_settled` pending-no-churn) and a forward-progress termination criterion: drain continues as long as a merge happened in the last 5 polls OR fix-checks workers are in flight OR any rollup state changed in the last 5 polls. Drain terminates when all three are false for 5 consecutive polls AND every `session_prs` entry is settled. Hard 120-min ceiling as a safety net for degenerate cases.
+- **Newly-red PRs during drain dispatch fix-checks.** Drain runs the same dispatcher logic step C uses, with `failed_prs` as the only drainable queue (no new issue work, no diverts — a red main mid-drain is next session's problem). Same `--concurrency` cap, same 3-attempt rule, same `ci-blocked` stamp on exhaustion.
+- **`ci-blocked` PRs count as "settled"** for drain-termination purposes — they're the "human needs to look" signal, not a reason to keep polling. The drain's open-PR query intentionally does NOT filter `-label:ci-blocked` (unlike step 5's query) so per-poll counts are accurate.
+- **Soft drain second-trigger semantics tightened.** Typing a stop phrase twice while already draining now skips the end-of-session drain phase entirely (was: "skips the CI pending-poll phase"). Whatever's still pending in `session_prs` lands in the summary as "still in flight at exit."
+- **End-of-session summary gets a `Drain phase` line** reporting termination reason (`all PRs settled` / `no forward progress for 5 polls` / `120-min ceiling` / `second stop signal — drain skipped`), elapsed minutes, and the final `session_prs` partition (merged / ci-blocked / still-pending) so the user sees at-a-glance whether the session left anything red.
+- **New `Don't` rule.** "Don't exit the end-of-session drain while the merge train is still making forward progress" — captures the failure mode that motivated this fix (a 41-PR session on lightwork that terminated with 11 PRs still draining).
+
+Discovered after a `mattsears18/lightwork` session that shipped 41 PRs (#909–#968), then ran cleanup + summary + exit at the 15-min mark with 11 PRs still in the merge train (10 pending CI / auto-merge, 1 ci-blocked). The user had to manually nudge the orchestrator to keep working. The new criterion lets small sessions exit fast and large sessions stay alive until the train is genuinely stalled.
+
 ### 1.2.2 — 2026-05-19
 
 Fixes a silent failure mode where foreign `ci-blocked` labels could jam `/shipyard:do-work` forever. Closes [#53](https://github.com/mattsears18/claude-plugins/issues/53) and [#54](https://github.com/mattsears18/claude-plugins/issues/54).

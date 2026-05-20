@@ -18,7 +18,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 ## Orchestrator state
 
-Across the session, the orchestrator maintains six mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
+Across the session, the orchestrator maintains seven mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
 
 - **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: [...], agent_id } }. Size is bounded by `--concurrency`.
 - **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths, touches_lockfile, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains.
@@ -26,6 +26,7 @@ Across the session, the orchestrator maintains six mental data structures. Hold 
 - **`raw_backlog`**: ranked list of issue numbers not yet scoped. Source for refilling `ready_issues`.
 - **`divert_queue`**: at most two synthetic high-priority entries that *preempt* normal work — `fix-main-ci` (main's latest CI is red) and `fix-failing-prs-batch` (≥10 open red PRs across all authors). Drained BEFORE `failed_prs`. Repopulated by the divert-checks scan (step 4.5 at setup, step D in steady state). An entry is only repopulated when no in-flight slot is already working that diversion — never two workers on the same diversion.
 - **`main_ci`**: cached snapshot of `<default-branch>` CI — `{ status: "green" | "red" | "pending" | "unknown", earliest_red_run_id?: string, earliest_red_run_url?: string, earliest_red_sha?: string, checked_at: <timestamp> }`. Refreshed by the divert-checks scan; consumed by the status line and the divert dispatch templates.
+- **`session_prs`**: set of PR numbers this session opened or fix-checks-touched. Populated by step A's reconcile (every `shipped` or fix-checks-touch appends `<M>`). Read by the [end-of-session drain](#end-of-session-drain) to decide what to watch and when to exit. The drain doesn't terminate until every entry is either merged/closed, `ci-blocked`, or settled (pending with no head-commit movement across a 5-poll window).
 
 When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules).
 
@@ -618,27 +619,29 @@ The agent's last line tells you what happened.
 
 For **issue work** (`shipped` / `blocked` / `errored`):
 
-- **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.
+- **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. **Append `<M>` to `session_prs`** (the set the [end-of-session drain](#end-of-session-drain) watches). Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.
 - **blocked #<N>** — comment on the issue summarizing the blocker, add the `blocked` label, continue.
 - **errored** — record in the session log, continue.
 
 For **fix-checks work** (`green` / `noop` / `blocked`):
 
-- **green #<M>** / **noop: already green #<M>** — PR is fine, continue.
-- **blocked #<M> at fix-checks** — comment on the PR summarizing the blocker, add the `ci-blocked` label so it's skipped from now on, continue.
+- **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed this session — no re-add needed.)
+- **blocked #<M> at fix-checks** — comment on the PR summarizing the blocker, add the `ci-blocked` label so it's skipped from now on, continue. The label is the drain phase's signal that this PR is "settled — human needs to look" and shouldn't keep the drain alive forever.
 - **errored** — record and continue.
 
 For **fix-main-ci work** (`shipped` / `noop` / `blocked`):
 
-- **shipped main-ci-fix via PR #<M>** — record. The diversion is "resolved" from the orchestrator's perspective the moment the PR is open with auto-merge; the next step-D refresh will detect main going green (and clear the divert flag) once the PR lands. Don't re-enqueue the diversion in the meantime — the in_flight slot is gone but the divert_queue check at step D guards against double-dispatch.
+- **shipped main-ci-fix via PR #<M>** — record. **Append `<M>` to `session_prs`.** The diversion is "resolved" from the orchestrator's perspective the moment the PR is open with auto-merge; the next step-D refresh will detect main going green (and clear the divert flag) once the PR lands. Don't re-enqueue the diversion in the meantime — the in_flight slot is gone but the divert_queue check at step D guards against double-dispatch.
 - **noop: main already green** — main flipped green between divert dispatch and the agent's pre-flight. Record. Step D will repopulate if it goes red again.
 - **blocked main-ci-fix: <reason>** — log to the session summary. Do NOT auto-retry — back off and surface in the status line: `main:🔴 (run <id>) · diversion blocked: <reason>`. A human needs to intervene.
 
 For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
 
-- **shipped pr-batch-fix via PR #<M>** — record. Same single-shot pattern as fix-main-ci.
+- **shipped pr-batch-fix via PR #<M>** — record. **Append `<M>` to `session_prs`.** Same single-shot pattern as fix-main-ci.
 - **noop: pileup already cleared** — the count dropped below 10 between dispatch and pre-flight (other PRs got merged or fixed). Record. Step D re-evaluates.
 - **blocked pr-batch-fix: <reason>** — log to summary, back off, surface in status line. No auto-retry.
+
+`session_prs` is the set of PR numbers this orchestrator session opened (issue-worker shipped, fix-main-ci shipped, fix-failing-prs-batch shipped) plus any pre-existing `@me` PRs that fix-checks touched. It is read by the end-of-session drain to decide what to watch and when to exit. A PR enters `session_prs` exactly once — re-touches don't re-add. Started empty at step 7's initial pool fill.
 
 ### B. Release the slot
 
@@ -762,9 +765,9 @@ Substring matching is deliberately avoided. Phrases like "don't stop yet" or "I'
 2. Set `draining = true` in TodoWrite.
 3. Steady-state Step A (reconcile) and Step B (release slot) continue normally — in-flight agents must still be properly recorded as they complete.
 4. Steady-state Step C (dispatch) and Step D (periodic refresh) become no-ops while `draining = true` (the guards in those steps handle this).
-5. When `in_flight` empties → run the end-of-session drain (CI pending poll, max 15 min) → end-of-session cleanup → end-of-session summary → exit.
+5. When `in_flight` empties → run the [end-of-session drain](#end-of-session-drain) (no-progress termination — keeps polling until the merge train is stalled, with a 120-min safety ceiling) → end-of-session cleanup → end-of-session summary → exit.
 
-**Second trigger** — typing a stop phrase again while already draining — still waits for `in_flight` to empty (in-flight agents are never hard-cancelled), but skips the CI pending-poll phase and exits immediately after cleanup. Useful when CI is slow and the user wants out.
+**Second trigger** — typing a stop phrase again while already draining — still waits for `in_flight` to empty (in-flight agents are never hard-cancelled), but **skips the end-of-session drain phase entirely** and goes straight to cleanup + summary. Useful when CI is slow and the user wants out. Whatever's still pending in `session_prs` at that moment lands in the summary as "still in flight at exit" — the user can re-run `/do-work` later to sweep them.
 
 **Why this is safe:** agents commit at logical milestones (TDD test → commit, implementation → commit) and PRs are opened with `--auto`. Letting an in-flight agent finish naturally never loses work. Killing it mid-edit could.
 
@@ -787,19 +790,61 @@ Run end-of-session drain → cleanup → summary.
 
 ## End-of-session drain
 
-Once the termination conditions above are met, some PRs you opened this session may still be `pending` CI. Don't terminate with red PRs hiding in flight.
+Once the termination conditions above are met, some PRs you opened this session may still be `pending` CI or waiting for auto-merge. **Don't terminate while the merge train is still draining.** Two independent processes are running: (1) the dispatch loop (now empty — that's why we're here), and (2) the merge train that lands open PRs as their checks turn green. The merge train runs without dispatching anything, but it can still go red mid-flight — a flaky test surfaces, a sibling merge causes base drift on a queued PR, a dependency update breaks at minute 18. If you stop monitoring at minute 15, those failures sit unfixed until the next `/do-work` session.
 
-Drain protocol:
+The drain phase keeps the orchestrator alive past the dispatch loop's end, watching the merge train and dispatching fix-checks workers against newly-red PRs, until either every session-opened PR has settled OR the train has clearly stalled.
 
-1. Query open PRs you authored this session whose checks are still in progress:
-   ```bash
-   gh pr list --repo <owner/repo> --state open --author @me \
-     --search '-label:ci-blocked -is:draft' \
-     --json number,statusCheckRollup --limit 100
+### Drain protocol
+
+**Initial snapshot.** Capture the set of PRs the orchestrator opened this session (`session_prs` — track this from step A's `shipped` reconciles throughout the run). These are the PRs whose status determines drain termination. Pre-existing PRs the orchestrator only fixed via fix-checks count too (they're authored by `@me` and shipyard touched them this session). PRs from other authors don't.
+
+Open-PR query for the drain loop:
+
+```bash
+gh pr list --repo <owner/repo> --state open --author @me \
+  --search '-is:draft' \
+  --json number,statusCheckRollup,mergeStateStatus,labels --limit 200
+```
+
+This intentionally **does NOT filter `-label:ci-blocked`** — ci-blocked PRs need to be counted as "settled" so they don't keep the drain open forever, and they need to be visible to the snapshot so the per-poll counts are accurate.
+
+**Per-poll bookkeeping.** Every 60s, snapshot the open PRs and compute:
+
+- `O` = open PRs in `session_prs` (not yet merged or closed)
+- `M_since_last` = PRs that merged or closed since the previous poll (delta vs. the previous `O`)
+- `R_new` = PRs whose rollup contains a hard failure (`FAILURE` / `ERROR` / `TIMED_OUT`) AND are NOT carrying `ci-blocked` AND are not already in `in_flight` or `failed_prs`
+- `B` = PRs carrying `ci-blocked` (these are "settled — human needs to look")
+- `P_settled` = PRs whose rollup is fully `PENDING` / `IN_PROGRESS` / `QUEUED` AND whose `headRefOid` hasn't changed since the previous poll (auto-merge waiting on long-running checks)
+
+A PR is **settled** when any of: it's merged/closed, it's labeled `ci-blocked`, or all its checks are pending AND the head commit hasn't moved AND `P_settled` has been true for it across the last 5 polls (i.e. no churn).
+
+**Per-poll actions.**
+
+1. If `R_new > 0`: push the newly-red PRs onto `failed_prs` (deduped) and dispatch fix-checks-only workers against them — same `--concurrency` cap, same 3-attempt rule, same `ci-blocked` stamp on exhaustion that step A enforces. Drain runs the same dispatcher logic step C uses, just with `failed_prs` as the only queue that's still drainable (no new issue work, no diverts; `divert_queue` is intentionally NOT re-evaluated during drain — a red main mid-drain becomes next session's problem because dispatching a fix-main-ci agent here would extend the session indefinitely).
+2. Update the rolling 5-poll window of `M_since_last` values and the in-flight fix-checks worker count.
+3. Print one drain status line per poll:
    ```
-   The `-label:ci-blocked` filter behaves the same as in [step 5](#5-snapshot-failing-prs): step 3d's session-start auto-clear sweep already removed the label from any PR whose head commit postdates the label, so the only PRs still labeled at this point are the genuinely-stuck ones the orchestrator deliberately leaves alone.
-2. If any rollup has only `PENDING` / `IN_PROGRESS` / `QUEUED` entries → poll every 60s for up to 15 min, re-running the step-5 failing-PR snapshot each pass. If newly-red PRs appear, dispatch fix-checks-only workers against them (subject to `--concurrency`) and continue draining until they too settle.
-3. After 15 min, stop draining and report whatever's still pending in the summary — the user can re-run `/do-work` later, which will sweep those PRs on its next setup pass.
+   [drain] open=<O> merged_this_poll=<M_since_last> newly_red=<R_new> ci_blocked=<B> in_flight_fix_checks=<n> · elapsed=<MM:SS>
+   ```
+
+**Termination criterion (forward-progress rule).** Drain continues as long as **any** of these is true:
+
+- A merge or close happened in the last 5 polls (`sum(M_since_last) > 0` over the trailing 5-min window), OR
+- Any fix-checks worker is in flight, OR
+- Any PR has had a rollup state transition in the last 5 polls (pending → green/failure, head-commit change, etc.)
+
+Drain terminates when **all** of the following are true for 5 consecutive polls (i.e. 5 min of zero forward progress):
+
+- No PR has merged or closed.
+- No fix-checks worker is in flight.
+- No rollup state has changed.
+- Every PR in `session_prs` is either (a) merged/closed, (b) `ci-blocked`, or (c) pending with no head-commit movement.
+
+**Hard ceiling: 120 min.** As a safety net against degenerate cases (a 90-minute test suite, a runaway CI loop), drain forcibly exits at the 120-min mark even if forward progress is still observable. Surface this in the summary as `drain exited at 120-min ceiling — <n> PRs still pending`. The 120-min number is deliberately generous — for normal sessions (10–20 PRs draining over 30–60 min wall-clock) the no-progress rule fires first and the ceiling never triggers.
+
+**On exit, regardless of how drain terminated**: report the final state of every PR in `session_prs` in the [end-of-session summary](#end-of-session-summary), separated by status (merged ✓ / ci-blocked / still-pending). The user can re-run `/do-work` later to sweep what's left.
+
+**Why this replaces the old 15-min cap.** The 15-min cap was too short for the realistic case where a session ships 30–40 PRs in a tight cluster. CI runs take 10–14 min each; auto-merge serializes per PR (each PR's required checks must go green before it's merged, then the next PR's branch needs to rebase onto the new main and re-run CI). A full drain can easily take 45–90 min wall-clock. Cutting that off at minute 15 means any PR that goes red AFTER the cap has no orchestrator watching to dispatch fix-checks against it. The no-progress rule scales with the actual size of the merge train — small sessions exit fast, large sessions stay alive until the train is genuinely stalled.
 
 ## End-of-session cleanup
 
@@ -883,12 +928,15 @@ Errored: J (#R — <agent error>)
 Diversions: <D> dispatched
   fix-main-ci: <d1> (<shipped/noop/blocked breakdown, with PR #s and block reasons>)
   fix-failing-prs-batch: <d2> (<shipped/noop/blocked breakdown>)
+Drain phase: exited via <reason>; <elapsed_min> min; final session_prs state — merged: <m>, ci-blocked: <c>, still pending: <p>
 Final repo health: main:<emoji> · failing PRs (all authors): <m>
 Reaped from prior sessions: <reaped_stale> stale agent worktrees (dead-PID locks); <deferred_stale> live-PID worktrees left for the owning Claude Code instance
 Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ```
+
+The `Drain phase` line reports how the [end-of-session drain](#end-of-session-drain) terminated. `<reason>` is one of: `all PRs settled` (every `session_prs` entry merged, ci-blocked, or pending-with-no-movement), `no forward progress for 5 polls`, `120-min ceiling`, or `second stop signal — drain skipped`. `<elapsed_min>` is wall-clock minutes in the drain phase (0 when the second-stop trigger skipped it). The merged / ci-blocked / still-pending counts are the final partition of `session_prs` — they always sum to `|session_prs|`, so the user can see at-a-glance whether the session left anything red on the board.
 
 Omit the `Diversions:` block entirely when `D == 0` — clutter is the enemy. The `Final repo health` line always prints; if a diversion is blocked at exit, that line surfaces the unresolved state (e.g. `main:🔴 · failing PRs (all authors): 12 ⚠️`) so the user knows what they're walking into.
 
@@ -905,6 +953,7 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 
 - **Don't go idle while `raw_backlog` or `ready_issues` has items.** When in-flight workers all return but the queues still hold work, the merge train auto-draining prior PRs is irrelevant to your loop. Your job is to dispatch new workers into the freed slots, not to wait for auto-merge to land prior PRs. Pool drained + backlog non-empty = you are failing to do your job. Refill the pool on the same turn the last completion notification arrives.
 - **Don't conflate "pool drained" with "session complete."** Two independent processes are running: (1) the dispatch loop that fills `--concurrency` slots from the backlog, and (2) the merge train that lands open PRs as their checks turn green. The merge train continues without you. The dispatch loop dies if you stop dispatching. Treat them as orthogonal — never use "the train will drain on its own" or "auto-merge handles it from here" as a justification to stop dispatching new work.
+- **Don't exit the end-of-session drain while the merge train is still making forward progress.** The dispatch loop's queues going empty is the signal to enter the [end-of-session drain](#end-of-session-drain), not to terminate. The drain phase keeps watching `session_prs` and dispatching fix-checks workers against newly-red PRs until either every session PR is settled (merged / `ci-blocked` / pending-with-no-movement-over-5-polls) OR forward progress has stalled for 5 consecutive polls (5 min) OR the 120-min safety ceiling fires. Exiting earlier — at a hard 15-min mark, or because "looks quiet enough," or because "the user can re-run later" — strands any PR that goes red after the cap with no orchestrator watching to dispatch fix-checks. The realistic case is a 30–40 PR session whose merge train takes 45–90 min wall-clock; don't cut that off prematurely.
 - **Don't ever ask the user "should I keep working, summarize, park, or stop?"** Termination is mechanical (see [Termination](#termination)). As long as ANY of `in_flight` / `failed_prs` / `ready_issues` / `raw_backlog` / `divert_queue` is non-empty, you keep dispatching. Drafting a question about whether to continue, summarize, or idle is itself the bug — delete it and dispatch instead. The only user input that ends the loop early is the explicit `stop` / `drain` / `/do-work stop` phrase from [Soft drain](#soft-drain); soft framings like "you can stop if you want" or "deep idle is fine" do not change behavior.
 - **Don't emit recap / "Next: …" narration in lieu of dispatching.** The orchestrator's failure mode is to summarize the situation in prose ("Currently 2 workers in flight; a dozen PRs are awaiting CI auto-merge. Next: watch returns and refill the pool from the remaining backlog issues.") and then end the turn without issuing the `Agent` tool call that would actually refill the pool. The recap *sentence itself* is the bug — it gives the model a graceful exit from a turn whose dispatch obligation hasn't been met. Forbidden phrasings include: "Next, I'll watch for …", "Waiting for completions to refill …", "The merge train will drain on its own …", "Will refill the pool from the backlog as agents return …". Every one of these is a description of behavior the harness already provides (notifications on completion); narrating it is pure overhead AND it tricks the model into thinking the turn is done. The correct shape of a turn that frees a slot is: tool call → invariant line. The correct shape of a turn that legitimately can't dispatch is: structured `[invariant] ... idle_reason="..."` line, nothing else. No prose between them, no prose after them, no "Next:" sentence anywhere.
 
