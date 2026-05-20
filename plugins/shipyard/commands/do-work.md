@@ -167,6 +167,23 @@ For each issue in bucket 6 or 7, generate a one-line **unblock recommendation** 
 
 The point is to give the user something **actionable** so they can start clearing blockers in parallel.
 
+**Inline action-recommendation candidates per skipped bucket.** Beyond the per-issue unblock recommendation list at the bottom, the orchestrator also surfaces **per-bucket candidate counts** under each Skipped-bucket. The intent is to make the "this bucket has N issues you could probably act on right now" signal visible at the bucket itself, not just in a flat recommendation list at the bottom. Apply only to buckets where a mechanical signal lets the orchestrator distinguish "likely-actionable" candidates from "genuinely stuck" residue. The orchestrator does NOT auto-act on these — it only surfaces them; the user decides.
+
+Compute candidates for the following buckets:
+
+- **Bucket 6 (Blocked label) — `likely-clearable` candidates.** For each issue in this bucket, parse `Blocked by #N` references from the body using the same regex step 3d.2 uses (`grep -oiE 'blocked by[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)'`). Check each referenced blocker's state via `gh issue view <N> --json state` (with `gh pr view` fallback for PR numbers). An issue is `likely-clearable` when **all** referenced blockers are `CLOSED` or `MERGED`. Candidates are also what step 3d.2 will auto-clear later in setup — surfacing them here in step 2 gives the user pre-sweep visibility before the sweep runs. Held issues (no body reference, or any blocker still open) are NOT surfaced as candidates.
+
+- **Bucket 5 (Needs triage / design) — `likely-triageable` candidates.** Score each issue by the presence of mechanical triage signals in its labels and body:
+  - `+1` if labels contain any of `P0` / `P1` / `P2` (priority already set).
+  - `+1` if labels contain any of `bug` / `enhancement` / `fix` / `feat` (issue type already declared).
+  - `+1` if body contains `## Acceptance` or `## Acceptance criteria` (criteria section present).
+  - `+1` if body contains `## Repro` / `## Reproduction` / `## Steps to reproduce` (repro section present).
+  - `+1` if labels contain NEITHER `needs-design` NOR `needs-human-review` (no co-gate beyond `needs-triage`).
+
+  Score `>= 3` → `likely-triageable` candidate. The recommendation is "review then remove `needs-triage`" — the orchestrator does NOT auto-remove the label, because the threshold is a heuristic and the user is better placed to judge whether the issue actually meets the bar. Score `< 3` → "genuinely fuzzy" residue; not a candidate.
+
+The bias is deliberately toward **surfacing too many** candidates rather than too few. A false-positive costs the user one glance, but a false-negative leaves work invisible (the failure mode from issue #75 that motivated this).
+
 Print the summary to the user in this shape. The bucket table is a **markdown table** — one row per non-zero bucket, in the order listed below. The table renders cleanly in any chat/terminal client that supports markdown and lets the eye compare counts column-aligned instead of scanning indented bullets:
 
 ```
@@ -179,8 +196,10 @@ Top workable items: #<a>, #<b>, #<c>, ...
 |---|---|---|
 | **Workable** (will be worked this session) | <W> | #<a>, #<b>, #<c>, +<K> more |
 | `blocked` label | <n> | #A, #B, ... |
+| &nbsp;&nbsp;⚠ likely-clearable | <k> | #A, ... — all referenced blockers closed; step 3d.2 will auto-clear |
 | Blocked (body reference) | <n> | #C, ... |
 | `needs-triage` / `needs-design` | <n> | #D, ... |
+| &nbsp;&nbsp;⚠ likely-triageable | <k> | #D, ... — review then remove `needs-triage` |
 | Awaiting refinement | <n> | #R, ... |
 | Awaiting human review | <n> | #H, ... |
 | Discussion | <n> | #E, ... |
@@ -223,7 +242,10 @@ Edge cases:
 - **No blocked issues** — omit the "Unblock recommendations" section entirely. Don't print an empty header.
 - **Priority labels not yet triaged** — the breakdown reflects current label state. Step 4's auto-triage pass labels the unlabeled survivors before dispatch, so `unlabeled=<n>` at preflight just shows how much triage will happen.
 - **Buckets with zero count** — omit those rows from the bucket table (except `Workable`, which always prints). Clutter is the enemy.
+- **Action-recommendation sub-rows with zero candidates** — omit the `⚠ likely-clearable` / `⚠ likely-triageable` sub-row entirely when its count is 0. The bucket's parent row stays; the sub-row only appears when there's something to act on.
 - **Very large backlogs** — per-row Issues column truncates after ~10 numbers with `, +<K> more`. See bucket-table rules above.
+- **`likely-clearable` overlap with step 3d.2** — every `likely-clearable` candidate surfaced in step 2 is also a candidate for step 3d.2's auto-clear sweep. Don't pre-deduplicate or skip them; the visibility in step 2 is the point — it lets the user see "shipyard is about to clear these N labels" before the sweep runs, so they can intervene (cancel, add a secondary gate comment, etc.) if any look wrong. The two surfaces aren't redundant — they're sequential checkpoints on the same set of issues.
+- **Cost** — the bucket-6 candidate computation is O(blocked-issues × referenced-blockers) `gh issue view --json state` lookups, same as step 3d.2's sweep does later. To avoid double-paying, cache the per-blocker state lookups in a small in-memory map (`blocker_state[<N>] → state`) and reuse the same map in step 3d.2. The bucket-5 candidate computation is a pure regex scan over already-fetched issue bodies — cheap, no extra network calls. Combined extra cost on a backlog of ~50 open issues is well under 1 second wall-clock and dominated by the step 3d.2 sweep's lookups, which were already paying that cost.
 
 Then proceed immediately to step 3.
 
