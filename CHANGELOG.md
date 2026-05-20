@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.8 — 2026-05-20
+
+Adds a `deferred: <reason>` outcome to `/shipyard:do-work`'s scope pre-flight return shape so scope agents can mark issues whose fix is correct but bigger than a single worker can ship (multi-PR migration, SDK upgrade, external decision required, etc.) instead of dispatching a worker that will burn agent minutes and bail with `blocked`. Closes [#76](https://github.com/mattsears18/claude-plugins/issues/76).
+
+- **Step 6 scope pre-flight return shape — new `deferred` variant.** Scoping agents now return one of two shapes: the existing ready shape (`{ issue, files, lockfile_sections }`) or the new deferred shape (`{ issue, deferred: "<reason>" }`) when the fix needs multi-PR work, an SDK upgrade, an external decision, etc.
+- **Orchestrator handling of deferred entries.** For each deferred entry: post a comment prefixed `Scope-preflight diagnosis (not auto-fixable as a single worker):` followed by the reason; append to new session-level `deferred_issues` list (8th orchestrator state struct); drop from `raw_backlog`; **never** dispatch a worker against it this session.
+- **End-of-session summary — new `Deferred:` line.** Renders `Deferred: <Df> (#P — <first sentence>, ...)` between `Blocked:` and `Errored:` when `deferred_issues` is non-empty.
+- **No new label, no auto-close, no assignment.** Deferred issues stay open and unassigned — the diagnosis comment is the only artifact.
+
+Motivating session: a `/do-work` run hit a `fix(ios): app crashes on register screen — EXC_BAD_ACCESS` issue whose scope-preflight diagnosis was an Expo SDK bump (multi-PR effort). The orchestrator dispatched a worker that bailed with `blocked` after ~10 min — wasted agent time on un-shippable work. Under 1.3.8 the scope agent returns deferred and the slot goes to the next workable item.
+
 ### 1.3.7 — 2026-05-20
 
 Makes the live dashboard launch + per-turn rewrite enforceable in `/shipyard:do-work` so the orchestrator can no longer silently skip them across an entire session. Closes [#78](https://github.com/mattsears18/claude-plugins/issues/78).
