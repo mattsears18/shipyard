@@ -27,13 +27,13 @@
 
 # Shipyard
 
-Experimental [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by Matt Sears. The headliner is **`shipyard`** — an autonomous engineering loop that finds work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers in isolated git worktrees.
+An experimental [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin — an autonomous engineering loop that finds work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers in isolated git worktrees.
 
 <p align="center">
   <img src="docs/images/shipyard-infographic.svg" alt="Shipyard at a glance — autonomous engineering loop. Five stages (Sources → Refine + Review → Orchestrator → Workers → PR Pipeline) plus a &quot;What's been hardened&quot; footer band citing the safety properties (#34 worktree isolation, #26 no-hook-bypass, #23 always-dispatching, #29 pre-dispatch refresh, #24 user-feedback gating)." width="100%" />
 </p>
 
-*Shipyard at a glance — five stages of the autonomous engineering loop. Read the [How shipyard works](#shipyard) section below for details.*
+*Shipyard at a glance — five stages of the autonomous engineering loop. Read the [How it works](#how-it-works) section below for details.*
 
 ## Quick start
 
@@ -49,7 +49,7 @@ Get from zero to your first auto-merging PR in about five minutes.
 
 ```sh
 claude plugin marketplace add mattsears18/shipyard
-claude plugin install shipyard@mattsears-plugins
+claude plugin install shipyard@shipyard
 ```
 
 Then restart Claude Code so the new slash commands register.
@@ -92,9 +92,7 @@ When `/audit` runs, you'll see filed issues with severity labels (`P0`/`P1`/`P2`
 - Skim [What's been hardened](#whats-been-hardened) for the safety properties that keep autonomous runs from clobbering your repo.
 - Wire up a Sentry / Datadog / Dependabot integration that files GitHub issues — see [Plays well with everything that files GitHub issues](#plays-well-with-everything-that-files-github-issues).
 
-## Plugins
-
-### `shipyard`
+## What it does
 
 An autonomous engineering loop for web + mobile app development. Three things it does:
 
@@ -169,7 +167,7 @@ Shipyard doesn't care **where** an issue came from — it only cares that the is
 - **Datadog / New Relic / Honeycomb** → file issues for SLO breaches and anomalies. Shipyard investigates and fixes the underlying cause.
 - **Dependabot / Renovate** → file PRs for outdated/vulnerable dependencies. Shipyard picks up the open issues those tools file and resolves them.
 - **GitHub Advanced Security / CodeQL** → file issues for code-scanning findings. Shipyard fixes the vulnerability or files a justified suppression.
-- **Customer support tools (Zendesk, Intercom)** → many have GitHub integrations that file issues from support tickets. Shipyard treats those just like user feedback (filed with the `user-feedback` label → refined → human-reviewed → worked; see [Refines work](#shipyard) above and the `/refine-issues` flow — the user-feedback classify+rewrite branch).
+- **Customer support tools (Zendesk, Intercom)** → many have GitHub integrations that file issues from support tickets. Shipyard treats those just like user feedback (filed with the `user-feedback` label → refined → human-reviewed → worked; see [Refines work](#what-it-does) above and the `/refine-issues` flow — the user-feedback classify+rewrite branch).
 - **Your own infrastructure** — anything you wire up via the GitHub API to file issues.
 
 The pattern: every "thing that's broken" becomes a GitHub issue, shipyard works the issue, the fix ships. The app becomes **effectively self-healing** — production errors don't sit until a human notices; they sit until shipyard's next dispatch.
