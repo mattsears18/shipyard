@@ -25,7 +25,7 @@
 > Recommended posture for first-time use: a throwaway repo, `--concurrency 1`, default-deny Claude
 > Code permissions, and a billing alert on your Anthropic account.
 
-# mattsears-plugins
+# Shipyard
 
 Experimental [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by Matt Sears. The headliner is **`shipyard`** — an autonomous engineering loop that finds work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers in isolated git worktrees.
 
