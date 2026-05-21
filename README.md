@@ -47,6 +47,10 @@ From inside any GitHub-connected repo, try one of these:
 # user-feedback classify+rewrite, open-questions resolve-defaults, or
 # escalate-to-triage fall-through. /refine-feedback still works as an alias.
 /refine-issues
+
+# See what's blocked on YOU (PRs waiting on review, issues needing triage, etc.)
+# — the human-facing counterpart to /do-work.
+/my-turn
 ```
 
 ### 3. Watch the loop
@@ -87,6 +91,8 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit all <url>` — every audit in parallel
 - `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through). `/refine-feedback` still works as a back-compat alias.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers
+- `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart.
+- `/shipyard:init` — _(coming in [#165](https://github.com/mattsears18/claude-plugins/issues/165))_ scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps.
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
 
@@ -96,15 +102,23 @@ Each audit runs in an isolated subagent, files its own issues using the shared `
 
 The loop has four phases, and the orchestrator drives them on every iteration of `/do-work`:
 
-1. **Inputs.** Issues arrive from two sources. The `/audit` family files them autonomously — a Lighthouse pass on a live URL, a Chrome DevTools tour, a security sweep, an a11y audit, etc. — each finding becomes a labeled GitHub issue with severity (`P0`/`P1`/`P2`). Separately, your app's feedback form posts raw user reports via a backend proxy that opens issues carrying `user-feedback` + `needs-refinement`.
+1. **Inputs.** Issues arrive from multiple sources, all unified at the GitHub-issue layer. The `/audit` family files them autonomously — a Lighthouse pass on a live URL, a Chrome DevTools tour, a security sweep, an a11y audit, etc. — each finding becomes a labeled GitHub issue with severity (`P0`/`P1`/`P2`). Your app's feedback form posts raw user reports via a backend proxy that opens issues carrying `user-feedback`. Humans file issues through the [GitHub issue template chooser](.github/ISSUE_TEMPLATE/) (`bug_report`, `feature_request`, `user_feedback`). At intake, the [`intake-refinement-gate.yml`](.github/workflows/intake-refinement-gate.yml) workflow conditionally applies `needs-refinement` — external authors, bodies with unresolved `## Open questions`, bare one-liners, and bot-authored issues all get gated for refinement before any worker is dispatched.
 
-2. **Refine.** `/refine-issues` reads each issue carrying the generic `needs-refinement` pipeline gate (applied conditionally by `.github/workflows/intake-refinement-gate.yml` — external authors, bodies with unresolved `## Open questions`, bare one-liners, bot-authored). The refiner branches by source signal: raw user-feedback issues get classified (`already-done` / `decline` / `legitimate`), preserved, and rewritten into engineering tickets with `needs-human-review` set; Claude-filed feature requests with open questions get reasonable defaults committed and become dispatch-eligible immediately; everything else falls through to `needs-triage` for human review. No code-modifying agent will touch user-feedback issues until `needs-human-review` is removed.
+2. **Refine.** `/refine-issues` reads each issue carrying the generic `needs-refinement` pipeline gate and branches by source signal: raw user-feedback issues get classified (`already-done` / `decline` / `legitimate`), preserved, and rewritten into engineering tickets with `needs-human-review` set; Claude-filed feature requests with open questions get reasonable defaults committed and become dispatch-eligible immediately; everything else falls through to `needs-triage` for human review. `needs-human-review` is **decoupled** from `needs-refinement` — only the user-feedback branch applies it. No code-modifying agent will touch user-feedback issues until `needs-human-review` is removed.
 
-3. **Human review.** You scan the refined backlog, drop `needs-human-review` from the ones you want shipped, and run `/do-work`. This is the only required human step. Everything before it (audits filing, feedback refining) and everything after (dispatch, fix-up, merge) is autonomous.
+3. **Human review.** You scan the refined backlog, drop `needs-human-review` from the ones you want shipped, and run `/do-work`. This is the only required human step. Everything before it (audits filing, feedback refining) and everything after (dispatch, fix-up, merge) is autonomous. Use [`/my-turn`](plugins/shipyard/commands/my-turn.md) for a focused read-only view of what's actually blocked on you across PRs and issues.
 
 4. **Orchestrator → workers → PR.** `/do-work` ranks the eligible backlog, then keeps `--concurrency` workers in flight at all times. Each worker is dispatched into an isolated git worktree on a deterministic branch (`do-work/issue-<N>`), implements the smallest change that satisfies the acceptance criteria, opens a PR that closes the issue, and enables auto-merge with squash. Green CI = merged = the next worker slot opens. When CI goes red, an in-progress PR fails its checks, or the default branch breaks, the orchestrator diverts a worker to fix it before resuming normal backlog work.
 
 The result: you write issues (or let `/audit` write them), you sign off on the user-feedback ones, and the rest of the chain runs without you.
+
+### Label conventions
+
+Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent` / `blocked:ci` — renamed from `blocked` / `ci-blocked` in 1.3.29), and gate labels (`needs-refinement`, `needs-human-review`, `needs-triage`). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
+
+### Observability — per-session token cost
+
+Every `/do-work` session writes per-session token-usage data to `~/.shipyard/sessions/<session-id>.json` and posts cost-tracking comments on the issues and PRs it touches, so you can see at a glance how much a given backlog burndown cost. Useful for tuning `--concurrency`, deciding which audits are worth running on a cron, and spotting agents that are spending too many tokens for the work they ship. Landed in [#179](https://github.com/mattsears18/claude-plugins/pull/179) / shipyard 1.3.30.
 
 ## What's been hardened
 
@@ -118,9 +132,9 @@ A non-exhaustive list of safety properties the orchestrator and workers carry to
 
 ## See it in action
 
-Every PR opened by `/do-work` carries the `do-work` label. The repo's own merged history is the living demo:
+Every PR opened by `/do-work` carries the `shipyard` label (renamed from `do-work` in 1.2.0). The repo's own merged history is the living demo:
 
-[**All `do-work`-labeled closed PRs →**](https://github.com/mattsears18/claude-plugins/pulls?q=is%3Apr+is%3Aclosed+label%3Ado-work)
+[**All `shipyard`-labeled closed PRs →**](https://github.com/mattsears18/claude-plugins/pulls?q=is%3Apr+is%3Aclosed+label%3Ashipyard)
 
 Each one was opened, fixed-up through CI failures (if any), and merged without a human touching the keyboard between issue triage and PR review.
 
@@ -160,19 +174,32 @@ The Sentry flow above is illustrative, not a case study — your mileage depends
 
 ```
 .claude-plugin/marketplace.json
+.github/
+  CODEOWNERS                     # maintainer-review gate (e.g. .shipyard/trusted-authors.txt)
+  ISSUE_TEMPLATE/                # bug_report, feature_request, user_feedback templates
+  PULL_REQUEST_TEMPLATE.md       # shown to anyone opening a PR
+  workflows/
+    intake-refinement-gate.yml   # auto-applies `needs-refinement` at issue intake
+    label-event-audit.yml        # alerts / reverts unauthorized label changes
+    external-author-gate.yml     # gates PRs from external authors
+    secret-scan.yml              # blocks committed secrets
+    shellcheck.yml               # lint for bash scripts
+    tests.yml                    # bash unit tests
 plugins/
   shipyard/
     .claude-plugin/plugin.json
     commands/
       audit.md
       do-work.md
+      do-work-RATIONALE.md       # design discussion companion
       my-turn.md
       refine-feedback.md         # back-compat alias for refine-issues
       refine-issues.md
     agents/
       a11y-auditor.md
       dx-auditor.md
-      issue-worker.md
+      issue-worker.md            # thin entry router; per-mode files under issue-worker/
+      issue-worker/              # one file per mode (issue-work, fix-checks-only, fix-rebase, ...)
       lighthouse-auditor.md
       mobile-ux-auditor.md
       privacy-auditor.md
@@ -187,13 +214,20 @@ plugins/
       audit-rubrics/SKILL.md
       dx-catalog/SKILL.md
       filing-github-issues/SKILL.md
+      worker-preamble/SKILL.md   # shared dispatch contract for every /do-work worker
     hooks/
       hooks.json
       enforce-worktree-isolation.sh
       report-plugin-error.sh
     scripts/
       report-plugin-error.sh
+      session-state.sh
+      worktree-reap.sh
       tests/
+CLAUDE.md                        # repo-scoped rules (load-bearing for Claude sessions)
+CONTRIBUTING.md                  # navigable index of contribution conventions
+LICENSE                          # MIT
+CHANGELOG.md                     # per-version changelog (plugin version bumps)
 ```
 
 ## Optional: auto-file issues on skill/agent failure
@@ -267,10 +301,24 @@ bash plugins/shipyard/scripts/tests/report-plugin-error.test.sh
 
 - v1 ships with `auto-reported` and `bug` labels only. Per-skill / per-agent labels (e.g. `skill:filing-github-issues`, `agent:issue-worker`) are deferred to keep label cardinality controlled until we see what categories actually show up in practice.
 
+## Filing issues
+
+The repo's [issue template chooser](.github/ISSUE_TEMPLATE/) routes filers into one of three forms:
+
+- **`bug_report`** — something is broken; includes repro steps + expected vs actual behavior.
+- **`feature_request`** — propose new functionality; surfaces an `## Open questions` block that the [`/refine-issues`](plugins/shipyard/commands/refine-issues.md) `resolve-defaults` branch acts on.
+- **`user_feedback`** — raw, unstructured user reports; auto-labeled `user-feedback` and routed through the classify+rewrite refiner branch with `needs-human-review` gating.
+
+The `intake-refinement-gate.yml` workflow applies `needs-refinement` conditionally at intake (see [How it works](#how-it-works) above). Anyone opening a PR will see [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — fill it out so the reviewer has the context they need.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the navigable index of operational conventions — getting started, adding a new auditor, working on shipyard core, label conventions, testing, branch naming, commit message style, and the PR workflow. The full label reference and repo-scoped rules live in [`CLAUDE.md`](./CLAUDE.md); the orchestrator design rationale lives in [`plugins/shipyard/commands/do-work-RATIONALE.md`](./plugins/shipyard/commands/do-work-RATIONALE.md).
 
 ## License
 
-MIT
+[MIT](./LICENSE) — see the `LICENSE` file for the full text.
+
+---
+
+<sub>Last verified against shipyard 1.3.30.</sub>
