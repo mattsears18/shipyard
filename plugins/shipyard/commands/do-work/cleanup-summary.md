@@ -98,6 +98,14 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, and `<deferred_live>`; pipe th
 
    The `flush` subcommand is idempotent (a session id that already appears in the ledger is silently skipped) and exits 0 with no output when the session file is missing — same don't-gate-exit posture as `session-state.sh cleanup`. The two ledger files (`cost-history.jsonl`, `cost-history-issues.jsonl`) are read by `/shipyard:cost report` to produce cross-session usage reports. **Order matters: flush before cleanup**, otherwise the data we want to persist is already gone.
 
+7.5. **Reap the `gh-cached.sh` cache directory** — drop the session-scoped `gh` response cache from [step 0.9](./setup.md#09-gh-cachedsh-wrapper-opt-in-per-call-site):
+
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" cleanup --session-id "<session-id>"
+   ```
+
+   Idempotent; same don't-gate-exit posture as the session-state cleanup. The cache directory at `$SHIPYARD_HOME/cache/<session-id>/` is session-scoped and has no value after the session terminates — leaving it behind would accumulate on long-running workstations.
+
 8. **Remove the session state file** — close out the durable mirror from [step 1.5](./setup.md#15-initialise-the-session-state-file):
 
    ```bash
