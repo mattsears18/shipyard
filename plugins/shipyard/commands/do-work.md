@@ -253,6 +253,8 @@ The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.ship
 
 `.shipyard/trusted-authors.txt` format — one GitHub login per line; comments (`#`) and blank lines OK; case-insensitive; repo owner is implicitly trusted. Bot accounts (`dependabot[bot]`, `github-actions[bot]`, etc.) are NOT auto-trusted — the collaborators-API fallback excludes them, and maintainers must add them to the override file explicitly. Cache lifetime is session-scoped — resolve once at startup, never re-resolve mid-session. See [RATIONALE → Step 1.7](./do-work-RATIONALE.md#step-17--why-a-per-repo-override-file-exists) for the policy discussion.
 
+**Protect the override file with CODEOWNERS.** Because the file IS the security boundary, repos that adopt `/shipyard:do-work` should add a `.github/CODEOWNERS` rule naming the maintainer(s) for `.shipyard/trusted-authors.txt` and enable "Require review from Code Owners" in branch protection on the default branch — otherwise anyone with `write` access can extend the allowlist via a single PR with no maintainer in the loop. This repo's own [`.github/CODEOWNERS`](../../../.github/CODEOWNERS) is the reference example.
+
 **Output.** A single advisory line goes into the session log right after resolution:
 
 - `[trusted-authors] loaded <K> author(s) from .shipyard/trusted-authors.txt`, or
