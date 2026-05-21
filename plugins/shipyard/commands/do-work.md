@@ -20,7 +20,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 ## Orchestrator state
 
-Across the session, the orchestrator maintains nine mental data structures. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
+Across the session, the orchestrator maintains nine mental data structures plus a small three-field refresh tracker. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
 
 - **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-rebase" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: { hard: [...], soft: [...] }, agent_id } }. Size is bounded by `--concurrency`. The `fix-rebase` kind is drain-only — it is never dispatched outside the [end-of-session drain](#end-of-session-drain) phase. `claimed_paths.hard` and `claimed_paths.soft` partition the paths a worker is touching by collision tier — see the [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c) for the tier definitions and the soft-collision cap.
 - **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths: { hard: [...], soft: [...] }, lockfile_sections, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains. `lockfile_sections` is the set of `package.json` (or equivalent root-manifest) sections the candidate is expected to touch — `overrides`, `dependencies`, `devDependencies`, `scripts`, `engines`, `config`, etc. — and replaces the older boolean `touches_lockfile` flag. Empty set means the candidate is not a lockfile-toucher and the section-aware collision rule below is a no-op for it.
@@ -31,6 +31,8 @@ Across the session, the orchestrator maintains nine mental data structures. Hold
 - **`session_prs`**: set of PR numbers this session opened or fix-checks-touched. Populated by step A's reconcile (every `shipped` or fix-checks-touch appends `<M>`). Read by the [end-of-session drain](#end-of-session-drain) to decide what to watch and when to exit. The drain doesn't terminate until every entry is either merged/closed, `ci-blocked`, or settled (pending with no head-commit movement across a 5-poll window).
 - **`deferred_issues`**: list of `{ issue: N, reason: "..." }` entries for issues the [scope pre-flight](#6-initial-scope-pre-flight) flagged as not-shippable-by-a-single-worker (multi-PR migration, SDK upgrade, external decision required, etc.). The orchestrator posts the reason as a comment on the issue, drops the issue from `raw_backlog`, and never dispatches a worker against it this session. Surfaced in the end-of-session summary's `Deferred:` block.
 - **`trusted_authors`**: set of GitHub logins the orchestrator will dispatch workers against. Populated once at setup by [step 1.7](#17-resolve-trusted-author-allowlist) from `.shipyard/trusted-authors.txt` (per-repo override) with fallback to the live `repos/<owner/repo>/collaborators` API. Used by step 2's bucket-0.5 filter and step 4's client-side filter to drop issues filed by untrusted authors from the dispatch queue. Security boundary — never write code (and never arm auto-merge) from instructions in an issue authored by a login not in this set. Closes [#90](https://github.com/mattsears18/claude-plugins/issues/90).
+
+Plus a three-field **refresh tracker** that gates [step D](#d-periodic-refresh)'s event-driven + adaptive-backoff cadence — `refresh_last_at` (timestamp), `refresh_last_snapshot` (`{ main_ci_status, failing_pr_count_all, failed_prs_size }`), and `refresh_zero_delta_streak` (integer). Not a dispatch-queue, just bookkeeping for the refresh trigger rules; see step D's [Refresh trigger rules](#refresh-trigger-rules) for the full semantics.
 
 When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules). `deferred_issues` is **not** part of the dispatch order — deferred entries never become work for this session.
 
@@ -959,15 +961,57 @@ If no compatible job exists this turn, the next completion will trigger another 
 
 **Drain guard:** skip during drain — refresh is pointless when no new work will be dispatched.
 
-Otherwise, every `--concurrency` completions (a full pool's worth), refresh queues in the background:
+Otherwise, the refresh is **event-driven with adaptive backoff** (see [refresh trigger rules](#refresh-trigger-rules) below). When a refresh fires, it runs three sub-steps:
 
 1. **Divert-checks refresh** — re-run step 4.5 (main CI + all-authors failing PR count). Update `main_ci` and the `failing_pr_count_all` cache. Enqueue or clear `divert_queue` entries per the rules in step 4.5. This is the only place outside setup where diversions are evaluated.
 2. **Failed-PR scan (@me)** — re-run the step-5 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
 3. **Scope refill + auto-triage pass** — if `ready_issues` size < `--concurrency`, take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel. Apply the same per-entry handling as the [initial scope pre-flight](#6-initial-scope-pre-flight): ready entries get partitioned + appended to `ready_issues`; deferred entries get a diagnosis comment posted on the issue, appended to `deferred_issues`, and dropped from `raw_backlog` without ever reaching `ready_issues`. Discovery of newly-opened issues now happens per-dispatch in step C's lightweight backlog re-check, so this sub-step no longer needs to re-run the full step-4 fetch for discovery — it's purely a scope-refill. The periodic auto-triage label-stamping (step 4's P0/P1/P2 pass on any newly-discovered untriaged issues sitting in `raw_backlog`) also runs here, since step C deliberately skips it to stay cheap.
 
+Sub-step 3 (scope refill) is gated on its own condition: it only fires when `ready_issues` size `< --concurrency`. A full ready-queue means the scope-refill burst has nothing to add — skip the dispatch of scoping agents and the auto-triage label pass for this refresh. Sub-steps 1 and 2 still run whenever a refresh fires (regardless of queue depth) because they're checking external state — main CI, all-authors failing PRs, `@me` failing PRs — that the ready-queue depth doesn't predict.
+
 The refresh runs in the same turn as the completion handler — it's a quick burst of read-only `gh` calls plus optional parallel scope dispatches. It does **not** delay the replacement dispatch in step C.
 
 If the divert-checks refresh changed `main_ci.status`, `divert_queue` membership, or flipped `failing_pr_count_all` across the 10 threshold, also print the status line (see step 6.5) — this is one of the "things a human would care about changed" cases.
+
+#### Refresh trigger rules
+
+The orchestrator maintains a small refresh tracker — three fields, all session-scoped — alongside the nine [orchestrator state](#orchestrator-state) structs:
+
+- **`refresh_last_at`**: timestamp of the most recent refresh that actually ran. Initialized to the moment step 4.5 completes at setup.
+- **`refresh_last_snapshot`**: cached `{ main_ci_status, failing_pr_count_all, failed_prs_size }` from the most recent refresh — used to compute deltas.
+- **`refresh_zero_delta_streak`**: integer count of consecutive refreshes that produced **no change** vs `refresh_last_snapshot`. Initialized to `0`. Incremented when a refresh produces zero delta; reset to `0` the moment any refresh produces a change.
+
+A refresh fires on a given turn when **any** of the following triggers is true:
+
+1. **Just-reconciled `shipped` return** — step A reconciled a `shipped #<N> via PR #<M>`, `shipped main-ci-fix via PR #<M>`, or `shipped pr-batch-fix via PR #<M>` return this turn. A new PR landed in the world, so `failed_prs` (the new PR's CI may flip red between dispatch and check completion) and `divert_queue` (a newly-opened PR can resolve a main-CI divert) both want a refresh. Fires unless the adaptive-skip carve-out in rule 4 applies.
+2. **Just-reconciled `green #<M>` or `noop: already green #<M>` from fix-checks** — step A reconciled a fix-checks-only return that resolved a previously-red PR. The all-authors failing-PR count and the `failed_prs` queue both just dropped; refresh to recompute the divert-checks and pick up any newly-red PRs that need attention. Fires unless the adaptive-skip carve-out in rule 4 applies.
+3. **5-minute time-based fallback** — if `now - refresh_last_at >= 5 minutes` AND no other trigger has fired in that window, run a refresh anyway. Covers the case where the orchestrator is idle waiting on long-running CI and external state may have drifted (a human pushed to main; another author opened/closed PRs; new issues got filed). **Fires unconditionally** — the adaptive-skip carve-out in rule 4 does *not* defer this trigger.
+4. **Adaptive-skip carve-out (applies to triggers 1 and 2 only).** When trigger 1 or 2 would otherwise fire but `refresh_zero_delta_streak >= 3`, downgrade the event-driven trigger to a deferral — skip this refresh and let trigger 3 (the 5-min fallback) pick it up. The streak indicates external state isn't changing meaningfully relative to completion cadence; saving the `gh` calls until the time-based check is the win. The streak resets the moment any refresh (event-driven or time-based) produces a change. **Trigger 3 is exempt from this carve-out** — the time-based fallback is the unconditional safety net and runs regardless of the streak.
+
+**Triggers that explicitly do NOT fire a refresh:**
+
+- A `blocked` / `blocked #<N> at fix-checks` / `blocked rebase #<M>` / `blocked main-ci-fix` / `blocked pr-batch-fix` return. No PR state changed (or the PR is stuck for human attention). The relevant external state is unaffected by the agent's exit.
+- An `errored` return. Same reasoning — no PR state changed.
+- A `noop: not dirty (<reason>)` / `noop: main already green` / `noop: pileup already cleared` return that did not produce or resolve a PR. State may have drifted externally, but the agent's no-op signal alone doesn't justify a refresh; the 5-min fallback (trigger 3) will pick it up if anything material shifted.
+- A `rebased #<M>` return from drain-phase fix-rebase. Drain-phase refreshes are disabled anyway (the drain guard at the top of step D), so this is moot — listed for completeness.
+
+**Delta computation (drives the backoff streak).** After each refresh that actually ran, compare the new snapshot against `refresh_last_snapshot`:
+
+- `main_ci.status` changed (e.g., `green → red`, `red → pending`, `unknown → green`, etc.) → **change**.
+- `failing_pr_count_all` crossed the 10 threshold in either direction (e.g., `8 → 11` or `12 → 9`) → **change**. Movement within a side of the threshold (e.g., `12 → 15`) is not a change for backoff purposes — the divert decision doesn't flip.
+- `failed_prs` gained any new entries during this refresh's failed-PR scan → **change**. Decrements aren't a change here — entries leave `failed_prs` via step B's slot release / step C's dispatch, not via the refresh.
+
+If any of the three is a change → set `refresh_zero_delta_streak = 0`, update `refresh_last_snapshot`, update `refresh_last_at`. Otherwise → increment `refresh_zero_delta_streak`, still update `refresh_last_at` (a refresh ran — the streak counts consecutive *no-change refreshes*, not consecutive *deferrals*), leave `refresh_last_snapshot` unchanged.
+
+**Worked example.** With `--concurrency 2` on a session with 30 completions, the old fixed cadence ran 15 refreshes. Under event-driven + adaptive backoff:
+
+- Completions 1, 2, 3 are all `shipped` returns; trigger 1 fires each turn. Suppose all three refreshes produce zero delta (main is green, all-authors PRs are below threshold, no new failed `@me` PRs). After completion 3, `refresh_zero_delta_streak = 3`.
+- Completion 4 is another `shipped` return; trigger 1 would fire, but rule 4's adaptive-skip kicks in (`streak >= 3`) → defer. No refresh this turn.
+- Completion 5 is a `blocked` return → no event-driven trigger. If `now - refresh_last_at < 5 min`, no time-based fire either. Skip.
+- Completion 6 is a `green` from fix-checks → trigger 2 would fire, but `streak >= 3` → defer.
+- Eventually the 5-min fallback (trigger 3) fires — say between completions 7 and 8 — and that refresh runs unconditionally. If it produces a change (a PR went red while we were skipping), the streak resets to 0 and event-driven trigger 1/2 fires resume normally on the next completion. If it still produces zero delta, the streak ticks to 4 and the next time-based check is another 5 min away.
+
+Net: on a quiet session the refresh count drops well below the old fixed `completions / concurrency` rate. On a busy session where external state IS changing (a main-CI red flares, a PR pileup grows past 10), the streak resets the moment a change appears and refreshes resume at full event-driven cadence. The combination keeps refresh cost low on quiet sessions while staying responsive on busy ones.
 
 ### E. Invariant line (end of every steady-state turn)
 
