@@ -158,7 +158,8 @@ Every state-mutation site writes through. Batch writes at end-of-turn — one `u
 | [Step C dispatch](#c-dispatch-a-replacement-if-work-remains--mandatory-action) | `in_flight` (new slot), `ready_issues` (consumed), `failed_prs` (consumed), `soft_caps` (increment), `raw_backlog` (post-refill) | every dispatch |
 | [Step D refresh](#d-periodic-refresh) | `main_ci`, `divert_queue`, `failed_prs`, `ready_issues`, `raw_backlog`, `deferred_issues` | every full-pool refresh |
 | Drain phase | `drain.active`, `drain.polls`, `session_prs`, `failed_prs`, `in_flight` | every poll |
-| [Cleanup step 6.5](#end-of-session-cleanup) | Session file removed via `cleanup` | last, after the user-facing summary prints |
+| [Cleanup step 7](#end-of-session-cleanup) | Session record flushed to `~/.shipyard/cost-history.jsonl` via `cost-history.sh flush` | last, immediately before the session file is removed |
+| [Cleanup step 8](#end-of-session-cleanup) | Session file removed via `session-state.sh cleanup` | last, after the user-facing summary prints |
 
 ### Failure mode — write-through breakage
 
@@ -1447,7 +1448,15 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, and `<deferred_live>`; pipe th
 
    `git worktree remove` only modifies shared `.git/worktrees/` metadata — the primary's HEAD never moves. If the remove fails (e.g., uncommitted orchestrator edits — itself a bug), surface that in the summary as `orchestrator worktree NOT reaped: <reason>` and leave it for next session's step 3b sweep.
 
-7. **Remove the session state file** — close out the durable mirror from [step 1.5](#15-initialise-the-session-state-file):
+7. **Flush the session's token data to the persistent cross-session ledger** — before the session file is deleted, append its rolled-up record to `~/.shipyard/cost-history.jsonl` so it survives into the next session's reports ([issue #163](https://github.com/mattsears18/claude-plugins/issues/163)):
+
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "<session-id>"
+   ```
+
+   The `flush` subcommand is idempotent (a session id that already appears in the ledger is silently skipped) and exits 0 with no output when the session file is missing — same don't-gate-exit posture as `session-state.sh cleanup`. The two ledger files (`cost-history.jsonl`, `cost-history-issues.jsonl`) are read by `/shipyard:cost report` to produce cross-session usage reports. **Order matters: flush before cleanup**, otherwise the data we want to persist is already gone.
+
+8. **Remove the session state file** — close out the durable mirror from [step 1.5](#15-initialise-the-session-state-file):
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "<session-id>"

@@ -87,3 +87,17 @@ Schemas live at `plugins/shipyard/schemas/shipyard.config.schema.json` (repo + l
 ### Don't put secrets in any config layer
 
 The schema rejects keys matching `/token|secret|api_key|password|credential/i` regardless of where they appear. Move secrets to environment variables — even `.shipyard/config.local.json` (which is gitignored) is treated as if it could land in a backup or paste-buffer leak.
+
+## Cost-tracking ledger (`~/.shipyard/cost-history.jsonl`)
+
+Persistent cross-session token-usage records live at `~/.shipyard/` (introduced in 1.3.32, [#163](https://github.com/mattsears18/claude-plugins/issues/163)). Every `/shipyard:do-work` session's end-of-session cleanup flushes a rolled-up record into this ledger before reaping the per-session state file.
+
+| Path | Format | Lifetime | Contents |
+|---|---|---|---|
+| `~/.shipyard/cost-history.jsonl` | append-only JSONL | persistent | One line per completed session: id, repo, started/ended timestamps, token totals, by-model rollup, by-mode rollup |
+| `~/.shipyard/cost-history-issues.jsonl` | append-only JSONL | persistent | One line per (repo, issue_number); reader dedupes by latest `last_touched` |
+| `~/.shipyard/sessions/<id>.json` | atomic JSON | transient | Per-session live state; reaped at end-of-session |
+
+Use `/shipyard:cost report` to query the persistent ledger. `--last 30d` (default), `--repo <owner/name>`, `--by-issue`, `--by-mode`, `--by-model`, `--top N`, `--trend`, and `--format markdown|csv|json` compose. `/shipyard:cost reset` is destructive but safe (moves to `.bak.<ts>` instead of `rm`); `/shipyard:cost export --to <path>.tar.gz` produces a portable backup.
+
+The ledger is local-only — shipyard never uploads it anywhere. To opt a specific repo out of cost-tracking, set `cost_tracking.enabled: false` for that repo, or add the repo to `exclude_repos_from_cost_tracking` in `~/.shipyard/config.json`. The ledger files are safe to `rm`; deletion only forfeits historical reports.
