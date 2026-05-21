@@ -17,13 +17,17 @@ Full issue → PR lifecycle. Self-assign, implement, open a PR with a `Closes #<
 **Do this first, every time.** State drifts between orchestrator pick and agent start.
 
 ```bash
-gh issue view <N> --repo <owner/repo> --json state,assignees,labels,body,title,comments,author
+gh issue view <N> --repo <owner/repo> \
+  --json state,assignees,labels,body,title,comments,author \
+  --jq '{state, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, comments: [.comments[] | {author: {login: .author.login}, body, url, createdAt}]}'
 
 # Open PRs that already close this issue (cross-check, the search qualifier sometimes misses)
 gh pr list --repo <owner/repo> --state open --search 'in:body "Closes #<N>"' --json number,title,url
 gh pr list --repo <owner/repo> --state open --search 'in:body "Fixes #<N>"' --json number,title,url
 gh pr list --repo <owner/repo> --state open --search 'in:body "Resolves #<N>"' --json number,title,url
 ```
+
+The `--jq` projection on the issue view keeps every field this step consumes — `state` (workable check), `title`/`body` (untrusted-input read in step 2), `labels[].name` (block-label check), `assignees[].login` (concurrent-claim check), `author.login` (trust-walk anchor in step 2), `comments[].{author.login, body, url, createdAt}` (trusted-author comment-thread walk + permalink citation in step 2) — and drops every field the worker doesn't read (label `id` / `description` / `color`, assignee `id` / `name`, comment `id` / `updatedAt`, author `id` / `name`). Same call count, smaller objects. Worker-preamble §"`gh` JSON discipline" covers the convention.
 
 Bail with `blocked` if any of:
 
