@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Test: the worker-preamble skill exists and each of the five dispatch prompt
+# templates in commands/do-work.md references it instead of inlining the
+# worktree-discipline preamble verbatim.
+#
+# Background — issue #107: do-work.md previously duplicated the same ~600-char
+# worktree-discipline preamble across all five dispatch prompt templates
+# (fix-main-ci, fix-failing-prs-batch, fix-checks-only, fix-rebase, issue-work).
+# When the preamble drifted in one place and not the others, the agent that
+# silently inherited stale rules could move the user's primary checkout's HEAD
+# via `gh pr checkout` or park a worktree on `[main]`. The DRY refactor lifts
+# the shared preamble into a skill that every dispatch prompt loads by name.
+#
+# This test is the regression guard: if anyone reintroduces the duplicated
+# verbatim preamble (or removes the skill), the test fails.
+#
+# Pure bash, no external dependencies. Run with:
+#
+#   bash plugins/shipyard/scripts/tests/worker-preamble.test.sh
+
+set -u
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$here"
+while [[ "$repo_root" != "/" ]]; do
+  if [[ -d "$repo_root/.git" || -f "$repo_root/CHANGELOG.md" ]]; then
+    break
+  fi
+  repo_root="$(dirname "$repo_root")"
+done
+
+if [[ "$repo_root" == "/" ]]; then
+  echo "FAIL: could not locate repo root from $here" >&2
+  exit 1
+fi
+
+skill_path="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
+
+pass=0
+fail=0
+GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
+
+assert_file_exists() {
+  local path="$1"
+  local label="$2"
+  if [[ -f "$path" ]]; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s (missing: %s)\n' "$RED" "$RESET" "$label" "$path"
+    fail=$((fail+1))
+  fi
+}
+
+assert_contains() {
+  local file="$1"
+  local needle="$2"
+  local label="$3"
+  if grep -qF -- "$needle" "$file" 2>/dev/null; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$label"
+    printf '    expected to find in %s: %s\n' "$file" "$needle"
+    fail=$((fail+1))
+  fi
+}
+
+assert_count_at_least() {
+  local file="$1"
+  local needle="$2"
+  local min="$3"
+  local label="$4"
+  local count
+  count=$(grep -cF -- "$needle" "$file" 2>/dev/null | head -n 1)
+  count=${count:-0}
+  if (( count >= min )); then
+    printf '  %sPASS%s  %s (found %d occurrences, expected ≥ %d)\n' \
+      "$GREEN" "$RESET" "$label" "$count" "$min"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s (found %d occurrences, expected ≥ %d)\n' \
+      "$RED" "$RESET" "$label" "$count" "$min"
+    fail=$((fail+1))
+  fi
+}
+
+assert_count_at_most() {
+  local file="$1"
+  local needle="$2"
+  local max="$3"
+  local label="$4"
+  local count
+  count=$(grep -cF -- "$needle" "$file" 2>/dev/null | head -n 1)
+  count=${count:-0}
+  if (( count <= max )); then
+    printf '  %sPASS%s  %s (found %d occurrences, expected ≤ %d)\n' \
+      "$GREEN" "$RESET" "$label" "$count" "$max"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s (found %d occurrences, expected ≤ %d)\n' \
+      "$RED" "$RESET" "$label" "$count" "$max"
+    fail=$((fail+1))
+  fi
+}
+
+echo "worker-preamble skill regression tests (issue #107)"
+echo
+
+# (1) Skill file must exist with proper YAML frontmatter.
+assert_file_exists "$skill_path" "worker-preamble SKILL.md exists"
+
+if [[ -f "$skill_path" ]]; then
+  assert_contains "$skill_path" "name: worker-preamble" \
+    "SKILL.md frontmatter declares name: worker-preamble"
+  assert_contains "$skill_path" "description:" \
+    "SKILL.md frontmatter has a description field"
+
+  # Skill must enumerate the four load-bearing rules verbatim so any single
+  # reader sees the full contract without bouncing between docs.
+  assert_contains "$skill_path" "isolated git worktree" \
+    "SKILL.md covers the isolated-worktree rule"
+  assert_contains "$skill_path" "gh pr checkout" \
+    "SKILL.md covers the no-gh-pr-checkout rule"
+  assert_contains "$skill_path" "git switch" \
+    "SKILL.md covers the no-git-switch-to-default rule"
+  assert_contains "$skill_path" "--label shipyard" \
+    "SKILL.md covers the shipyard label requirement"
+fi
+
+# (2) do-work.md must reference the skill from each of the five dispatch
+# prompts. We count by the canonical reference string the dispatch prompts
+# use to invoke the skill.
+assert_file_exists "$do_work_path" "commands/do-work.md exists"
+
+if [[ -f "$do_work_path" ]]; then
+  # The five dispatch prompts should reference the skill — expect ≥5 references.
+  assert_count_at_least "$do_work_path" "shipyard:worker-preamble" 5 \
+    "do-work.md references the worker-preamble skill in ≥5 places (one per dispatch prompt)"
+
+  # Regression guard: the verbatim "never \`cd\` outside it, never use \`gh pr
+  # checkout\`" sentence must not be duplicated inside dispatch prompts
+  # anymore. We allow it to appear at most TWICE: once in the orchestrator's
+  # own worktree-discipline preamble (step 0.5 area, line ~70) and possibly
+  # once in the Don't section listing the rule. Five+ inline copies would
+  # mean the refactor regressed.
+  assert_count_at_most "$do_work_path" \
+    "never \`cd\` outside it, never use \`gh pr checkout\`" 2 \
+    "do-work.md no longer inlines the full worktree-discipline sentence in dispatch prompts"
+fi
+
+echo
+if (( fail > 0 )); then
+  printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
+  exit 1
+else
+  printf '%sPASS%s  all %d test(s) passed\n' "$GREEN" "$RESET" "$pass"
+  exit 0
+fi
