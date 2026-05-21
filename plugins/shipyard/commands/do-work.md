@@ -71,7 +71,56 @@ Why a dedicated worktree (vs. just "be careful with cwd"):
 
 End-of-session cleanup also runs from the orchestrator worktree, and reaps the orchestrator's own worktree last — see [End-of-session cleanup](#end-of-session-cleanup) below.
 
+### 0.7 Setup parallelization contract (fire-once-batch)
+
+**The setup phase below (steps 1 → 5) is mostly a graph of read-only `gh` calls with no data dependencies on each other.** Done serially — one `Bash` tool call per read — it costs 10–15 orchestrator turns of wall-clock latency before the first agent is dispatched, on a backlog where nothing needs recovery. Done in parallel — every independent read fired as part of a single batch — it collapses to one or two orchestrator turns. The user-watching-the-terminal experience is the difference between "the pool fills in under 5 seconds" and "the orchestrator is still spinning up after 30 seconds." Closes [#101](https://github.com/mattsears18/claude-plugins/issues/101).
+
+**The canonical setup batch.** Treat the following reads as a single parallel burst — they have no data dependencies on each other:
+
+- **[Step 1](#1-resolve-repo--user) — repo + user metadata** (3 `gh` calls: `gh repo view --json nameWithOwner`, `gh api user -q .login`, `gh repo view --json defaultBranchRef`). Independent of every other read.
+- **[Step 2](#2-backlog-overview) — issue universe** (1 `gh issue list --state open --limit 200 --json number,title,labels,assignees,body,author` + 1 `gh issue list --search 'is:issue is:open linked:pr' --json number`). Independent — uses literal `<owner/repo>` (set in step 1) and **does not** need to wait for step 1's per-call resolution to finish, since the orchestrator already has `<owner/repo>` from the `--repo` arg or a one-shot `gh repo view` that's part of this same batch.
+- **[Step 3d.1](#3-ensure-label-exists--recover-from-prior-session) — `ci-blocked` PR scan** (`gh pr list --label ci-blocked --json number,headRefOid,headRefName`). The per-PR follow-up reads (`gh api .../events`, `gh api .../commits/$head_oid`) DO depend on the initial PR list, so fire them as a **second-tier parallel batch** keyed off the first-tier result — one parallel burst per PR, not one serial loop iteration per PR. Within the second tier, every PR's events+commit lookups are independent of every other PR's, so the per-PR pairs all parallelize too.
+- **[Step 3d.2](#3-ensure-label-exists--recover-from-prior-session) — `blocked`-label issue scan** (`gh issue list --label blocked --json number,body`). Same shape as 3d.1: the per-issue blocker-state lookups (`gh issue view <blocker>` / `gh pr view <blocker>` fallback) are a second-tier parallel batch keyed off the first-tier list. Use the `blocker_state` cache (see [step 0.8 below](#08-blocker_state-cache-default-on)) so a referenced blocker isn't re-queried if step 2's bucket-6 candidate computation already resolved it.
+- **[Step 4.5a](#45-divert-checks-main-ci--pr-pileup) — main CI status** (`gh run list --branch <default-branch> --limit 60`). Independent.
+- **[Step 4.5b](#45-divert-checks-main-ci--pr-pileup) — all-authors failing-PR count** (`gh pr list --state open --json number,title,author,headRefName,statusCheckRollup`). Independent.
+- **[Step 5](#5-snapshot-failing-prs) — `@me` failing-PR snapshot** (`gh pr list --state open --author @me --search '-label:ci-blocked -is:draft'`). Independent.
+
+**How to fire it.** Two equivalent shapes — pick whichever the orchestrator implementation finds natural:
+
+1. **One `Bash` tool call** containing a `bash -c '... &  ... &  ... & wait'` block that backgrounds each read, pipes JSON to a deterministic `/tmp/do-work-setup-<key>.json` file, and `wait`s for all to finish. Subsequent steps read the JSON files instead of issuing fresh `gh` calls. This shape is friendlier for orchestrator implementations that find it easier to reason about a single shell pipeline.
+2. **Multiple `Bash` tool calls in one orchestrator message** — N parallel calls in a single message, each running one `gh` command. The harness fires them in parallel and reports each result independently. This shape is friendlier when the orchestrator wants to bind the result of each call to a distinct variable.
+
+Either way, the obligation is the same: **at most one orchestrator turn passes between "decide to start setup" and "all independent reads have returned."** A serial walk through steps 1 → 5 — one read per turn — is the failure mode this section exists to prevent.
+
+**Steps that MUST run after the batch.** A handful of setup actions have data dependencies on the batch's results and have to come after it:
+
+- **[Step 1.7](#17-resolve-trusted-author-allowlist)** — reads `.shipyard/trusted-authors.txt` (filesystem, not network) and falls back to `gh api repos/<owner/repo>/collaborators` only when the file is absent. The file read is fast and can be done in parallel with the batch; the collaborators-API fallback (when needed) can be added to the same batch. The output (`trusted_authors`) is consumed by step 2's bucket-0.5 filter and step 4's client-side filter, so it must be resolved before step 2's bucketing logic runs.
+- **[Step 3a](#3-ensure-label-exists--recover-from-prior-session)** — `gh label create` calls. These are writes (mutate the repo), not reads, so they're not part of the read-only batch. They're idempotent and can fire in their own parallel burst right after step 1's repo info resolves, but they're never on the critical path because no later step reads the labels back.
+- **[Step 3b / 3c](#3-ensure-label-exists--recover-from-prior-session)** — local-filesystem worktree reaping. Independent of the network batch; can run in parallel with it.
+- **[Step 3.5](#35-refine-pending-user-feedback-issues)** — invokes `/refine-feedback`. Blocks the setup pipeline until refinement completes, by design (refined issues need to be visible to step 4's fetch).
+- **[Step 4](#4-fetch--rank-the-backlog)** — the **filtered** backlog fetch (with all the `-label:` qualifiers and `-linked:pr`). Distinct from step 2's universe fetch — step 2 fetches *all* open issues for bucket assignment; step 4 fetches only the workable subset for ranking + dispatch. The two queries return overlapping but not identical sets, and the orchestrator needs both. They CAN fire in the same batch (no data dependency between them) — but step 4's auto-triage label-stamping pass (the P0/P1/P2 assignment) and the client-side filters depend on having both step 1.7's `trusted_authors` and step 2's already-fetched issue universe in hand. Defer the auto-triage labeling until those are ready.
+
+**Steps 6+ stay serial.** The scope pre-flight (step 6) dispatches read-only scoping agents in parallel within itself, but it depends on the ranked `raw_backlog` from step 4. The initial pool fill (step 7) depends on the scoped `ready_issues` from step 6. Neither participates in the setup batch.
+
+The numbered subsection order below (1 → 5) is preserved for human readability — it's still the order the user reads the spec. But the orchestrator's *execution* order is "fire the batch, then walk the dependent steps." Don't read the section numbering as serial scheduling — read it as documentation layout.
+
+### 0.8 `blocker_state` cache (default-on)
+
+The orchestrator maintains a session-local in-memory map `blocker_state: { <issue-or-pr-number> → "OPEN" | "CLOSED" | "MERGED" | "unresolvable" }` from the moment setup starts. Three setup paths read or write this map; reusing the same cache across all three is what keeps the wall-clock cost flat as the backlog grows:
+
+- **[Step 2](#2-backlog-overview)'s bucket-6 candidate computation** — for every `Blocked by #N` reference in a bucket-6 issue body, `gh issue view <N> --json state` (with `gh pr view <N>` fallback). Cache each result in `blocker_state[<N>]`.
+- **[Step 3d.2](#3-ensure-label-exists--recover-from-prior-session)'s auto-clear sweep** — same lookup against the same reference set. If `blocker_state[<N>]` is already populated from step 2, use the cached value; otherwise query and cache.
+- **[Step 2](#2-backlog-overview)'s bucket-7 "Blocked (body reference)" classification** — also reads `Blocked by #N` references. Same cache.
+
+Cache lifetime is **session-scoped**. Don't persist between sessions (PR/issue states change). Don't re-validate within a session (a blocker that closed in the 30 seconds between step 2 and step 3d.2's read is fine to treat as still-open — the next session catches it). The cache is a pure latency optimization; it never gates a correctness check.
+
+**Cache miss policy.** On the first lookup of an unknown number: query `gh issue view <N>` first; if that returns `not found` (the number is a PR, not an issue), fall back to `gh pr view <N>`; if both fail, cache `"unresolvable"` and the consumer treats it as "not all closed" (i.e. don't auto-clear). The `unresolvable` entry survives subsequent lookups within the session — no retry burst per consumer.
+
+**Spelling.** The map is `blocker_state`, lowercased-with-underscores to match the other state-struct names in the [Orchestrator state](#orchestrator-state) section. It's NOT a 10th formal state struct (it's an internal optimization, not a queue the dispatch loop reads) — but it's named consistently so it's not mistaken for an ad-hoc local variable.
+
 ### 1. Resolve repo + user
+
+These three reads are part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) — fire them in parallel with steps 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5, not serially before them.
 
 ```bash
 gh repo view --json nameWithOwner -q .nameWithOwner   # if --repo omitted
@@ -129,7 +178,7 @@ The count `<K>` includes the repo owner (which is always in the set). The adviso
 
 Before any other setup, fetch every open issue and print an upfront summary of what will be worked on, what will be skipped, and why. The user reads this once at the start of the session and uses it to (a) calibrate expectations for how many issues this run will close, and (b) start unblocking the blocked work in parallel while the orchestrator runs. The summary is **informational only** — print it, then continue with step 3. No confirmation needed.
 
-Fetch the universe of open issues and the linked-PR subset:
+Fetch the universe of open issues and the linked-PR subset. Both calls are part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) — fire them in parallel with steps 1 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5:
 
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 200 \
@@ -292,7 +341,7 @@ Edge cases:
 - **Action-recommendation sub-rows with zero candidates** — omit the `⚠ likely-clearable` / `⚠ likely-triageable` sub-row entirely when its count is 0. The bucket's parent row stays; the sub-row only appears when there's something to act on.
 - **Very large backlogs** — per-row Issues column truncates after ~10 numbers with `, +<K> more`. See bucket-table rules above.
 - **`likely-clearable` overlap with step 3d.2** — every `likely-clearable` candidate surfaced in step 2 is also a candidate for step 3d.2's auto-clear sweep. Don't pre-deduplicate or skip them; the visibility in step 2 is the point — it lets the user see "shipyard is about to clear these N labels" before the sweep runs, so they can intervene (cancel, add a secondary gate comment, etc.) if any look wrong. The two surfaces aren't redundant — they're sequential checkpoints on the same set of issues.
-- **Cost** — the bucket-6 candidate computation is O(blocked-issues × referenced-blockers) `gh issue view --json state` lookups, same as step 3d.2's sweep does later. To avoid double-paying, cache the per-blocker state lookups in a small in-memory map (`blocker_state[<N>] → state`) and reuse the same map in step 3d.2. The bucket-5 candidate computation is a pure regex scan over already-fetched issue bodies — cheap, no extra network calls. Combined extra cost on a backlog of ~50 open issues is well under 1 second wall-clock and dominated by the step 3d.2 sweep's lookups, which were already paying that cost.
+- **Cost** — the bucket-6 candidate computation is O(blocked-issues × referenced-blockers) `gh issue view --json state` lookups, same as step 3d.2's sweep does later. The [`blocker_state` cache](#08-blocker_state-cache-default-on) (default-on, populated as lookups happen) ensures any reference resolved here is reused by step 3d.2 — no double-paying. Bucket-6 / bucket-7 / step 3d.2 all read and write the same map, so the wall-clock cost is paid once per distinct blocker reference regardless of how many setup steps consume it. The bucket-5 candidate computation is a pure regex scan over already-fetched issue bodies — cheap, no extra network calls. Within the bucket-6 computation, all blocker lookups across all bucket-6 issues are independent of each other, so fire them as a parallel burst (one `gh issue view` call per distinct blocker — the `blocker_state` cache dedupes references that appear on multiple bucket-6 issues). Combined extra cost on a backlog of ~50 open issues is well under 1 second wall-clock when parallelized.
 
 Then proceed immediately to step 3.
 
@@ -384,6 +433,8 @@ Any results here that DON'T correspond to a `do-work/*` worktree on disk are "di
 
 This sweep runs **before** step 5's failing-PR snapshot so freshly-unblocked PRs are visible in the same session. It is also the only place `ci-blocked` is ever removed by the orchestrator — applying the label is step A's job, removing it is step 3d.1's job, and no other step touches it.
 
+**Parallel-batch shape.** The initial PR list is part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) — fire it in parallel with steps 1 / 2 / 3d.2 / 4.5a / 4.5b / 5. The per-PR follow-up reads (`gh api .../events`, `gh api .../commits/$head_oid`) DO depend on the initial PR list, so fire them as a **second-tier parallel batch** keyed off the first-tier result: one parallel burst of (events + commit) pairs per PR, not one serial loop iteration per PR. Within the second tier, every PR's events+commit lookups are independent of every other PR's, so the per-PR pairs all parallelize too. The serial-loop shape below is shown for readability — the actual execution is "list, then fire all per-PR pairs in parallel, then apply the decisions sequentially."
+
 ```bash
 # All open PRs currently carrying ci-blocked, regardless of author. Foreign authors
 # matter here too — the sweep is about the label's premise, not who owns the PR.
@@ -442,6 +493,8 @@ Any of these means the auto-clear can't make a confident judgment, so the safe d
 
 The same auto-clear pattern as `ci-blocked` works here, just with a different condition: instead of "head commit newer than label timestamp," the rule is "every `Blocked by #N` reference in the body resolves to a closed issue." This sweep runs immediately after the `ci-blocked` sweep, before step 4's backlog fetch, so freshly-unblocked issues land in the workable bucket the same session they become unblocked.
 
+**Parallel-batch shape.** The initial issue list is part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) — fire it in parallel with steps 1 / 2 / 3d.1 / 4.5a / 4.5b / 5. The per-issue blocker-state lookups (`gh issue view <blocker>` / `gh pr view <blocker>` fallback) are a second-tier parallel batch keyed off the first-tier list — fire all the lookups as one parallel burst across all blocked issues, not one serial loop iteration per blocker. Read through the [`blocker_state` cache](#08-blocker_state-cache-default-on) so a blocker resolved by step 2's bucket-6 computation isn't re-queried here; only cache-miss blockers go to `gh`. The serial-loop shape below is shown for readability.
+
 ```bash
 # All open issues currently carrying the `blocked` label.
 gh issue list --repo <owner/repo> --state open --label blocked --limit 200 \
@@ -471,13 +524,20 @@ for n in $(jq -r '.[].number' /tmp/do-work-blocked-issues.json); do
   fi
 
   # Check each referenced blocker's state. If ANY is OPEN (or unresolvable), hold.
+  # Reads through the blocker_state cache (see step 0.8) — cache-hits skip the
+  # gh call entirely; cache-misses populate the cache before consuming the value.
   all_closed=true
   closed_list=""
   for b in $blockers; do
-    state=$(gh issue view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null || echo "")
+    state="${blocker_state[$b]:-}"
     if [ -z "$state" ]; then
-      # Could be a PR (gh issue view fails on PR numbers) — try gh pr view.
-      state=$(gh pr view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null || echo "")
+      state=$(gh issue view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null || echo "")
+      if [ -z "$state" ]; then
+        # Could be a PR (gh issue view fails on PR numbers) — try gh pr view.
+        state=$(gh pr view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null || echo "")
+      fi
+      [ -z "$state" ] && state="unresolvable"
+      blocker_state[$b]="$state"
     fi
     case "$state" in
       CLOSED|MERGED)
@@ -582,6 +642,8 @@ This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exis
 
 Two repo-health conditions can preempt all normal work. Run these checks at setup, repopulate `divert_queue`, then continue. The same checks re-run during the periodic refresh (step D).
 
+Both reads (4.5a and 4.5b) are part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) — fire them in parallel with steps 1 / 2 / 3d.1 / 3d.2 / 5. The aggregation logic (per-workflow grouping in 4.5a, rollup filtering in 4.5b) runs locally on the JSON returned from each call; no further network I/O is needed.
+
 **4.5a — Main CI status.** Determine whether main is currently healthy by looking at *each workflow's* most-recent COMPLETED run on `<default-branch>`. Main is green only when every workflow's last completed run was a success. If any workflow's most-recent completed run was a failure (or cancelled / timed out), main is red — even if a sibling workflow finished green more recently, and even if a newer in-progress run might eventually flip the failing workflow back to green.
 
 **Reason this needs care:** every commit on `<default-branch>` typically has *multiple* workflow runs (e.g. `ci`, `release`, `claude-review`). They run independently. A single `success` entry in `gh run list` proves only that ONE workflow passed — a sibling workflow on the same SHA, or the latest run of the *same* workflow, can still be red. So the wrong question is "is the newest run green?" — the right question is "for each workflow, is its most recent completed run green?" Evaluate at the **per-workflow** granularity.
@@ -635,6 +697,8 @@ Filter to PRs where `statusCheckRollup` contains any entry with `conclusion: FAI
 Both checks are cheap (two `gh` calls) and the cached results power the status line in step 5.5. Don't re-run them per dispatch — only at setup and at step D's periodic refresh.
 
 ### 5. Snapshot failing PRs
+
+This read is part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) — fire it in parallel with steps 1 / 2 / 3d.1 / 3d.2 / 4.5a / 4.5b. The filtering / deduping logic runs locally on the returned JSON.
 
 ```bash
 gh pr list --repo <owner/repo> --state open --author @me \

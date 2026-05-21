@@ -4,6 +4,19 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.18 — 2026-05-20
+
+Parallelizes the setup-phase `gh` reads in `/shipyard:do-work` and elevates the `blocker_state` cache from "optimization tip" to "default-on session-local map." Closes [#101](https://github.com/mattsears18/claude-plugins/issues/101).
+
+The setup phase walked steps 1 → 5 serially — repo info, the issue universe, the `ci-blocked` PR scan, the `blocked`-label issue scan, the main-CI status check, the all-authors failing-PR count, and the `@me` failing-PR snapshot. None of those reads have data dependencies on each other, but the spec presented them as a numbered list, so orchestrator implementations naturally read them as 10–15 serial `Bash` tool calls. On a clean backlog (nothing to recover from) the user stares at "setup spinning up" for 30+ seconds before the pool fills — pure wall-clock latency, no correctness implication.
+
+- **New step 0.7 "Setup parallelization contract (fire-once-batch)" in `commands/do-work.md`.** Names every independent read in the setup phase explicitly (steps 1, 2, 3d.1, 3d.2, 4.5a, 4.5b, 5), lists the two equivalent shapes the orchestrator can use to fire them (one `Bash` call with `& wait`, or N parallel `Bash` tool calls in one orchestrator message), and lists the steps that MUST come after the batch (step 1.7 trusted-author resolution, step 3a label creation, step 3.5 refinement, step 4 filtered fetch, step 6+ scope pre-flight). The numbered section order (1 → 5) is preserved for human readability; the contract is "execution is parallel, the numbering is documentation layout."
+- **New step 0.8 "`blocker_state` cache (default-on)" in `commands/do-work.md`.** Promotes the previously-mentioned `blocker_state[<N>] → state` map from a one-line cost optimization in step 2's notes to a first-class session-local cache referenced by step 2's bucket-6 computation, step 2's bucket-7 classification, and step 3d.2's auto-clear sweep. Defines the cache-miss policy (try `gh issue view` then `gh pr view` then cache `"unresolvable"`), the cache lifetime (session-scoped, no re-validation), and the spelling convention (lowercased-with-underscores like the other state-struct names, but explicitly not a 10th formal state struct).
+- **Per-step parallel-batch references in steps 1, 2, 3d.1, 3d.2, 4.5, 5.** Each gets a one-paragraph note pointing back at step 0.7 so a reader who lands directly on a numbered step sees the parallelization obligation without having to know step 0.7 exists. Steps 3d.1 and 3d.2 also clarify the **second-tier parallel batch** for their per-PR / per-blocker follow-up reads — the per-PR events + commit lookups and the per-blocker state lookups parallelize across PRs / blockers, not serially loop one at a time.
+- **Step 3d.2's inner blocker-state loop reads through the cache.** The serial-loop pseudo-code body was updated to consult `blocker_state[$b]` before calling `gh issue view` / `gh pr view`, populating the cache on cache-miss. Step 2's bucket-6 candidates (resolved earlier in setup) now skip the network entirely in step 3d.2 — no double-paying.
+
+Pure spec edit — no agent template changes, no new state-struct dependencies, no dispatch-rule semantics change. Orchestrator implementations that already happened to batch setup reads keep working as before; the change makes the contract explicit so all future implementations do the same.
+
 ### 1.3.17 — 2026-05-20
 
 Two-mode rendering for the backlog-overview and end-of-session bucket sections — fixed-width aligned text table when there are 2+ non-zero buckets, single-line summary when there's exactly one, empty-board one-liner when the universe is empty. Closes [#97](https://github.com/mattsears18/claude-plugins/issues/97).
