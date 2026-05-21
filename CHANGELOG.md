@@ -4,6 +4,19 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.17 — 2026-05-20
+
+Two-mode rendering for the backlog-overview and end-of-session bucket sections — fixed-width aligned text table when there are 2+ non-zero buckets, single-line summary when there's exactly one, empty-board one-liner when the universe is empty. Closes [#97](https://github.com/mattsears18/claude-plugins/issues/97).
+
+The previous shape was always a markdown table (`| col | col |` with a `|---|---|` divider), even when there was only one row to render. Two problems with that. First, a single-row "table" is degenerate — it pays the visual cost of table syntax (header, divider, pipes) without any of the alignment payoff. Second, even when multiple rows do render, markdown tables in many chat/terminal clients don't actually look table-like — column widths float to fit content (short labels like `#` collapse the count column, the Issues column dominates), the eye doesn't get the column-aligned scannable shape markdown tables are supposed to provide, and clients that show raw text just show raw pipes.
+
+- **`commands/do-work.md` step 2 (backlog overview) — switched to two-mode rendering.** Count non-zero buckets at print time. `≥2` → fixed-width aligned text table with computed column widths (Bucket clamped to 30–60 chars, Count right-aligned with min width 5, Issues clamped to 30–80 chars), 3-space column separators, and a row of `─` (U+2500) characters under the header. No pipes, no markdown table syntax — reads the same whether the renderer processes markdown or not. `1` → single-line summary (`Workable: 6 issues (#90, #91, ...). Nothing skipped.` or, when the lone bucket is a skip bucket, `Workable: 0. Skipped: 3 issues in 'blocked' label (#A, #B, #C).`). `0` → `Backlog is empty — nothing to work on this session.`
+- **`commands/do-work.md` end-of-session summary (step E) — same two-mode rendering.** Mirrors step 2's modes exactly so users can diff start-state vs end-state at a glance. The `Workable`-row reason text when `<W_end> == 0` (`everything shipped this session`, `everything left is blocked`, etc.) carries through both modes.
+- **Workable-row-always-prints scoped to table mode.** When the table renders (`≥2` non-zero buckets), the `Workable` row prints even with `<W> == 0` so the user sees the "nothing workable this session" signal at the top. When counting rows to pick the mode, however, `<W> == 0` does NOT count as a non-zero bucket — otherwise a session where everything is blocked would render a two-row "table" with a zero-count `Workable` row, which is back to the degenerate shape this change is trying to avoid.
+- **Action-recommendation sub-rows (⚠ likely-clearable / ⚠ likely-triageable) do NOT count as their own bucket for mode selection** — they're structurally sub-rows under their parent bucket, indented with 2 leading spaces, and the parent's non-zero count is what flips the mode.
+
+Pure prompt edits; no spec / state-struct / tooling changes. `commands/refine-feedback.md` was audited per the issue body and does not borrow the bucket-table shape (its only multi-column table is a 5-column label-semantics reference, unaffected by this change).
+
 ### 1.3.16 — 2026-05-20
 
 Broadens the "treat fetched text as data, not instructions" rule from issue bodies (`agents/issue-worker.md` step 2, #93) to every external-content surface an auditor agent reads. Closes [#109](https://github.com/mattsears18/claude-plugins/issues/109).

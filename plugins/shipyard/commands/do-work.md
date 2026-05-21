@@ -190,7 +190,13 @@ Compute candidates for the following buckets:
 
 The bias is deliberately toward **surfacing too many** candidates rather than too few. A false-positive costs the user one glance, but a false-negative leaves work invisible (the failure mode from issue #75 that motivated this).
 
-Print the summary to the user in this shape. The bucket table is a **markdown table** — one row per non-zero bucket, in the order listed below. The table renders cleanly in any chat/terminal client that supports markdown and lets the eye compare counts column-aligned instead of scanning indented bullets:
+Print the summary to the user in this shape. The bucket breakdown uses **two-mode rendering**, picked by row count — the goal is "let the eye compare counts column-aligned instead of scanning indented bullets" without paying the visual cost of table syntax when there's nothing to align:
+
+- **Two or more non-zero buckets** → render a **fixed-width aligned text table** (not a markdown table). Compute column widths at print time to fit the longest content in each column (with sane min/max bounds per the rules below). Reads the same whether the renderer processes markdown or not — no pipes, no header divider with dashes-and-pipes, just spaces-aligned columns separated by 2+ spaces and one row of `─` characters under the header.
+- **Exactly one non-zero bucket** (typically just `Workable`, or `Workable=0` with one skip reason) → skip the table entirely and render a **single-line summary**. Single-row "tables" are degenerate — they carry table syntax overhead without the alignment payoff.
+- **Zero buckets total** (`<W> == 0` AND no skip rows) → render the empty-backlog one-liner.
+
+The full shape, **two-or-more-rows mode**:
 
 ```
 /do-work backlog overview — <owner/repo>
@@ -198,21 +204,21 @@ Print the summary to the user in this shape. The bucket table is a **markdown ta
 By priority: P0=<n>  P1=<n>  P2=<n>  unlabeled=<n>
 Top workable items: #<a>, #<b>, #<c>, ...
 
-| Why skipped | # | Issues |
-|---|---|---|
-| **Workable** (will be worked this session) | <W> | #<a>, #<b>, #<c>, +<K> more |
-| ⛔ **Untrusted author** | <n> | #U → @stranger, #V → @stranger2, ... |
-| `blocked` label | <n> | #A, #B, ... |
-| &nbsp;&nbsp;⚠ likely-clearable | <k> | #A, ... — all referenced blockers closed; step 3d.2 will auto-clear |
-| Blocked (body reference) | <n> | #C, ... |
-| `needs-triage` / `needs-design` | <n> | #D, ... |
-| &nbsp;&nbsp;⚠ likely-triageable | <k> | #D, ... — review then remove `needs-triage` |
-| Awaiting refinement | <n> | #R, ... |
-| Awaiting human review | <n> | #H, ... |
-| Discussion | <n> | #E, ... |
-| Won't fix | <n> | #F, ... |
-| In flight (open PR) | <n> | #G → PR #H, ... |
-| Assigned to others | <n> | #I → @user, ... |
+Bucket                                       Count   Issues
+───────────────────────────────────────────  ─────   ──────────────────────────────────────────────
+Workable (will be worked this session)           6   #<a>, #<b>, #<c>, +<K> more
+⛔ Untrusted author                              2   #U → @stranger, #V → @stranger2
+blocked label                                    3   #A, #B, #C
+  ⚠ likely-clearable                             1   #A — all referenced blockers closed; step 3d.2 will auto-clear
+Blocked (body reference)                         1   #D
+needs-triage / needs-design                      2   #E, #F
+  ⚠ likely-triageable                            1   #E — review then remove `needs-triage`
+Awaiting refinement                              1   #R
+Awaiting human review                            1   #H
+Discussion                                       1   #G
+Won't fix                                        1   #X
+In flight (open PR)                              2   #I → PR #J, #K → PR #L
+Assigned to others                               1   #M → @user
 
 Total open: <W + S>  (workable: <W>, skipped: <S>)
 
@@ -231,13 +237,47 @@ Unblock recommendations (work these in parallel while /do-work runs):
   ...
 ```
 
+The full shape, **one-row mode** (skip the table — single-line summary):
+
+```
+/do-work backlog overview — <owner/repo>
+
+By priority: P0=<n>  P1=<n>  P2=<n>  unlabeled=<n>
+Top workable items: #<a>, #<b>, #<c>, ...
+
+Workable: 6 issues (#90, #91, #92, #93, #94, #89). Nothing skipped.
+
+Total open: 6  (workable: 6, skipped: 0)
+```
+
+If the lone non-zero bucket is a skip bucket (e.g., `Workable=0`, everything else 0 except one skip row), use the same single-line shape pointed at that bucket:
+
+```
+Workable: 0. Skipped: 3 issues in `blocked` label (#A, #B, #C).
+```
+
+The full shape, **zero-row mode** (`<W> == 0` AND no skip rows — the universe is empty):
+
+```
+/do-work backlog overview — <owner/repo>
+
+Backlog is empty — nothing to work on this session.
+```
+
 **Bucket-table rules:**
 
-- One row per non-zero bucket — omit any row whose count is `0`. The **Workable** row prints even when `<W> == 0` so the user can see at a glance that nothing is workable this session.
-- Row order: `Workable` first, then `Untrusted author`, `Blocked (label)`, `Blocked (body reference)`, `Needs-triage/design`, `Awaiting refinement`, `Awaiting human review`, `Discussion`, `Won't fix`, `In flight`, `Assigned to others`. The order mirrors the bucketing precedence in the table above so the most-actionable buckets sit near the top. `Untrusted author` is rendered *immediately* under `Workable` (despite being the highest-precedence skip bucket) because it's the most security-relevant skip — the user should see "N stranger-filed issues skipped" at the top of the skip list, not buried at the bottom.
-- The **Issues** column lists the bucket's issue numbers (comma-separated, with arrow-targets like `#G → PR #H` or `#I → @user` for `In flight` / `Assigned to others`). Truncate after **10 numbers** with `, +<K> more` where `<K>` is the count of omitted numbers — same truncation rule as the pre-1.3.5 bullet-list shape, just applied per row.
-- The `Total open: <W + S>` summary line stays below the table for at-a-glance verification that the row counts sum to the universe size.
-- The `By priority` and `Top workable items` lines move **above** the table so the priority breakdown is the first thing the user sees — the table itself is the bucket breakdown.
+- **Row count picks the mode.** Count the number of non-zero buckets (the `Workable` row counts only when `<W> > 0` — see note below). `0` → empty-backlog one-liner. `1` → single-line summary, no table. `≥2` → fixed-width aligned text table.
+- **Workable-row-always-prints is a table-mode rule, not a row-counting rule.** When the table renders (`≥2` non-zero buckets), the `Workable` row prints even with `<W> == 0` so the user can see at a glance that nothing is workable. When counting rows to pick the mode, however, `<W> == 0` does NOT count as a non-zero bucket — otherwise a session where everything is blocked would render a two-row "table" with a zero-count `Workable` row, which is back to the degenerate shape this rule is trying to avoid. The single-line one-bucket shape (`Workable: 0. Skipped: <N> issues in <bucket> (...)`) is the right surface when there's exactly one real bucket.
+- **Action-recommendation sub-rows do NOT count as their own bucket for mode selection.** A `⚠ likely-clearable` / `⚠ likely-triageable` row is structurally a sub-row under its parent bucket (`blocked label` / `needs-triage`); the parent's non-zero count is what flips the mode. So a backlog with just `Workable=6` AND a `blocked label = 3` (with `likely-clearable = 1` as a sub-row) is 2 buckets, not 3 — renders as a table with the sub-row indented.
+- **Column widths in two-or-more-rows mode.** Computed at print time:
+  - **Bucket** column: width = max(label length across rendered rows), clamped to a minimum of 30 and a maximum of 60 characters. Sub-row labels include their 2-space indent in the length.
+  - **Count** column: right-aligned, width = max(digit count across rows), clamped to a minimum of 5.
+  - **Issues** column: width = max(content length across rendered rows), clamped to a minimum of 30 and a maximum of 80 characters. Content wider than the cap is NOT line-wrapped — the per-row truncation rule below handles overflow.
+  - Column separator: **3 spaces** (visible gap without looking like a tab). Header divider: one `─` (U+2500) per character of the header label, separated by the same 3-space gaps.
+- **Row order** (both modes, when applicable): `Workable` first, then `Untrusted author`, `Blocked (label)`, `Blocked (body reference)`, `Needs-triage/design`, `Awaiting refinement`, `Awaiting human review`, `Discussion`, `Won't fix`, `In flight`, `Assigned to others`. The order mirrors the bucketing precedence so the most-actionable buckets sit near the top. `Untrusted author` is rendered *immediately* under `Workable` (despite being the highest-precedence skip bucket) because it's the most security-relevant skip — the user should see "N stranger-filed issues skipped" at the top of the skip list, not buried at the bottom.
+- **Issues column content.** Comma-separated issue numbers (with arrow-targets like `#G → PR #H` or `#I → @user` for `In flight` / `Assigned to others`). Truncate after **10 numbers** with `, +<K> more` where `<K>` is the count of omitted numbers — same truncation rule as the pre-1.3.5 bullet-list shape, just applied per row. In single-line mode, the truncation rule still applies (long lists are unreadable on one line too).
+- **The `Total open: <W + S>` summary line** stays below the table (or below the single-line summary) for at-a-glance verification that the row counts sum to the universe size. Omit it in zero-row mode — the one-liner already conveys the same fact.
+- **The `By priority` and `Top workable items` lines** stay **above** the table (or single-line summary) so the priority breakdown is the first thing the user sees — the bucket section is the breakdown.
 
 The **PR-side state** block surfaces shipyard's circuit breaker visibly so it's not invisible state. `<k>` (will be re-evaluated) is the count of PRs the [step 3d.1 auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) just unlocked — those PRs are about to flow into step 5's failing-PR snapshot and get another 3 fix-checks attempts this session. `<h>` (held) is the count of PRs the sweep examined but kept labeled — they have no new commits since shipyard gave up, so the "human needs to look" rule (see [Don't L873](#dont)) still applies. The block prints whenever `<c> > 0`; omit it entirely when there are no `ci-blocked` PRs. The numbers come directly from `cleared_ciblocked` / `held_ciblocked` (and their PR-number arrays) recorded in step 3d.1.
 
@@ -245,10 +285,10 @@ The **Auto-cleared this session** block (above PR-side state) surfaces step 3d.2
 
 Edge cases:
 
-- **`W == 0`** — print the summary anyway, then continue with setup. Step 4's filtered fetch will return empty and the loop will terminate cleanly. The summary still tells the user *why* there's nothing to work on (e.g., everything is blocked, or everything has a linked PR). The **Workable** row stays in the table with `<W> = 0`; every other zero-count row is omitted per the bucket-table rules above.
+- **`W == 0`** — print the summary anyway, then continue with setup. Step 4's filtered fetch will return empty and the loop will terminate cleanly. The summary still tells the user *why* there's nothing to work on (e.g., everything is blocked, or everything has a linked PR). The rendering mode follows the row-count rules above — if `<W> == 0` is the only non-zero data (zero skip buckets too), use zero-row mode; if there's exactly one skip bucket, use one-row mode pointed at that bucket; if there are 2+ non-zero skip buckets, render the table with the `Workable` row included (showing `<W> = 0`).
 - **No blocked issues** — omit the "Unblock recommendations" section entirely. Don't print an empty header.
 - **Priority labels not yet triaged** — the breakdown reflects current label state. Step 4's auto-triage pass labels the unlabeled survivors before dispatch, so `unlabeled=<n>` at preflight just shows how much triage will happen.
-- **Buckets with zero count** — omit those rows from the bucket table (except `Workable`, which always prints). Clutter is the enemy.
+- **Buckets with zero count** — in table mode, omit those rows (except `Workable`, which always prints in table mode). In one-row mode the omission is implicit. Clutter is the enemy.
 - **Action-recommendation sub-rows with zero candidates** — omit the `⚠ likely-clearable` / `⚠ likely-triageable` sub-row entirely when its count is 0. The bucket's parent row stays; the sub-row only appears when there's something to act on.
 - **Very large backlogs** — per-row Issues column truncates after ~10 numbers with `, +<K> more`. See bucket-table rules above.
 - **`likely-clearable` overlap with step 3d.2** — every `likely-clearable` candidate surfaced in step 2 is also a candidate for step 3d.2's auto-clear sweep. Don't pre-deduplicate or skip them; the visibility in step 2 is the point — it lets the user see "shipyard is about to clear these N labels" before the sweep runs, so they can intervene (cancel, add a secondary gate comment, etc.) if any look wrong. The two surfaces aren't redundant — they're sequential checkpoints on the same set of issues.
@@ -1161,24 +1201,43 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, and `<deferred_live>`; pipe th
 
 ## End-of-session summary
 
-When the loop ends (drain completes or times out, and cleanup has run), report. Lead with a **bucket table** in the same shape as step 2's backlog overview so the user can compare end-state to start-state at a glance — the table shows the **remaining open** issues partitioned by skip reason, plus a `Workable` row carrying the remaining workable count (and a reason if 0). Then print the existing flat summary lines below it:
+When the loop ends (drain completes or times out, and cleanup has run), report. Lead with a **bucket breakdown** in the same shape as step 2's backlog overview — same two-mode rendering (≥2 non-zero buckets → fixed-width aligned text table; 1 non-zero bucket → single-line summary; 0 buckets → empty-backlog one-liner). The breakdown shows the **remaining open** issues partitioned by skip reason, plus a `Workable` row carrying the remaining workable count (and a reason if 0). Then print the existing flat summary lines below it:
+
+The full shape, **two-or-more-rows mode**:
 
 ```
 /do-work session — <owner/repo>
 
-| Why skipped | # | Issues |
-|---|---|---|
-| **Workable** (remaining after session) | <W_end> | <#<a>, #<b>, +<K> more — OR reason text if 0> |
-| ⛔ **Untrusted author** | <n> | #U → @stranger, ... |
-| `blocked` label | <n> | #A, #B, ... |
-| Blocked (body reference) | <n> | #C, ... |
-| `needs-triage` / `needs-design` | <n> | #D, ... |
-| Awaiting refinement | <n> | #R, ... |
-| Awaiting human review | <n> | #H, ... |
-| Discussion | <n> | #E, ... |
-| Won't fix | <n> | #F, ... |
-| In flight (open PR) | <n> | #G → PR #H, ... |
-| Assigned to others | <n> | #I → @user, ... |
+Bucket                                       Count   Issues
+───────────────────────────────────────────  ─────   ──────────────────────────────────────────────
+Workable (remaining after session)               2   #<a>, #<b>   — OR reason text if 0
+⛔ Untrusted author                              1   #U → @stranger
+blocked label                                    3   #A, #B, #C
+Blocked (body reference)                         1   #D
+needs-triage / needs-design                      2   #E, #F
+Awaiting refinement                              1   #R
+Awaiting human review                            1   #H
+Discussion                                       1   #G
+Won't fix                                        1   #X
+In flight (open PR)                              2   #I → PR #J, #K → PR #L
+Assigned to others                               1   #M → @user
+```
+
+The full shape, **one-row mode** (skip the table):
+
+```
+/do-work session — <owner/repo>
+
+Workable (remaining after session): 2 issues (#<a>, #<b>). Nothing skipped.
+```
+
+The full shape, **zero-row mode** (everything closed this session — clean board):
+
+```
+/do-work session — <owner/repo>
+
+Remaining open: 0 — clean board.
+```
 
 Recovered from prior session: <salvaged_count> salvaged (PRs created/kept), <abandoned_count> abandoned
 Advisory: <A> labeled+assigned issues with no worktree and no PR (#<N>, ...)  # omit line if A == 0
@@ -1203,14 +1262,14 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 **End-of-session bucket-table rules** (same shape as step 2 with one addition):
 
 - Source the row data from a fresh `gh issue list --repo <owner/repo> --state open --limit 200 --json number,title,labels,assignees,body,author` call run just before printing the summary — the universe has drifted since step 2 (PRs merged, new issues filed, labels removed by sweeps), so re-bucket against the live state rather than reusing step 2's snapshot. The `author` field is required so the `Untrusted author` row can re-derive from the (still-cached) `trusted_authors` set against any newly-filed issues that landed during the session.
-- One row per non-zero bucket. The **Workable** row always prints, even when `<W_end> == 0`. When `<W_end> == 0`, the Issues column carries a short **reason** instead of issue numbers — pick the dominant cause from end-state counts:
+- **Same two-mode rendering as step 2.** Count non-zero buckets at print time and pick the shape: `≥2` → fixed-width aligned text table; `1` → single-line summary; `0` → empty-board one-liner. The column-width rules, separator spacing, header divider character, row order, per-row truncation (10 numbers + `, +<K> more`), and the `Workable`-row-prints-in-table-mode-even-with-`<W_end>=0` rule all match step 2's bucket-table rules exactly. Keep the two surfaces consistent so users can diff them mentally start-vs-end.
+- **Workable-row reason text when `<W_end> == 0`.** In table mode the `Workable` row's Issues column carries a short reason instead of issue numbers; in one-row mode (where the lone non-zero bucket is `Workable=0`'s sibling skip bucket) the reason still surfaces in the single-line shape. Pick the dominant cause from end-state counts:
   - `everything shipped this session` — `shipped_count > 0` AND every other bucket is 0 or already-skipped.
   - `everything left is blocked` — `blocked-label + blocked-body > 0` AND no other workable-eligible issues remain.
   - `everything left needs triage/design or refinement/review` — those buckets dominate the residual.
   - `everything left is in flight` — every remaining open issue has a linked PR.
   - `nothing matches the workable filter` — fallback when none of the above applies cleanly (multiple skip categories combined).
-- Row order, per-row truncation (10 numbers + `, +<K> more`), and the `Workable`-always-prints rule match step 2's bucket-table rules exactly — keep the two shapes consistent so users can diff them mentally.
-- Print the bucket table FIRST, above the existing flat lines, so it's the first thing the user sees when the session wraps. The flat lines below the table carry the per-PR detail (shipped issue → PR mappings, blocked reasons, drain state) that doesn't fit a bucket-by-bucket view.
+- Print the bucket breakdown FIRST, above the existing flat lines, so it's the first thing the user sees when the session wraps. The flat lines below carry the per-PR detail (shipped issue → PR mappings, blocked reasons, drain state) that doesn't fit a bucket-by-bucket view.
 
 The `Drain phase` line reports how the [end-of-session drain](#end-of-session-drain) terminated. `<reason>` is one of: `all PRs settled` (every `session_prs` entry merged, ci-blocked, rebase-blocked, or pending-with-no-movement), `no forward progress for 5 polls`, `120-min ceiling`, or `second stop signal — drain skipped`. `<elapsed_min>` is wall-clock minutes in the drain phase (0 when the second-stop trigger skipped it). The merged / ci-blocked / rebase-blocked / still-pending counts are the final partition of `session_prs` — they always sum to `|session_prs|`, so the user can see at-a-glance whether the session left anything red on the board.
 
