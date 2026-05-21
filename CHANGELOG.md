@@ -4,6 +4,20 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.11 — 2026-05-20
+
+Adds **decision-context comment trails** so non-trivial agent decisions survive past the session that made them. Closes [#94](https://github.com/mattsears18/claude-plugins/issues/94).
+
+Git history captures *what* changed; comments capture *why this approach over the rejected ones*. Previously the only artifact of an agent's decision (rejected alternative, divergence from issue body, external constraint, accepted side-effect) was the agent's transient working context — once the session ended, future maintainers re-litigated the same tradeoffs because the prior reasoning was never written down where it belongs.
+
+- **New step 5.5 "Record decision context (when applicable)" in `agents/issue-worker.md`.** Inserted between step 5 (commit + push + PR) and step 6 (enable auto-merge). Spells out four trigger conditions — a viable alternative was rejected, the PR diverges materially from the issue body or suggested approach, an external constraint shaped the implementation, a side-effect was deliberately accepted or punted. One PR comment, one bullet per decision, named alternative or constraint plus the tradeoff in one sentence. Routing rules table covers PR-vs-issue placement (PR for implementation decisions, issue for triage/scope decisions; divergence cases get both). Silence is the correct default for routine work — most PRs need no decision comment at all.
+- **New fix-checks-only root-cause comment rule in `agents/issue-worker.md`.** Added to the fix-loop section right after the 3-attempt cap. When a fix-checks worker identifies the actual root cause of a flake / race / environmental failure that wouldn't be obvious from the diff alone, post a `Fix-checks: <one-line root cause>` comment on the PR before returning `green`. This stops the next session's auditor or human reviewer from re-flagging the same failure mode without context. Routine "applied the obvious fix to the obvious error" cases skip the comment — the diff is the explanation. Comment-post failure (rate limit, permission) is non-blocking; the return contract still applies.
+- **New "Decided not to file: leave a decision trail" section in `skills/audit-rubrics/SKILL.md`.** When an auditor considers a finding and decides NOT to file for a contextual reason ("intentional per design doc X," "covered by open issue #N," "accepted tradeoff per PR #M"), the rationale lands in two places: the audit's end-of-run summary as a new `Skipped (decided not to file)` section alongside the existing `Skipped (duplicates)` block, and — if the finding has a natural home issue — as a one-line comment on that issue. Distinguishes the new "decided not to file" category from the existing "skipped (duplicate)" / "skipped (not applicable to stack)" categories which already have their own trails. The section omits entirely when nothing was decided against.
+
+Doesn't change the deferred-issue handling from 1.3.8 (#76) — that path stays as-is. This release generalizes the same "write the reasoning down where it belongs" pattern to other agent decisions.
+
+Pure prompt edits; no spec / state-struct / tooling changes.
+
 ### 1.3.10 — 2026-05-20
 
 Extends the defense-in-depth untrusted-body language in `agents/issue-worker.md` step 2 with the verification-first stance and the explicit `body requested out-of-scope action` framing. Closes [#93](https://github.com/mattsears18/claude-plugins/issues/93).

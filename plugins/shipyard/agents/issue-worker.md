@@ -136,6 +136,8 @@ On failure:
 
 **Hard cap: 3 fix attempts.** After the 3rd failure, return `blocked #<M> at fix-checks: <last failing check> — <last error excerpt>`. The orchestrator will label the PR `ci-blocked` and move on. Do not let one PR consume the session.
 
+**Record root-cause context before returning `green`.** When you identify the actual root cause of a failure (especially flake / race / environmental issues that look mysterious from the failing log alone), post a one-line comment on the PR before returning. Format: `Fix-checks: <one-line root cause>` (e.g., "Fix-checks: flaky because of a race in the test setup — serialized the fixture init"). This stops the next session's auditor or human reviewer from re-flagging the same failure mode without context. Routine "applied the obvious fix to the obvious error" cases don't need a comment — the diff is the explanation. Use `gh pr comment <M> --repo <owner/repo> --body "..."`; if it errors, log an advisory and continue — don't block the return on a comment failure. This is the fix-checks-only analog of the [step 5.5 decision-context rule](#55-record-decision-context-when-applicable).
+
 ## Fix-rebase mode (drain-phase stale-base PR)
 
 The orchestrator sends this when the end-of-session [drain](../commands/do-work.md#end-of-session-drain) finds an `@me` PR in `mergeStateStatus: DIRTY` with **no failing checks** — the PR is green-or-pending but its base is stale relative to the freshly-advanced main, so auto-merge won't fire until it's rebased onto current main.
@@ -450,6 +452,39 @@ EOF
 ```
 
 The body **must** include `Closes #<N>` (case-insensitive, on its own line) so the issue auto-closes on merge.
+
+### 5.5 Record decision context (when applicable)
+
+Before enabling auto-merge, leave a **comment trail for non-trivial decisions** the next maintainer (human or AI) couldn't recover from the diff alone. Git history captures *what* changed; comments capture *why this approach over the rejected ones*. The point isn't to narrate every step — most PRs need no decision comment at all — it's to write down reasoning that would otherwise be permanently lost when this session ends.
+
+**When to post a comment.** Post one if AT LEAST ONE of these is true for this PR:
+
+1. **A viable alternative was rejected.** You considered ≥2 implementation paths and picked one. Name the alternative and the tradeoff in one sentence (e.g., "rejected adding a `migrations/` folder — the schema change is small enough to inline in the model, keeps the diff focused").
+2. **The PR diverges materially from the issue body or suggested approach.** The issue's suggested fix was wrong, outdated, or out-of-scope, and you implemented something different. Both the **PR** and the **originating issue** get a comment so future readers of either don't re-litigate.
+3. **An external constraint shaped the implementation.** SDK quirk, rate limit, deprecation, browser-platform gotcha. One sentence is plenty — the goal is "next person doesn't get burned by the same thing."
+4. **A potential side-effect was deliberately accepted or punted.** "This breaks existing X behavior; documented in CHANGELOG." or "Doesn't handle Y case; filed #N as follow-up."
+
+**What is NOT a decision comment.** Avoid comment noise:
+
+- Routine implementation steps already visible in the diff.
+- Restatements of the issue body.
+- Progress updates ("working on it", "tests pass") — that's not a decision.
+- Anything the next maintainer can derive in <10 seconds from reading the diff.
+
+**Routing rules.**
+
+| Decision type | Lands on |
+|---|---|
+| Rejected alternative implementation | **PR** (it's about how the code came to be) |
+| Divergence from issue body / suggested approach | **PR** (why this code) AND **issue** (why the issue's suggestion was wrong/outdated) |
+| External constraint that shaped implementation | **PR** |
+| Side-effect accepted or follow-up filed | **PR** |
+
+When in doubt: PR for implementation decisions, issue for triage/scope decisions. If none of (1)–(4) apply, **post nothing** — silence is the correct default for routine work.
+
+**Format.** One PR comment, one bullet per decision, named alternative or constraint plus the tradeoff in one sentence. Use `gh pr comment <pr-num> --repo <owner/repo> --body "..."`. For an issue-side comment on divergence use `gh issue comment <N> --repo <owner/repo> --body "..."`.
+
+If the comment-post errors (rate limit, permission), log an advisory and continue — don't block auto-merge on a single comment failure.
 
 ### 6. Enable auto-merge
 

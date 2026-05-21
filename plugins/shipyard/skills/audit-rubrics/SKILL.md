@@ -48,6 +48,23 @@ When two audit agents catch the same thing (e.g. Lighthouse a11y flags low contr
 - **Things already explicitly tracked.** Always run the duplicate search first.
 - **Generic moralizing.** "Bad design" is not a finding. "Primary CTA contrast 2.8:1, fails WCAG AA" is.
 
+## Decided not to file: leave a decision trail
+
+When you consider a finding and decide NOT to file it for a contextual reason — "intentional per design doc X," "covered by open issue #N," "intentional tradeoff (see PR #M)," "applies to a stack we don't use," "out of scope for this audit dimension" — record the decision so the next audit doesn't re-litigate the same finding from scratch.
+
+Two surfaces, both required when applicable:
+
+1. **The audit's end-of-run summary.** Add a `Skipped (decided not to file)` section to the return summary, one bullet per skipped finding with the rationale. This sits alongside the existing `Skipped (duplicates)` block and uses the same shape. The next session's auditor reading the prior transcript (or `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md`) sees the decision and doesn't re-flag.
+2. **If the skipped finding has a natural home issue** — i.e., there's an existing open issue covering the area the finding sits in (e.g., a finding about a screen that already has an open issue, or a finding the next audit will re-derive from the same code) — also post a one-line comment on that issue: `Audit on <YYYY-MM-DD> considered <finding> and decided not to file: <rationale>`. Use `gh issue comment <N> --repo <owner/repo> --body "..."`. If the comment errors (rate limit, permission), log an advisory and continue — the in-summary record is the source of truth; the in-issue comment is the cross-reference.
+
+What counts as "decided not to file" (vs. just "skipped" — different concept):
+
+- **Skipped (duplicate)** — already-existing open issue covers it. Use the existing `Skipped (duplicates)` block. No new comment needed; the dedup-fingerprint match is the trail.
+- **Skipped (not applicable to stack)** — the dx-auditor's existing "applies_to" filter, or any analogous "this category doesn't apply to this codebase" filter. The auditor's existing return summary already covers this category.
+- **Decided not to file** — you considered filing and chose not to *because of context outside the audit's evidence bar* (intentional design choice, covered elsewhere, accepted tradeoff). This is the new category that needs the trail — the rationale would be lost otherwise.
+
+If you didn't decide against anything, the section omits entirely. The threshold for adding a bullet is "the next auditor would re-derive this finding and re-consider filing if I don't write it down" — not every micro-skip merits a bullet.
+
 ## Evidence bar
 
 Every issue needs at least one of:
