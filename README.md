@@ -52,7 +52,7 @@ claude plugin marketplace add mattsears18/shipyard
 claude plugin install shipyard@shipyard
 ```
 
-Then restart Claude Code so the new slash commands register.
+Then run `/reload-plugins` (or restart Claude Code on older versions) so the new slash commands register.
 
 ### 2. Run your first command
 
@@ -101,7 +101,7 @@ claude plugin marketplace update shipyard
 claude plugin update shipyard@shipyard
 ```
 
-Then restart Claude Code so the refreshed slash commands, agents, and hooks register.
+Then run `/reload-plugins` (or restart Claude Code on older versions) so the refreshed slash commands, agents, and hooks register.
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release, and pin to a specific commit if you need reproducibility (the [`No API stability`](#-experimental--read-before-you-run-this-against-anything-important-) warning at the top applies — slash-command shape, skill interfaces, and agent contracts evolve between updates).
 
