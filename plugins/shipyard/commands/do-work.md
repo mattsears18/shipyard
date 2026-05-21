@@ -432,16 +432,19 @@ for wt_dir in .git/worktrees/agent-*; do
   [ -z "$worktree_path" ] && worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
   [ -z "$worktree_path" ] && continue
 
-  lock_file="$wt_dir/locked"
-  if [ -f "$lock_file" ]; then
-    lock_pid=$(grep -oE '[0-9]+\)' "$lock_file" | tr -d ')' | head -1)
-    if [ -n "$lock_pid" ] && ps -p "$lock_pid" -o pid= >/dev/null 2>&1; then
-      # Lock-holding PID is alive — likely another active Claude Code instance. Defer.
-      deferred_stale=$((deferred_stale + 1))
-      continue
-    fi
+  classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
+    classify-lock "$wt_dir/locked")
+
+  if [ "$classification" = "peer-alive" ]; then
+    # Lock-holding PID is alive AND not in our ancestor chain — likely
+    # another active Claude Code instance. Defer.
+    deferred_stale=$((deferred_stale + 1))
+    continue
   fi
 
+  # no-lock / dead / self-ancestor — safe to reap. (`self-ancestor` is
+  # rare at startup since by definition we just launched, but covers the
+  # PID-recycling edge case where a stale lock happens to name our PID.)
   git worktree unlock "$worktree_path" 2>/dev/null
   if git worktree remove --force "$worktree_path" 2>/dev/null; then
     reaped_stale=$((reaped_stale + 1))
@@ -1240,7 +1243,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    ls -d .claude/worktrees/agent-*/ 2>/dev/null || echo "(no agent worktrees)"
    ```
 
-3. **Reap all agent worktrees from THIS session — liveness-check the lock-holding PID first.** Cleanup can fire while a dispatched agent is still in flight; reaping its worktree would destroy unpushed work. Mirror step 3b's startup-time liveness check: if the lock file at `.git/worktrees/agent-<id>/locked` names a still-alive PID, skip that worktree and surface it in `<deferred_live>` for the user's summary. Only reap worktrees whose lock-holding PID is dead. See [RATIONALE → Liveness check at shutdown](./do-work-RATIONALE.md#end-of-session-cleanup--why-the-orchestrator-worktree-is-reaped-last):
+3. **Reap all agent worktrees from THIS session — classify the lock-holding PID first.** Cleanup can fire while a dispatched agent is still in flight; reaping its worktree would destroy unpushed work. Run the helper [`scripts/worktree-reap.sh classify-lock <lock-file>`](../scripts/worktree-reap.sh) against each worktree's lock file. It returns one of `no-lock` / `dead` / `self-ancestor` / `peer-alive`. Reap on the first three; defer only on `peer-alive`. The `self-ancestor` case is load-bearing: the Claude Code harness writes the **orchestrator's** PID into every dispatched agent's lock file (lock content is literally `claude agent <agent-id> (pid <orchestrator-pid>)`), so at end-of-session cleanup the lock PID is alive by definition — it's the process running cleanup. A strict liveness check would defer every worktree the orchestrator itself owns (see [issue #138](https://github.com/mattsears18/claude-plugins/issues/138)). `self-ancestor` means the lock PID is in our own process ancestor chain — not a peer agent, just the orchestrator about to retire its own worktree. Safe to reap. See [RATIONALE → Liveness check at shutdown](./do-work-RATIONALE.md#end-of-session-cleanup--why-the-orchestrator-worktree-is-reaped-last):
 
    ```bash
    cd "$(git rev-parse --show-toplevel)"
@@ -1252,20 +1255,20 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
      [ -z "$worktree_path" ] && continue
 
-     lock_file="$wt_dir/locked"
-     if [ -f "$lock_file" ]; then
-       lock_pid=$(grep -oE '[0-9]+\)' "$lock_file" | tr -d ')' | head -1)
-       if [ -n "$lock_pid" ] && ps -p "$lock_pid" -o pid= >/dev/null 2>&1; then
-         # Lock-holding PID is still alive — a dispatched agent is still
-         # running. Don't reap. Either the orchestrator's termination logic
-         # ran early, or the agent is genuinely still working. Either way,
-         # yanking its worktree out from under it destroys in-flight or
-         # unpushed work product. Defer.
-         deferred_live=$((deferred_live + 1))
-         continue
-       fi
+     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
+       classify-lock "$wt_dir/locked")
+
+     if [ "$classification" = "peer-alive" ]; then
+       # Lock PID is alive AND not in our ancestor chain — a genuine peer
+       # (another Claude Code instance's orchestrator, or a still-running
+       # dispatched agent whose return hasn't been processed yet). Yanking
+       # its worktree out from under it destroys in-flight or unpushed
+       # work product. Defer.
+       deferred_live=$((deferred_live + 1))
+       continue
      fi
 
+     # no-lock / dead / self-ancestor — safe to reap.
      git worktree unlock "$worktree_path" 2>/dev/null
      if git worktree remove --force "$worktree_path" 2>/dev/null; then
        reaped_worktrees=$((reaped_worktrees + 1))
