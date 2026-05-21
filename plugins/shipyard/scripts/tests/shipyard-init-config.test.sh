@@ -189,7 +189,29 @@ assert_file_contains "$claude_md" '/shipyard:config'      "CLAUDE.md references 
 echo "== Plugin version bump"
 
 plugin_json="$repo_root/plugins/shipyard/.claude-plugin/plugin.json"
-assert_jq "$plugin_json" '.version' "1.3.31" "plugin.json bumped to 1.3.31"
+# Version must be at least 1.3.31 (the #165 ship). We don't pin to a specific
+# version because subsequent releases bump it further (#163 → 1.3.32, etc.) —
+# the regression we care about is "did the #165 work make it into a release?"
+current_version=$(jq -r '.version' "$plugin_json" 2>/dev/null)
+if [[ -n "$current_version" ]]; then
+  # Strip semver pre-release / build suffix if any, split into integers.
+  IFS='.' read -r v_major v_minor v_patch <<< "${current_version%%[-+]*}"
+  if [[ "$v_major" =~ ^[0-9]+$ ]] && [[ "$v_minor" =~ ^[0-9]+$ ]] && [[ "$v_patch" =~ ^[0-9]+$ ]] \
+       && (( v_major > 1 \
+             || (v_major == 1 && v_minor > 3) \
+             || (v_major == 1 && v_minor == 3 && v_patch >= 31) )); then
+    printf '  %sPASS%s  plugin.json at or past 1.3.31 (actual: %s)\n' \
+      "$GREEN" "$RESET" "$current_version"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  plugin.json at or past 1.3.31 (actual: %s)\n' \
+      "$RED" "$RESET" "$current_version"
+    fail=$((fail+1))
+  fi
+else
+  printf '  %sFAIL%s  plugin.json at or past 1.3.31 — .version missing\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
 
 # --------------------------------------------------------------------------
 echo "== CHANGELOG entry"
