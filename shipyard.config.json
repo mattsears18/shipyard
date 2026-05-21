@@ -1,0 +1,32 @@
+{
+  "$schema": "https://github.com/mattsears18/claude-plugins/raw/main/plugins/shipyard/schemas/shipyard.config.schema.json",
+  "version": 1,
+  "repo": {
+    "owner": "mattsears18",
+    "name": "claude-plugins"
+  },
+  "auto_merge": {
+    "policy": "trusted-only"
+  },
+  "trust": {
+    "authors": ["mattsears18"]
+  },
+  "labels": {
+    "session_stamp": "shipyard",
+    "blocked": "blocked:agent",
+    "ci_blocked": "blocked:ci",
+    "needs_refinement": "needs-refinement",
+    "needs_human_review": "needs-human-review",
+    "needs_triage": "needs-triage",
+    "user_feedback": "user-feedback"
+  },
+  "cost_tracking": {
+    "enabled": true,
+    "comment_on_pr": true,
+    "comment_on_issue": false
+  },
+  "concurrency": {
+    "default": 2,
+    "soft_collision": 3
+  }
+}
