@@ -260,6 +260,242 @@ rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=64" "update without --set exits 64"
 
 # --------------------------------------------------------------------------
+echo "== init writes the tokens field"
+# --------------------------------------------------------------------------
+# The session-state schema grew a `.tokens` block in 1.3.30 (issue #153) for
+# per-session token accounting. init MUST seed it to its empty shape so
+# subsequent bump-tokens / read-tokens calls never trip on a missing key.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-init" --repo "o/r" >/dev/null
+session_file="$tmphome/sessions/tok-init.json"
+content=$(cat "$session_file")
+assert_contains "$content" '"tokens"' "init seeds .tokens block"
+assert_contains "$content" '"totals"' ".tokens.totals present"
+assert_contains "$content" '"per_issue": {}' ".tokens.per_issue is empty object"
+assert_contains "$content" '"per_pr": {}' ".tokens.per_pr is empty object"
+assert_contains "$content" '"per_invocation": []' ".tokens.per_invocation is empty array"
+assert_contains "$content" '"estimated_usd": 0' ".tokens.totals.estimated_usd seeded to 0"
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens — basic accumulation"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-bump" --repo "o/r" >/dev/null
+
+# First bump — issue + pr cross-link, opus pricing path.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-bump" \
+  --issue 153 --pr 200 \
+  --input 1000 --output 500 \
+  --cache-read 200 --cache-creation 100 \
+  --mode issue-work --model claude-opus-4-7 >/dev/null
+
+# Totals updated.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.totals.input")
+assert_equals "$out" "1000" "bump-tokens updates totals.input"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.totals.output")
+assert_equals "$out" "500" "bump-tokens updates totals.output"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.totals.cache_read")
+assert_equals "$out" "200" "bump-tokens updates totals.cache_read"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.totals.cache_creation")
+assert_equals "$out" "100" "bump-tokens updates totals.cache_creation"
+
+# Per-issue + per-pr buckets created.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_issue[\"153\"].input")
+assert_equals "$out" "1000" "bump-tokens creates per_issue bucket and updates input"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_pr[\"200\"].input")
+assert_equals "$out" "1000" "bump-tokens creates per_pr bucket and updates input"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_pr[\"200\"].issue")
+assert_equals "$out" "153" "bump-tokens cross-links per_pr.issue when --issue+--pr both supplied"
+
+# Per-invocation ring buffer recorded.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation | length")
+assert_equals "$out" "1" "bump-tokens appends one entry to per_invocation"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[0].mode")
+assert_equals "$out" "issue-work" "per_invocation[0].mode recorded"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[0].model")
+assert_equals "$out" "claude-opus-4-7" "per_invocation[0].model recorded"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[0].issue")
+assert_equals "$out" "153" "per_invocation[0].issue recorded as number"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[0].pr")
+assert_equals "$out" "200" "per_invocation[0].pr recorded as number"
+
+# Second bump — accumulator semantics (sum, not replace).
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-bump" \
+  --issue 153 --pr 200 \
+  --input 500 --output 100 \
+  --mode fix-checks-only --model claude-opus-4-7 >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.totals.input")
+assert_equals "$out" "1500" "second bump accumulates totals.input (sum, not replace)"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_pr[\"200\"].input")
+assert_equals "$out" "1500" "second bump accumulates per_pr.input"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation | length")
+assert_equals "$out" "2" "second bump appends a second per_invocation entry"
+
+# Orchestrator-overhead path — no --issue, no --pr, only totals get bumped.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-bump" \
+  --input 300 --output 50 \
+  --mode orchestrator --model claude-opus-4-7 >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.totals.input")
+assert_equals "$out" "1800" "orchestrator-overhead bump updates totals.input"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_pr[\"200\"].input")
+assert_equals "$out" "1500" "orchestrator-overhead bump does NOT touch per_pr buckets"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[2].issue")
+assert_equals "$out" "null" "per_invocation entry for orchestrator-overhead has null issue"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[2].pr")
+assert_equals "$out" "null" "per_invocation entry for orchestrator-overhead has null pr"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens — USD pricing"
+# --------------------------------------------------------------------------
+# Pricing table is embedded in the script (per 1M tokens). Verify the
+# math for a known model (opus = $15 input + $75 output per 1M).
+#   1_000_000 * $15 / 1_000_000 = $15.00 for 1M input tokens.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-price" --repo "o/r" >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-price" \
+  --input 1000000 --output 0 \
+  --model claude-opus-4-7 >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-price" --path ".tokens.totals.estimated_usd")
+assert_equals "$out" "15" "opus pricing: 1M input tokens -> \$15.00 USD"
+
+# Unknown model -> zero USD; tokens still counted.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-price" \
+  --input 1000 \
+  --model "unknown-model" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-price" --path ".tokens.totals.input")
+assert_equals "$out" "1001000" "unknown model still records token counts"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens — input validation"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-v" --repo "o/r" >/dev/null
+
+# Negative token count -> usage error.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-v" --input "-5" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "bump-tokens rejects negative input count"
+
+# Non-numeric issue -> usage error.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-v" --issue "abc" --input 100 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "bump-tokens rejects non-numeric --issue"
+
+# Missing session file -> exit 3.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "missing" --input 100 2>/dev/null; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "bump-tokens on missing session exits 3"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== read-tokens — json format"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-r" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-r" --issue 153 --pr 200 \
+  --input 1000 --output 500 --mode issue-work --model claude-opus-4-7 >/dev/null
+
+# Session-wide totals (no --issue / --pr).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-r" --format json)
+assert_contains "$out" '"input": 1000' "read-tokens (session) returns totals.input"
+assert_contains "$out" '"output": 500' "read-tokens (session) returns totals.output"
+
+# Per-PR scope.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-r" --pr 200 --format json)
+assert_contains "$out" '"input": 1000' "read-tokens --pr returns per_pr.input"
+assert_contains "$out" '"issue": 153' "read-tokens --pr returns the cross-linked issue number"
+
+# Per-issue scope.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-r" --issue 153 --format json)
+assert_contains "$out" '"input": 1000' "read-tokens --issue returns per_issue.input"
+
+# Unknown issue/PR -> zero-shape fallback (no exit-3, no error).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-r" --pr 9999 --format json)
+assert_contains "$out" '"input": 0' "read-tokens of unknown PR returns zero-shape default"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== read-tokens — comment format"
+# --------------------------------------------------------------------------
+# The comment format is the load-bearing output for the cost-tracking hook
+# in commands/do-work.md step A. It must include the sentinel for
+# idempotency and a Markdown table.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-c" --repo "owner/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-c" --issue 153 --pr 200 \
+  --input 18203 --output 4102 --cache-read 8210 \
+  --mode issue-work --model claude-opus-4-7 >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-c" --pr 200 --format comment)
+assert_contains "$out" "<!-- do-work-cost-tracking -->" "comment format includes idempotency sentinel"
+assert_contains "$out" "PR #200" "comment format names the PR in the heading"
+assert_contains "$out" "18203" "comment format includes the input token count"
+assert_contains "$out" "4102" "comment format includes the output token count"
+assert_contains "$out" "claude-opus-4-7" "comment format includes the model"
+assert_contains "$out" "issue-work" "comment format includes the mode"
+
+# Bad --format value -> usage error.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens \
+  --session-id "tok-c" --pr 200 --format invalid 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "read-tokens rejects unknown --format"
+
+# Missing session -> exit 3.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens \
+  --session-id "missing" 2>/dev/null; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "read-tokens on missing session exits 3"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens — atomicity (no .tmp files left behind)"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-a" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-a" --issue 153 --pr 200 --input 1000 --mode issue-work --model claude-opus-4-7 >/dev/null
+
+leftover=""
+shopt -s nullglob
+for f in "$tmphome/sessions/"*; do
+  case "$(basename "$f")" in
+    tok-a.json) ;;
+    *) leftover="$leftover $(basename "$f")" ;;
+  esac
+done
+shopt -u nullglob
+assert_equals "${leftover# }" "" "bump-tokens leaves no .tmp files behind after successful write"
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]

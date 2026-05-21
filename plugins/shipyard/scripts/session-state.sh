@@ -52,6 +52,36 @@
 #              we're guarding against is a half-cleanup, not a missing
 #              file).
 #
+#   bump-tokens — atomically add token-usage counts to the session's
+#              `.tokens` block. The `tokens` field tracks token spend
+#              at three levels of granularity: `totals` (cumulative
+#              across the session, including orchestrator overhead),
+#              `per_issue.<N>` (sum across every agent that touched
+#              issue N), and `per_pr.<M>` (sum across every agent that
+#              touched PR M). Pass `--issue N` and/or `--pr M` to
+#              attribute the delta — neither flag only bumps `totals`
+#              (use for orchestrator-side overhead). `--mode` and
+#              `--model` are recorded into a small `.tokens.per_invocation`
+#              ring buffer for traceability (capped at the most recent
+#              200 entries to keep the file small). Exit 3 if the session
+#              file does not exist.
+#
+#   read-tokens — emit token data on stdout. `--format json` (default)
+#              prints the relevant slice; `--format comment` emits a
+#              ready-to-post Markdown comment body marked with the
+#              `<!-- do-work-cost-tracking -->` sentinel for idempotent
+#              edit-or-create on the issue/PR. Pair with `--issue N` or
+#              `--pr M` to scope; without either, emits the session-wide
+#              totals. Exit 3 if the session file does not exist.
+#
+# Pricing table:
+#
+#   The USD estimate in `bump-tokens` and `read-tokens` uses a hardcoded
+#   pricing table embedded in this script (per 1M tokens, current as of
+#   2026-05-21). Update the `PRICING_JQ` block below when Anthropic
+#   changes pricing. Unknown models fall back to zero — the token counts
+#   are still tracked, only the dollar estimate is `0.00`.
+#
 # Environment variables:
 #
 #   SHIPYARD_HOME — base directory for shipyard's per-user state. Defaults
@@ -87,24 +117,45 @@ fi
 usage() {
   cat <<'EOF' >&2
 Usage:
-  session-state.sh init     --session-id <id> --repo <owner/repo>
-                            [--concurrency N] [--soft-collision-concurrency N]
-                            [--force]
-  session-state.sh read     --session-id <id> [--path <jq-path>]
-  session-state.sh update   --session-id <id> --set '<jq-expr>' [--set ...]
-  session-state.sh cleanup  --session-id <id>
+  session-state.sh init        --session-id <id> --repo <owner/repo>
+                               [--concurrency N] [--soft-collision-concurrency N]
+                               [--force]
+  session-state.sh read        --session-id <id> [--path <jq-path>]
+  session-state.sh update      --session-id <id> --set '<jq-expr>' [--set ...]
+  session-state.sh cleanup     --session-id <id>
+  session-state.sh bump-tokens --session-id <id>
+                               [--issue N] [--pr N]
+                               [--input N] [--output N]
+                               [--cache-read N] [--cache-creation N]
+                               [--mode <kind>] [--model <id>]
+  session-state.sh read-tokens --session-id <id>
+                               [--issue N] [--pr N]
+                               [--format json|comment]
 
 Environment:
-  SHIPYARD_HOME             base dir for sessions/ (default: $HOME/.shipyard)
+  SHIPYARD_HOME                base dir for sessions/ (default: $HOME/.shipyard)
 
 Exit codes:
   0   success
   2   refused to clobber (init w/o --force)
-  3   session file missing (read or update)
+  3   session file missing (read, update, bump-tokens, read-tokens)
   64  usage error
   65+ internal helper failure
 EOF
 }
+
+# --------------------------------------------------------------------------
+# Pricing table — USD per 1M tokens, current as of 2026-05-21. Update
+# alongside Anthropic's pricing page. Models not listed fall back to zero
+# (token counts still recorded, USD estimate emits 0.00).
+# --------------------------------------------------------------------------
+PRICING_JQ='{
+  "claude-opus-4-7":   { "input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_creation": 18.75 },
+  "claude-opus-4-6":   { "input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_creation": 18.75 },
+  "claude-sonnet-4-6": { "input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_creation":  3.75 },
+  "claude-sonnet-4-5": { "input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_creation":  3.75 },
+  "claude-haiku-4-5":  { "input":  1.00, "output":  5.00, "cache_read": 0.10, "cache_creation":  1.25 }
+}'
 
 # Resolve the canonical session-file path. Mirrors the spec in
 # commands/do-work.md: `$SHIPYARD_HOME/sessions/<session-id>.json`.
@@ -218,6 +269,18 @@ cmd_init() {
          active: false,
          started_at: null,
          polls: 0
+       },
+       tokens: {
+         totals: {
+           input: 0,
+           output: 0,
+           cache_read: 0,
+           cache_creation: 0,
+           estimated_usd: 0
+         },
+         per_issue: {},
+         per_pr: {},
+         per_invocation: []
        }
      }' | atomic_write "$target"
 }
@@ -312,6 +375,286 @@ cmd_update() {
   fi
 }
 
+# shellcheck disable=SC2016
+# rationale: this function builds jq programs whose single-quoted bodies
+# reference jq variables (`$input`, `$pr`, `$usd_delta`, etc.) bound via the
+# `--arg` / `--argjson` flags. The single-quoted form is the correct,
+# safe shape — shell expansion would corrupt the jq program. The disable
+# is scoped to this function only.
+cmd_bump_tokens() {
+  local session_id=""
+  local issue=""
+  local pr=""
+  local input=0
+  local output=0
+  local cache_read=0
+  local cache_creation=0
+  local mode=""
+  local model=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) session_id="${2:-}"; shift 2 ;;
+      --issue) issue="${2:-}"; shift 2 ;;
+      --pr) pr="${2:-}"; shift 2 ;;
+      --input) input="${2:-0}"; shift 2 ;;
+      --output) output="${2:-0}"; shift 2 ;;
+      --cache-read) cache_read="${2:-0}"; shift 2 ;;
+      --cache-creation) cache_creation="${2:-0}"; shift 2 ;;
+      --mode) mode="${2:-}"; shift 2 ;;
+      --model) model="${2:-}"; shift 2 ;;
+      *) echo "bump-tokens: unknown arg $1" >&2; usage; exit 64 ;;
+    esac
+  done
+
+  if [[ -z "$session_id" ]]; then
+    echo "bump-tokens: --session-id is required" >&2
+    usage
+    exit 64
+  fi
+
+  local target
+  target=$(session_path "$session_id")
+
+  if [[ ! -f "$target" ]]; then
+    echo "bump-tokens: $target does not exist (use init first)" >&2
+    exit 3
+  fi
+
+  # Normalise unset counts to 0; reject negative deltas (the orchestrator
+  # never subtracts tokens, only adds them — guard against typos).
+  local n
+  for n in "$input" "$output" "$cache_read" "$cache_creation"; do
+    if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+      echo "bump-tokens: token counts must be non-negative integers (got: $n)" >&2
+      exit 64
+    fi
+  done
+
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # Compose the jq pipeline. The structure mirrors the orchestrator's three
+  # attribution levels: always bump `.tokens.totals`; conditionally bump the
+  # per-issue / per-pr buckets when --issue / --pr is supplied; always
+  # append a `per_invocation` ring-buffer entry (cap at 200) for trace.
+  #
+  # `cost` is computed inline using the embedded pricing table:
+  #
+  #   usd = (input * P.input + output * P.output
+  #        + cache_read * P.cache_read + cache_creation * P.cache_creation) / 1e6
+  #
+  # Unknown models → zero USD (price lookup returns `null`, multiplications
+  # short-circuit to 0 via the `// 0` fallback).
+  local jq_args=(
+    --arg now "$now"
+    --argjson input "$input"
+    --argjson output "$output"
+    --argjson cache_read "$cache_read"
+    --argjson cache_creation "$cache_creation"
+    --arg mode "$mode"
+    --arg model "$model"
+    --arg issue "$issue"
+    --arg pr "$pr"
+    --argjson pricing "$(jq -c -n "$PRICING_JQ")"
+  )
+
+  local issue_branch=""
+  if [[ -n "$issue" ]]; then
+    if ! [[ "$issue" =~ ^[0-9]+$ ]]; then
+      echo "bump-tokens: --issue must be a positive integer (got: $issue)" >&2
+      exit 64
+    fi
+    issue_branch='
+      | .tokens.per_issue[$issue] //= {input: 0, output: 0, cache_read: 0, cache_creation: 0, estimated_usd: 0}
+      | .tokens.per_issue[$issue].input          += $input
+      | .tokens.per_issue[$issue].output         += $output
+      | .tokens.per_issue[$issue].cache_read     += $cache_read
+      | .tokens.per_issue[$issue].cache_creation += $cache_creation
+      | .tokens.per_issue[$issue].estimated_usd  += $usd_delta
+    '
+  fi
+
+  local pr_branch=""
+  if [[ -n "$pr" ]]; then
+    if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+      echo "bump-tokens: --pr must be a positive integer (got: $pr)" >&2
+      exit 64
+    fi
+    pr_branch='
+      | .tokens.per_pr[$pr] //= {input: 0, output: 0, cache_read: 0, cache_creation: 0, estimated_usd: 0, issue: null}
+      | .tokens.per_pr[$pr].input          += $input
+      | .tokens.per_pr[$pr].output         += $output
+      | .tokens.per_pr[$pr].cache_read     += $cache_read
+      | .tokens.per_pr[$pr].cache_creation += $cache_creation
+      | .tokens.per_pr[$pr].estimated_usd  += $usd_delta
+    '
+    # If an --issue was provided alongside --pr, cross-link them so a future
+    # PR-targeted read can resolve the corresponding issue without a GitHub
+    # round-trip.
+    if [[ -n "$issue" ]]; then
+      pr_branch="$pr_branch
+      | .tokens.per_pr[\$pr].issue = (\$issue | tonumber)
+      "
+    fi
+  fi
+
+  # Compose the full pipeline. `$usd_delta` is computed once at the top and
+  # reused in every accumulator below.
+  local jq_pipeline='
+    ($pricing[$model] // {input:0, output:0, cache_read:0, cache_creation:0}) as $p
+    | (
+        ($input * ($p.input // 0)
+         + $output * ($p.output // 0)
+         + $cache_read * ($p.cache_read // 0)
+         + $cache_creation * ($p.cache_creation // 0)
+        ) / 1000000
+      ) as $usd_delta
+    | .tokens.totals.input          += $input
+    | .tokens.totals.output         += $output
+    | .tokens.totals.cache_read     += $cache_read
+    | .tokens.totals.cache_creation += $cache_creation
+    | .tokens.totals.estimated_usd  += $usd_delta
+    '"$issue_branch""$pr_branch"'
+    | .tokens.per_invocation += [{
+        at: $now,
+        mode: ($mode | if . == "" then null else . end),
+        model: ($model | if . == "" then null else . end),
+        issue: ($issue | if . == "" then null else (. | tonumber) end),
+        pr: ($pr | if . == "" then null else (. | tonumber) end),
+        input: $input,
+        output: $output,
+        cache_read: $cache_read,
+        cache_creation: $cache_creation,
+        estimated_usd: $usd_delta
+      }]
+    | .tokens.per_invocation = (.tokens.per_invocation | if length > 200 then .[-200:] else . end)
+    | .updated_at = $now
+  '
+
+  if ! jq "${jq_args[@]}" "$jq_pipeline" "$target" | atomic_write "$target"; then
+    echo "bump-tokens: jq expression failed — file left unchanged" >&2
+    exit 68
+  fi
+}
+
+# shellcheck disable=SC2016
+# rationale: same as cmd_bump_tokens — the jq programs in this function
+# use single quotes to wrap jq syntax with embedded jq variables, not
+# shell variables. Single-quoting is correct.
+cmd_read_tokens() {
+  local session_id=""
+  local issue=""
+  local pr=""
+  local format="json"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) session_id="${2:-}"; shift 2 ;;
+      --issue) issue="${2:-}"; shift 2 ;;
+      --pr) pr="${2:-}"; shift 2 ;;
+      --format) format="${2:-json}"; shift 2 ;;
+      *) echo "read-tokens: unknown arg $1" >&2; usage; exit 64 ;;
+    esac
+  done
+
+  if [[ -z "$session_id" ]]; then
+    echo "read-tokens: --session-id is required" >&2
+    usage
+    exit 64
+  fi
+
+  if [[ "$format" != "json" && "$format" != "comment" ]]; then
+    echo "read-tokens: --format must be 'json' or 'comment' (got: $format)" >&2
+    exit 64
+  fi
+
+  local target
+  target=$(session_path "$session_id")
+
+  if [[ ! -f "$target" ]]; then
+    echo "read-tokens: $target does not exist" >&2
+    exit 3
+  fi
+
+  # Resolve the scope. --pr wins over --issue if both supplied (the comment
+  # surfaces on the PR; issue scoping is only used for /shipyard:my-turn
+  # cost surfacing). Without either, scope is session-wide totals.
+  local scope_jq
+  if [[ -n "$pr" ]]; then
+    scope_jq='.tokens.per_pr[$key] // {input:0, output:0, cache_read:0, cache_creation:0, estimated_usd:0, issue:null}'
+  elif [[ -n "$issue" ]]; then
+    scope_jq='.tokens.per_issue[$key] // {input:0, output:0, cache_read:0, cache_creation:0, estimated_usd:0}'
+  else
+    scope_jq='.tokens.totals'
+  fi
+
+  local key=""
+  if [[ -n "$pr" ]]; then
+    key="$pr"
+  elif [[ -n "$issue" ]]; then
+    key="$issue"
+  fi
+
+  if [[ "$format" == "json" ]]; then
+    jq --arg key "$key" "$scope_jq" "$target"
+    return 0
+  fi
+
+  # format=comment: emit a Markdown body marked with the dedup sentinel.
+  # Mode counts come from per_invocation entries that match the scope.
+  local mode_filter
+  local scope_label
+  if [[ -n "$pr" ]]; then
+    mode_filter='[.tokens.per_invocation[] | select(.pr == ($key | tonumber))]'
+    scope_label="PR #$pr"
+  elif [[ -n "$issue" ]]; then
+    mode_filter='[.tokens.per_invocation[] | select(.issue == ($key | tonumber))]'
+    scope_label="Issue #$issue"
+  else
+    mode_filter='.tokens.per_invocation'
+    scope_label="session"
+  fi
+
+  local session_repo
+  session_repo=$(jq -r '.repo' "$target")
+  local session_started
+  session_started=$(jq -r '.started_at' "$target")
+  local session_id_str
+  session_id_str=$(jq -r '.session_id' "$target")
+
+  jq -r \
+    --arg key "$key" \
+    --arg scope_label "$scope_label" \
+    --arg session_id "$session_id_str" \
+    --arg started "$session_started" \
+    --arg repo "$session_repo" \
+    "
+    ($scope_jq) as \$scope
+    | ($mode_filter) as \$invocations
+    | (\$invocations | map(.mode) | unique | map(select(. != null)) | join(\", \")) as \$modes
+    | (\$invocations | map(.model) | unique | map(select(. != null)) | join(\", \")) as \$models
+    | (\$invocations | length) as \$count
+    | (\$scope.input + \$scope.output + \$scope.cache_read + \$scope.cache_creation) as \$total_tokens
+    | \"<!-- do-work-cost-tracking -->\n\" +
+      \"### Shipyard cost — \" + \$scope_label + \"\n\n\" +
+      \"| Metric | Value |\n\" +
+      \"|---|---|\n\" +
+      \"| Input tokens | \" + (\$scope.input | tostring) + \" |\n\" +
+      \"| Output tokens | \" + (\$scope.output | tostring) + \" |\n\" +
+      \"| Cache read | \" + (\$scope.cache_read | tostring) + \" |\n\" +
+      \"| Cache creation | \" + (\$scope.cache_creation | tostring) + \" |\n\" +
+      \"| **Total tokens** | **\" + (\$total_tokens | tostring) + \"** |\n\" +
+      \"| Estimated cost (USD) | \" + (\$scope.estimated_usd | . * 10000 | round / 10000 | tostring) + \" |\n\" +
+      \"| Worker invocations | \" + (\$count | tostring) + \" |\n\" +
+      (if \$modes != \"\" then \"| Modes | \" + \$modes + \" |\n\" else \"\" end) +
+      (if \$models != \"\" then \"| Models | \" + \$models + \" |\n\" else \"\" end) +
+      \"| Session | \`\" + \$session_id + \"\` (\" + \$started + \") |\n\" +
+      \"| Repo | \" + \$repo + \" |\n\n\" +
+      \"_Posted automatically by \`/shipyard:do-work\` for cost-tracking. Edit-or-create idempotency keyed on the HTML sentinel comment above._\n\"
+    " "$target"
+}
+
 cmd_cleanup() {
   local session_id=""
 
@@ -357,10 +700,12 @@ subcmd="$1"
 shift
 
 case "$subcmd" in
-  init)    cmd_init "$@" ;;
-  read)    cmd_read "$@" ;;
-  update)  cmd_update "$@" ;;
-  cleanup) cmd_cleanup "$@" ;;
+  init)        cmd_init "$@" ;;
+  read)        cmd_read "$@" ;;
+  update)      cmd_update "$@" ;;
+  cleanup)     cmd_cleanup "$@" ;;
+  bump-tokens) cmd_bump_tokens "$@" ;;
+  read-tokens) cmd_read_tokens "$@" ;;
   -h|--help|help)
     usage
     exit 0

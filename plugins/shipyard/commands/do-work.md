@@ -68,15 +68,31 @@ The orchestrator mirrors every state structure above into a small JSON file at `
     "earliest_red_sha": null,
     "checked_at": "2026-05-20T18:04:22Z"
   },
-  "drain": { "active": false, "started_at": null, "polls": 0 }
+  "drain": { "active": false, "started_at": null, "polls": 0 },
+
+  "tokens": {
+    "totals": {
+      "input": 0, "output": 0, "cache_read": 0, "cache_creation": 0,
+      "estimated_usd": 0
+    },
+    "per_issue": {
+      "153": { "input": 18203, "output": 4102, "cache_read": 8210, "cache_creation": 0, "estimated_usd": 0.59 }
+    },
+    "per_pr": {
+      "200": { "input": 18203, "output": 4102, "cache_read": 8210, "cache_creation": 0, "estimated_usd": 0.59, "issue": 153 }
+    },
+    "per_invocation": []
+  }
 }
 ```
 
 Field names match the orchestrator-state structure names above 1:1 so a reader of either surface (file or prose) can cross-reference without translation. `started_at` and `updated_at` are always-present ISO-8601 UTC timestamps; `updated_at` advances on every successful `update` call so external watchers can detect change without diffing the body.
 
+The `tokens` block (added in 1.3.30, [#153](https://github.com/mattsears18/claude-plugins/issues/153)) is the **per-session** cost ledger — written through `session-state.sh bump-tokens` after each Agent dispatch returns. `.tokens.totals` is cumulative across the session (including orchestrator overhead); `.tokens.per_issue[<N>]` and `.tokens.per_pr[<M>]` are attribution buckets the cost-comment hook in [step A reconcile](#a-reconcile-the-return) reads when posting `<!-- do-work-cost-tracking -->`-marked comments on the resulting issue/PR. The persistent cross-session ledger at `~/.shipyard/cost-history.jsonl` is [#163](https://github.com/mattsears18/claude-plugins/issues/163)'s scope — out of scope here. `per_invocation` is a ring buffer capped at the most-recent 200 entries for traceability without unbounded file growth.
+
 ### Helper script — `plugins/shipyard/scripts/session-state.sh`
 
-Every write goes through the helper, which writes to `<target>.tmp.<pid>` and atomically renames into place. **Never edit the JSON directly with `Edit` / `Write` / `jq` / a shell heredoc** — none of those preserve the atomic-rename contract. The helper exposes four subcommands:
+Every write goes through the helper, which writes to `<target>.tmp.<pid>` and atomically renames into place. **Never edit the JSON directly with `Edit` / `Write` / `jq` / a shell heredoc** — none of those preserve the atomic-rename contract. The helper exposes six subcommands:
 
 ```bash
 # Set up the session file at startup (step 0.5).
@@ -95,6 +111,23 @@ plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>" --pat
 plugins/shipyard/scripts/session-state.sh update --session-id "<session-id>" \
   --set '.session_prs += [96]' \
   --set '.main_ci.status = "green"'
+
+# Bump token-usage counts after an Agent dispatch returns. --issue and
+# --pr are optional — omit both to attribute to orchestrator overhead.
+plugins/shipyard/scripts/session-state.sh bump-tokens \
+  --session-id "<session-id>" \
+  --issue <N> --pr <M> \
+  --input <input_tokens> --output <output_tokens> \
+  --cache-read <cache_read_tokens> --cache-creation <cache_creation_tokens> \
+  --mode <issue-work|fix-checks-only|fix-rebase|fix-main-ci|fix-failing-prs-batch|orchestrator> \
+  --model <model-id>
+
+# Read aggregated token data. --format json (default) or comment (Markdown
+# body with the <!-- do-work-cost-tracking --> sentinel, ready to post via
+# `gh pr comment` / `gh issue comment`).
+plugins/shipyard/scripts/session-state.sh read-tokens \
+  --session-id "<session-id>" \
+  --pr <M> --format comment
 
 # Remove the file at end-of-session (cleanup step).
 plugins/shipyard/scripts/session-state.sh cleanup --session-id "<session-id>"
@@ -120,7 +153,7 @@ Every state-mutation site writes through. Batch writes at end-of-turn — one `u
 | [Step 5](#5-snapshot-failing-prs) | `failed_prs` | once, post-snapshot |
 | [Step 6](#6-initial-scope-pre-flight) | `ready_issues`, `deferred_issues` | once, post-scope |
 | Step 7 (initial pool fill) | `in_flight`, `soft_caps` | per dispatch |
-| [Step A reconcile](#a-reconcile-the-return) | `in_flight` (release), `session_prs`, `failed_prs`, `deferred_issues` (via blocked) | every completion |
+| [Step A reconcile](#a-reconcile-the-return) | `in_flight` (release), `session_prs`, `failed_prs`, `deferred_issues` (via blocked), `tokens` (via `bump-tokens`) | every completion |
 | [Step B release](#b-release-the-slot) | `in_flight` (slot removal), `soft_caps` (decrement) | every completion |
 | [Step C dispatch](#c-dispatch-a-replacement-if-work-remains--mandatory-action) | `in_flight` (new slot), `ready_issues` (consumed), `failed_prs` (consumed), `soft_caps` (increment), `raw_backlog` (post-refill) | every dispatch |
 | [Step D refresh](#d-periodic-refresh) | `main_ci`, `divert_queue`, `failed_prs`, `ready_issues`, `raw_backlog`, `deferred_issues` | every full-pool refresh |
@@ -130,6 +163,17 @@ Every state-mutation site writes through. Batch writes at end-of-turn — one `u
 ### Failure mode — write-through breakage
 
 If `session-state.sh update` fails (exit code != 0), log `[session-state] update failed: <exit code> — session file out of sync with working memory; continuing` and continue the turn. Working memory is authoritative; the next turn's update cycle re-attempts the write. Do not stall dispatch on a file-write failure. Read-through failures (exit 3 mid-session) are handled the same way — log + continue; the next `update` call recreates the file via `init`. See [RATIONALE → Failure mode](./do-work-RATIONALE.md#failure-mode--write-through-breakage) for the full failure-mode discussion.
+
+### Cost-tracking write-through
+
+After every Agent dispatch returns, the orchestrator extracts the dispatch's `usage` payload (input/output/cache_read/cache_creation token counts; model id) and attributes it via `bump-tokens` before reconciling the return string. The attribution rules:
+
+- **Worker dispatches with an associated issue or PR** — pass `--issue <N>` (issue-work, fix-checks-only) and/or `--pr <M>` (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch) along with `--mode <mode>` and `--model <id>`. Both the per-issue/per-pr bucket and `.tokens.totals` get bumped; a `per_invocation` ring-buffer entry is recorded for trace.
+- **Orchestrator-side overhead** — calls without `--issue` or `--pr` only bump `.tokens.totals`. Use this for the orchestrator's own per-turn token cost (the scope-pre-flight pass at step 6, the periodic refresh at step D, etc.) — those don't attribute to a specific PR.
+
+The hook is observational and write-only — `bump-tokens` never affects dispatch decisions. If the helper call errors, log `[bump-tokens] attribution failed: <exit code>; continuing` and proceed; the dollar-cost data point is lost but the session marches on.
+
+The persistent cross-session ledger at `~/.shipyard/cost-history.jsonl` is [#163](https://github.com/mattsears18/claude-plugins/issues/163)'s scope — out of scope here. This section covers the per-session in-memory accounting only; the artifact comments posted on the issue/PR are the durable export.
 
 ## Setup (run once)
 
@@ -910,12 +954,40 @@ The agent's last line tells you what happened.
 For **issue work** (`shipped` / `blocked` / `errored`):
 
 - **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. **Append `<M>` to `session_prs`** (the set the [end-of-session drain](#end-of-session-drain) watches). Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.
+
+  **Then post a cost-tracking comment on the resulting PR.** The session-state file's `.tokens.per_pr[<M>]` bucket was populated by every `bump-tokens` call made while the worker was in flight (see [Cost-tracking write-through](#cost-tracking-write-through) below). Read it as a Markdown body via the helper and post on the PR with edit-or-create semantics keyed on the `<!-- do-work-cost-tracking -->` sentinel:
+
+  ```bash
+  # 1. Read the cost summary as a Markdown comment body.
+  BODY=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
+    --session-id "<session-id>" --pr <M> --format comment)
+
+  # 2. Look up the existing sentinel comment (if any) so we can edit
+  # in-place instead of posting duplicates each time the cost grows
+  # (e.g. across a fix-checks-only follow-up dispatch on the same PR).
+  EXISTING=$(gh pr view <M> --repo <owner/repo> \
+    --json comments --jq '[.comments[] | select(.body | startswith("<!-- do-work-cost-tracking -->"))][0].id // empty')
+
+  if [ -n "$EXISTING" ]; then
+    gh api -X PATCH "/repos/<owner/repo>/issues/comments/$EXISTING" \
+      -f body="$BODY" >/dev/null
+  else
+    gh pr comment <M> --repo <owner/repo> --body "$BODY" >/dev/null
+  fi
+  ```
+
+  The hook fires on every `shipped` reconcile — issue-work, fix-main-ci, fix-failing-prs-batch. On a synthetic-divert `shipped main-ci-fix` / `shipped pr-batch-fix` return there's no originating issue, but the PR still gets the comment via the same `read-tokens --pr <M>` slice. For `external`-author PRs that are gated on `needs-human-review`, post the comment regardless — the cost is real whether or not the PR auto-merges. The edit-in-place semantics mean a follow-up fix-checks-only dispatch on the same PR will *update* the existing sentinel comment with the cumulative cost, not stack duplicate comments.
+
+  **Don't post a separate cost comment on the originating issue.** GitHub's auto-close mechanism links the issue to the closing PR; readers click through to the PR to see the cost. Posting on both surfaces double-counts in feed scans and creates two places that have to stay consistent across fix-checks follow-ups. The PR is the single source of truth for this session's cost on the artifact.
+
+  If either `gh` call errors (rate limit, permission denied), log `[cost-comment] PR #<M> post failed: <reason>; continuing` and proceed. Cost-tracking is observational — never block dispatch on a comment-post failure.
+
 - **blocked #<N>** — comment on the issue summarizing the blocker, add the `blocked:agent` label, continue.
 - **errored** — record in the session log, continue.
 
 For **fix-checks work** (`green` / `noop` / `blocked`):
 
-- **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed — no re-add needed.)
+- **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed — no re-add needed.) **Refresh the cost-tracking comment** for `<M>` using the same edit-or-create flow described in the [`shipped`-return cost-comment hook](#a-reconcile-the-return) — the worker's `bump-tokens` calls landed against this PR's bucket, so the comment body needs to reflect the new cumulative total. No-ops on a PR that never had a sentinel comment posted (no existing comment to update, no `shipped` event to anchor a fresh post).
 
   **Trust-but-verify before accepting `green`.** The agent's `green` claim is load-bearing — downstream code treats green PRs as settled. Spot-check:
 
