@@ -1231,7 +1231,9 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 
 ## Write the consolidated report to disk
 
-After emitting the chat summary, persist the same content to `./.shipyard/do-work/<YYYY-MM-DD>-do-work-session.md` so it survives the session. Mirrors the `/shipyard:audit` report-writer (see [`commands/audit.md`](./audit.md) → "Write the consolidated report to disk") under the same `.shipyard/` convention — `/shipyard:audit` writes to `.shipyard/audits/`, `/shipyard:do-work` writes to `.shipyard/do-work/`. Don't skip this step — the data is already in your context; the cost of writing it is one tool call and the value of having it on disk is large (the chat summary scrolls out of context the moment compaction fires).
+After emitting the chat summary, persist the same content to `./.shipyard/do-work/<YYYY-MM-DD>-do-work-session.html` so it survives the session. Mirrors the `/shipyard:audit` report-writer (see [`commands/audit.md`](./audit.md) → "Write the consolidated report to disk") under the same `.shipyard/` convention — `/shipyard:audit` writes to `.shipyard/audits/`, `/shipyard:do-work` writes to `.shipyard/do-work/`. Don't skip this step — the data is already in your context; the cost of writing it is one tool call and the value of having it on disk is large (the chat summary scrolls out of context the moment compaction fires).
+
+Reports are **styled HTML, not markdown** — markdown is fine for grep / version control / diffing but a poor end-user surface. The maintainer wants to read these in a browser with typography, sectioning, status-colored merged/open/ci-blocked badges, hover states, and clickable issue/PR links. The HTML target also makes "save to PDF" trivial via the print stylesheet. See [#112](https://github.com/mattsears18/claude-plugins/issues/112) for the rationale. Reports are static (one-shot generation, no JS, no live updates) — they are NOT a revival of the deleted live dashboard ([#95](https://github.com/mattsears18/claude-plugins/issues/95)); they're the HTML version of what was already `.md`.
 
 **Skip the write when** the session shipped nothing, filed no shipyard improvement issues, AND reaped no agent worktrees beyond pure housekeeping — heuristic: `shipped_count + filed_count + reaped_worktrees == 0`. Also skip when the user invoked `/do-work` and immediately drained out (e.g., typed `stop` right after the backlog overview) without shipping anything (`shipped_count == 0`). No-op runs don't need a report — the chat summary already captures everything worth saying.
 
@@ -1243,86 +1245,147 @@ After emitting the chat summary, persist the same content to `./.shipyard/do-wor
 
    Do NOT `git add` it and do NOT amend the host repo's `.gitignore`. The directory is meant to stay local — the host repo decides whether to track `.shipyard/` via its own ignore rules. No PR is ever opened for the report itself.
 
-2. **Compute the target path.** Base name is `<YYYY-MM-DD>-do-work-session.md` using today's date in the local timezone. If that file already exists (rerun same day), suffix `-2`, `-3`, etc. until a free path is found — don't clobber the prior session's report:
+2. **Ensure the shared stylesheet exists at `.shipyard/styles.css`.** Same idempotent-write contract as `/shipyard:audit` — see [`commands/audit.md`](./audit.md) → "Write the consolidated report to disk" step 2 for the full CSS template (canonical source). Briefly: only write when the file does not exist (`if [ ! -f .shipyard/styles.css ]`), never clobber a user-edited version, never `git add` it. The CSS file lives at the artifact-tree root (`.shipyard/styles.css`) and every report references it via `../styles.css`. The plugin does not bundle the CSS as a plugin asset — every report-writing command is responsible for the idempotent-write step against its host repo.
+
+3. **Compute the target path.** Base name is `<YYYY-MM-DD>-do-work-session.html` using today's date in the local timezone. If that file already exists (rerun same day), suffix `-2`, `-3`, etc. until a free path is found — don't clobber the prior session's report:
 
    ```bash
    base="$(date +%Y-%m-%d)-do-work-session"
-   path=".shipyard/do-work/${base}.md"
+   path=".shipyard/do-work/${base}.html"
    n=2
-   while [ -e "$path" ]; do path=".shipyard/do-work/${base}-${n}.md"; n=$((n+1)); done
+   while [ -e "$path" ]; do path=".shipyard/do-work/${base}-${n}.html"; n=$((n+1)); done
    ```
 
-3. **Write the report** using the `Write` tool. Mirror the chat summary's content plus a metadata header. Every section is data the orchestrator already has at termination time (`in_flight`, `failed_prs`, `ready_issues`, `session_prs`, the running shipped count, the lifetime-totals query results, the cleanup counts, the divert-checks cache). The change is just to serialize that state to disk in addition to printing it. Recommended layout:
+4. **Write the report** using the `Write` tool. Mirror the chat summary's content plus a metadata header. Every section is data the orchestrator already has at termination time (`in_flight`, `failed_prs`, `ready_issues`, `session_prs`, the running shipped count, the lifetime-totals query results, the cleanup counts, the divert-checks cache). The change is just to serialize that state to disk in addition to printing it. Use the HTML skeleton below — populate placeholders directly; the `Write` tool dumps the populated HTML to the target path in one call. Recommended shape:
 
-   ```markdown
-   # /shipyard:do-work session — <owner/repo> — <YYYY-MM-DD>
+   ```html
+   <!doctype html>
+   <html lang="en">
+   <head>
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>/shipyard:do-work session — <owner/repo> — <YYYY-MM-DD></title>
+     <link rel="stylesheet" href="../styles.css" />
+   </head>
+   <body>
+     <main>
+       <header>
+         <h1>/shipyard:do-work session — <owner/repo></h1>
+         <div class="meta">
+           <strong>Repo:</strong> <owner/repo> ·
+           <strong>Started:</strong> <ISO8601 UTC> ·
+           <strong>Ended:</strong> <ISO8601 UTC> ·
+           <strong>Duration:</strong> <H>h<M>m ·
+           <strong>Concurrency:</strong> <--concurrency N> (soft-collision cap: <N>) ·
+           <strong>PRs merged this session:</strong> <merged_count> ·
+           <strong>Issues shipped this session:</strong> <shipped_count> ·
+           <strong>Lifetime via /do-work:</strong> <I> issues closed, <P> PRs opened (repo-wide)
+         </div>
+       </header>
 
-   - **Repo:** <owner/repo>
-   - **Started:** <ISO8601 UTC>
-   - **Ended:** <ISO8601 UTC>
-   - **Duration:** <H>h<M>m
-   - **Concurrency:** <--concurrency N> (soft-collision cap: <N>)
-   - **PRs merged this session:** <merged_count>
-   - **Issues shipped this session:** <shipped_count>
-   - **Lifetime via /do-work:** <I> issues closed, <P> PRs opened (repo-wide)
+       <section>
+         <h2>Headline numbers</h2>
+         <ul>
+           <li>PRs merged: <merged_count></li>
+           <li>Issues shipped: <shipped_count></li>
+           <li>Issues filed (shipyard improvement, see below): <filed_count></li>
+           <li>Diversions dispatched: <D> (fix-main-ci: <d1>, fix-failing-prs-batch: <d2>)</li>
+           <li>Drain phase: exited via <code><reason></code> in <elapsed_min> min</li>
+         </ul>
+       </section>
 
-   ## Headline numbers
+       <section>
+         <h2>Backlog shape</h2>
+         <table>
+           <thead>
+             <tr><th>Phase</th><th class="num">Workable</th><th class="num">Blocked</th><th class="num">Needs-triage</th><th class="num">In flight</th></tr>
+           </thead>
+           <tbody>
+             <tr><td>Start</td><td class="num"><s_w></td><td class="num"><s_b></td><td class="num"><s_t></td><td class="num"><s_i></td></tr>
+             <tr><td>Mid-session deltas</td><td class="num">+<m_w_added></td><td class="num">…</td><td class="num">…</td><td class="num">peak <m_i_peak>/<concurrency></td></tr>
+             <tr><td>End</td><td class="num"><e_w></td><td class="num"><e_b></td><td class="num"><e_t></td><td class="num"><e_i></td></tr>
+           </tbody>
+         </table>
+       </section>
 
-   - PRs merged: <merged_count>
-   - Issues shipped: <shipped_count>
-   - Issues filed (shipyard improvement, see §6): <filed_count>
-   - Diversions dispatched: <D> (fix-main-ci: <d1>, fix-failing-prs-batch: <d2>)
-   - Drain phase: exited via `<reason>` in <elapsed_min> min
+       <section>
+         <h2>What shipped</h2>
+         <table>
+           <thead><tr><th>Issue</th><th>PR</th><th>Title</th><th>Final state</th></tr></thead>
+           <tbody>
+             <tr>
+               <td><a class="issue" href="https://github.com/<owner/repo>/issues/<N>"><span class="hash">#</span><N></a></td>
+               <td><a class="pr-link" href="https://github.com/<owner/repo>/pull/<M>"><span class="badge pr">PR</span><span class="hash">#</span><M></a></td>
+               <td><title></td>
+               <td><span class="badge merged">merged</span></td>
+             </tr>
+             <tr>
+               <td><a class="issue" href="…"><span class="hash">#</span><N></a></td>
+               <td><a class="pr-link" href="…"><span class="badge pr">PR</span><span class="hash">#</span><M></a></td>
+               <td><title></td>
+               <td><span class="badge open">ci-blocked</span></td>
+             </tr>
+           </tbody>
+         </table>
+       </section>
 
-   ## Backlog shape
+       <section>
+         <h2>Notable cross-PR conflicts</h2>
+         <ul>
+           <li><code><path></code> — touched by <k> in-flight PRs (<PR links>); resolved via <auto-rebase / manual / land-order serialization>.</li>
+         </ul>
+       </section>
 
-   | Phase | Workable | Blocked | Needs-triage | In flight |
-   |---|---|---|---|---|
-   | Start | <s_w> | <s_b> | <s_t> | <s_i> |
-   | Mid-session deltas | +<m_w_added> from concurrent /audit runs | … | … | peak <m_i_peak>/<concurrency> |
-   | End | <e_w> | <e_b> | <e_t> | <e_i> still open |
+       <section>
+         <h2>Mid-session phenomena</h2>
+         <ul>
+           <li><anything weird worth remembering — long-running fix-checks, flake cascades, agent misbehavior, premature-termination near-misses, divert events, soft-collision cap reached></li>
+         </ul>
+       </section>
 
-   ## What shipped
+       <section>
+         <h2>Shipyard improvement issues filed</h2>
+         <table>
+           <thead><tr><th>Issue</th><th>Title</th><th>Severity</th></tr></thead>
+           <tbody>
+             <tr>
+               <td><a class="issue" href="https://github.com/mattsears18/claude-plugins/issues/<n>"><span class="hash">#</span><n></a></td>
+               <td><title></td>
+               <td><span class="badge p1">P1</span></td>
+             </tr>
+           </tbody>
+         </table>
+         <p>(Gaps in the orchestrator itself surfaced by the session — filed against <code>mattsears18/claude-plugins</code> per the global memory rule.)</p>
+       </section>
 
-   | Issue | PR | Title | Final state |
-   |---|---|---|---|
-   | #<N> | #<M> | <title> | merged |
-   | #<N> | #<M> | <title> | ci-blocked |
-   | … | … | … | … |
+       <section>
+         <h2>User-action follow-ups</h2>
+         <ul>
+           <li><thing that blocks full value-delivery and needs a human — Secret Manager values, Vercel env vars, ci-blocked PRs needing review, manual-gate release PRs, blocked-rebase PRs surfaced by the drain></li>
+         </ul>
+       </section>
 
-   ## Notable cross-PR conflicts
-
-   - `<path>` — touched by <k> in-flight PRs (#<a>, #<b>, #<c>); resolved via <auto-rebase / manual / land-order serialization>. <one-line "chronic re-DIRTY source" note if it kept coming back>
-
-   ## Mid-session phenomena
-
-   - <anything weird worth remembering — long-running fix-checks, flake cascades, agent misbehavior, premature-termination near-misses, divert events, soft-collision cap reached>
-
-   ## Shipyard improvement issues filed
-
-   | Issue | Title | Severity | Link |
-   |---|---|---|---|
-   | #<n> | <title> | P<0–2> | https://github.com/mattsears18/claude-plugins/issues/<n> |
-
-   (These are gaps in the orchestrator itself surfaced by the session — filed against `mattsears18/claude-plugins` per the [global memory rule](https://github.com/mattsears18/claude-plugins/blob/main/CLAUDE.md). Omit the section entirely when none were filed this session.)
-
-   ## User-action follow-ups
-
-   - <thing that blocks full value-delivery and needs a human — Secret Manager values, Vercel env vars, ci-blocked PRs needing review, manual-gate release PRs, blocked-rebase PRs surfaced by the drain>
-
-   ## End-of-session cleanup
-
-   - Reaped this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches
-   - Deferred (still-running PIDs): <deferred_live>
-   - Reaped from prior sessions: <reaped_stale> stale worktrees; <deferred_stale> live-PID worktrees left for the owning Claude Code instance
-   - Final `git worktree list` shape: <n> worktrees (primary + orchestrator + <m> agent worktrees deferred)
+       <section>
+         <h2>End-of-session cleanup</h2>
+         <ul>
+           <li>Reaped this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches</li>
+           <li>Deferred (still-running PIDs): <deferred_live></li>
+           <li>Reaped from prior sessions: <reaped_stale> stale worktrees; <deferred_stale> live-PID worktrees left for the owning Claude Code instance</li>
+           <li>Final <code>git worktree list</code> shape: <n> worktrees (primary + orchestrator + <m> agent worktrees deferred)</li>
+         </ul>
+       </section>
+     </main>
+   </body>
+   </html>
    ```
 
-   Omit sections that have no content (e.g. zero diversions → drop the line; no cross-PR conflicts → drop the entire "Notable cross-PR conflicts" section; no shipyard improvement issues filed → drop §6 entirely). Don't pad with empty bullets — empty rows are noise. The shape is "everything the chat summary said, plus context the chat summary elided for brevity."
+   Severity badges: pick the matching CSS class (`p0` / `p1` / `p2`). Final-state badges use `merged` (green), `open` (blue — for ci-blocked / pending), `closed` (purple — for abandoned). Same-day audit reports filed via `/shipyard:audit` are sibling-linkable at relative path `../audits/<YYYY-MM-DD>-shipyard-audit.html` if the session report wants to cross-reference them.
 
-4. **Surface the path in chat** as the last line of your reply so the user sees where it landed:
+   Omit sections that have no content (e.g. zero diversions → drop the line; no cross-PR conflicts → drop the entire "Notable cross-PR conflicts" section; no shipyard improvement issues filed → drop that section entirely). Don't pad with empty rows — empty rows are noise. The shape is "everything the chat summary said, plus context the chat summary elided for brevity." Escape interpolated user-supplied text appropriately (`&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`, `"` → `&quot;` inside attributes) — issue titles are the most likely place to forget escaping.
 
-   > Report saved: `.shipyard/do-work/<filename>.md`
+5. **Surface the path in chat** as the last line of your reply so the user sees where it landed:
+
+   > Report saved: `.shipyard/do-work/<filename>.html`
 
 If the orchestrator's working directory isn't a git repo or `.shipyard/` can't be created (read-only filesystem, permissions), report the failure inline (`Report could not be saved: <reason>`) and continue — don't block the chat summary on it. The report is a side-effect, not a contract; the chat summary is the source of truth and runs unconditionally.
 

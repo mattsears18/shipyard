@@ -54,7 +54,7 @@ When you consider a finding and decide NOT to file it for a contextual reason �
 
 Two surfaces, both required when applicable:
 
-1. **The audit's end-of-run summary.** Add a `Skipped (decided not to file)` section to the return summary, one bullet per skipped finding with the rationale. This sits alongside the existing `Skipped (duplicates)` block and uses the same shape. The next session's auditor reading the prior transcript (or `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md`) sees the decision and doesn't re-flag.
+1. **The audit's end-of-run summary.** Add a `Skipped (decided not to file)` section to the return summary, one bullet per skipped finding with the rationale. This sits alongside the existing `Skipped (duplicates)` block and uses the same shape. The next session's auditor reading the prior transcript (or `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.html`) sees the decision and doesn't re-flag.
 2. **If the skipped finding has a natural home issue** — i.e., there's an existing open issue covering the area the finding sits in (e.g., a finding about a screen that already has an open issue, or a finding the next audit will re-derive from the same code) — also post a one-line comment on that issue: `Audit on <YYYY-MM-DD> considered <finding> and decided not to file: <rationale>`. Use `gh issue comment <N> --repo <owner/repo> --body "..."`. If the comment errors (rate limit, permission), log an advisory and continue — the in-summary record is the source of truth; the in-issue comment is the cross-reference.
 
 What counts as "decided not to file" (vs. just "skipped" — different concept):

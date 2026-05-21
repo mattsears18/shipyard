@@ -83,7 +83,7 @@ Title prefixes:
 
 Embed the screenshot path in every body: `Evidence: \`store-assets/screenshots/ios/03-task-detail.png\``. These paths reference files already committed to the host repo — don't copy them anywhere.
 
-**If you ever produce a derived screenshot** (annotated overlay, cropped detail, side-by-side comparison) **save it to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<finding-id>.png`, never to the repo root or any working directory.** The orchestrator promises the parent directory exists before dispatch (sibling to the consolidated `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md` report). Embed via relative path: `![](./.shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png)`. Don't dump derived assets next to the source screenshots in `store-assets/` — that directory is for committed store assets, not audit artifacts.
+**If you ever produce a derived screenshot** (annotated overlay, cropped detail, side-by-side comparison) **save it to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<finding-id>.png`, never to the repo root or any working directory.** The orchestrator promises the parent directory exists before dispatch (sibling to the consolidated `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.html` report). Embed via relative path: `![](./.shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png)`. Don't dump derived assets next to the source screenshots in `store-assets/` — that directory is for committed store assets, not audit artifacts.
 
 ### 6. Clean up unreferenced derived screenshots
 

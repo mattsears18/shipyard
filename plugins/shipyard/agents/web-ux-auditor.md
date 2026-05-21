@@ -25,7 +25,7 @@ For each surface:
 
 1. `new_page` or `navigate_page` to reach it
 2. `take_snapshot` to read the DOM tree + interactive affordances
-3. `take_screenshot` to see what the user sees — **save it to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<route-or-finding-id>.png`, never to the repo root or any working directory.** The orchestrator promises the parent directory exists before dispatch (sibling to the consolidated `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.md` report). If `take_screenshot` only accepts a `filePath` argument, pass the full relative path explicitly; if it auto-names, immediately `mv` the output into the target directory before continuing the tour. Use a short, stable slug (e.g. `login.png`, `register-audit.png`, `marketing-narrow.png`) so cross-links in issue bodies stay readable.
+3. `take_screenshot` to see what the user sees — **save it to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<route-or-finding-id>.png`, never to the repo root or any working directory.** The orchestrator promises the parent directory exists before dispatch (sibling to the consolidated `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.html` report). If `take_screenshot` only accepts a `filePath` argument, pass the full relative path explicitly; if it auto-names, immediately `mv` the output into the target directory before continuing the tour. Use a short, stable slug (e.g. `login.png`, `register-audit.png`, `marketing-narrow.png`) so cross-links in issue bodies stay readable.
 4. Note findings in scratch notes
 
 **Default surfaces to tour** (adapt to the app):

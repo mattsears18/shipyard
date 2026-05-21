@@ -4,6 +4,22 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.15 — 2026-05-20
+
+Switches `/shipyard:audit` and `/shipyard:do-work` consolidated reports from markdown to styled HTML. Closes [#112](https://github.com/mattsears18/claude-plugins/issues/112).
+
+Markdown reports are fine for grep / version control / diffing but a poor end-user surface — the maintainer wants to *read* the report (review issues filed, see what shipped, scan PRs, click through to GitHub) in a format that actually presents the information well: typography, sectioning, hover states, link-styled URLs, status-colored severity badges, sortable tables. None of that is in markdown. The HTML target also makes "save to PDF" trivial via the print stylesheet.
+
+- **`commands/audit.md` report-write step — extension flipped from `.md` to `.html`.** The recommended layout in step 4 (now step 4 after inserting the new step 2) becomes an HTML skeleton with `<header>`, `<section>`, and `<table>` elements. Severity badges (`<span class="badge p1">P1</span>`), issue links with muted `#` prefix (`<a class="issue"><span class="hash">#</span>N</a>`), and PR links with a small `PR` prefix badge get their styling from the shared stylesheet. Same omit-empty-sections rule, same "surface the path in chat" return line — only the extension and the markup shape changed.
+- **`commands/do-work.md` report-write step — same flip from `.md` to `.html`.** Final-state badges use `merged` (green), `open` (blue, used for `ci-blocked` / pending), `closed` (purple, used for abandoned). The end-of-session HTML can sibling-link the same day's audit reports via relative `../audits/<YYYY-MM-DD>-shipyard-audit.html` when cross-referencing makes sense.
+- **New step 2 in both commands — idempotent shared-stylesheet write.** Before writing the report, each command checks for `.shipyard/styles.css` and writes the default stylesheet if missing. The CSS file is **per-host-repo** (sits in the host repo's `.shipyard/`, not bundled in the plugin) and **idempotent** (only written when missing, never clobbers a user-edited version). The leading `/* shipyard-styles v1 — ... */` comment lets a future migration tool detect "default version" vs "user-modified." Same gitignore convention as the rest of `.shipyard/` — no `git add`.
+- **CSS template inline in `commands/audit.md` as canonical source.** ~115 lines: modern dark-theme defaults with `prefers-color-scheme: light` override, system font stack, status-colored severity badges (P0 red, P1 orange, P2 yellow), merged/open/closed PR-state badges, subtle bordered rounded sections, zebra-striped tables with right-aligned numeric columns and hover row highlight, issue-link styling with muted `#` prefix and `PR` badge variant for PR links, one-time print stylesheet so the user can save to PDF cleanly. `commands/do-work.md` references the canonical block rather than restating it.
+- **`.shipyard/<YYYY-MM-DD>-shipyard-audit.md` references in auditors updated to `.html`.** `agents/web-ux-auditor.md`, `agents/mobile-ux-auditor.md`, `agents/a11y-auditor.md`, and `skills/audit-rubrics/SKILL.md` all carried the `.md` extension in their "the orchestrator promises the parent directory exists before dispatch (sibling to ... `<YYYY-MM-DD>-shipyard-audit.md` report)" lines — flipped to `.html` so the cross-references stay accurate.
+
+Not a revival of the deleted live dashboard ([#95](https://github.com/mattsears18/claude-plugins/issues/95)) — these are *static* reports, one-shot generation at end-of-session, no JS, no live updates, no detached background process. They're the HTML version of what was already markdown.
+
+Existing `.md` reports stay as markdown — no migration is forced. Future report-writing commands inherit the same idempotent-write contract and CSS template.
+
 ### 1.3.14 — 2026-05-20
 
 Adds **issue-comment-thread reading** to `agents/issue-worker.md` step 2. Closes [#114](https://github.com/mattsears18/claude-plugins/issues/114).
