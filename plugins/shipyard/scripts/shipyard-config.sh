@@ -133,7 +133,7 @@ DEFAULTS_JQ='{
   },
   "inline_trivial": {
     "enabled": false,
-    "max_body_chars": 500,
+    "max_body_chars": 200,
     "patterns": ["typo", "dep-bump", "doc-only", "comment-only", "config-tweak"]
   },
   "models": {
