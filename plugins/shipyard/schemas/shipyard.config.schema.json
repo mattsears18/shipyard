@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/mattsears18/claude-plugins/raw/main/plugins/shipyard/schemas/shipyard.config.schema.json",
+  "title": "Shipyard repo config",
+  "description": "Schema for shipyard.config.json (committed, repo-level) and .shipyard/config.local.json (gitignored, personal override). The latter is sparse — only fields the user wants to override locally.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional schema reference for editor autocomplete."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Schema version. Increment on breaking changes. Additive changes within a major version don't bump this."
+    },
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$",
+          "description": "GitHub repo owner (user or org)."
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "description": "GitHub repo name."
+        }
+      },
+      "required": ["owner", "name"]
+    },
+    "auto_merge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "type": "string",
+          "enum": ["always", "trusted-only", "never"],
+          "description": "always = arm auto-merge on every PR; trusted-only = arm only when originating_author_trust == trusted (default); never = never arm auto-merge."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "description": "GitHub usernames whose issues are dispatch-eligible without external-author gating. Overrides the user-global trusted-authors list (does not merge — repo override is authoritative)."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_stamp": { "type": "string" },
+        "blocked": { "type": "string" },
+        "ci_blocked": { "type": "string" },
+        "needs_refinement": { "type": "string" },
+        "needs_human_review": { "type": "string" },
+        "needs_triage": { "type": "string" },
+        "user_feedback": { "type": "string" },
+        "_comment": { "type": "string" }
+      }
+    },
+    "inline_trivial": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "max_body_chars": { "type": "integer", "minimum": 0 },
+        "patterns": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "_comment": { "type": "string" }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issue_work": { "type": "string" },
+        "fix_checks_only": { "type": "string" },
+        "fix_rebase": { "type": "string" },
+        "fix_main_ci": { "type": "string" },
+        "fix_failing_prs_batch": { "type": "string" },
+        "_comment": { "type": "string" }
+      }
+    },
+    "cost_tracking": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "comment_on_pr": { "type": "boolean" },
+        "comment_on_issue": { "type": "boolean" },
+        "_comment": { "type": "string" }
+      }
+    },
+    "concurrency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "type": "integer", "minimum": 1 },
+        "soft_collision": { "type": "integer", "minimum": 1 },
+        "_comment": { "type": "string" }
+      }
+    }
+  },
+  "required": ["version"],
+  "$comment": "Forbidden field surfaces: anything matching /token|secret|api_key|password|credential/i is rejected at load time by shipyard-config.sh — the committed config must never carry secrets. Personal overrides in .shipyard/config.local.json are gitignored but the same rule applies (helps catch accidental paste into the wrong file)."
+}

@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/mattsears18/claude-plugins/raw/main/plugins/shipyard/schemas/shipyard.user-config.schema.json",
+  "title": "Shipyard user-global config",
+  "description": "Schema for ~/.shipyard/config.json (user-global, applies to every repo unless overridden by the repo-level shipyard.config.json or the per-repo .shipyard/config.local.json).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional schema reference for editor autocomplete."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "currency": {
+      "type": "string",
+      "description": "Currency code for cost-tracking estimates (e.g. USD). Informational only — pricing table is in USD; conversion is left to consumers."
+    },
+    "pricing_override": {
+      "type": "object",
+      "description": "Optional per-model pricing overrides. Keys are model IDs (e.g. claude-opus-4-7); values are { input, output, cache_read, cache_creation } in USD per 1M tokens. Use to track Anthropic price changes between plugin releases.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "input": { "type": "number", "minimum": 0 },
+          "output": { "type": "number", "minimum": 0 },
+          "cache_read": { "type": "number", "minimum": 0 },
+          "cache_creation": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "description": "User-global trusted-author list. Repo-level trust.authors overrides this (does not merge)."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
+    "default_auto_merge_policy": {
+      "type": "string",
+      "enum": ["always", "trusted-only", "never"],
+      "description": "Default auto-merge policy when a repo has no shipyard.config.json or hasn't set auto_merge.policy."
+    },
+    "default_models": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issue_work": { "type": "string" },
+        "fix_checks_only": { "type": "string" },
+        "fix_rebase": { "type": "string" },
+        "fix_main_ci": { "type": "string" },
+        "fix_failing_prs_batch": { "type": "string" }
+      }
+    },
+    "exclude_repos_from_cost_tracking": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*\\/[A-Za-z0-9._-]+$" },
+      "description": "List of owner/repo strings to exclude from cost-tracking even if cost_tracking.enabled is true at the repo level."
+    },
+    "cost_tracking_enabled": {
+      "type": "boolean",
+      "description": "Default-on cost-tracking switch. Repo-level cost_tracking.enabled overrides this."
+    }
+  },
+  "required": ["version"]
+}

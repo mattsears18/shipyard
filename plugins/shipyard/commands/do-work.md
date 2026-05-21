@@ -177,6 +177,61 @@ The persistent cross-session ledger at `~/.shipyard/cost-history.jsonl` is [#163
 
 ## Setup (run once)
 
+### 0.4 Check the repo-level opt-in (`shipyard.config.json`)
+
+**Run this BEFORE the worktree relocation.** The check is a single `shipyard-config.sh exists` call against the user's primary checkout — read-only, no writes, so the worktree-isolation rule doesn't apply yet.
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+"${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" exists
+case $? in
+  0)
+    # Repo is shipyard-initialized — load the merged config so subsequent
+    # steps can read tunables like trust.authors, auto_merge.policy, etc.
+    EFFECTIVE_CONFIG=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load) ;;
+  1)
+    # Repo is NOT shipyard-initialized. Warn loudly and continue with
+    # built-in defaults — but record the unconfigured state so the
+    # end-of-session summary surfaces it for the user. The hard refusal
+    # gate ships in a later release once /shipyard:init is widely used
+    # (issue #165's risk-mitigation section explicitly defers it).
+    cat <<'EOF'
+warning: this repo is not shipyard-initialized.
+
+  No shipyard.config.json found at the repo root. Running with built-in
+  defaults — auto_merge.policy=trusted-only, no per-repo trust list, etc.
+
+  To opt in (recommended for shared / team repos):
+    /shipyard:init
+
+  To suppress this warning, run with --no-config (built-in defaults only).
+  A future release will refuse to dispatch without shipyard.config.json
+  unless --force is passed.
+EOF
+    EFFECTIVE_CONFIG=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load)
+    SHIPYARD_UNCONFIGURED=1 ;;
+esac
+```
+
+`EFFECTIVE_CONFIG` is the merged result of all layers (defaults < user-global < repo < local). Subsequent steps that previously hardcoded a value should now read it via `jq` from `$EFFECTIVE_CONFIG` or via a fresh `shipyard-config.sh get <path>` call. The migration of hardcoded values is incremental — this PR introduces the loader; downstream issues (#156, #157, #160, #163) will swap each hardcoded value for a config read.
+
+Flags interpreted here:
+
+- `--force` / `--no-config` — skip the warn and continue with built-in defaults. Equivalent for now; once the hard-refusal gate ships, `--force` will be the explicit "I know this repo is unconfigured" opt-out.
+- `--strict` — refuse to dispatch if `shipyard.config.json` is missing. Early-adopter opt-in for the future-default behavior.
+
+```bash
+case "${1:-}" in
+  --strict)
+    if [ "$SHIPYARD_UNCONFIGURED" = "1" ]; then
+      echo "/shipyard:do-work --strict: shipyard.config.json is required"
+      echo "  run /shipyard:init to bootstrap, or drop --strict to fall back to defaults"
+      exit 1
+    fi ;;
+  --no-config|--force) : ;;  # already handled above
+esac
+```
+
 ### 0.5 Move into the orchestrator's worktree
 
 **Before any other setup, the orchestrator MUST relocate every write into a dedicated worktree.** The user's primary checkout is strictly read-only for the rest of the session. The hard rule: every *write* (`Edit`, `Write`, `git commit`, `git reset`, `git branch <new>`, label setup, README/CHANGELOG/CLAUDE.md tweaks, `plugin.json` version bumps, etc.) goes through the orchestrator worktree. Read-only operations (`git status`, `gh issue list`, `gh pr view`, `find`, `grep`, `git worktree list`, `gh run list`, label-existence checks via `gh label list`, etc.) MAY run in either checkout.

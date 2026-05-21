@@ -40,3 +40,50 @@ Reserves space for future categories (`blocked:external` for upstream / vendor b
 - `needs-refinement` — **generic pipeline gate** (semantics generalized in 1.3.28, [#145](https://github.com/mattsears18/claude-plugins/issues/145)): "this issue isn't ready for `/shipyard:do-work` dispatch yet — a refiner needs to process it first." Applied conditionally at intake by `.github/workflows/intake-refinement-gate.yml` (external authors, bodies with `## Open questions` headings, bare one-liners, bot-authored). `/shipyard:refine-issues` (renamed from `/shipyard:refine-feedback` — alias preserved) branches by source signal: user-feedback gets classify+rewrite, open-questions get resolve-defaults, anything else falls through to `escalate-to-triage` (which swaps `needs-refinement` for `needs-triage`).
 - `needs-human-review` — **decoupled** from `needs-refinement` in 1.3.28. Specifically a human sign-off gate: applied only by the user-feedback classify+rewrite branch of `/shipyard:refine-issues`, the `external-author-gate.yml` workflow, and `issue-worker.md` step 6 for external-author PRs. The resolve-defaults and escalate-to-triage branches do NOT apply it — trusted-author issues that pass through resolve-defaults become dispatch-eligible immediately.
 - `needs-triage` — fall-through label applied by `/shipyard:refine-issues`' escalate-to-triage branch when no refiner rule matches. `/do-work` excludes it from dispatch; `/shipyard:my-turn` surfaces it for human triage.
+
+## Configuration (`shipyard.config.json` + layered overrides)
+
+Shipyard runs against a 4-layer config (introduced in 1.3.31, [#165](https://github.com/mattsears18/claude-plugins/issues/165)). Effective config is the deep-merge of all four layers in order — later wins, arrays are replaced (not concatenated), and objects merge key-by-key recursively.
+
+| Layer | Path | Committed? | Purpose |
+|---|---|---|---|
+| 1. Built-in defaults | hardcoded in `plugins/shipyard/scripts/shipyard-config.sh` | n/a | Always present; bottom layer |
+| 2. User-global | `~/.shipyard/config.json` | no (per-user) | Pricing overrides, default models, personal opt-outs across every repo |
+| 3. Repo-level | `<repo>/shipyard.config.json` | **yes** | Shared policy, reviewable in PRs; opt-in surface for `/shipyard:do-work` |
+| 4. Personal override | `<repo>/.shipyard/config.local.json` | no (gitignored) | Per-repo personal overrides without touching committed policy |
+
+### Opt-in contract
+
+`/shipyard:do-work` checks for `<repo>/shipyard.config.json` at session start (step 0.4):
+
+- **Present**: load the merged effective config and dispatch normally.
+- **Missing** (default behavior in 1.3.31): warn and fall back to built-in defaults. The hard refusal gate is deferred until `/shipyard:init` adoption is widespread (per #165's risk-mitigation). Pass `--strict` to opt into the future hard-refusal behavior today.
+
+### Bootstrap
+
+```bash
+/shipyard:init                              # interactive
+/shipyard:init --auto-merge trusted-only    # non-interactive with one flag
+/shipyard:init --dry-run                    # preview without writing
+```
+
+Creates `shipyard.config.json` with sensible defaults, appends `.shipyard/` to `.gitignore`, validates against the schema before the write commits.
+
+### Managing config post-bootstrap
+
+```bash
+/shipyard:config show                       # effective + source-layer annotation
+/shipyard:config show --layer repo          # one layer in isolation
+/shipyard:config get auto_merge.policy      # one field
+/shipyard:config set auto_merge.policy never           # writes to repo (committed)
+/shipyard:config set auto_merge.policy never --local   # writes to .shipyard/config.local.json
+/shipyard:config set models.issue_work claude-opus-4-7 --global  # writes to ~/.shipyard/config.json
+/shipyard:config edit [--local|--global]    # open in $EDITOR
+/shipyard:config validate                   # schema-check all layers
+```
+
+Schemas live at `plugins/shipyard/schemas/shipyard.config.schema.json` (repo + local) and `plugins/shipyard/schemas/shipyard.user-config.schema.json` (user-global). Every load and every `set` validates the result before it lands; typos surface as clear errors rather than silent ignores.
+
+### Don't put secrets in any config layer
+
+The schema rejects keys matching `/token|secret|api_key|password|credential/i` regardless of where they appear. Move secrets to environment variables — even `.shipyard/config.local.json` (which is gitignored) is treated as if it could land in a backup or paste-buffer leak.
