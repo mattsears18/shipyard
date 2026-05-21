@@ -1,0 +1,17 @@
+# Shellcheck configuration for mattsears18/claude-plugins.
+#
+# All plugin shell scripts (production + tests) must pass shellcheck with the
+# defaults below before they can merge. CI enforces this via
+# `.github/workflows/shellcheck.yml`.
+#
+# If you need to silence a finding inside a script, use an inline
+# `# shellcheck disable=SCXXXX` with a one-line rationale on the next line
+# rather than adding a global exclusion here. The audit trail matters: see
+# issue #102 for the threat model behind this gate (command-injection /
+# quoting bugs in scripts that run with the user's shell privileges).
+#
+# Format: one directive per line. Comments use `#`. See
+# https://github.com/koalaman/shellcheck/wiki for syntax.
+
+# Treat warnings as failures (default already, but explicit for clarity).
+severity=style

@@ -23,7 +23,7 @@ fi
 # Counters + colors.
 pass=0
 fail=0
-GREEN=$'\033[32m'; RED=$'\033[31m'; DIM=$'\033[2m'; RESET=$'\033[0m'
+GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
 
 assert_contains() {
   local haystack="$1"
