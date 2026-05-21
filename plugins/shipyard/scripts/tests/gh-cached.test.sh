@@ -493,6 +493,62 @@ assert_equals "${#leftover[@]}" "0" "no .tmp.<pid> files linger after successful
 rm -rf "$env"
 
 # --------------------------------------------------------------------------
+echo "== regression #199: cache-hit path emits no bash arithmetic errors"
+# --------------------------------------------------------------------------
+# Original bug: file_mtime_epoch() called `stat -f '%m'` first. On GNU stat
+# (Linux/CI), `-f` means "display filesystem status", so the call succeeds
+# with non-numeric prose like `  File: "/path"\n    ID: ...`. The captured
+# string was then fed to `$((now - mtime))` arithmetic, which under `set -u`
+# parsed "File" as an unbound variable and errored to stderr — the cache-hit
+# path emitted no stdout, breaking every cache-hit-relying assertion above.
+#
+# Defense: cache-hit must produce ZERO bash error output on stderr. Anything
+# matching "unbound variable" or "arithmetic" signals the bug returned.
+
+env=$(mktmpenv)
+counter="$env/calls.log"
+
+# Prime: cache miss.
+GH_CACHED_TEST_COUNTER="$counter" SHIPYARD_HOME="$env/home" PATH="$env/bin:$PATH" \
+  bash "$helper" run --session-id s10 --ttl 3600 -- issue list >/dev/null 2>"$env/stderr-miss"
+# Cache hit — this is the path that was broken.
+GH_CACHED_TEST_COUNTER="$counter" SHIPYARD_HOME="$env/home" PATH="$env/bin:$PATH" \
+  bash "$helper" run --session-id s10 --ttl 3600 -- issue list >"$env/stdout-hit" 2>"$env/stderr-hit"
+
+stderr_hit=$(cat "$env/stderr-hit" 2>/dev/null || true)
+stdout_hit=$(cat "$env/stdout-hit" 2>/dev/null || true)
+
+if [[ -z "$stderr_hit" ]]; then
+  printf '  %sPASS%s  cache-hit path emits empty stderr (no arithmetic / unbound-variable errors)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  cache-hit path emitted stderr (regression of #199)\n' "$RED" "$RESET"
+  printf '    stderr: %s\n' "$stderr_hit"
+  fail=$((fail+1))
+fi
+
+# Also stress: stderr must NOT contain the literal "unbound variable" phrase
+# regardless of source. Hard-coded sentinel for the specific failure mode.
+case "$stderr_hit" in
+  *"unbound variable"*)
+    printf '  %sFAIL%s  cache-hit stderr contains "unbound variable" — #199 regression\n' "$RED" "$RESET"
+    fail=$((fail+1))
+    ;;
+  *)
+    printf '  %sPASS%s  cache-hit stderr free of "unbound variable" sentinel\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+    ;;
+esac
+
+# Stdout must contain the cached call_index. This is the user-visible
+# breakage — already covered above, but pin it here too as part of the
+# regression group so the failure mode is self-documented.
+assert_contains "$stdout_hit" '"call_index": 1' "regression #199: cache-hit stdout still returns the cached payload"
+assert_equals "$(count_calls "$counter")" "1" "regression #199: cache-hit does not invoke gh (still 1 call)"
+
+rm -rf "$env"
+
+# --------------------------------------------------------------------------
 echo
 if [[ $fail -eq 0 ]]; then
   printf '%sAll %d tests passed.%s\n' "$GREEN" "$pass" "$RESET"
