@@ -1,0 +1,93 @@
+name: Tests
+
+# Runs the repo's bash unit-test suites on every push and PR so the
+# load-bearing safety-hook tests + secret-scrubbing tests can't regress
+# silently between PRs.
+#
+# Rationale (issue #105): before this workflow existed the repo had no
+# CI at all. The hook tests under plugins/shipyard/hooks/tests/ and the
+# script tests under plugins/shipyard/scripts/tests/ were only run by
+# hand on the author's machine, so a PR could land that broke the
+# worktree-isolation hook or the secret-scrubbing patterns in the
+# auto-reporter and the regression would only surface once a user
+# installed the plugin and tripped over it.
+#
+# This is intentionally a separate workflow from
+# external-author-gate.yml (issue #91, issue-intake gate),
+# secret-scan.yml (issue #108, gitleaks gate), and the future
+# shellcheck workflow (issue #102) — separate concerns, separate
+# files, no shared matrix needed. Splitting keeps each gate debuggable
+# in isolation and lets failures be addressed without rerunning
+# unrelated jobs.
+#
+# Security note: the third-party action is pinned by full commit SHA
+# (not a floating tag) so a tag-repoint supply-chain attack on the
+# action repo cannot compromise this workflow. No event-supplied values
+# (issue titles, PR bodies, commit messages, branch names) are
+# interpolated into `run:` scripts — the workflow only invokes pinned
+# actions with static inputs and runs static bash. See
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  # Read-only — we only need to check out the repo and execute its test
+  # scripts. No labels, comments, releases, or other writes happen here.
+  contents: read
+
+jobs:
+  bash-tests:
+    name: bash test suites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Discover every `*.test.sh` under plugins/ and run them. Using
+      # `find` (rather than hardcoding paths) means new test files added
+      # alongside the convention are picked up automatically — no
+      # workflow edit required. Sort for deterministic ordering and use
+      # `-print0` / `read -d ''` to be safe against any odd characters
+      # in paths.
+      - name: Run bash test suites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tests=()
+          while IFS= read -r -d '' f; do
+            tests+=("$f")
+          done < <(find plugins -type f -name '*.test.sh' -print0 | sort -z)
+
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "No test files found under plugins/ matching *.test.sh" >&2
+            exit 1
+          fi
+
+          echo "Found ${#tests[@]} test file(s):"
+          printf '  %s\n' "${tests[@]}"
+          echo
+
+          failed=0
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            if bash "$t"; then
+              echo "::endgroup::"
+            else
+              rc=$?
+              echo "::endgroup::"
+              echo "::error file=$t::test suite exited with code $rc"
+              failed=$((failed + 1))
+            fi
+          done
+
+          if (( failed > 0 )); then
+            echo "$failed test suite(s) failed." >&2
+            exit 1
+          fi
+
+          echo "All test suites passed."
