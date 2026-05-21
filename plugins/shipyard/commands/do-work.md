@@ -22,7 +22,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 Across the session, the orchestrator maintains nine mental data structures plus a small three-field refresh tracker. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine. The same structures are **mirrored to a JSON file on disk** (see [Session state file](#session-state-file) below) so the artifact survives turn boundaries, can be inspected by external tools (dashboards, notifiers, a future `--resume <session-id>` flag), and lets the LLM stop re-narrating state in prose every turn. The JSON file is the *durable record*; the working memory is still where dispatch decisions are made.
 
-- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-rebase" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: { hard: [...], soft: [...] }, agent_id } }. Size is bounded by `--concurrency`. The `fix-rebase` kind is drain-only — it is never dispatched outside the [end-of-session drain](./do-work/drain.md#end-of-session-drain) phase. `claimed_paths.hard` and `claimed_paths.soft` partition the paths a worker is touching by collision tier — see the [Dispatch rules](./do-work/steady-state.md#dispatch-rules-used-by-step-7-and-step-c) for the tier definitions and the soft-collision cap.
+- **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-rebase" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: { hard: [...], soft: [...] }, agent_id, started_at?, progress_current?, progress_total?, progress_updated_at? } }. Size is bounded by `--concurrency`. The `fix-rebase` kind is drain-only — never dispatched outside the [end-of-session drain](./do-work/drain.md#end-of-session-drain). `claimed_paths.hard` and `claimed_paths.soft` partition the paths a worker is touching by collision tier — see the [Dispatch rules](./do-work/steady-state.md#dispatch-rules-used-by-step-7-and-step-c). `started_at`, `progress_current`/`progress_total`, and `progress_updated_at` feed [`/shipyard:status`](./status.md) ([#167](https://github.com/mattsears18/claude-plugins/issues/167)) — `started_at` is set on dispatch; the progress trio is managed by `session-state.sh set-progress` and defaults to `null` for non-batch workers.
 - **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths: { hard: [...], soft: [...] }, lockfile_sections, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains. `lockfile_sections` is the set of `package.json` (or equivalent root-manifest) sections the candidate is expected to touch — `overrides`, `dependencies`, `devDependencies`, `scripts`, `engines`, `config`, etc. — and replaces the older boolean `touches_lockfile` flag. Empty set means the candidate is not a lockfile-toucher and the section-aware collision rule below is a no-op for it.
 - **`failed_prs`**: queue of red PRs (authored by `@me`) needing fix-checks-only work. Drained after `divert_queue`, before `ready_issues`.
 - **`raw_backlog`**: ranked list of issue numbers not yet scoped. Source for refilling `ready_issues`.
@@ -52,7 +52,7 @@ The orchestrator mirrors every state structure above into a small JSON file at `
   "updated_at": "2026-05-20T18:04:22Z",
 
   "in_flight": {
-    "slot1": { "kind": "issue", "target": 90, "claimed_paths": { "hard": [], "soft": [] }, "agent_id": "..." }
+    "slot1": { "kind": "issue", "target": 90, "claimed_paths": { "hard": [], "soft": [] }, "agent_id": "...", "started_at": "2026-05-20T17:35:01Z", "progress_current": null, "progress_total": null, "progress_updated_at": null }
   },
   "ready_issues": [],
   "failed_prs": [],
@@ -92,7 +92,7 @@ The `tokens` block (added in 1.3.30, [#153](https://github.com/mattsears18/claud
 
 ### Helper script — `plugins/shipyard/scripts/session-state.sh`
 
-Every write goes through the helper, which writes to `<target>.tmp.<pid>` and atomically renames into place. **Never edit the JSON directly with `Edit` / `Write` / `jq` / a shell heredoc** — none of those preserve the atomic-rename contract. The helper exposes six subcommands:
+Every write goes through the helper, which writes to `<target>.tmp.<pid>` and atomically renames into place. **Never edit the JSON directly with `Edit` / `Write` / `jq` / a shell heredoc** — none of those preserve the atomic-rename contract. Subcommands:
 
 ```bash
 # Set up the session file at startup (step 0.5).
@@ -103,31 +103,26 @@ plugins/shipyard/scripts/session-state.sh init \
   --soft-collision-concurrency <N>
 
 # Read the whole file or one jq path.
-plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>"
-plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>" --path ".session_prs"
+plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>" [--path ".session_prs"]
 
-# Merge one or more jq assignments atomically. Each --set is a complete jq
-# assignment expression. Multiple --set args compose left-to-right.
+# Merge one or more jq assignments atomically. Multiple --set args compose left-to-right.
 plugins/shipyard/scripts/session-state.sh update --session-id "<session-id>" \
-  --set '.session_prs += [96]' \
-  --set '.main_ci.status = "green"'
+  --set '.session_prs += [96]' --set '.main_ci.status = "green"'
 
-# Bump token-usage counts after an Agent dispatch returns. --issue and
-# --pr are optional — omit both to attribute to orchestrator overhead.
+# Bump token-usage counts after an Agent dispatch returns. --issue / --pr optional.
 plugins/shipyard/scripts/session-state.sh bump-tokens \
-  --session-id "<session-id>" \
-  --issue <N> --pr <M> \
-  --input <input_tokens> --output <output_tokens> \
-  --cache-read <cache_read_tokens> --cache-creation <cache_creation_tokens> \
-  --mode <issue-work|fix-checks-only|fix-rebase|fix-main-ci|fix-failing-prs-batch|orchestrator> \
-  --model <model-id>
+  --session-id "<session-id>" --issue <N> --pr <M> \
+  --input <N> --output <N> --cache-read <N> --cache-creation <N> \
+  --mode <mode> --model <model-id>
 
 # Read aggregated token data. --format json (default) or comment (Markdown
-# body with the <!-- do-work-cost-tracking --> sentinel, ready to post via
-# `gh pr comment` / `gh issue comment`).
+# body with the <!-- do-work-cost-tracking --> sentinel for idempotent posting).
 plugins/shipyard/scripts/session-state.sh read-tokens \
-  --session-id "<session-id>" \
-  --pr <M> --format comment
+  --session-id "<session-id>" --pr <M> --format comment
+
+# Set progress counters on an in-flight slot (feeds /shipyard:status; #167).
+plugins/shipyard/scripts/session-state.sh set-progress \
+  --session-id "<session-id>" --slot "<slot-id>" --current 4 --total 7
 
 # Remove the file at end-of-session (cleanup step).
 plugins/shipyard/scripts/session-state.sh cleanup --session-id "<session-id>"

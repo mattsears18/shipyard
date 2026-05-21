@@ -127,6 +127,22 @@ Apply the **dispatch rules** to pick the next job:
 - **Job found** → issue the `Agent` tool call **in this turn**. Multiple slots freed by step B fill with parallel `Agent` calls in the same message.
 - **No compatible job** → record *why* the slot stays empty. The reason feeds into step E's invariant line. Examples: `parked (all ready_issues collide with in_flight paths)`, `parked (all ready_issues collide with in_flight lockfile sections: overrides×1, dependencies×1)`, `parked (all ready_issues blocked by soft-cap on CLAUDE.md, ×3 active)`, `parked (all queues empty after backlog re-check)`.
 
+**Per-slot dispatch metadata write-through.** When a new slot lands in `.in_flight`, the orchestrator's write-through call MUST include the slot's `started_at` ISO-8601 UTC timestamp alongside `kind` / `target` / `claimed_paths` / `agent_id`. The timestamp powers [`/shipyard:status`](../status.md)'s `ELAPSED` column and the stale-worker detection — without it, every worker would render as "elapsed 0s, stale" the moment a new orchestrator instance reads the file. Per-slot `progress_current` / `progress_total` start as `null` and are managed by the worker via `session-state.sh set-progress --slot <id>` if the worker is doing batch work (the typical issue-work / fix-checks-only worker doesn't bother — the kind alone is enough). Example shape — see [the schema doc](../do-work.md#schema) for the canonical fields:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update \
+  --session-id "<session-id>" \
+  --set ".in_flight.<slot-id> = {
+    kind: \"issue\", target: <N>,
+    claimed_paths: { hard: [...], soft: [...] },
+    agent_id: \"<agent-uuid>\",
+    started_at: \"<iso-8601 UTC now>\",
+    progress_current: null,
+    progress_total: null,
+    progress_updated_at: null
+  }"
+```
+
 ### D. Periodic refresh
 
 **Drain guard:** skip during drain — refresh is pointless when no new work will be dispatched.

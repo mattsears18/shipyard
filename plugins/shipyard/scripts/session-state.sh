@@ -74,6 +74,19 @@
 #              `--pr M` to scope; without either, emits the session-wide
 #              totals. Exit 3 if the session file does not exist.
 #
+#   set-progress — atomically set `progress_current` / `progress_total` on
+#              a single in-flight slot. Used by /shipyard:status (issue
+#              #167) to render batch-style progress (e.g. `4/7`) on
+#              workers that process N items per dispatch. The two values
+#              live on the slot record itself (not on a separate per-worker
+#              status file) — the session state file is already the
+#              single source of truth for in-flight worker bookkeeping.
+#              `--slot <id>` is required; `--current N` / `--total N` are
+#              optional (pass either, both, or neither — neither is a
+#              no-op success). Pass `--current null` / `--total null` to
+#              clear a previously-set value. Exit 3 if the session file
+#              does not exist; exit 64 if the slot is unknown.
+#
 # Pricing table:
 #
 #   The USD estimate in `bump-tokens` and `read-tokens` uses a hardcoded
@@ -131,6 +144,9 @@ Usage:
   session-state.sh read-tokens --session-id <id>
                                [--issue N] [--pr N]
                                [--format json|comment]
+  session-state.sh set-progress --session-id <id>
+                               --slot <slot-id>
+                               [--current N|null] [--total N|null]
 
 Environment:
   SHIPYARD_HOME                base dir for sessions/ (default: $HOME/.shipyard)
@@ -138,7 +154,7 @@ Environment:
 Exit codes:
   0   success
   2   refused to clobber (init w/o --force)
-  3   session file missing (read, update, bump-tokens, read-tokens)
+  3   session file missing (read, update, bump-tokens, read-tokens, set-progress)
   64  usage error
   65+ internal helper failure
 EOF
@@ -655,6 +671,120 @@ cmd_read_tokens() {
     " "$target"
 }
 
+# shellcheck disable=SC2016
+# rationale: this function builds jq programs whose single-quoted bodies
+# reference jq variables (`$slot`, `$current`, `$total`) bound via the
+# `--arg` / `--argjson` flags. The single-quoted form is the correct,
+# safe shape — shell expansion would corrupt the jq program. The disable
+# is scoped to this function only.
+cmd_set_progress() {
+  local session_id=""
+  local slot=""
+  local current=""
+  local current_set=0
+  local total=""
+  local total_set=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) session_id="${2:-}"; shift 2 ;;
+      --slot) slot="${2:-}"; shift 2 ;;
+      --current) current="${2:-}"; current_set=1; shift 2 ;;
+      --total) total="${2:-}"; total_set=1; shift 2 ;;
+      *) echo "set-progress: unknown arg $1" >&2; usage; exit 64 ;;
+    esac
+  done
+
+  if [[ -z "$session_id" ]]; then
+    echo "set-progress: --session-id is required" >&2
+    usage
+    exit 64
+  fi
+  if [[ -z "$slot" ]]; then
+    echo "set-progress: --slot is required" >&2
+    usage
+    exit 64
+  fi
+
+  # Neither flag set → no-op success. Callers can pass `set-progress
+  # --session-id x --slot s1` defensively from a batch refactor without
+  # tripping a usage error.
+  if [[ $current_set -eq 0 && $total_set -eq 0 ]]; then
+    return 0
+  fi
+
+  # Validate the values. Accept positive integers or the literal `null`
+  # (which clears a previously-set value). Negative numbers and non-integers
+  # are rejected so a typo doesn't silently persist as a string.
+  local current_jq="null"
+  if [[ $current_set -eq 1 ]]; then
+    if [[ "$current" == "null" ]]; then
+      current_jq="null"
+    elif [[ "$current" =~ ^[0-9]+$ ]]; then
+      current_jq="$current"
+    else
+      echo "set-progress: --current must be a non-negative integer or 'null' (got: $current)" >&2
+      exit 64
+    fi
+  fi
+
+  local total_jq="null"
+  if [[ $total_set -eq 1 ]]; then
+    if [[ "$total" == "null" ]]; then
+      total_jq="null"
+    elif [[ "$total" =~ ^[0-9]+$ ]]; then
+      total_jq="$total"
+    else
+      echo "set-progress: --total must be a non-negative integer or 'null' (got: $total)" >&2
+      exit 64
+    fi
+  fi
+
+  local target
+  target=$(session_path "$session_id")
+
+  if [[ ! -f "$target" ]]; then
+    echo "set-progress: $target does not exist (use init first)" >&2
+    exit 3
+  fi
+
+  # Verify the slot exists in .in_flight. set-progress is "modify an
+  # existing slot record," not "create a slot" — the slot is added by
+  # step C dispatch with the worker's claimed_paths + agent_id. If the
+  # caller is updating a slot that doesn't exist, that's a programming
+  # error worth surfacing (likely the worker returned and the slot got
+  # released before the progress write landed — race window is narrow
+  # but real).
+  if ! jq -e --arg slot "$slot" '.in_flight | has($slot)' "$target" >/dev/null 2>&1; then
+    echo "set-progress: slot '$slot' not present in .in_flight" >&2
+    exit 64
+  fi
+
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # Compose the jq pipeline. Each field is updated only when its --set was
+  # provided this call — preserves a previously-set total when only current
+  # advances (the common case for a progressing batch worker).
+  local jq_pipeline=""
+  if [[ $current_set -eq 1 ]]; then
+    jq_pipeline=".in_flight[\$slot].progress_current = $current_jq"
+  fi
+  if [[ $total_set -eq 1 ]]; then
+    if [[ -z "$jq_pipeline" ]]; then
+      jq_pipeline=".in_flight[\$slot].progress_total = $total_jq"
+    else
+      jq_pipeline="$jq_pipeline | .in_flight[\$slot].progress_total = $total_jq"
+    fi
+  fi
+  jq_pipeline="$jq_pipeline | .in_flight[\$slot].progress_updated_at = \$now | .updated_at = \$now"
+
+  if ! jq --arg slot "$slot" --arg now "$now" "$jq_pipeline" "$target" | atomic_write "$target"; then
+    echo "set-progress: jq expression failed — file left unchanged" >&2
+    exit 68
+  fi
+}
+
 cmd_cleanup() {
   local session_id=""
 
@@ -700,12 +830,13 @@ subcmd="$1"
 shift
 
 case "$subcmd" in
-  init)        cmd_init "$@" ;;
-  read)        cmd_read "$@" ;;
-  update)      cmd_update "$@" ;;
-  cleanup)     cmd_cleanup "$@" ;;
-  bump-tokens) cmd_bump_tokens "$@" ;;
-  read-tokens) cmd_read_tokens "$@" ;;
+  init)         cmd_init "$@" ;;
+  read)         cmd_read "$@" ;;
+  update)       cmd_update "$@" ;;
+  cleanup)      cmd_cleanup "$@" ;;
+  bump-tokens)  cmd_bump_tokens "$@" ;;
+  read-tokens)  cmd_read_tokens "$@" ;;
+  set-progress) cmd_set_progress "$@" ;;
   -h|--help|help)
     usage
     exit 0
