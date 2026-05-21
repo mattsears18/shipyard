@@ -6,18 +6,19 @@ name: Label-event audit
 # when the actor is NOT trusted. Trusted actors are no-ops.
 #
 # Rationale (issue #140): `/shipyard:do-work` uses GitHub labels (`shipyard`,
-# `ci-blocked`, `needs-human-review`, `needs-refinement`, `P0`-`P2`,
-# `wontfix`, `blocked`, etc.) as routing hints, but does NOT verify who
-# applied or removed each label. The trusted-author check at dispatch time
-# (do-work.md step 1.7, step 2 bucket 0.5, step 4 client-side filter) gates
-# on `issue.author.login`, so the primary attack — a rogue triager applying
-# `shipyard` to a stranger's issue — can't escalate to worker dispatch: the
-# issue is still filtered out for not being authored by a trusted user
-# (issues #90, #91). However, the rogue-triager surface still allows:
+# `blocked:ci`, `needs-human-review`, `needs-refinement`, `P0`-`P2`,
+# `wontfix`, `blocked:agent`, etc.) as routing hints, but does NOT verify
+# who applied or removed each label. The trusted-author check at dispatch
+# time (do-work.md step 1.7, step 2 bucket 0.5, step 4 client-side filter)
+# gates on `issue.author.login`, so the primary attack — a rogue triager
+# applying `shipyard` to a stranger's issue — can't escalate to worker
+# dispatch: the issue is still filtered out for not being authored by a
+# trusted user (issues #90, #91). However, the rogue-triager surface still
+# allows:
 #
 #   1. Routing-bomb / denial-of-service via mass `shipyard` application.
 #   2. Premature `needs-human-review` removal (confusing for maintainers).
-#   3. `ci-blocked` tampering — removing it resets shipyard's 3-attempt
+#   3. `blocked:ci` tampering — removing it resets shipyard's 3-attempt
 #      counter, so a compromised triager could force shipyard to bang on a
 #      known-bad PR indefinitely.
 #   4. Audit-trail gap on routing-label changes.
@@ -28,11 +29,14 @@ name: Label-event audit
 # another, and this workflow closes it.
 #
 # Tier policy:
-#   - Tier A (security-sensitive): `shipyard`, `ci-blocked`,
+#   - Tier A (security-sensitive): `shipyard`, `blocked:ci`,
 #     `needs-human-review` — REVERT the actor's change AND comment.
+#     Deprecated alias `ci-blocked` is also Tier A for the 1.3.29 grace
+#     period; remove after one week.
 #   - Tier B (routing-only): `needs-refinement`, `P0`, `P1`, `P2`,
-#     `wontfix`, `blocked`, `needs-design`, `needs-triage`, `discussion` —
-#     alert-only (comment), no automatic revert.
+#     `wontfix`, `blocked:agent`, `needs-design`, `needs-triage`,
+#     `discussion` — alert-only (comment), no automatic revert. Deprecated
+#     alias `blocked` is also Tier B for the 1.3.29 grace period.
 #   - Out of scope: free-form labels (`bug`, `enhancement`, `documentation`,
 #     `feature-request`, `good first issue`, `help wanted`, `invalid`,
 #     `question`, `user-feedback`) — those are tag-style and don't drive
@@ -205,10 +209,16 @@ jobs:
           # ------------------------------------------------------------------
           tier=
           case "$label" in
-            shipyard|ci-blocked|needs-human-review)
+            # Tier A (security-sensitive) — revert untrusted-actor changes.
+            # `ci-blocked` is retained as a deprecated alias for the 1.3.29
+            # grace period; remove after one week.
+            shipyard|blocked:ci|ci-blocked|needs-human-review)
               tier=A
               ;;
-            needs-refinement|P0|P1|P2|wontfix|blocked|needs-design|needs-triage|discussion)
+            # Tier B (routing-only) — alert-only, no revert. `blocked` is
+            # retained as a deprecated alias of `blocked:agent` for the
+            # 1.3.29 grace period; remove after one week.
+            needs-refinement|P0|P1|P2|wontfix|blocked:agent|blocked|needs-design|needs-triage|discussion)
               tier=B
               ;;
             *)
