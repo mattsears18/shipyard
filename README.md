@@ -124,7 +124,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit dx` — developer-experience catalog (lints, hooks, observability, contributor docs, etc.)
 - `/audit all <url>` — every audit in parallel
 - `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through). `/refine-feedback` still works as a back-compat alias.
-- `/do-work` — burn down the issue backlog with a rolling pool of parallel workers
+- `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`)
 - `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart.
 - `/shipyard:init` — _(coming in [#165](https://github.com/mattsears18/shipyard/issues/165))_ scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps.
 
@@ -166,11 +166,10 @@ A non-exhaustive list of safety properties the orchestrator and workers carry to
 
 ## See it in action
 
-Every PR opened by `/do-work` carries the `shipyard` label (renamed from `do-work` in 1.2.0). The repo's own merged history is the living demo:
+**Shipyard is built with shipyard.** The majority of merged PRs in this repo were opened by `/do-work` workers — each one opened, fixed-up through CI failures (if any), and merged without a human touching the keyboard between issue triage and PR review. The `shipyard` label (renamed from `do-work` in 1.2.0) stamps every PR the orchestrator produces. Browse the living demo:
 
-[**All `shipyard`-labeled closed PRs →**](https://github.com/mattsears18/shipyard/pulls?q=is%3Apr+is%3Aclosed+label%3Ashipyard)
-
-Each one was opened, fixed-up through CI failures (if any), and merged without a human touching the keyboard between issue triage and PR review.
+- [**Issues →**](https://github.com/mattsears18/shipyard/issues?q=is%3Aissue) — the backlog the orchestrator has been working, plus the closed ones with their resolving PRs linked
+- [**`shipyard`-labeled closed PRs →**](https://github.com/mattsears18/shipyard/pulls?q=is%3Apr+is%3Aclosed+label%3Ashipyard) — the merged outputs
 
 ## Plays well with everything that files GitHub issues
 
