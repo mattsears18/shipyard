@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "mattsears-plugins",
+  "name": "shipyard",
   "owner": {
     "name": "Matt Sears",
     "email": "mattsears18@gmail.com"
