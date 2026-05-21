@@ -34,6 +34,8 @@ Across the session, the orchestrator maintains nine mental data structures plus 
 
 Plus a three-field **refresh tracker** that gates [step D](./do-work/steady-state.md#d-periodic-refresh)'s event-driven + adaptive-backoff cadence — `refresh_last_at` (timestamp), `refresh_last_snapshot` (`{ main_ci_status, failing_pr_count_all, failed_prs_size }`), and `refresh_zero_delta_streak` (integer). Not a dispatch-queue, just bookkeeping for the refresh trigger rules; see step D's [Refresh trigger rules](./do-work/steady-state.md#refresh-trigger-rules) for the full semantics.
 
+A separate **`last_fresh_fetch`** timestamp ([#195](https://github.com/mattsears18/shipyard/issues/195)) tracks the most recent backlog re-fetch against the live tracker — set by step C's lightweight backlog re-check, step D's periodic refresh, or [drain.md's termination-assertion step 4](./do-work/drain.md#termination-assertion). Surfaced on the [steady-state step E invariant line](./do-work/steady-state.md#e-invariant-line-end-of-every-steady-state-turn) and gates handoff to drain — the orchestrator may not declare termination unless `last_fresh_fetch` is within the last 60s. Initial value `"never"` until the first re-check fires.
+
 When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules). `deferred_issues` is **not** part of the dispatch order — deferred entries never become work for this session.
 
 ## Session state file
