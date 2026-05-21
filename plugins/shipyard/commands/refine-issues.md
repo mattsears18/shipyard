@@ -126,8 +126,11 @@ Both `/refine-issues` and `/do-work` run this block. Idempotency means it's safe
 
 ```bash
 gh issue list --repo <owner/repo> --state open --label needs-refinement --limit 200 \
-  --json number,title,body,labels,createdAt,comments
+  --json number,title,body,labels,createdAt,comments \
+  --jq '[.[] | . + {comments: (.comments | map({first_line: (.body | split("\n")[0])}))}]'
 ```
+
+The `comments` projection keeps only the first line of each comment body — the sentinel check in step 4 (`<!-- do-work-refinement-agent -->`) needs nothing else. Full comment bodies on every needs-refinement issue burn tool-result tokens that the sentinel-check never reads. Worker-preamble §"`gh` JSON discipline" covers the convention.
 
 Note the candidate query is now broader than before — it pulls every open `needs-refinement` issue regardless of whether `user-feedback` is also present. The branch decision happens per-issue inside each refinement worker.
 

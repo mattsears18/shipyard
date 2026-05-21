@@ -176,7 +176,7 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 
 **End-of-session bucket-table rules** (match step 2's modes with one addition):
 
-- **Source data from a fresh fetch** — `gh issue list --repo <owner/repo> --state open --limit 200 --json number,title,labels,assignees,body,author`. The universe drifted since step 2; re-bucket against live state.
+- **Source data from a fresh fetch** — `gh issue list --repo <owner/repo> --state open --limit 200 --json number,title,labels,assignees,body,author --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}}]'`. The universe drifted since step 2; re-bucket against live state. The `--jq` projection matches step 2's so the bucket router consumes the same flattened shape on both ends. Worker-preamble §"`gh` JSON discipline" covers the convention.
 - **Same two-mode rendering as step 2.** Column-width rules, row order, truncation, and the `Workable`-row-always-prints-in-table-mode rule all match.
 - **`Workable`-row reason text when `<W_end> == 0`.** Pick the dominant cause: `everything shipped this session` / `everything left is blocked` / `everything left needs triage/design or refinement/review` / `everything left is in flight` / `nothing matches the workable filter` (fallback).
 - Print the bucket breakdown FIRST, above the flat lines.

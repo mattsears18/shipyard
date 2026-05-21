@@ -132,6 +132,17 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md covers the no-git-switch-to-default rule"
   assert_contains "$skill_path" "--label shipyard" \
     "SKILL.md covers the shipyard label requirement"
+
+  # Issue #158 — `gh` JSON discipline convention section.
+  # The convention exists so every worker mode consistently scopes
+  # `gh ... --json` responses to the fields it actually consumes; removing
+  # the section regresses the per-call token-cost contract.
+  assert_contains "$skill_path" "## \`gh\` JSON discipline" \
+    "SKILL.md covers the gh JSON discipline convention (issue #158)"
+  assert_contains "$skill_path" "--json <fields>" \
+    "SKILL.md names the --json <fields> pattern"
+  assert_contains "$skill_path" "--jq" \
+    "SKILL.md names the --jq projection flag"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after

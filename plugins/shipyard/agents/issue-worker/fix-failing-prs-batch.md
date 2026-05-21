@@ -15,10 +15,10 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
 1. **Pre-flight: re-confirm the pileup.**
    ```bash
    gh pr list --repo <owner/repo> --state open --limit 200 \
-     --json number,statusCheckRollup | \
-     jq '[.[] | select(.statusCheckRollup[]? | select(.conclusion=="FAILURE" or .conclusion=="ERROR" or .conclusion=="TIMED_OUT" or .state=="FAILURE" or .state=="ERROR" or .state=="TIMED_OUT"))] | length'
+     --json number,statusCheckRollup \
+     --jq '[.[] | select(.statusCheckRollup[]? | select(.conclusion=="FAILURE" or .conclusion=="ERROR" or .conclusion=="TIMED_OUT" or .state=="FAILURE" or .state=="ERROR" or .state=="TIMED_OUT"))] | length'
    ```
-   If count < 10 → return `noop: pileup already cleared`. Don't open a PR.
+   If count < 10 → return `noop: pileup already cleared`. Don't open a PR. (The `--jq` flag projects the response server-side on the gh-CLI boundary — no second `jq` subprocess, no full-JSON pipe to wrap and re-parse. Worker-preamble §"`gh` JSON discipline" covers the convention.)
 
 2. **Sample failing logs** — up to 5 PRs (representative mix: oldest, newest, a few middle). For each, grab the failing-check name and a 20-line log excerpt:
    ```bash

@@ -57,8 +57,11 @@ From this projection, derive per-PR signals:
 
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 200 \
-  --json number,title,url,author,assignees,createdAt,updatedAt,labels,comments
+  --json number,title,url,author,assignees,createdAt,updatedAt,labels,comments \
+  --jq '[.[] | . + {comments: (.comments | map({author: .author.login, body: (.body[:280]), createdAt}) | .[-3:])}]'
 ```
+
+The `comments` projection keeps only the last 3 comments on each issue, and each comment is trimmed to its first 280 chars + author login + createdAt. The Pass B signals only inspect the most-recent comment author (`@<$ME>` ping detection) and the first chunk of its body (substring match for `?` and the mention shape) — keeping the full comment history per issue (or full bodies) burns tool-result tokens for fields nothing reads. Worker-preamble §"`gh` JSON discipline" covers the convention.
 
 From this projection, derive per-issue signals:
 

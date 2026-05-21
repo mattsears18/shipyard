@@ -302,13 +302,16 @@ Fetch the universe of open issues and the linked-PR subset. Both calls are part 
 
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 200 \
-  --json number,title,labels,assignees,body,author
+  --json number,title,labels,assignees,body,author \
+  --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}}]'
 
 gh issue list --repo <owner/repo> --state open --limit 200 \
   --json number \
   --search 'is:issue is:open linked:pr' \
   --jq '[.[].number]'
 ```
+
+The `--jq` projection flattens `labels` / `assignees` to the only shapes the bucket routing consumes (label names, assignee logins) and preserves the canonical `author.login` shape so the bucket-0.5 untrusted-author check (`author.login NOT in trusted_authors`) reads identically. Body stays full because bucket 6 / bucket 7 parse `Blocked by #N` references out of it via regex. Worker-preamble §"`gh` JSON discipline" covers the convention.
 
 Bucket each issue into exactly one category. Apply in order — first match wins so an issue lands in its most specific bucket:
 
@@ -673,8 +676,11 @@ The refined-and-now-`needs-human-review`-only issues will be picked up by the *n
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 100 \
   --json number,title,labels,assignees,body,author,createdAt,updatedAt \
+  --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, createdAt, updatedAt}]' \
   --search 'is:issue is:open -linked:pr -label:blocked:agent -label:wontfix -label:needs-design -label:needs-triage -label:discussion -label:needs-refinement -label:needs-human-review'
 ```
+
+The `--jq` projection mirrors step 2's: flatten `labels` / `assignees` to the consumed shapes (names, logins) and preserve `author.login` as the canonical shape downstream filters and step 7's `originating_author_trust` computation reference. Body stays full because the client-side filter walks it for `Blocked by #N` references. Worker-preamble §"`gh` JSON discipline" covers the convention.
 
 Add `label:<L>` qualifiers for each `--label` arg.
 
