@@ -10,12 +10,55 @@ Personal [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by M
 
 ## Quick start
 
+Get from zero to your first auto-merging PR in about five minutes.
+
+### Prerequisites
+
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) installed and signed in.
+- The [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated (`gh auth login`). Shipyard drives every GitHub interaction through `gh`.
+- A local checkout of a GitHub repo with at least one open issue. Branch protection / required CI checks are fine — shipyard arms auto-merge and lets the merge train do the rest.
+
+### 1. Install the plugin
+
 ```sh
 claude plugin marketplace add mattsears18/claude-plugins
 claude plugin install shipyard@mattsears-plugins
 ```
 
-Restart Claude Code, then from inside any GitHub-connected repo run `/do-work --concurrency 4`. You'll see the backlog ranked, a live HTML dashboard open at `/tmp/do-work-dashboard.html`, and 4 parallel workers start opening PRs against your open issues — each with auto-merge armed, so green CI = merged.
+Then restart Claude Code so the new slash commands register.
+
+### 2. Run your first command
+
+From inside any GitHub-connected repo, try one of these:
+
+```sh
+# Burn down the backlog — pick up open issues and ship PRs in parallel.
+/do-work --concurrency 4
+
+# Find work — audit a live URL for performance, SEO, a11y, and best-practices,
+# and autonomously file an issue per finding.
+/audit lighthouse https://your-app.example.com
+
+# Refine raw user-feedback issues into implementation-ready tickets
+# (rewrites the body, preserves the original, gates on human review).
+/refine-feedback
+```
+
+### 3. Watch the loop
+
+When you run `/do-work`, you'll see:
+
+- A markdown table of the ranked backlog at start (and again at end of session).
+- A live HTML dashboard open at `/tmp/do-work-dashboard.html` showing every dispatched worker, their PR, and CI state in real time.
+- `--concurrency N` parallel workers, each in its own isolated git worktree under `.claude/worktrees/`, opening PRs that close their assigned issues. Each PR has auto-merge with squash armed — green CI means it merges itself.
+
+When `/audit` runs, you'll see filed issues with severity labels (`P0`/`P1`/`P2`) and an audit-key HTML comment for dedup.
+
+### Next steps
+
+- Read [How it works](#how-it-works) for the full four-phase loop (inputs → refine → human review → orchestrator → workers → PR).
+- Skim [What's been hardened](#whats-been-hardened) for the safety properties that keep autonomous runs from clobbering your repo.
+- Wire up a Sentry / Datadog / Dependabot integration that files GitHub issues — see [Plays well with everything that files GitHub issues](#plays-well-with-everything-that-files-github-issues).
 
 ## Plugins
 
@@ -107,15 +150,6 @@ The Sentry flow above is illustrative, not a case study — your mileage depends
 - **User-feedback flows through refinement first.** Customer-support tools that file raw user complaints should label issues with `user-feedback` + `needs-refinement` + `needs-human-review` so `/refine-feedback` cleans them up and a human signs off before shipyard touches them.
 - **Not everything is auto-fixable.** Shipyard returns `blocked` on issues it can't repro or for which it can't infer a fix. Those still need humans — but they were going to need humans anyway. The win is on the long tail of "easy fixes that just sat there."
 - **Set sane labels at the auto-filer.** Most integrations let you specify labels at the issue-creation API call. Apply a priority label (`P0`/`P1`/`P2`) so the orchestrator ranks them correctly.
-
-## Install
-
-```sh
-claude plugin marketplace add mattsears18/claude-plugins
-claude plugin install shipyard@mattsears-plugins
-```
-
-Restart Claude Code after install. `/audit`, `/refine-feedback`, and `/do-work` will be available.
 
 ## Layout
 
