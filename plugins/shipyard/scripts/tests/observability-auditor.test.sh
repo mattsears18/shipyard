@@ -125,7 +125,11 @@ if [[ -f "$audit_cmd_path" ]]; then
     "audit.md dispatch table references shipyard:observability-auditor"
   assert_contains "$audit_cmd_path" "| \`observability\` |" \
     "audit.md dispatch table has an observability row"
-  assert_contains "$audit_cmd_path" "\`observability\`, or \`all\`" \
+  # Less brittle than matching "observability, or all" — that pattern broke
+  # when api-auditor (#133) appended a new type between observability and
+  # `all` in the type enumeration. Match just the surrounded token so the
+  # assertion holds regardless of position in the list.
+  assert_contains "$audit_cmd_path" "\`observability\`" \
     "audit.md type-list arg documents observability as a valid type"
 fi
 
