@@ -1,0 +1,234 @@
+name: Intake refinement gate
+
+# Conditionally applies `needs-refinement` on `issues.opened` (and `reopened`)
+# when an issue isn't ready for `/shipyard:do-work` dispatch yet. The label
+# acts as a generic pipeline gate (issue #145); the source-branched
+# `/shipyard:refine-issues` command then routes the issue to the correct
+# refinement branch (classify+rewrite for user-feedback, resolve-defaults for
+# open-questions, escalate-to-triage as the fall-through).
+#
+# Rationale (issue #145): the previous design conflated two concepts —
+# `needs-refinement` only ever meant "this is raw user feedback awaiting
+# `/refine-feedback`," and `needs-human-review` was applied alongside it by
+# the same backend at intake time. That left two gaps:
+#
+#   1. Claude-filed feature requests that include an `## Open questions`
+#      section have nowhere to land — `/do-work` dispatches them with the
+#      questions unresolved, or (if Claude mislabels) `/refine-feedback`
+#      skips them for not carrying `user-feedback`. They sit stuck.
+#   2. The label semantics couldn't extend to new refinement rules without
+#      changing the intake-side contract — every new rule would need a new
+#      label or new backend logic.
+#
+# This workflow is the conditional version of "apply `needs-refinement` to
+# every new issue" — the naive fix would over-trigger (every routine
+# trusted-author issue would get gated, defeating `/do-work`'s autonomy).
+# Instead the workflow checks for the specific shapes that genuinely need a
+# refiner pass, and skips otherwise.
+#
+# Triggering conditions (any one match applies the label):
+#
+#   1. Author is NOT in the trusted-author allowlist (external authors;
+#      preserves the existing `user-feedback` security gate so strangers'
+#      issues never reach `/do-work` dispatch unrefined).
+#   2. Body contains an `## Open questions` (or `## Open Questions`)
+#      heading — Claude-filed feature requests with unresolved scope.
+#   3. Body is shorter than 200 characters AND contains no Markdown
+#      headings — bare one-liner that's too thin to dispatch on.
+#   4. Issue is opened by a bot (Dependabot, Renovate, ...) — future hook
+#      for auto-classification rules; initially the gate just applies and
+#      the bot-source ends up in the escalate-to-triage branch.
+#
+# Trusted-author, well-structured issues skip the gate entirely and become
+# dispatch-eligible without any `/refine-issues` interaction.
+#
+# Decoupling vs `external-author-gate.yml` (issue #91): that workflow gates
+# external-author issues with `needs-human-review` — a SEPARATE label that
+# specifically means "human sign-off required." This workflow gates on
+# `needs-refinement` — the pipeline-readiness gate. The two compose: an
+# external-author issue gets `needs-human-review` from external-author-gate
+# AND `needs-refinement` from this workflow; once a refiner processes it,
+# the `needs-refinement` label drops, but `needs-human-review` stays until
+# a human signs off. This is the intended layered defense.
+#
+# Trusted-author resolution mirrors do-work.md step 1.7 and
+# label-event-audit.yml:
+#
+#   1. If `.shipyard/trusted-authors.txt` exists at the default branch,
+#      that file is the source of truth (one login per line; `#` comments
+#      and blank lines ignored; case-insensitive). The repo owner is
+#      implicitly in the set.
+#   2. Otherwise, fall back to the live collaborators-with-push API.
+#   3. If the API errors, fall back to the single-member set
+#      `{ <repo-owner> }` — restrictive default is the safe failure mode.
+#
+# Security note: actions are pinned by full commit SHA (not floating
+# tags) to avoid the supply-chain risk of a tag being repointed at
+# malicious code. No event-supplied values (issue bodies, titles, author
+# logins) are interpolated into `run:` scripts directly — every event
+# value goes through env vars. See
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  # issues: write — required to add the `needs-refinement` label via
+  # `gh issue edit --add-label`. We don't post a comment from this
+  # workflow (the refiner posts a sentinel comment when it processes the
+  # issue); adding the label is signal enough.
+  issues: write
+  # contents: read — needed to read `.shipyard/trusted-authors.txt` from
+  # the default branch via the checkout step.
+  contents: read
+
+jobs:
+  gate:
+    name: Intake refinement gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (default branch — for trusted-authors.txt)
+        # Pinned to the same SHA secret-scan.yml + external-author-gate.yml
+        # + label-event-audit.yml use (v4.2.2). Checkout of the DEFAULT
+        # branch (not the issue's commit, which doesn't exist anyway for
+        # issue events) so a malicious actor can't poison the allowlist
+        # by some side-channel.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          # Shallow clone — we only need the file at HEAD, not history.
+          fetch-depth: 1
+
+      - name: Apply needs-refinement gate
+        env:
+          # All event-supplied values go through env, never interpolated
+          # into the run: script directly. This is the workflow-injection
+          # mitigation pattern documented in external-author-gate.yml and
+          # label-event-audit.yml.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          ISSUE: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          AUTHOR_TYPE: ${{ github.event.issue.user.type }}
+          # Issue body — passed through env (not run: interpolation) so
+          # markdown content cannot be parsed by the shell. We use it for
+          # the open-questions heading check and the length heuristic
+          # below, then discard.
+          BODY: ${{ github.event.issue.body }}
+          # Whether the issue already has needs-refinement applied (e.g.
+          # the user-feedback backend applied it directly — the contract
+          # in /refine-issues says it shouldn't, but defense in depth).
+          # We compute this from the labels array via jq to avoid string
+          # matching against attacker-supplied label names.
+          LABELS_JSON: ${{ toJSON(github.event.issue.labels) }}
+        run: |
+          set -euo pipefail
+
+          # ------------------------------------------------------------------
+          # 0. Short-circuit: needs-refinement already applied.
+          # ------------------------------------------------------------------
+          if printf '%s' "$LABELS_JSON" | jq -e 'any(.name == "needs-refinement")' >/dev/null 2>&1; then
+            echo "Issue #$ISSUE already carries needs-refinement — no-op."
+            exit 0
+          fi
+
+          # ------------------------------------------------------------------
+          # 1. Resolve trusted-author allowlist.
+          #
+          # Order of precedence (matches do-work.md step 1.7 +
+          # label-event-audit.yml):
+          #   1. .shipyard/trusted-authors.txt at the default branch
+          #   2. Collaborators-with-push API
+          #   3. Fallback: just the repo owner
+          # ------------------------------------------------------------------
+          owner_lc=$(printf '%s' "$REPO_OWNER" | tr 'A-Z' 'a-z')
+          author_lc=$(printf '%s' "$AUTHOR" | tr 'A-Z' 'a-z')
+          allowlist_file=".shipyard/trusted-authors.txt"
+          allowlist=""
+
+          if [ -f "$allowlist_file" ]; then
+            allowlist=$(
+              {
+                sed -e 's/#.*$//' -e 's/[[:space:]]//g' "$allowlist_file" \
+                  | grep -v '^$' || true
+                printf '%s\n' "$owner_lc"
+              } | tr 'A-Z' 'a-z' | sort -u
+            )
+            echo "Trusted set: from .shipyard/trusted-authors.txt (+ owner)"
+          else
+            if api_out=$(gh api --paginate "repos/$REPO/collaborators" \
+                --jq '.[] | select(.permissions.push==true) | .login' 2>/dev/null); then
+              allowlist=$(
+                {
+                  printf '%s\n' "$api_out"
+                  printf '%s\n' "$owner_lc"
+                } | tr 'A-Z' 'a-z' | sort -u
+              )
+              echo "Trusted set: from collaborators API (+ owner)"
+            else
+              allowlist=$owner_lc
+              echo "Trusted set: fallback to repo owner only (collaborators API unavailable)"
+            fi
+          fi
+
+          # ------------------------------------------------------------------
+          # 2. Evaluate gate conditions. Apply the label on the FIRST match;
+          # we don't need to check every condition once one fires.
+          # ------------------------------------------------------------------
+          reason=""
+
+          # Condition 1 (and 4): bot-authored issues take precedence over
+          # the external-author check. Dependabot etc. show up as
+          # type=Bot but aren't human authors the security model worries
+          # about — the bot path applies the gate for a *different*
+          # reason (no-op classification slot today; escalate-to-triage
+          # branch handles them).
+          if [ "$AUTHOR_TYPE" = "Bot" ]; then
+            reason="bot-authored (future auto-classification hook; currently a no-op slot)"
+          elif ! printf '%s\n' "$allowlist" | grep -qx -- "$author_lc"; then
+            reason="external author ($author_lc not in trusted-author allowlist)"
+          fi
+
+          # Condition 2: body contains an Open questions heading. The
+          # comparison is line-anchored to `## Open questions` (or
+          # `## Open Questions`) so a body that mentions the phrase in
+          # passing doesn't trip the gate.
+          if [ -z "$reason" ]; then
+            if printf '%s\n' "$BODY" | grep -qE '^## Open [qQ]uestions[[:space:]]*$'; then
+              reason="body contains '## Open questions' heading"
+            fi
+          fi
+
+          # Condition 3: bare one-liner (<200 chars AND no markdown
+          # headings). We count chars on the body verbatim — multibyte
+          # safety isn't critical here, the heuristic is loose by design.
+          if [ -z "$reason" ]; then
+            body_len=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+            if [ "$body_len" -lt 200 ] && ! printf '%s\n' "$BODY" | grep -qE '^#{1,6}[[:space:]]'; then
+              reason="bare one-liner ($body_len chars, no headings)"
+            fi
+          fi
+
+          # ------------------------------------------------------------------
+          # 3. Apply label if any condition matched.
+          # ------------------------------------------------------------------
+          if [ -z "$reason" ]; then
+            echo "Issue #$ISSUE: no gate condition matched — dispatch-eligible."
+            exit 0
+          fi
+
+          echo "Issue #$ISSUE: applying needs-refinement — $reason"
+
+          # The label may not exist yet on a fresh repo. `gh issue edit`
+          # fails when the label is missing, so create idempotently first
+          # — matches the setup block in do-work.md step 3a and
+          # refine-issues.md step 2.
+          gh label create needs-refinement \
+            --repo "$REPO" \
+            --description "Pipeline gate — issue isn't ready for /do-work; /refine-issues processes it" \
+            --color FBCA04 2>/dev/null || true
+
+          gh issue edit "$ISSUE" --repo "$REPO" \
+            --add-label needs-refinement
