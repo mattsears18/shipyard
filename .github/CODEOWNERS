@@ -1,0 +1,20 @@
+# GitHub CODEOWNERS for mattsears18/claude-plugins
+#
+# This file requires named reviewers to approve PRs that touch listed paths
+# when "Require review from Code Owners" is enabled in the branch protection
+# rule for `main`. Branch protection is configured manually in the repo
+# Settings UI; this file alone does not enforce review — it only declares
+# WHO must review WHAT once the branch-protection toggle is on.
+#
+# Order matters: GitHub uses the LAST matching pattern, so put more-specific
+# rules below less-specific ones.
+
+# --- Security boundary: trusted-author allowlist -----------------------------
+#
+# `.shipyard/trusted-authors.txt` is the single security gate that decides
+# which issue authors `/shipyard:do-work` will dispatch autonomous workers
+# against (see plugins/shipyard/commands/do-work.md step 1.7). Anyone with
+# `write` access could otherwise extend the allowlist via a single PR with
+# no maintainer in the loop, which is a privilege-escalation surface
+# (see issue #139). Require the repo owner to review changes to this file.
+.shipyard/trusted-authors.txt @mattsears18
