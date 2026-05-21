@@ -191,7 +191,19 @@ atomic_write() {
 }
 
 # Compute the file mtime in epoch seconds. macOS BSD stat vs Linux GNU
-# stat disagree on the flag — try both, in that order.
+# stat disagree on the flag:
+#   - GNU stat (Linux):  stat -c '%Y' <file>   → mtime epoch
+#   - BSD stat (macOS):  stat -f '%m' <file>   → mtime epoch
+#
+# DO NOT swap the order or use `-f` first: on GNU stat, `-f` means "display
+# filesystem status" (not a format string), so `stat -f '%m' /tmp/foo`
+# succeeds with non-empty output like `  File: "/tmp/foo"\n    ID: ...`,
+# the `[[ -z "$m" ]]` check falls through to the fallback never running,
+# and downstream `$((now - mtime))` arithmetic parses "File" as an unbound
+# variable name under `set -u`. We try `-c` first (GNU is what CI runs),
+# fall back to `-f` for BSD, and finally validate that the result is
+# numeric before returning — anything else triggers the safe default.
+# Original bug: #199.
 file_mtime_epoch() {
   local f="$1"
   if [[ ! -f "$f" ]]; then
@@ -199,14 +211,20 @@ file_mtime_epoch() {
     return
   fi
   local m
-  m=$(stat -f '%m' "$f" 2>/dev/null)
-  if [[ -z "$m" ]]; then
-    m=$(stat -c '%Y' "$f" 2>/dev/null)
+  # GNU stat path (Linux). On BSD/macOS, -c is rejected and m stays empty.
+  m=$(stat -c '%Y' "$f" 2>/dev/null)
+  if [[ ! "$m" =~ ^[0-9]+$ ]]; then
+    # BSD stat path (macOS).
+    m=$(stat -f '%m' "$f" 2>/dev/null)
   fi
-  if [[ -z "$m" ]]; then
-    printf '0\n'
-  else
+  # Final guard: only emit the value if it parses as a non-negative
+  # integer. GNU `stat -f '%m'` succeeds with non-numeric prose, so this
+  # validator catches a future regression where the order is swapped or
+  # an additional fallback emits text.
+  if [[ "$m" =~ ^[0-9]+$ ]]; then
     printf '%s\n' "$m"
+  else
+    printf '0\n'
   fi
 }
 
