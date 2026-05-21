@@ -34,34 +34,6 @@ Across the session, the orchestrator maintains nine mental data structures. Hold
 
 When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules). `deferred_issues` is **not** part of the dispatch order — deferred entries never become work for this session.
 
-## Live dashboard
-
-Every `/do-work` session opens a self-contained HTML status dashboard at `/tmp/do-work-dashboard.html` and spawns a 10-second background updater. Three layers of refresh combine to make the page feel live:
-
-1. **Browser reload** — the dashboard sets `<meta http-equiv="refresh" content="10">` so the open tab reloads every 10 seconds.
-2. **Background updater** — `${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard-updater.sh` polls `gh` every 10 seconds and rewrites dynamic bits of the HTML in place (open-issue / open-PR counts; pending → merged ✓ / closed badge flips). Static bits (worker cards, shipped-PR rows) the orchestrator updates on event.
-3. **Orchestrator** — me, on every notification (agent return, periodic refresh): re-write the worker-card section, append a new shipped-PR row, etc.
-
-The dashboard is the **rich** UI surface. The terminal CLI status line and state-change banners ([step 6.5](#65-status-line--state-change-banners-ui)) are the always-on terse equivalent for users not actively watching the browser. Both render the same underlying state — they don't disagree.
-
-What the dashboard must include:
-
-- **Stat tiles** — shipped (this session), in-flight, total tokens spent (sum of completed agents' `<total_tokens>`), repo-wide open issues, repo-wide open PRs, pool utilization (`N / concurrency`). Each tile that references a GitHub list is a clickable link.
-- **Main CI health tile** — `<emoji>` green / red / pending / unknown, with the *earliest unfixed red run* linked when red (matches `main_ci` cached state). The tile turns red and pulses when a `fix-main-ci` diversion is in flight.
-- **In-flight workers** — one card per slot showing: slot label, issue number linked to GitHub, title, priority pill (`P0`/`P1`/`P2` / `unlabeled`), files-touched, branch name, PR link (or `pending — running` text). When a lockfile-toucher is active, only show the other slots as parked if their candidate's `lockfile_sections` overlaps the in-flight toucher's set — sibling lockfile workers claiming disjoint `package.json` sections (e.g., `overrides` vs `dependencies` vs `scripts`) co-run normally per the [section-aware lockfile rule](#dispatch-rules-used-by-step-7-and-step-c). **For diversion slots** (`fix-main-ci` / `fix-failing-prs-batch`), the card shows the diversion kind as the title, a `⚠️ DIVERSION` pill in place of priority, and the linked context (the earliest red run URL or the failing-PR list).
-- **Diversion banner row** — when `divert_queue` has an enqueued-but-not-yet-dispatched entry OR an in-flight diversion slot exists, render a full-width banner at the top of the page (above the worker cards): `⚠️ Main CI red — diverting to fix` or `⚠️ <n> failing PRs — diverting to find common root cause`. Banner clears the moment the diversion ships, no-ops, or resolves via main going green / pileup clearing.
-- **Shipped this session** — one row per completed agent showing: issue → PR title (linked) → token count → status badge (`merged ✓`, `pending`, `failing`, `closed`). Diversion ships render with a distinct `⚠️ DIVERSION` row badge so they don't visually merge with normal issue work. All clickable.
-- **Noop'd / stale-closed** — pill row of issues that returned without a PR (already-fixed-on-main, duplicate, etc.).
-- **Backlog peek** — top of queue with priority pills.
-
-Use `${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard.example.html` as a structural reference for the dark-themed layout (CSS variables, gradient backdrop, pulsing live-dot, two-row stats with Repo Health + This Session, diversion banners, diversion-flavored worker cards, DIVERT-tagged shipped rows). Copy its structure and substitute fresh session data.
-
-The background updater (`assets/do-work-dashboard-updater.sh`) refreshes the Main CI tile and Failing PRs (all authors) tile every 10 seconds in place, so those stay live even between orchestrator turns. The diversion *banners* are orchestrator-owned — the updater leaves them alone, since whether a divert is `IN FLIGHT · SLOT N` vs `ENQUEUED · awaiting slot` is session state the script can't infer.
-
-### Launch sequence (executed by [step 1.5](#15-launch-the-live-dashboard) — see below)
-
-The full launch recipe — initial HTML write, `open`, `nohup` updater spawn — now lives in [step 1.5](#15-launch-the-live-dashboard) as a dedicated, numbered setup step so it can't be skimmed past while reading the spec. The mechanics, detach pattern, and respawn rules all moved with it; this subsection just points at the canonical home so cross-references from elsewhere in the doc keep resolving. **If you're reading the spec top-to-bottom during a `/do-work` session, do not launch the dashboard from here — wait until step 1.5 in the Setup section below, which fires after the session-state caches it needs are populated.**
-
 ## Setup (run once)
 
 ### 0.5 Move into the orchestrator's worktree
@@ -109,38 +81,7 @@ gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name   # 
 
 Cache all three for the session.
 
-(The trusted-author allowlist used by step 4's filter and step 7's `originating_author_trust` computation is populated separately by [step 1.7 below](#17-resolve-trusted-author-allowlist), which runs after the dashboard launch.)
-
-### 1.5 Launch the live dashboard
-
-**This step is non-optional.** The [Live dashboard](#live-dashboard) section above describes WHAT the dashboard is and what it must include; this step is WHEN and HOW it gets stood up. It exists as its own numbered step — rather than a tail paragraph hanging off step 1 — so it cannot be skimmed past while reading the spec, and so a session that started without it is immediately visible as a contract violation in the transcript (no "launched dashboard" line means the step was skipped).
-
-Run all three sub-steps in order, end-to-end, before moving to step 2. Do not interleave step 2's `gh issue list` work here — the dashboard's initial render needs the repo cache from step 1 but doesn't need the backlog overview, and deferring the launch until after step 2 makes the spec slide back into the "easy to skip" shape this step was hoisted out of.
-
-```bash
-# (1) Write initial HTML to /tmp/do-work-dashboard.html — populate from session state
-#     (Use ${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard.example.html as the structural reference)
-
-# (2) Open in browser
-open /tmp/do-work-dashboard.html
-
-# (3) Spawn the 10s updater fully detached from the harness
-nohup "${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard-updater.sh" \
-  --repo <owner/repo> \
-  --dashboard /tmp/do-work-dashboard.html \
-  </dev/null >/tmp/do-work-dashboard-updater.log 2>&1 &
-disown
-```
-
-**Do NOT use `run_in_background: true` for this call.** Harness-tracked background Bash tasks are reaped after a few minutes (exit 144 = SIGURG-style reap), which kills the updater mid-session. The `nohup` + `</dev/null >…log 2>&1 &` + `disown` combination fully detaches the process from the harness so it survives the entire `/do-work` run. Call it as a regular foreground `Bash` — it returns instantly because the `&` puts the real work in a detached child.
-
-If the harness ever does reap the updater anyway (you'll see the "Spawn 10s dashboard updater" tile go red with exit 144), respawn it the same way. The dashboard file on disk is the source of truth — a respawn just resumes refreshing it. Confirm liveness by checking `ps -p <PID>` against the PID printed to stdout by the launch.
-
-If the user's repo has a `docs/` directory and they've asked for the dashboard to live in-repo as well, pass `--mirror /path/to/repo/docs/do-work-dashboard.html` to the updater so each refresh also writes to that path.
-
-**Graceful degradation if launch fails.** If any sub-step errors (the `open` call returns non-zero on a headless box; `${CLAUDE_PLUGIN_ROOT}/assets/do-work-dashboard-updater.sh` is missing because the plugin cache is mid-update; `/tmp` is read-only; the `nohup` exits immediately) — log a single `[dashboard] launch failed: <one-line reason>; continuing without live dashboard, terminal status line remains authoritative` advisory and proceed to step 2. Do NOT block the session on dashboard failure — the dashboard is the rich UI surface but the [terminal status line + state-change banners](#65-status-line--state-change-banners-ui) are the always-on terse equivalent. Both render the same underlying state; the session is still observable without the browser tab. A best-effort retry on the updater spawn is fine, but don't loop more than once — if launch is genuinely broken (read-only `/tmp`, missing asset), looping just delays useful work.
-
-**Confirm before continuing to step 2.** The expected post-conditions are: `/tmp/do-work-dashboard.html` exists on disk, an `open` call was issued, and either an updater PID was printed or the graceful-degradation advisory above was logged. If you can't tick those off, step 1.5 hasn't finished — go back. Do not begin step 2 with the dashboard half-stood-up; that's the precise contract-violation shape this step was carved out to make visible.
+(The trusted-author allowlist used by step 4's filter and step 7's `originating_author_trust` computation is populated separately by [step 1.7 below](#17-resolve-trusted-author-allowlist).)
 
 ### 1.7 Resolve trusted-author allowlist
 
@@ -817,9 +758,7 @@ When an agent completes, the harness notifies you. Each notification is one orch
 
 ### Turn contract (read this first, every turn)
 
-Every steady-state turn — without exception — has the shape `reconcile → release → dashboard rewrite → dispatch (or prove idle) → invariant line`. The dispatch step is what was missing in the bug that motivated this section: the orchestrator was firing step A (reconcile), then drifting into a "recap" sentence ("Goal: ... Next: watch returns and refill the pool ...") and ending the turn without firing step C. That recap sentence IS the bug — narrating future intent in prose lets the model conclude its turn gracefully without ever issuing the `Agent` tool call that would actually fill the freed slot.
-
-The dashboard rewrite (step B.5 below) is an explicit per-turn obligation rather than an aspirational "on every notification" mention, because in practice the orchestrator was systematically skipping it — worker cards never refreshed, shipped-PR rows never appended, stat tiles never updated — leaving the user staring at a frozen page. Treat it the same way you treat the invariant line: missing it means the turn is incomplete. Closes [#78](https://github.com/mattsears18/claude-plugins/issues/78).
+Every steady-state turn — without exception — has the shape `reconcile → release → dispatch (or prove idle) → invariant line`. The dispatch step is what was missing in the bug that motivated this section: the orchestrator was firing step A (reconcile), then drifting into a "recap" sentence ("Goal: ... Next: watch returns and refill the pool ...") and ending the turn without firing step C. That recap sentence IS the bug — narrating future intent in prose lets the model conclude its turn gracefully without ever issuing the `Agent` tool call that would actually fill the freed slot.
 
 Therefore, on every notification turn, the LAST thing you do is exactly one of these two — never anything else, never a "Next: …" narration, never a status recap, never an "I'll watch for returns and refill" promise:
 
@@ -842,7 +781,7 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 
 - **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed this session — no re-add needed.)
 
-  **Trust-but-verify before accepting `green`.** The agent's `green #<M>` return claims a full CI run completed and passed *after* the fix was pushed. That claim is load-bearing: downstream code (the drain phase, the dashboard's "shipped this session" status badges, the per-poll bookkeeping) treats `green` PRs as "settled successfully" and stops scrutinizing them. A `green` return that's actually just "pushed and queued" leaves a red PR sitting unwatched until the next session's step 3d sweep. The motivating failure (issue [#56](https://github.com/mattsears18/claude-plugins/issues/56)) was exactly this — an ad-hoc dispatch prompt skipped `--watch`, the agent returned `green` optimistically, and the orchestrator trusted it. Spot-check before accepting:
+  **Trust-but-verify before accepting `green`.** The agent's `green #<M>` return claims a full CI run completed and passed *after* the fix was pushed. That claim is load-bearing: downstream code (the drain phase, the per-poll bookkeeping) treats `green` PRs as "settled successfully" and stops scrutinizing them. A `green` return that's actually just "pushed and queued" leaves a red PR sitting unwatched until the next session's step 3d sweep. The motivating failure (issue [#56](https://github.com/mattsears18/claude-plugins/issues/56)) was exactly this — an ad-hoc dispatch prompt skipped `--watch`, the agent returned `green` optimistically, and the orchestrator trusted it. Spot-check before accepting:
 
   ```bash
   gh pr view <M> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus
@@ -897,24 +836,6 @@ For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
 
 Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
-### B.5 Rewrite the orchestrator-owned dashboard sections — MANDATORY ACTION
-
-**This step is non-optional and runs on every steady-state turn**, after reconcile + release have updated session state but before the new dispatch obligation in step C. It is the orchestrator's share of the three-layer dashboard refresh ([Live dashboard, layer 3](#live-dashboard)) — the static bits the 10s background updater cannot infer on its own. Skipping it is the dashboard-staleness bug from issue [#78](https://github.com/mattsears18/claude-plugins/issues/78): the file existed, the updater rewrote dynamic counts every 10s, but worker cards, shipped-PR rows, noop pills, and the diversion banner never changed because the orchestrator never rewrote them on completion turns.
-
-The rewrite is a single `Edit` (or `Write` if the file structure has drifted enough that a targeted patch is unreliable) against `/tmp/do-work-dashboard.html`. Which sections to refresh depends on what step A just reconciled — the rule of thumb is "rewrite every section whose contents could have changed because of the return we just handled":
-
-- **Worker cards section** — rewrite whenever a slot was released by step B (the just-completed agent disappears from the in-flight row) OR a new dispatch fires in step C (a fresh card appears). Update slot label, issue number link, title, priority pill, files-touched, branch name, PR link / `pending — running` text per the [Live dashboard](#live-dashboard) shape spec. Diversion slots use the diversion-flavored card shape.
-- **Shipped-this-session rows** — append a new row whenever step A reconciled a `shipped` / `green` / `rebased` / `shipped main-ci-fix` / `shipped pr-batch-fix` return. Row contents: issue → PR title (linked) → token count → status badge (`merged ✓` / `pending` / `failing` / `closed`). Diversion ships get the `⚠️ DIVERSION` row badge.
-- **Noop'd / stale-closed pills** — append a pill whenever step A reconciled a `noop:` return that didn't produce a PR.
-- **Diversion banner row** — rewrite whenever `divert_queue` membership changed, an in-flight diversion slot opened, or a diversion just shipped / no-op'd / resolved. Banner clears the moment `divert_queue` is empty AND no in-flight slot is a diversion.
-- **Stat tiles for this-session counters** — `shipped this session`, `in-flight`, `total tokens spent`, `pool utilization`. These are orchestrator-owned because they're derived from session state the updater can't see (`in_flight`, `session_prs`, completed-agent token sums). The repo-wide `open issues` / `open PRs` and `Main CI` / `Failing PRs (all authors)` tiles are updater-owned — don't touch those.
-
-**The orchestrator does NOT touch updater-owned bits.** Specifically: the Main CI tile, the Failing PRs (all authors) tile, and the repo-wide open-issue / open-PR counts. Those refresh in place every 10s by the background updater script. If the orchestrator rewrites them too, the two layers race — the updater will overwrite the orchestrator's value within 10s, leading to flicker. Stay in your lane: orchestrator owns session state (worker cards, shipped rows, noop pills, banners, session-counter tiles); updater owns repo-wide and CI-health state.
-
-**Cheap when nothing changed.** If A → B produced no change worth surfacing (rare — the dashboard's invariant is "every notification turn refreshes something"), the rewrite is still cheap: read the file, no-op `Edit`, done. Don't skip the step just because the diff would be empty — the step's value is the obligation, not the bytes written. The act of running the rewrite is what proves to a reader of the transcript that the dashboard is not stale.
-
-**Graceful degradation.** If `/tmp/do-work-dashboard.html` no longer exists (the file was deleted, `/tmp` got cleaned, the launch in step 1.5 was the graceful-degradation path), log a single `[dashboard] file missing; skipping rewrite this turn` advisory and continue. Do NOT block the turn on a missing dashboard file. One re-attempt to rewrite the initial HTML from session state is allowed (mirrors step 1.5's recovery shape); past that, the terminal status line is authoritative and the rewrite stays no-op for the rest of the session. Do not let dashboard plumbing failures stall dispatch.
-
 ### C. Dispatch a replacement (if work remains) — MANDATORY ACTION
 
 **This step is non-optional and non-deferrable.** Whenever a slot is freed by step B, this step MUST resolve in the same turn — to either an `Agent` tool call (the freed slot is refilled) or an explicit, structured idle-proof (step E below). There is no third option. "I'll dispatch on the next notification" / "the merge train will catch up" / "watching for completions" are all the bug — they leave step C unresolved and end the turn with `in_flight < concurrency` while work remains in the queues. That is the exact failure mode this command was rewritten to prevent.
@@ -946,21 +867,19 @@ If the divert-checks refresh changed `main_ci.status`, `divert_queue` membership
 
 ### E. Invariant line (end of every steady-state turn)
 
-After A → B → B.5 → C → D, the **last thing emitted in the turn** is a single-line invariant check. It exists for one reason: to make idle drift detectable in the transcript. Whenever you find yourself ending a turn without one of these lines, you have skipped step C — go back and fix it. The `dashboard=<state>` token also makes step B.5 visible in the same line: a transcript-only reader can confirm the per-turn dashboard rewrite actually ran (or surfaced a documented degradation) without inspecting `/tmp/do-work-dashboard.html` directly.
+After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. It exists for one reason: to make idle drift detectable in the transcript. Whenever you find yourself ending a turn without one of these lines, you have skipped step C — go back and fix it.
 
 **Steady-state format** (after a normal dispatch turn):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · dashboard=<state>
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k>
 ```
 
 **Idle-proof format** (used ONLY when step C produced no dispatch AND `in_flight < concurrency`):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · dashboard=<state> · idle_reason="<reason>"
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · idle_reason="<reason>"
 ```
-
-`<state>` is one of: `rewritten` (step B.5 wrote new bytes — worker cards, shipped row, banner, or counters changed), `noop` (step B.5 ran but produced no diff — rare; tolerated), or `degraded` (step B.5 logged the missing-file advisory and skipped; the terminal status line is authoritative for the rest of the session). A missing `dashboard=` token means step B.5 was skipped — that's a contract violation, same as a missing invariant line; go back, run B.5, re-emit.
 
 The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight drains)`, `draining=true`, `all ready_issues collide with in_flight paths`, `all ready_issues blocked by soft-cap on <path> (×<N> active)`, `all ready_issues collide with in_flight lockfile sections (<section>×<N>, ...)`, or a concrete diagnostic string. The lockfile reason names the *sections* in flight rather than the toucher's issue number, since the rule is now section-aware — multiple lockfile-touchers may be in flight simultaneously on disjoint sections. Vague reasons ("waiting for completions", "merge train draining", "nothing to do right now") are NOT acceptable — they're the recap pattern in disguise. If you can't name the queue-level reason the slot is empty, you haven't actually checked the queues; go back and check.
 
@@ -1428,13 +1347,13 @@ If the orchestrator's working directory isn't a git repo or `.shipyard/` can't b
   ```
   [Agent tool call dispatching slot 3 with next ready_issue]
   [Agent tool call dispatching slots 4-8 with next ready_issues (if also free)]
-  [invariant] in_flight=8/8 · ready_issues=27 · failed_prs=1 · divert_queue=0 · raw_backlog=12 · dispatched_this_turn=6 · dashboard=rewritten
+  [invariant] in_flight=8/8 · ready_issues=27 · failed_prs=1 · divert_queue=0 · raw_backlog=12 · dispatched_this_turn=6
   ```
 
   Or, if every queue really is empty and `in_flight` is also empty:
 
   ```
-  [invariant] in_flight=0/8 · ready_issues=0 · failed_prs=0 · divert_queue=0 · raw_backlog=0 · dispatched_this_turn=0 · dashboard=rewritten · idle_reason="all queues empty (terminating after in_flight drains)"
+  [invariant] in_flight=0/8 · ready_issues=0 · failed_prs=0 · divert_queue=0 · raw_backlog=0 · dispatched_this_turn=0 · idle_reason="all queues empty (terminating after in_flight drains)"
   ```
 - Don't work on issues assigned to other users — soft-lock via `gh api user` check.
 - Don't merge manually. Use `--auto`. Auto-merge waits for green.
