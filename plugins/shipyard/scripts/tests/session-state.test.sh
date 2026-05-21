@@ -496,6 +496,127 @@ assert_equals "${leftover# }" "" "bump-tokens leaves no .tmp files behind after 
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+echo "== set-progress — basic update + clearing"
+# --------------------------------------------------------------------------
+# The set-progress subcommand (issue #167) writes batch-style progress
+# counters into the per-slot `in_flight` record. Used by /shipyard:status
+# to render `4/7`-style progress on batch workers.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "prog" --repo "o/r" >/dev/null
+
+# Seed an in_flight slot before set-progress can target it. set-progress
+# is "modify an existing slot," not "create a slot" — refusing the call
+# when the slot is missing surfaces the race where a worker returned and
+# the slot got released before the progress write landed.
+SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "prog" \
+  --set '.in_flight.slot1 = {kind: "issue", target: 167, claimed_paths: {hard: [], soft: []}, agent_id: "abc", started_at: "2026-05-21T14:00:00Z"}' >/dev/null
+
+# Set both fields.
+SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog" \
+  --slot "slot1" --current 3 --total 7 >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "prog" --path ".in_flight.slot1.progress_current")
+assert_equals "$out" "3" "set-progress writes progress_current"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "prog" --path ".in_flight.slot1.progress_total")
+assert_equals "$out" "7" "set-progress writes progress_total"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "prog" --path ".in_flight.slot1.progress_updated_at")
+# Just check it's non-null / non-empty — the timestamp value itself depends on the clock.
+if [[ -n "$out" && "$out" != "null" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "set-progress stamps progress_updated_at"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (got: %s)\n' "$RED" "$RESET" "set-progress stamps progress_updated_at" "$out"
+  fail=$((fail+1))
+fi
+
+# Advance current without touching total — preserves the denominator.
+SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog" \
+  --slot "slot1" --current 4 >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "prog" --path ".in_flight.slot1.progress_current")
+assert_equals "$out" "4" "set-progress --current alone advances counter"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "prog" --path ".in_flight.slot1.progress_total")
+assert_equals "$out" "7" "set-progress --current alone preserves total"
+
+# Clear via literal `null`.
+SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog" \
+  --slot "slot1" --current null --total null >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "prog" --path ".in_flight.slot1.progress_current")
+assert_equals "$out" "null" "set-progress --current null clears progress_current"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "prog" --path ".in_flight.slot1.progress_total")
+assert_equals "$out" "null" "set-progress --total null clears progress_total"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== set-progress — input validation"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "prog-v" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "prog-v" \
+  --set '.in_flight.s1 = {kind: "issue", target: 167, claimed_paths: {hard: [], soft: []}, agent_id: "abc"}' >/dev/null
+
+# Missing --session-id.
+out=$(bash "$helper" set-progress --slot "s1" --current 3 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "set-progress without --session-id exits 64"
+
+# Missing --slot.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog-v" --current 3 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "set-progress without --slot exits 64"
+
+# Non-numeric --current.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog-v" --slot "s1" --current "abc" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "set-progress rejects non-numeric --current"
+
+# Negative --current.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog-v" --slot "s1" --current "-1" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "set-progress rejects negative --current"
+
+# Unknown slot — the slot isn't in .in_flight, so refuse.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog-v" --slot "nonexistent" --current 3 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "set-progress on unknown slot exits 64"
+
+# Missing session file.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "missing" --slot "s1" --current 3 2>/dev/null; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "set-progress on missing session exits 3"
+
+# Neither flag set → no-op success (defensive caller-friendliness).
+SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog-v" --slot "s1" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "set-progress with neither --current nor --total is a no-op success"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== set-progress — atomicity (no .tmp files left behind)"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "prog-a" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "prog-a" \
+  --set '.in_flight.s1 = {kind: "issue", target: 167, claimed_paths: {hard: [], soft: []}, agent_id: "abc"}' >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" set-progress --session-id "prog-a" --slot "s1" --current 2 --total 5 >/dev/null
+
+leftover=""
+shopt -s nullglob
+for f in "$tmphome/sessions/"*; do
+  case "$(basename "$f")" in
+    prog-a.json) ;;
+    *) leftover="$leftover $(basename "$f")" ;;
+  esac
+done
+shopt -u nullglob
+assert_equals "${leftover# }" "" "set-progress leaves no .tmp files behind after successful write"
+rm -rf "$tmphome"
+
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]

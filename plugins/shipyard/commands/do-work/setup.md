@@ -814,4 +814,6 @@ The rule of thumb is: banners are LOUD and one-shot (printed when the transition
 
 Dispatch up to `--concurrency` workers in parallel — one message with N background `Agent` calls (`run_in_background: true`, `subagent_type: "shipyard:issue-worker"`, `isolation: "worktree"`). For each slot, pick the next job using the **dispatch rules** below.
 
+**Per-slot metadata.** Each new `in_flight` slot record MUST include `started_at` (ISO-8601 UTC) alongside `kind` / `target` / `claimed_paths` / `agent_id`. This powers [`/shipyard:status`](../status.md)'s `ELAPSED` column and stale-worker detection — see the [steady-state per-slot dispatch metadata write-through note](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) for the canonical shape. Same write-through pattern applies to every dispatch site in the session (initial pool fill, step C, divert-queue pop, fix-checks pop, drain-phase fix-rebase dispatch).
+
 Once the pool is full, **return control** — you'll be notified the moment any agent completes. Do not poll. Do not sleep.
