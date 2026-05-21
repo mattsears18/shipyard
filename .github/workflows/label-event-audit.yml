@@ -1,0 +1,290 @@
+name: Label-event audit
+
+# Audits every issue/PR `labeled` / `unlabeled` event against the trusted-
+# author set and either reverts the change (Tier A — security-sensitive
+# routing labels) or posts an alert comment (Tier B — routing-only labels)
+# when the actor is NOT trusted. Trusted actors are no-ops.
+#
+# Rationale (issue #140): `/shipyard:do-work` uses GitHub labels (`shipyard`,
+# `ci-blocked`, `needs-human-review`, `needs-refinement`, `P0`-`P2`,
+# `wontfix`, `blocked`, etc.) as routing hints, but does NOT verify who
+# applied or removed each label. The trusted-author check at dispatch time
+# (do-work.md step 1.7, step 2 bucket 0.5, step 4 client-side filter) gates
+# on `issue.author.login`, so the primary attack — a rogue triager applying
+# `shipyard` to a stranger's issue — can't escalate to worker dispatch: the
+# issue is still filtered out for not being authored by a trusted user
+# (issues #90, #91). However, the rogue-triager surface still allows:
+#
+#   1. Routing-bomb / denial-of-service via mass `shipyard` application.
+#   2. Premature `needs-human-review` removal (confusing for maintainers).
+#   3. `ci-blocked` tampering — removing it resets shipyard's 3-attempt
+#      counter, so a compromised triager could force shipyard to bang on a
+#      known-bad PR indefinitely.
+#   4. Audit-trail gap on routing-label changes.
+#
+# This workflow is the belt-and-suspenders defense layered on top of the
+# trusted-author dispatch gate. Authoring (and dispatching against) an
+# issue is one boundary; mutating routing labels on existing issues/PRs is
+# another, and this workflow closes it.
+#
+# Tier policy:
+#   - Tier A (security-sensitive): `shipyard`, `ci-blocked`,
+#     `needs-human-review` — REVERT the actor's change AND comment.
+#   - Tier B (routing-only): `needs-refinement`, `P0`, `P1`, `P2`,
+#     `wontfix`, `blocked`, `needs-design`, `needs-triage`, `discussion` —
+#     alert-only (comment), no automatic revert.
+#   - Out of scope: free-form labels (`bug`, `enhancement`, `documentation`,
+#     `feature-request`, `good first issue`, `help wanted`, `invalid`,
+#     `question`, `user-feedback`) — those are tag-style and don't drive
+#     automated workflow. Skip silently.
+#
+# Trusted-actor resolution mirrors do-work.md step 1.7:
+#   1. If `.shipyard/trusted-authors.txt` exists at the repo HEAD, that file
+#      is the source of truth (one login per line; `#` comments and blank
+#      lines ignored; case-insensitive). The repo owner is implicitly in
+#      the set.
+#   2. Otherwise, fall back to the live collaborators-with-push API.
+#   3. If the API errors, fall back to the single-member set
+#      `{ <repo-owner> }` — restrictive default is the safe failure mode.
+#
+# `pull_request_target` is used for the PR-side trigger (not
+# `pull_request`) so the workflow runs with the repo's permissions, not the
+# PR's. This is required to comment on / revert labels on PRs from forks.
+# Per GitHub's security guidance, no PR-supplied code or event payload is
+# interpolated into `run:` blocks — every event value goes through env vars.
+#
+# Security note (same model as secret-scan.yml and external-author-gate.yml):
+# actions are pinned by full commit SHA (not floating tags) to avoid the
+# supply-chain risk of a tag being repointed at malicious code. No event-
+# supplied values are interpolated into `run:` scripts directly — see
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  issues:
+    types: [labeled, unlabeled]
+  pull_request_target:
+    types: [labeled, unlabeled]
+
+permissions:
+  # issues: write — required to comment on issues and revert Tier A labels
+  # (gh issue edit --add-label / --remove-label).
+  issues: write
+  # pull-requests: write — same, for the PR side. The `gh pr edit` /
+  # `gh pr comment` calls need this even though we're triggered by
+  # pull_request_target (which gates *receipt* of the event but not the
+  # mutation token's scopes).
+  pull-requests: write
+  # contents: read — to read .shipyard/trusted-authors.txt at the merge
+  # base / default branch.
+  contents: read
+
+jobs:
+  audit:
+    name: Audit label event
+    runs-on: ubuntu-latest
+    # Skip bot-authored events. github-actions[bot] itself applies labels
+    # (e.g. external-author-gate.yml adds needs-human-review to untrusted-
+    # author issues); reacting to those would create a feedback loop.
+    # Dependabot and similar bots are also skipped — their labels are
+    # tooling artifacts, not human routing decisions.
+    if: github.event.sender.type != 'Bot'
+    steps:
+      - name: Checkout (default branch — for trusted-authors.txt)
+        # Pinned to the same SHA secret-scan.yml uses (v4.2.2). The
+        # checkout is of the DEFAULT branch (not the PR head) so a PR
+        # cannot poison `.shipyard/trusted-authors.txt` to whitelist
+        # itself — the file is read from the canonical repo state, not
+        # from the contributor's branch.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          # Shallow clone — we only need the .shipyard/trusted-authors.txt
+          # file at HEAD, not history.
+          fetch-depth: 1
+
+      - name: Audit label change
+        env:
+          # All event-supplied values go through env, never interpolated
+          # into the run: script directly. This is the workflow-injection
+          # mitigation pattern documented in external-author-gate.yml.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          AUTHOR: ${{ github.actor }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          ACTION: ${{ github.event.action }}
+          # Either issue.number (for `issues` events) or
+          # pull_request.number (for `pull_request_target` events); GitHub
+          # populates whichever is relevant and the other expands empty.
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # ------------------------------------------------------------------
+          # 0. Normalize inputs.
+          # ------------------------------------------------------------------
+          actor_lc=$(printf '%s' "$AUTHOR" | tr 'A-Z' 'a-z')
+          owner_lc=$(printf '%s' "$REPO_OWNER" | tr 'A-Z' 'a-z')
+          label=$LABEL_NAME
+
+          # Either ISSUE_NUMBER or PR_NUMBER is set; the other is empty.
+          # `gh issue edit` and `gh pr edit` both accept the number as the
+          # positional arg, so we just pick whichever is present and route
+          # the gh subcommand below.
+          if [ -n "$ISSUE_NUMBER" ]; then
+            number=$ISSUE_NUMBER
+            kind="issue"
+          else
+            number=$PR_NUMBER
+            kind="pr"
+          fi
+
+          if [ -z "$number" ]; then
+            echo "::warning::No issue/PR number in event payload; nothing to audit."
+            exit 0
+          fi
+
+          printf 'Audit: actor=%s label=%s action=%s kind=%s number=%s\n' \
+            "$actor_lc" "$label" "$ACTION" "$kind" "$number"
+
+          # ------------------------------------------------------------------
+          # 1. Resolve trusted-author allowlist.
+          #
+          # Order of precedence (matches do-work.md step 1.7):
+          #   1. .shipyard/trusted-authors.txt at the default branch
+          #   2. Collaborators-with-push API
+          #   3. Fallback: just the repo owner
+          # ------------------------------------------------------------------
+          allowlist_file=".shipyard/trusted-authors.txt"
+          allowlist=""
+
+          if [ -f "$allowlist_file" ]; then
+            # Strip comments / blanks, lowercase, dedupe. The repo owner is
+            # implicitly trusted even if the file omits them — append and
+            # sort -u.
+            allowlist=$(
+              {
+                sed -e 's/#.*$//' -e 's/[[:space:]]//g' "$allowlist_file" \
+                  | grep -v '^$' || true
+                printf '%s\n' "$owner_lc"
+              } | tr 'A-Z' 'a-z' | sort -u
+            )
+            echo "Trusted set: from .shipyard/trusted-authors.txt (+ owner)"
+          else
+            # Override file absent — query collaborators-with-push API.
+            # If the API errors (private repo / token without admin scope /
+            # rate-limited), fall back to {owner} only. Restrictive default.
+            if api_out=$(gh api --paginate "repos/$REPO/collaborators" \
+                --jq '.[] | select(.permissions.push==true) | .login' 2>/dev/null); then
+              allowlist=$(
+                {
+                  printf '%s\n' "$api_out"
+                  printf '%s\n' "$owner_lc"
+                } | tr 'A-Z' 'a-z' | sort -u
+              )
+              echo "Trusted set: from collaborators API (+ owner)"
+            else
+              allowlist=$owner_lc
+              echo "Trusted set: fallback to repo owner only (collaborators API unavailable)"
+            fi
+          fi
+
+          # ------------------------------------------------------------------
+          # 2. Trusted actor? Exit no-op.
+          # ------------------------------------------------------------------
+          if printf '%s\n' "$allowlist" | grep -qx -- "$actor_lc"; then
+            echo "Actor $actor_lc is trusted — no audit action."
+            exit 0
+          fi
+
+          echo "Actor $actor_lc is NOT trusted — applying audit policy."
+
+          # ------------------------------------------------------------------
+          # 3. Classify label into tier.
+          # ------------------------------------------------------------------
+          tier=
+          case "$label" in
+            shipyard|ci-blocked|needs-human-review)
+              tier=A
+              ;;
+            needs-refinement|P0|P1|P2|wontfix|blocked|needs-design|needs-triage|discussion)
+              tier=B
+              ;;
+            *)
+              echo "Label '$label' is out of scope (free-form tag) — skipping."
+              exit 0
+              ;;
+          esac
+          printf 'Label tier: %s\n' "$tier"
+
+          # ------------------------------------------------------------------
+          # 4. Tier A — revert the actor's change.
+          #
+          #   - On `labeled` events, the actor ADDED the label. Revert by
+          #     removing it (--remove-label).
+          #   - On `unlabeled` events, the actor REMOVED the label. Revert
+          #     by adding it back (--add-label).
+          #
+          # We run revert BEFORE comment so the audit comment can describe
+          # the final state ("reverted"), not the transient state.
+          # ------------------------------------------------------------------
+          revert_note=""
+          if [ "$tier" = "A" ]; then
+            if [ "$kind" = "issue" ]; then
+              edit_cmd=(gh issue edit "$number" --repo "$REPO")
+            else
+              edit_cmd=(gh pr edit "$number" --repo "$REPO")
+            fi
+
+            case "$ACTION" in
+              labeled)
+                if "${edit_cmd[@]}" --remove-label "$label"; then
+                  revert_note="Reverted: removed \`$label\` (untrusted actor added it)."
+                else
+                  revert_note="Revert attempt failed — could not remove \`$label\`. Manual cleanup needed."
+                fi
+                ;;
+              unlabeled)
+                if "${edit_cmd[@]}" --add-label "$label"; then
+                  revert_note="Reverted: restored \`$label\` (untrusted actor removed it)."
+                else
+                  revert_note="Revert attempt failed — could not restore \`$label\`. Manual cleanup needed."
+                fi
+                ;;
+            esac
+            printf '%s\n' "$revert_note"
+          fi
+
+          # ------------------------------------------------------------------
+          # 5. Post audit comment.
+          #
+          # Body intentionally short and includes the actor login as inline
+          # code so it doesn't render as a notification ping (the goal is
+          # an audit trail, not pestering the actor). The maintainer is
+          # tagged explicitly so the comment surfaces in their notifications.
+          #
+          # We use `printf` rather than a heredoc because YAML's block scalar
+          # preserves leading indentation on every line, which would either
+          # collide with the heredoc delimiter or inject extra spaces into
+          # the rendered comment body. `printf` with `\n` escapes sidesteps
+          # both hazards.
+          # ------------------------------------------------------------------
+          if [ "$tier" = "A" ]; then
+            body=$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
+              "@mattsears18 — label-event audit (Tier A, security-sensitive)." \
+              "Actor \`$actor_lc\` is **not** in the trusted-author allowlist but \`${ACTION}\` the \`$label\` label on this $kind." \
+              "$revert_note" \
+              "See [issue #140](https://github.com/$REPO/issues/140) for the threat model. Trusted-author allowlist is configured in \`.shipyard/trusted-authors.txt\` or falls back to repo collaborators-with-push.")
+          else
+            body=$(printf '%s\n\n%s\n\n%s\n' \
+              "@mattsears18 — label-event audit (Tier B, routing-only)." \
+              "Actor \`$actor_lc\` is **not** in the trusted-author allowlist but \`${ACTION}\` the \`$label\` label on this $kind. No automatic revert (Tier B is alert-only)." \
+              "See [issue #140](https://github.com/$REPO/issues/140) for the threat model.")
+          fi
+
+          if [ "$kind" = "issue" ]; then
+            gh issue comment "$number" --repo "$REPO" --body "$body"
+          else
+            gh pr comment "$number" --repo "$REPO" --body "$body"
+          fi
