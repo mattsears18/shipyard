@@ -73,7 +73,7 @@ if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)"
 fi
 ```
 
-The exact return string is load-bearing: the orchestrator's step A reconcile parses it as a distinct outcome (no `ci-blocked` label, no retry — the work product, if any, is already in the remote branch from a prior `git push`). Do NOT try to `cd` to a different worktree, recreate your worktree, or operate in the primary checkout — exit immediately.
+The exact return string is load-bearing: the orchestrator's step A reconcile parses it as a distinct outcome (no `blocked:ci` label, no retry — the work product, if any, is already in the remote branch from a prior `git push`). Do NOT try to `cd` to a different worktree, recreate your worktree, or operate in the primary checkout — exit immediately.
 
 ## Never `--no-verify`
 

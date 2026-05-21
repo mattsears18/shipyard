@@ -28,10 +28,12 @@ We intentionally don't prefix `user-feedback` with `origin:` for naming consiste
 
 ### State labels (auto-managed)
 
-These reflect transient state and are managed by `/shipyard:do-work`:
+These reflect transient state and are managed by `/shipyard:do-work`. Both live in the `blocked:*` namespace (renamed from `blocked` / `ci-blocked` in 1.3.29, [#148](https://github.com/mattsears18/claude-plugins/issues/148)) so the label itself communicates the block category without reading the comment trail. The old `blocked` / `ci-blocked` names are kept as deprecated aliases for one week after 1.3.29 to avoid breaking in-flight sessions.
 
-- `blocked` — added when an agent returns `blocked: <reason>`. The orchestrator never removes it on its own; the step 3d.2 sweep in `plugins/shipyard/commands/do-work.md` auto-clears it on referential `Blocked by #N` resolution, but otherwise it stays until a human or follow-up issue clears it.
-- `ci-blocked` — added when a PR exhausts the 3-attempt fix-checks cap (the orchestrator's circuit breaker). The step 3d.1 sweep in `plugins/shipyard/commands/do-work.md` auto-clears it when a new commit lands on the PR's head branch (the "stuck" premise no longer holds), letting shipyard retry.
+- `blocked:agent` — added when an agent returns `blocked: <reason>`. The orchestrator never removes it on its own; the step 3d.2 sweep in `plugins/shipyard/commands/do-work.md` auto-clears it on referential `Blocked by #N` resolution, but otherwise it stays until a human or follow-up issue clears it.
+- `blocked:ci` — added when a PR exhausts the 3-attempt fix-checks cap (the orchestrator's circuit breaker). The step 3d.1 sweep in `plugins/shipyard/commands/do-work.md` auto-clears it when a new commit lands on the PR's head branch (the "stuck" premise no longer holds), letting shipyard retry.
+
+Reserves space for future categories (`blocked:external` for upstream / vendor blocks, `blocked:design` for design-gated work) — those aren't created proactively; add them when the first instance appears, per the `audit:*` precedent.
 
 ### Gate labels (intake → human review)
 

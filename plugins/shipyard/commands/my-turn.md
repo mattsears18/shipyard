@@ -48,7 +48,7 @@ gh pr list --repo <owner/repo> --state open --limit 200 \
 From this projection, derive per-PR signals:
 
 - **PR awaiting `$ME`'s review** — `reviewRequests` contains `$ME` (direct) OR `$ME` is on a team in `reviewRequests` (skip the team-lookup for v1; direct match only). `reviewDecision` is `REVIEW_REQUIRED`. Highest-leverage human action — `$ME` is literally what's blocking merge.
-- **PR with `ci-blocked` label** — the orchestrator's 3-attempt fix-loop ran out; needs manual investigation.
+- **PR with `blocked:ci` label** — the orchestrator's 3-attempt fix-loop ran out; needs manual investigation.
 - **PR with `mergeStateStatus: DIRTY`** that has been DIRTY for `>24h` — rebase didn't auto-fire, or auto-merge isn't armed.
 - **Draft PR last updated >7 days ago** — stale; either finish or close.
 - **PR with `CHANGES_REQUESTED` `reviewDecision` authored by `$ME`** — the user submitted a PR that someone (human or bot) asked for changes on; the ball is back on their court.
@@ -64,8 +64,8 @@ From this projection, derive per-issue signals:
 
 - **Issue with `needs-human-review` label** — `/shipyard:do-work` is skipping it until a human signs off (canonical case: refined user-feedback issues awaiting maintainer approval). The reviewer **is the user** (or, more precisely: a maintainer; the survey assumes `$ME` is one).
 - **Issue with `needs-refinement` label** and no `<!-- do-work-refinement-agent -->` sentinel in any comment — `/shipyard:refine-issues` hasn't run yet OR ran and got blocked; the user may need to nudge it. (Note: `needs-refinement` is the generic pipeline gate as of shipyard 1.3.28; the refiner branches by source signal — user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through. See [#145](https://github.com/mattsears18/claude-plugins/issues/145).)
-- **Issue with `blocked` label** where every body-referenced blocker (`Blocked by #<M>`) is `CLOSED` / `MERGED` — likely clearable; user should remove the label.
-- **Issue authored by `$ME` with no linked PR and no `blocked` / `needs-design` label** — the user filed something and nothing's happened; `/shipyard:do-work` should be picking it up, but if it's not (wrong priority label, missing labels), the user should triage.
+- **Issue with `blocked:agent` label** where every body-referenced blocker (`Blocked by #<M>`) is `CLOSED` / `MERGED` — likely clearable; user should remove the label.
+- **Issue authored by `$ME` with no linked PR and no `blocked:agent` / `needs-design` label** — the user filed something and nothing's happened; `/shipyard:do-work` should be picking it up, but if it's not (wrong priority label, missing labels), the user should triage.
 - **Issue where the last comment was authored by someone other than `$ME` AND the comment text contains `?` or `@<$ME>`** — someone asked a question or pinged the user; awaiting response. Implementation: walk `comments` newest-first, find the last non-`$ME` comment, check for `?` substring or `@<login>` mention of `$ME`.
 
 ### Pass C — Unanswered review comments on `$ME`'s PRs
@@ -100,7 +100,7 @@ Merge the candidates from passes A–D into a single ranked list. Each item carr
   - Red main / failing CI on default branch with no `fix-main-ci` PR open
 
 - **P1 — decisions**
-  - PRs with `ci-blocked` (3-attempt orchestrator fix-loop exhausted, needs human eyes)
+  - PRs with `blocked:ci` (3-attempt orchestrator fix-loop exhausted, needs human eyes)
   - Issues with `needs-refinement` and no refinement-agent sentinel yet
   - Issues authored by `$ME` with no linked PR (the user filed it, nothing happened)
   - Open review comment threads on `$ME`'s PRs awaiting reply
@@ -109,7 +109,7 @@ Merge the candidates from passes A–D into a single ranked list. Each item carr
 - **P2 — housekeeping**
   - PRs with `mergeStateStatus: DIRTY` >24h (rebase didn't auto-fire)
   - Draft PRs stale >7 days (finish or close)
-  - Issues with `blocked` label where every referenced blocker is closed (likely clearable)
+  - Issues with `blocked:agent` label where every referenced blocker is closed (likely clearable)
   - `CHANGES_REQUESTED` on `$ME`'s open PRs (the user owes the reviewer a response)
 
 ### Secondary sort
@@ -118,7 +118,7 @@ Within each tier, sort by `createdAt` ascending (oldest first). Surface a single
 
 ### Dedup
 
-An item may match multiple signals (e.g. a PR is both `ci-blocked` AND DIRTY); collapse to a single rendered row, keep the highest-priority signal, list the secondary signals in the "why" column.
+An item may match multiple signals (e.g. a PR is both `blocked:ci` AND DIRTY); collapse to a single rendered row, keep the highest-priority signal, list the secondary signals in the "why" column.
 
 ## Output
 
@@ -139,7 +139,7 @@ P0 — blocking other work
 
 P1 — decisions
   3. PR #148 — "fix(api): rate-limit retries"
-     ci-blocked (3 fix attempts exhausted) · 1d old
+     blocked:ci (3 fix attempts exhausted) · 1d old
      <https://github.com/owner/repo/pull/148>
      Next: investigate the failing check manually (`gh pr checks 148 --watch`), fix or escalate
 
@@ -159,7 +159,7 @@ Per item, render:
 
 - **Index** (1-based, monotonic across all tiers — easy to refer to as "item 3" verbally)
 - **Artifact** — `PR #<num>` or `Issue #<num>` plus the title (truncate at 60 chars with `…`)
-- **Why-on-user** — one line, the signal that fired (`awaiting your review`, `ci-blocked`, etc.). If multiple signals fired, the highest-priority one is the primary; secondaries appear in parens (e.g. `awaiting your review (also: DIRTY)`).
+- **Why-on-user** — one line, the signal that fired (`awaiting your review`, `blocked:ci`, etc.). If multiple signals fired, the highest-priority one is the primary; secondaries appear in parens (e.g. `awaiting your review (also: DIRTY)`).
 - **Age** — when the item entered its "blocked on human" state — uses `createdAt` for new items, `updatedAt` for label-change items. v1 heuristic: use the older of the two — slightly under-counts age but never over-counts.
 - **URL** — clickable `<https://...>` so terminals render it as a hyperlink.
 - **Next action** — one-line concrete next step the user can take. Examples: `review and approve or request changes`, `set a priority label and remove needs-human-review`, `investigate the failing check manually`, `reply to the question or close`.
@@ -201,6 +201,6 @@ If a backlog blows the budget, `--limit` already provides a knob; otherwise file
 - **Don't scan other repos.** Current repo only. Cross-repo digest is a future v2; for v1 the user can re-run with `--repo` in different cwds.
 - **Don't write a report file.** v1 is terminal-only. If the user wants persistence, they can pipe via shell redirection from outside the slash-command UI; that's their concern, not the command's. Add `--output <path>` later if useful.
 - **Don't surface PRs / issues authored by bots** (Dependabot, Renovate, etc.) unless they specifically request review from `$ME` — those auto-update PRs are noise in a "human action needed" list and have their own automation handling them.
-- **Don't include items where the next action is obviously Claude's, not the user's.** A PR with failing checks but NOT carrying `ci-blocked` is still inside `/shipyard:do-work`'s fix-loop — surfacing it would tell the user to step on the orchestrator's work. The `ci-blocked` label is the explicit "Claude gave up, human must" signal; absence of it means leave it alone.
+- **Don't include items where the next action is obviously Claude's, not the user's.** A PR with failing checks but NOT carrying `blocked:ci` is still inside `/shipyard:do-work`'s fix-loop — surfacing it would tell the user to step on the orchestrator's work. The `blocked:ci` label is the explicit "Claude gave up, human must" signal; absence of it means leave it alone.
 - **Don't deep-dive on team membership for review requests.** v1 matches `$ME` directly against `reviewRequests`; team-via-membership lookups would add an extra `gh api` round-trip per PR and are out of scope. Users on teams will still see direct review requests in v1; team-level requests roll up via the GitHub UI's notification stream, which the user has anyway.
 - **Don't repeat work `/shipyard:do-work`'s upfront summary already does.** `/do-work`'s step 2 prints a buckets table with workable / skipped / blocked counts. That's a *backlog snapshot*; `/my-turn` is a *human-actions list*. They share inputs but have different shapes — don't try to merge them.
