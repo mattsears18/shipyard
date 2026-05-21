@@ -4,6 +4,22 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.13 — 2026-05-20
+
+Deletes the **live HTML dashboard** from `/shipyard:do-work` entirely — it never reflected session state reliably, and every notification turn paid setup + rewrite tokens for plumbing that produced no value. Closes [#95](https://github.com/mattsears18/claude-plugins/issues/95).
+
+The maintainer surfaced this mid-session: the dashboard launched cleanly (file written, browser opened, `nohup` updater spawned), but the content didn't actually reflect what was happening in the session. Rather than debug the rendering layer, removing the feature is simpler and cheaper — the terminal status line (step 6.5) and state-change banners are the always-on terse equivalent and they DO work. The dashboard's "graceful-degradation path" already declared the status line authoritative; this release just collapses to that path unconditionally.
+
+- **`commands/do-work.md`** — deleted the entire **Live dashboard** section (three-layer refresh model, stat tiles spec, worker-card / shipped-row / banner / pill shape spec, launch-sequence redirect). Deleted **step 1.5 "Launch the live dashboard"** in its entirety (initial HTML write + `open` + detached `nohup` updater spawn + graceful-degradation rules + confirmation gate). Deleted **step B.5 "Rewrite the orchestrator-owned dashboard sections — MANDATORY ACTION"** in its entirety (per-turn rewrite obligation, section-by-section refresh rules, updater-owned-vs-orchestrator-owned partition, graceful-degradation on missing file). Pruned the `dashboard=<state>` token from both invariant-line format strings (steady-state and idle-proof) in step E, and the matching `<state>` token from the two example invariant lines in the `Don't` section. Stripped the per-turn-shape mention `reconcile → release → dashboard rewrite → dispatch (or prove idle) → invariant line` back to `reconcile → release → dispatch (or prove idle) → invariant line` in step E and the `A → B → B.5 → C → D` reference in step E's preamble back to `A → B → C → D`. Removed the dashboard reference from step A's trust-but-verify paragraph (the downstream-code list no longer mentions "the dashboard's 'shipped this session' status badges").
+- **`plugins/shipyard/assets/do-work-dashboard.example.html`** — deleted (~28 KB structural reference for the dark-themed dashboard layout).
+- **`plugins/shipyard/assets/do-work-dashboard-updater.sh`** — deleted (~10 KB shell script that polled `gh` every 10s and rewrote tiles in place). The now-empty `assets/` directory goes with it.
+- **`README.md`** — removed the `assets/` block from the plugin layout tree (both files gone with the directory), and pruned the dashboard mention from the Quick start blurb (`You'll see the backlog ranked, a live HTML dashboard open at /tmp/do-work-dashboard.html` → `You'll see the backlog ranked, a one-line status header printed before the initial pool fill`).
+- Verified post-deletion that no other plugin file references `do-work-dashboard` or the dashboard concept — `grep -rn "do-work-dashboard" plugins/` returns nothing; the remaining `dashboard` matches in `agents/web-ux-auditor.md` and `skills/dx-catalog/SKILL.md` are unrelated (they describe generic web-app dashboards and third-party error/feature-flag provider dashboards, not `/do-work`'s own surface).
+
+After this lands, the orchestrator's per-turn obligations collapse to `reconcile → release → dispatch (or prove idle) → invariant line`. Cleaner spec, fewer tokens per turn, no broken plumbing. The terminal CLI status line and state-change banners ([step 6.5](#65-status-line--state-change-banners-ui) — unchanged) remain the user's at-a-glance view.
+
+Pure removal release; no spec / state-struct / dispatch-rule semantics change. Issue [#78](https://github.com/mattsears18/claude-plugins/issues/78)'s per-turn-rewrite obligation (added in 1.3.7) is moot post-removal — there's nothing to keep fresh.
+
 ### 1.3.12 — 2026-05-20
 
 Adds a dispatch-side `originating_author_trust ∈ {trusted, external}` field to `/shipyard:do-work`'s issue-worker dispatch prompt and gates `gh pr merge --auto` on it inside the worker. Closes [#92](https://github.com/mattsears18/claude-plugins/issues/92).

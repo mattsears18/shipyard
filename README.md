@@ -49,7 +49,7 @@ From inside any GitHub-connected repo, try one of these:
 When you run `/do-work`, you'll see:
 
 - A markdown table of the ranked backlog at start (and again at end of session).
-- A live HTML dashboard open at `/tmp/do-work-dashboard.html` showing every dispatched worker, their PR, and CI state in real time.
+- A one-line status header printed before the initial pool fill (and re-printed whenever repo-health state changes — main going red, a divert firing, the failing-PR count crossing the threshold).
 - `--concurrency N` parallel workers, each in its own isolated git worktree under `.claude/worktrees/`, opening PRs that close their assigned issues. Each PR has auto-merge with squash armed — green CI means it merges itself.
 
 When `/audit` runs, you'll see filed issues with severity labels (`P0`/`P1`/`P2`) and an audit-key HTML comment for dedup.
@@ -187,9 +187,6 @@ plugins/
     scripts/
       report-plugin-error.sh
       tests/
-    assets/
-      do-work-dashboard-updater.sh
-      do-work-dashboard.example.html
 ```
 
 ## Optional: auto-file issues on skill/agent failure
