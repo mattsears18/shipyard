@@ -2,7 +2,7 @@
   <img src="docs/images/shipyard-marketing.png" alt="Shipyard: Turn Your Backlog into Shipped Work. /audit (auditors), third-party services, user feedback, and manual entry feed into the issue backlog stack; the orchestrator (/do-work) directs issue workers loading containers onto shipping vessels." width="100%" />
 </p>
 
-> ## 🚨 Experimental — read before you run this against anything important
+> ## 🚨 Experimental — read before you run this against anything important 🚨
 >
 > The shipyard plugin runs an **autonomous code-modification loop** — it
 > edits files, pushes branches, opens PRs, and arms auto-merge on PRs once their CI goes green. Before
@@ -16,7 +16,7 @@
 > - **Treat it as expensive.** Parallel `/do-work` workers each pay full per-context costs; recursive
 >   audit / refine flows can dispatch deep agent trees. Start with `--concurrency 1` and watch the
 >   billing dashboard before scaling.
-> - **No tests.** No automated test coverage on the skills, commands, or agents. Behavior verification
+> - **No tests.** No automated test coverage on the skills, commands, or agents yet. Behavior verification
 >   is manual + dogfooding.
 > - **No API stability.** Slash-command shape, skill interfaces, and agent contracts evolve fast.
 >   Pin to a specific commit if you need reproducibility; expect drift between updates.
