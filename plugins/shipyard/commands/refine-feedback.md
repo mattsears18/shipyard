@@ -7,7 +7,7 @@ argument-hint: [--repo owner/repo] [--issue N] [--concurrency N] [--dry-run]
 
 `/refine-feedback` is the **back-compatibility alias** for [`/refine-issues`](./refine-issues.md). The two commands are equivalent — they route to the same refinement logic and accept the same arguments.
 
-The rename happened in shipyard 1.3.28 (closes [#145](https://github.com/mattsears18/claude-plugins/issues/145)) when the `needs-refinement` label was generalized from a `user-feedback`-only intake into a universal "this issue isn't ready for `/do-work` dispatch yet" pipeline gate. The user-feedback classify+rewrite flow is now one branch of a source-branched refiner — see `/refine-issues` for the full source-branch table and worker prompt template.
+The rename happened in shipyard 1.3.28 (closes [#145](https://github.com/mattsears18/shipyard/issues/145)) when the `needs-refinement` label was generalized from a `user-feedback`-only intake into a universal "this issue isn't ready for `/do-work` dispatch yet" pipeline gate. The user-feedback classify+rewrite flow is now one branch of a source-branched refiner — see `/refine-issues` for the full source-branch table and worker prompt template.
 
 **There is no separate spec here** — invoking `/refine-feedback` invokes `/refine-issues` with the same args. Future plugin versions may drop this alias once muscle memory has converted. Update any local notes / wiki entries / dispatch scripts to use `/refine-issues` directly.
 

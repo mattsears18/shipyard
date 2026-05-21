@@ -26,7 +26,7 @@ SHIPYARD STATUS — 3 active worker(s) across 1 session(s)
 
   WORKER                     TARGET                           ELAPSED    TOKENS       STALE-AGE
   ────────────────────────── ──────────────────────────────── ────────── ──────────── ──────────
-  [session: 7c1a-… · repo: mattsears18/claude-plugins]
+  [session: 7c1a-… · repo: mattsears18/shipyard]
   issue                      #142                             3m 12s     8.4k         3m 12s
   issue                      #143                             45s        4.1k         45s
   fix-checks                 PR #156                          1m 02s     2.0k         1m 02s
@@ -82,10 +82,10 @@ The command is a thin wrapper. The assistant's job is to:
 - [`/shipyard:cost`](./cost.md) — token-cost reports. Reads the same session state files for the current-session view.
 - [`plugins/shipyard/scripts/status.sh`](../scripts/status.sh) — the dashboard renderer.
 - [`plugins/shipyard/scripts/session-state.sh`](../scripts/session-state.sh) — the per-session state file writer (`init` / `update` / `set-progress` / `bump-tokens`).
-- Issue [#167](https://github.com/mattsears18/claude-plugins/issues/167) — this spec.
+- Issue [#167](https://github.com/mattsears18/shipyard/issues/167) — this spec.
 
 ## Don't
 
 - **Don't poll `/shipyard:status` in a tight loop.** Each call walks every session file and re-renders. For a continuous view, pair with the standard shell `watch` utility: `watch -n 2 /shipyard:status` (rather than relaunching the command repeatedly inside an assistant turn — that burns context).
-- **Don't expect history.** `/shipyard:status` shows the *current* in-flight state. The `--history` flag is deferred to a follow-up (see [issue body in #167](https://github.com/mattsears18/claude-plugins/issues/167)). For post-session analysis use [`/shipyard:cost report`](./cost.md), which reads the persistent cross-session ledger.
+- **Don't expect history.** `/shipyard:status` shows the *current* in-flight state. The `--history` flag is deferred to a follow-up (see [issue body in #167](https://github.com/mattsears18/shipyard/issues/167)). For post-session analysis use [`/shipyard:cost report`](./cost.md), which reads the persistent cross-session ledger.
 - **Don't edit the session state files directly.** They're managed by `session-state.sh`'s atomic-write contract — hand-edits race against in-progress writes.

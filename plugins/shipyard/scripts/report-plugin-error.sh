@@ -28,7 +28,7 @@
 #
 #   CLAUDE_PLUGINS_AUTOREPORT      — must be "1" to enable. Default: off.
 #   CLAUDE_PLUGINS_AUTOREPORT_REPO — target repo (owner/repo). Default:
-#                                    mattsears18/claude-plugins.
+#                                    mattsears18/shipyard.
 #   CLAUDE_PLUGINS_AUTOREPORT_DRY  — when "1", print the would-be issue to
 #                                    stdout instead of calling gh. Used by the
 #                                    test suite and for local development.
@@ -56,7 +56,7 @@ if [[ "${CLAUDE_PLUGINS_AUTOREPORT:-}" != "1" ]]; then
   exit 0
 fi
 
-target_repo="${CLAUDE_PLUGINS_AUTOREPORT_REPO:-mattsears18/claude-plugins}"
+target_repo="${CLAUDE_PLUGINS_AUTOREPORT_REPO:-mattsears18/shipyard}"
 dry_run="${CLAUDE_PLUGINS_AUTOREPORT_DRY:-0}"
 
 # --------------------------------------------------------------------------

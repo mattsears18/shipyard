@@ -1,5 +1,5 @@
 {
-  "$schema": "https://github.com/mattsears18/claude-plugins/raw/main/plugins/shipyard/schemas/shipyard.config.schema.json",
+  "$schema": "https://github.com/mattsears18/shipyard/raw/main/plugins/shipyard/schemas/shipyard.config.schema.json",
   "version": 1,
   "repo": {
     "owner": "mattsears18",

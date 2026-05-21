@@ -1,4 +1,4 @@
-# Shellcheck configuration for mattsears18/claude-plugins.
+# Shellcheck configuration for mattsears18/shipyard.
 #
 # All plugin shell scripts (production + tests) must pass shellcheck with the
 # defaults below before they can merge. CI enforces this via

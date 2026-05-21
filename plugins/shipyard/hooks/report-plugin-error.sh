@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PostToolUse / SubagentStop hook — forwards the hook payload to the
 # report-plugin-error.sh helper script, which decides whether to file an
-# auto-report against mattsears18/claude-plugins.
+# auto-report against mattsears18/shipyard.
 #
 # Kept as a one-line shim on purpose. All logic lives in
 # scripts/report-plugin-error.sh so it can be unit-tested independently of
