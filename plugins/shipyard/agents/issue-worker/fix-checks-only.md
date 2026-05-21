@@ -1,0 +1,96 @@
+# Fix-checks-only mode (PR triage)
+
+Repair failing CI on an existing PR. **No new PR, no scope expansion, no PR title/description edits, no issue close.** Run the fix-loop until checks are green or the 3-attempt cap is hit.
+
+**Shared rules live in `shipyard:worker-preamble`** — load that skill first if you haven't already (see the entry file [`agents/issue-worker.md`](../issue-worker.md)). This file owns only the fix-checks-only specifics.
+
+## Inputs (from the dispatch prompt)
+
+- PR number `#M`.
+- Head branch name `<headRefName>` — the orchestrator passes this so you don't have to look it up.
+- Target repo `<owner/repo>`.
+
+## Setup
+
+The harness placed you inside an isolated worktree on some placeholder branch (typically `worktree-agent-<id>`). Land on the PR's actual head branch with the **safe two-step** — do NOT use `gh pr checkout` (see worker-preamble's worktree discipline rule 2):
+
+```bash
+HEAD_REF=$(gh pr view <M> --repo <owner/repo> --json headRefName -q .headRefName)
+git fetch origin "$HEAD_REF"
+git switch "$HEAD_REF"
+```
+
+## Hard rules
+
+1. Do NOT modify scope. Do NOT amend the PR title/description. Do NOT close the linked issue from this PR. Do NOT add new tests or refactors — fix only what's needed to turn the failing checks green.
+2. **Hard cap: 3 fix attempts.** After the 3rd failure, return `blocked #<M> at fix-checks: <last failing check> — <last error excerpt>`. The orchestrator will label the PR `ci-blocked` and move on. Do not let one PR consume the session.
+3. **`green #<M>` is a load-bearing claim**, not a hypothesis — see the return contract below.
+
+## Return contract — read carefully
+
+When you finish, your **last line MUST be exactly one of the three strings below** (with `<M>` substituted). Anything else is a contract violation that wastes orchestrator turns. The exact semantics of `green` matter:
+
+- `green #<M>` — **a full CI run completed and passed AFTER your final push.** Not "pushed and queued." Not "the failure looked transient so I optimistically declared victory." Not "I rebased onto a green main so it should work now." The contract is "the rollup is fully `SUCCESS` (or `SKIPPED` / `NEUTRAL`) at the moment you return." You enforce this by running the `gh pr checks <M> --watch --interval 30` step in the fix-loop below to completion — not by polling once and assuming the queued runs will eventually pass. The orchestrator's [step A reconcile](../../commands/do-work.md#a-reconcile-the-return) spot-checks `statusCheckRollup` on every `green` return and will downgrade you to `pending` / `failing` if the rollup contradicts your claim. The advisory log will say `[fix-checks-verify] downgraded #<M> green→…` — that's the breadcrumb saying you returned too early.
+- `noop: already green #<M>` — no failures by the time you started. Same verification semantics: confirm with a single `gh pr view <M> --json statusCheckRollup` that the rollup is fully passing before returning this. The orchestrator spot-checks this path too.
+- `blocked #<M> at fix-checks: <reason>` — 3 attempts exhausted or the failure is structural.
+
+**Do NOT return mid-stream status updates.** Strings like the following are contract violations and are NOT acceptable terminal returns:
+
+- `"E2E shards typically take 8-15 min. Let me wait for the Monitor notifications."`
+- `"Let me wait for the monitor to report results."`
+- `"Routine progress, no action needed. Waiting for unit + E2E results."`
+- `"Lint & Typecheck pass. Waiting for unit + E2E."`
+- `"Unit tests pass. Awaiting E2E shards."`
+- `"Shard 3/3 passes. Awaiting shards 1 and 2 (2 was the previously failing one)."`
+- `"Routine progress."` / `"Waiting for X."` / `"Shard N still running."`
+
+Each of those returns is treated by the harness as a **completion notification**, forcing the orchestrator to spend a turn just to acknowledge "stale re-notification, no state change." A single fix-checks dispatch that returns six narrative updates burns six orchestrator turns for what should have been one terminal return. The orchestrator's [step A reconcile](../../commands/do-work.md#a-reconcile-the-return) parses your last line by matching the documented prefixes (`green`, `noop:`, `blocked`); a string that doesn't match falls through to a defensive `gh pr view <M>` probe, and the orchestrator logs `[fix-checks-unrecognized]` against your worker.
+
+**If checks are still running when you'd otherwise be ready to return, block your own turn on the watch loop until they finish — then return one of the three values above.** The agent harness's notion of "completion" is "you produced your final assistant message and stopped" — it has no way to distinguish "I'm waiting for monitor notifications" from "I'm done." So the only correct way to wait for CI is to keep the foreground bash call running:
+
+```bash
+gh pr checks <M> --repo <owner/repo> --watch --interval 30
+```
+
+This command exits zero when the rollup resolves to all green, non-zero on any failure — either way, you re-enter the fix-loop or fall through to the return. Do not produce intermediate assistant messages narrating "shard 2 still running" or "waiting for monitor"; those are visible as completions to the harness and the contract violation kicks in.
+
+## Fix-loop
+
+In this mode — and only this mode — you do block on CI, because resolving a known-failing PR is the agent's entire job.
+
+```bash
+gh pr checks <M> --repo <owner/repo> --watch --interval 30
+```
+
+On failure:
+
+1. Identify the failing check:
+   ```bash
+   gh pr checks <M> --repo <owner/repo> --json name,state,link
+   ```
+2. Pull failed logs:
+   ```bash
+   gh run view <run-id> --repo <owner/repo> --log-failed
+   ```
+3. Reproduce locally if practical.
+4. Fix the smallest thing that resolves the failure. Don't expand scope.
+5. `git commit` + `git push` to the same branch. Never `--no-verify` (see worker-preamble). Never force-push unless rewriting history is genuinely required.
+6. Re-watch checks.
+
+**Hard cap: 3 fix attempts.** After the 3rd failure, return `blocked #<M> at fix-checks: <last failing check> — <last error excerpt>`. The orchestrator will label the PR `ci-blocked` and move on.
+
+**Record root-cause context before returning `green`.** When you identify the actual root cause of a failure (especially flake / race / environmental issues that look mysterious from the failing log alone), post a one-line comment on the PR before returning. Format: `Fix-checks: <one-line root cause>` (e.g., "Fix-checks: flaky because of a race in the test setup — serialized the fixture init"). This stops the next session's auditor or human reviewer from re-flagging the same failure mode without context. Routine "applied the obvious fix to the obvious error" cases don't need a comment — the diff is the explanation. Use `gh pr comment <M> --repo <owner/repo> --body "..."`; if it errors, log an advisory and continue — don't block the return on a comment failure. This is the fix-checks-only analog of issue-work mode's step 5.5 decision-context rule.
+
+## Don't
+
+- Don't open a new PR. The PR is already open; this mode repairs CI only.
+- Don't modify the PR title or description.
+- Don't close the linked issue from this PR. The original PR body already has the `Closes #N` line; merging the rebased branch closes the issue automatically.
+- Don't add new tests or refactors. Fix only what's needed to turn the failing checks green.
+- Don't keep trying past 3 fix attempts. The cap is a circuit breaker, not a suggestion.
+- **Don't return `green #<M>` on the basis of a hypothesis.** "I rebased onto a commit that should fix this" is a hypothesis until CI confirms it. The contract is unambiguous: `green` means the rollup is fully `SUCCESS` (or `SKIPPED` / `NEUTRAL`) at the moment of return. If checks are still queued / running, you have not finished the fix-loop — keep watching, or return `blocked` if the 3-attempt cap is up. The orchestrator's step A reconcile spot-checks every `green` return against `gh pr view <M> --json statusCheckRollup` and will silently downgrade you to `pending` / `failing` if the rollup contradicts the claim. Returning `green` on a `PENDING` rollup wastes a turn and earns you a `[fix-checks-verify] downgraded` advisory in the orchestrator's log.
+- **Don't return narrative status updates.** Strings like "waiting for monitor," "shard 2 still running," "routine progress, awaiting E2E," "unit tests pass, awaiting shards" are NOT acceptable terminal returns. The agent harness treats every assistant message ending your turn as a completion notification, so each narrative update forces the orchestrator to spend a turn acknowledging a stale re-notification. The only acceptable terminal returns are the three documented strings: `green #<M>`, `noop: already green #<M>`, `blocked #<M> at fix-checks: <reason>`. If CI is still running and you'd otherwise return, keep the `gh pr checks <M> --watch --interval 30` foreground bash call alive instead — that blocks your own turn until the rollup resolves.
+- Don't `--no-verify` to skip hooks. Fix the underlying issue. (See worker-preamble for the absolute prohibition.)
+- Don't disable a failing test to make checks pass. If the test is genuinely broken (not the code), comment on the PR with the evidence and return `blocked #<M> at fix-checks: <reason>`.
+- Don't edit `.github/workflows/` or branch protection to make a check pass.
+- **Leave your worktree on the PR's head branch when you return** (not `main` / the default branch). See worker-preamble's worktree discipline rule 3.
