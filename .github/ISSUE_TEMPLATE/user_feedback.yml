@@ -1,0 +1,19 @@
+name: User Feedback
+description: Share feedback from real-world usage (free-form — shipyard will refine it)
+title: "feedback: <one line>"
+labels: ["user-feedback", "needs-refinement", "needs-human-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write whatever you want, however you want. Don't worry about formatting —
+        `/shipyard:refine-issues` will rewrite this into a clean issue.
+        Your raw text is preserved in a comment for reference.
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback
+      description: What happened? What did you notice? What would be better?
+      placeholder: "I was trying to do X and..."
+    validations:
+      required: true
