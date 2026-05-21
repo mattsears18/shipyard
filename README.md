@@ -92,6 +92,19 @@ When `/audit` runs, you'll see filed issues with severity labels (`P0`/`P1`/`P2`
 - Skim [What's been hardened](#whats-been-hardened) for the safety properties that keep autonomous runs from clobbering your repo.
 - Wire up a Sentry / Datadog / Dependabot integration that files GitHub issues — see [Plays well with everything that files GitHub issues](#plays-well-with-everything-that-files-github-issues).
 
+## Updating
+
+Shipyard is moving fast — expect frequent releases. To pull down the latest version:
+
+```sh
+claude plugin marketplace update shipyard
+claude plugin update shipyard@shipyard
+```
+
+Then restart Claude Code so the refreshed slash commands, agents, and hooks register.
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release, and pin to a specific commit if you need reproducibility (the [`No API stability`](#-experimental--read-before-you-run-this-against-anything-important-) warning at the top applies — slash-command shape, skill interfaces, and agent contracts evolve between updates).
+
 ## What it does
 
 An autonomous engineering loop for web + mobile app development. Three things it does:
