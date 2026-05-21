@@ -71,7 +71,7 @@ Do not file any issues from the main session — that's each agent's job. The ma
 
 After emitting the chat summary, persist the same content to `./.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.html` so it survives the session. Don't skip this step — the data is already in your context; the cost of writing it is one tool call and the value of having it on disk is large.
 
-Reports are **styled HTML, not markdown** — markdown is fine for grep / version control / diffing but a poor end-user surface. The maintainer wants to read these in a browser with typography, sectioning, status-colored severity badges, hover states, and clickable issue/PR links. The HTML target also makes "save to PDF" trivial via the print stylesheet. See [#112](https://github.com/mattsears18/claude-plugins/issues/112) for the rationale. Reports are static (one-shot generation, no JS, no live updates) — they are NOT a revival of the deleted live dashboard ([#95](https://github.com/mattsears18/claude-plugins/issues/95)); they're the HTML version of what was already `.md`.
+Reports are **styled HTML, not markdown** — markdown is fine for grep / version control / diffing but a poor end-user surface. The maintainer wants to read these in a browser with typography, sectioning, status-colored severity badges, hover states, and clickable issue/PR links. The HTML target also makes "save to PDF" trivial via the print stylesheet. Reports are static (one-shot generation, no JS, no live updates); they're the HTML version of what was already `.md`.
 
 1. **Create the directory if missing**, scoped to the host repo's working directory:
 
