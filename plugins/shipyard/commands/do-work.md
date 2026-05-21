@@ -20,7 +20,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 
 ## Orchestrator state
 
-Across the session, the orchestrator maintains nine mental data structures plus a small three-field refresh tracker. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine.
+Across the session, the orchestrator maintains nine mental data structures plus a small three-field refresh tracker. Hold them in your head (or in `TodoWrite` if you prefer durable scratch); they are the entire state machine. The same structures are **mirrored to a JSON file on disk** (see [Session state file](#session-state-file) below) so the artifact survives turn boundaries, can be inspected by external tools (dashboards, notifiers, a future `--resume <session-id>` flag), and lets the LLM stop re-narrating state in prose every turn. The JSON file is the *durable record*; the working memory is still where dispatch decisions are made.
 
 - **`in_flight`**: { slot_id → { kind: "issue" | "fix-checks" | "fix-rebase" | "fix-main-ci" | "fix-failing-prs-batch", target: <#N or #M or "main" or "pr-pileup">, claimed_paths: { hard: [...], soft: [...] }, agent_id } }. Size is bounded by `--concurrency`. The `fix-rebase` kind is drain-only — it is never dispatched outside the [end-of-session drain](#end-of-session-drain) phase. `claimed_paths.hard` and `claimed_paths.soft` partition the paths a worker is touching by collision tier — see the [Dispatch rules](#dispatch-rules-used-by-step-7-and-step-c) for the tier definitions and the soft-collision cap.
 - **`ready_issues`**: priority queue of *scoped* issue candidates — `{ number, claimed_paths: { hard: [...], soft: [...] }, lockfile_sections, rank_key }` — ready to dispatch the moment a slot opens. Refilled from the backlog as it drains. `lockfile_sections` is the set of `package.json` (or equivalent root-manifest) sections the candidate is expected to touch — `overrides`, `dependencies`, `devDependencies`, `scripts`, `engines`, `config`, etc. — and replaces the older boolean `touches_lockfile` flag. Empty set means the candidate is not a lockfile-toucher and the section-aware collision rule below is a no-op for it.
@@ -35,6 +35,125 @@ Across the session, the orchestrator maintains nine mental data structures plus 
 Plus a three-field **refresh tracker** that gates [step D](#d-periodic-refresh)'s event-driven + adaptive-backoff cadence — `refresh_last_at` (timestamp), `refresh_last_snapshot` (`{ main_ci_status, failing_pr_count_all, failed_prs_size }`), and `refresh_zero_delta_streak` (integer). Not a dispatch-queue, just bookkeeping for the refresh trigger rules; see step D's [Refresh trigger rules](#refresh-trigger-rules) for the full semantics.
 
 When a slot opens, the dispatch order is always: `divert_queue` first, then `failed_prs`, then `ready_issues` (subject to path-collision and lockfile rules). `deferred_issues` is **not** part of the dispatch order — deferred entries never become work for this session.
+
+## Session state file
+
+The orchestrator mirrors every state structure above into a small JSON file at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`). The file is the **durable record** of the session — written through whenever state changes, read back by external tools (and a future `/do-work --resume <session-id>` flag), and removed at end-of-session by the cleanup step. The LLM's per-turn working memory still drives dispatch decisions (path collisions, lockfile sections, the "do I have work for this slot" walk through the dispatch rules), but the LLM no longer pays the token cost of re-typing 100+ chars of state in the invariant and status lines every turn — those surfaces collapse to short shapes that point at the file.
+
+Closes [#103](https://github.com/mattsears18/claude-plugins/issues/103).
+
+### Why a file
+
+Three failure modes the prose-narrated state was prone to:
+
+1. **Token-expensive.** Every turn paid the cost of re-emitting the eight-or-nine-struct state in prose (the invariant line + status line + state-change banners). On a 200-turn session that's ~20–30K wasted tokens.
+2. **Drift-prone.** The LLM could mis-remember which slot held which issue, which soft-cap counters needed decrementing on a release, or which fields had stale values. Mirroring to a structured file with explicit field names makes drift visible to anyone reading the file.
+3. **Inspectable.** A separate dashboard (browser, Slack notifier, CI status webhook) had no machine-readable source. The JSON file is the source. External readers do not have to parse orchestrator transcripts to know what's in flight.
+
+The JSON file is **not** working memory for dispatch decisions. The LLM still has to hold the model in its head to walk the dispatch tree. The file is the artifact, not the algorithm.
+
+### Schema
+
+```json
+{
+  "session_id": "<uuid or stable id>",
+  "repo": "owner/repo",
+  "concurrency": 2,
+  "soft_collision_concurrency": 3,
+  "started_at": "2026-05-20T17:31:14Z",
+  "updated_at": "2026-05-20T18:04:22Z",
+
+  "in_flight": {
+    "slot1": { "kind": "issue", "target": 90, "claimed_paths": { "hard": [], "soft": [] }, "agent_id": "..." }
+  },
+  "ready_issues": [],
+  "failed_prs": [],
+  "raw_backlog": [],
+  "divert_queue": [],
+  "session_prs": [],
+  "deferred_issues": [],
+  "soft_caps": { "CLAUDE.md": 2 },
+  "main_ci": {
+    "status": "green",
+    "earliest_red_run_id": null,
+    "earliest_red_run_url": null,
+    "earliest_red_sha": null,
+    "checked_at": "2026-05-20T18:04:22Z"
+  },
+  "drain": { "active": false, "started_at": null, "polls": 0 }
+}
+```
+
+Field names match the orchestrator-state structure names above 1:1 so a reader of either surface (file or prose) can cross-reference without translation. `started_at` and `updated_at` are always-present ISO-8601 UTC timestamps; `updated_at` advances on every successful `update` call so external watchers can detect change without diffing the body.
+
+### Atomic write contract
+
+Every write goes through `plugins/shipyard/scripts/session-state.sh`, which writes to `<target>.tmp.<pid>` and atomically renames into place. POSIX `rename(2)` is atomic on the same filesystem (the tmp-in-same-dir pattern guarantees this), so a partial-write crash leaves the previous file intact — never a half-written JSON document that downstream readers would choke on. The helper also drops any leftover `.tmp.<pid>` files on cleanup, so a crashed update doesn't accumulate cruft.
+
+### Helper script — `plugins/shipyard/scripts/session-state.sh`
+
+The helper exposes four subcommands. They are the **only** way the orchestrator writes to the session file — never edit the JSON directly with `Edit` / `Write` / `jq` / a shell heredoc, because none of those preserve the atomic-rename contract.
+
+```bash
+# Set up the session file at startup (step 0.5).
+plugins/shipyard/scripts/session-state.sh init \
+  --session-id "<session-id>" \
+  --repo "<owner/repo>" \
+  --concurrency <N> \
+  --soft-collision-concurrency <N>
+
+# Read the whole file or one jq path.
+plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>"
+plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>" --path ".session_prs"
+
+# Merge one or more jq assignments atomically. Each --set is a complete jq
+# assignment expression. Multiple --set args compose left-to-right.
+plugins/shipyard/scripts/session-state.sh update --session-id "<session-id>" \
+  --set '.session_prs += [96]' \
+  --set '.main_ci.status = "green"'
+
+# Remove the file at end-of-session (cleanup step).
+plugins/shipyard/scripts/session-state.sh cleanup --session-id "<session-id>"
+```
+
+Exit codes:
+
+- `0` — success.
+- `2` — `init` refused to clobber an existing file (use `--force` if the clobber is intentional). Protects against accidentally re-initialising a session that's still active.
+- `3` — `read` or `update` ran on a session file that does not exist. Distinct from `0` so the orchestrator can branch on "first-write to a session that wasn't initialised" vs "successful read."
+- `64` — usage error (bad subcommand, missing required arg). Mirrors `sysexits.h`'s `EX_USAGE`.
+- `65+` — internal helper failure (jq missing, write permission denied). Never papered over — the orchestrator should surface these so the user sees why state stopped updating.
+
+### When the orchestrator writes through
+
+The file is the durable mirror of working memory, so every state-mutation site that matters writes through:
+
+| Site | What changes | When |
+|---|---|---|
+| [Step 0.5 → step 1.5](#15-initialise-the-session-state-file) | Session file created with `init` | once, at startup |
+| [Step 4](#4-fetch--rank-the-backlog) | `raw_backlog`, `trusted_authors` (if dynamically loaded) | once, post-fetch |
+| [Step 4.5](#45-divert-checks-main-ci--pr-pileup) | `main_ci`, `divert_queue` | at setup + step D refresh |
+| [Step 5](#5-snapshot-failing-prs) | `failed_prs` | once, post-snapshot |
+| [Step 6](#6-initial-scope-pre-flight) | `ready_issues`, `deferred_issues` | once, post-scope |
+| Step 7 (initial pool fill) | `in_flight`, `soft_caps` | per dispatch |
+| [Step A reconcile](#a-reconcile-the-return) | `in_flight` (release), `session_prs`, `failed_prs`, `deferred_issues` (via blocked) | every completion |
+| [Step B release](#b-release-the-slot) | `in_flight` (slot removal), `soft_caps` (decrement) | every completion |
+| [Step C dispatch](#c-dispatch-a-replacement-if-work-remains--mandatory-action) | `in_flight` (new slot), `ready_issues` (consumed), `failed_prs` (consumed), `soft_caps` (increment), `raw_backlog` (post-refill) | every dispatch |
+| [Step D refresh](#d-periodic-refresh) | `main_ci`, `divert_queue`, `failed_prs`, `ready_issues`, `raw_backlog`, `deferred_issues` | every full-pool refresh |
+| Drain phase | `drain.active`, `drain.polls`, `session_prs`, `failed_prs`, `in_flight` | every poll |
+| [Cleanup step 6.5](#end-of-session-cleanup) | Session file removed via `cleanup` | last, after the user-facing summary prints |
+
+The granularity is "after the LLM has updated its working-memory copy of the struct, write through" — not "between every line of orchestrator narration." A single turn that reconciles a completion, releases a slot, and dispatches a replacement does **one** `update` call with multiple `--set` flags (or a small handful of chained calls) at the end of the turn, not a flurry of one-field-at-a-time writes.
+
+### Failure mode — write-through breakage
+
+If a `session-state.sh update` call fails (exit code != 0), the LLM's working memory has already advanced but the file has not. The orchestrator must:
+
+1. Log a single `[session-state] update failed: <exit code> — session file out of sync with working memory; continuing` advisory in the transcript.
+2. Continue the turn — do **not** stall dispatch waiting for the file to come back. The working memory is authoritative for dispatch decisions; the file is the mirror.
+3. Re-attempt the write on the next turn's natural update cycle. A persistent failure (e.g., disk full, permission lost) will surface as repeated advisories and the user can intervene.
+
+Read-through failures (exit code 3 — session file does not exist on a `read` call mid-session) indicate the file was removed under the orchestrator (manual `rm`, disk failure, end-of-session cleanup that fired too early). Treat as a deferred failure: log the advisory, continue from working memory, and the next `update` call will recreate the file via the `init` recovery path. The orchestrator does not block on file recovery.
 
 ## Setup (run once)
 
@@ -133,6 +252,26 @@ gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name   # 
 Cache all three for the session.
 
 (The trusted-author allowlist used by step 4's filter and step 7's `originating_author_trust` computation is populated separately by [step 1.7 below](#17-resolve-trusted-author-allowlist).)
+
+### 1.5 Initialise the session state file
+
+Stand up the durable JSON mirror described in the [Session state file](#session-state-file) section. This is a one-shot setup write — every subsequent state mutation routes through `session-state.sh update` rather than re-initialising.
+
+```bash
+# <session-id> is the orchestrator's session identifier — the same value
+# step 0.5 used in the orchestrator-worktree path. Stable across the run.
+"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" init \
+  --session-id "<session-id>" \
+  --repo "<owner/repo>" \
+  --concurrency <N from --concurrency arg> \
+  --soft-collision-concurrency <N from --soft-collision-concurrency arg>
+```
+
+The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`). The default config above is the entire schema with empty queues + an `unknown` `main_ci` state — everything else gets filled in by later setup steps and the steady-state loop.
+
+**If `init` returns exit code 2** ("file already exists, use `--force`"), a prior session left a state file at the same path — either a crashed earlier run or another `/do-work` instance using the same session-id. The safe default is to **call `init` again with `--force`** to reset the file to empty queues. A stale session file's contents are not load-bearing for the current run (the orchestrator's working memory will repopulate every field on the natural setup pass), so clobbering is fine. Log a single `[session-state] --force overrode stale state file from <prior session>` advisory for the transcript.
+
+**If `init` returns 65+** (jq missing, permission denied on `$SHIPYARD_HOME`, etc.), surface the error and continue **without** the session-state file. The orchestrator falls back to pre-#103 prose-narration behavior — the invariant line emits `state=disabled` to make the degradation visible, and external tools that depend on the file should treat the session as opaque until the next run. Don't block the session on file-write failure; the dispatch loop is independent of the durable mirror.
 
 ### 1.7 Resolve trusted-author allowlist
 
@@ -1015,19 +1154,21 @@ Net: on a quiet session the refresh count drops well below the old fixed `comple
 
 ### E. Invariant line (end of every steady-state turn)
 
-After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. It exists for one reason: to make idle drift detectable in the transcript. Whenever you find yourself ending a turn without one of these lines, you have skipped step C — go back and fix it.
+After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. It exists for one reason: to make idle drift detectable in the transcript. Whenever you find yourself ending a turn without one of these lines, you have skipped step C — go back and fix it. The `state=<state>` token also makes the per-turn write-through to the [session state file](#session-state-file) visible in the same line: a transcript-only reader can confirm the file got the turn's state-mutation write (or surfaced a documented degradation) without inspecting `$SHIPYARD_HOME/sessions/<session-id>.json` directly.
 
 **Steady-state format** (after a normal dispatch turn):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k>
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · state=<state>
 ```
 
 **Idle-proof format** (used ONLY when step C produced no dispatch AND `in_flight < concurrency`):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · idle_reason="<reason>"
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · state=<state> · idle_reason="<reason>"
 ```
+
+`<state>` is one of: `written` (the turn's `session-state.sh update` call succeeded — file now reflects working memory), `noop` (no state mutation happened this turn so no update fired — rare; tolerated, mostly drain-poll turns where nothing moved), `degraded` (an `update` call failed and the orchestrator logged the `[session-state] update failed: …` advisory — file is out of sync with working memory; the dispatch loop continues from working memory and the next turn re-attempts), or `disabled` (step 1.5's `init` failed and the session is running without the file mirror — pre-#103 prose-narration semantics). A missing `state=` token means the orchestrator forgot to mirror this turn's state mutations to disk; same contract violation as a missing invariant line itself, go back and re-run the write-through then re-emit.
 
 The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight drains)`, `draining=true`, `all ready_issues collide with in_flight paths`, `all ready_issues blocked by soft-cap on <path> (×<N> active)`, `all ready_issues collide with in_flight lockfile sections (<section>×<N>, ...)`, or a concrete diagnostic string. The lockfile reason names the *sections* in flight rather than the toucher's issue number, since the rule is now section-aware — multiple lockfile-touchers may be in flight simultaneously on disjoint sections. Vague reasons ("waiting for completions", "merge train draining", "nothing to do right now") are NOT acceptable — they're the recap pattern in disguise. If you can't name the queue-level reason the slot is empty, you haven't actually checked the queues; go back and check.
 
@@ -1306,6 +1447,16 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, and `<deferred_live>`; pipe th
    ```
 
    This is a read-only-effect operation on the primary checkout — `git worktree remove` modifies `.git/worktrees/` (which is shared metadata), not the primary's working tree or HEAD. The primary's HEAD never moves. If the remove fails (e.g., uncommitted edits the orchestrator made but never pushed — which would itself be a bug), surface that in the summary as `orchestrator worktree NOT reaped: <reason>` and leave it on disk for the next session's step 3b liveness-checked sweep to consider.
+
+7. **Remove the session state file** — close out the durable mirror set up by [step 1.5](#15-initialise-the-session-state-file). The file lives at `$SHIPYARD_HOME/sessions/<session-id>.json`, outside the orchestrator worktree, so this step runs in any cwd:
+
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "<session-id>"
+   ```
+
+   The `cleanup` subcommand is idempotent — a re-run after the file has already been removed exits 0 (the failure mode this guards against is a half-cleaned session, not a missing file). Don't gate the rest of the session's exit on this call; even if it errors (`$SHIPYARD_HOME` filesystem suddenly read-only, etc.), the worst case is a stale session file that the next session's [step 1.5](#15-initialise-the-session-state-file) `--force` path will overwrite.
+
+   If the user has set `SHIPYARD_KEEP_SESSIONS=1`, skip the cleanup call — the file stays on disk as a permanent record. Useful for debugging or for external tools that want to query past sessions retrospectively. Default behavior remains "clean up on exit" so `$SHIPYARD_HOME/sessions/` doesn't accumulate dead state files.
 
 ## End-of-session summary
 
