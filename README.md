@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/shipyard-marketing.png" alt="Shipyard: Turn Your Backlog into Shipped Work. /audit (auditors), third-party services, user feedback, and manual entry feed into the issue backlog stack; the orchestrator (/do-work) directs issue workers loading containers onto shipping vessels." width="100%" />
+</p>
+
 # mattsears-plugins
 
 Personal [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by Matt Sears. The headliner is **`shipyard`** — an autonomous engineering loop that finds work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers in isolated git worktrees.
