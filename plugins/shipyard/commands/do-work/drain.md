@@ -69,6 +69,20 @@ This intentionally **does NOT filter `-label:blocked:ci`** — `blocked:ci` PRs 
 
 `mergeStateStatus` and `headRefName` / `headRefOid` are required for the `D_dirty` set below (drain-phase fix-rebase dispatch) — `mergeStateStatus == "DIRTY"` is the signal that a PR is stale relative to current main but otherwise healthy, and the head-branch identifiers are passed into the fix-rebase prompt template. The fields are also cheap — adding them to an existing query doesn't change the call count.
 
+**Batching the per-PR refresh.** When the drain loop has already snapshotted the open-PR list (above) but needs to re-resolve per-PR fields *for a known subset* — e.g. the "did this `D_dirty` PR's `mergeStateStatus` flip to `CLEAN` since the previous poll, or did its `headRefOid` move?" check that powers the forward-progress rule below — use `plugins/shipyard/scripts/gh-batch.sh pr-status` instead of N sequential `gh pr view <M>`:
+
+```bash
+# One round-trip + one tool-result block instead of N. Same projection
+# fields the per-PR `gh pr view` would return.
+"${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
+  --repo <owner/repo> \
+  --numbers "142 143 144 145 146"
+```
+
+Emits a JSON object keyed by PR number (string) → `{number, state, mergeable, mergeStateStatus, statusCheckRollupState, headRefName, headRefOid}`. PRs that no longer exist (deleted, transferred) are silently dropped from the output — the caller treats a missing key as "settled, no longer trackable." Suggested TTL band when composing with `gh-cached.sh` (issue [#160](https://github.com/mattsears18/claude-plugins/issues/160)): **10s**, same churn class as per-PR `statusCheckRollup` queries.
+
+The wrapper auto-chunks at 50 aliases per query (override via `SHIPYARD_GH_BATCH_CHUNK_SIZE`). For typical drain-phase fan-out (3–8 PRs) the entire batch fires as one query.
+
 **Per-poll bookkeeping.** Every 60s, snapshot the open PRs and compute:
 
 - `O` = open PRs in `session_prs` (not yet merged or closed)
