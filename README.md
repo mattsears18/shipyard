@@ -16,8 +16,9 @@
 > - **Treat it as expensive.** Parallel `/do-work` workers each pay full per-context costs; recursive
 >   audit / refine flows can dispatch deep agent trees. Start with `--concurrency 1` and watch the
 >   billing dashboard before scaling.
-> - **No tests.** No automated test coverage on the skills, commands, or agents yet. Behavior verification
->   is manual + dogfooding.
+> - **Limited automated testing.** Bash unit tests cover the supporting scripts and hooks
+>   (run by `.github/workflows/tests.yml`), but the skills, commands, and agents themselves are markdown
+>   specs without automated behavior verification — that side is manual + dogfooding.
 > - **No API stability.** Slash-command shape, skill interfaces, and agent contracts evolve fast.
 >   Pin to a specific commit if you need reproducibility; expect drift between updates.
 > - **No support.** No SLA, no incident response, issues triaged at the author's discretion.
@@ -103,13 +104,13 @@ claude plugin update shipyard@shipyard
 
 Then run `/reload-plugins` (or restart Claude Code on older versions) so the refreshed slash commands, agents, and hooks register.
 
-See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release, and pin to a specific commit if you need reproducibility (the [`No API stability`](#-experimental--read-before-you-run-this-against-anything-important-) warning at the top applies — slash-command shape, skill interfaces, and agent contracts evolve between updates).
+See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release. Pin to a specific commit if you need reproducibility — the experimental-status warning at the top of this README applies, and slash-command shape, skill interfaces, and agent contracts evolve between updates.
 
 ## What it does
 
 An autonomous engineering loop for web + mobile app development. Three things it does:
 
-1. **Finds work** — `/audit` runs deep audits across UX, performance, security, accessibility, DX, privacy, PWA readiness, release readiness, SEO, tech debt, and testing, and autonomously files GitHub issues for every finding.
+1. **Finds work** — `/audit` runs deep audits across UX, performance, security, accessibility, DX, privacy, PWA readiness, release readiness, SEO, tech debt, testing, docs, observability, and API surface health, and autonomously files GitHub issues for every finding.
 2. **Refines work** — `/refine-issues` is a source-branched refiner: raw user-feedback issues get classified (already-done / decline / legitimate) and rewritten into implementation-ready tickets; Claude-filed feature requests with `## Open questions` get reasonable defaults committed; everything else falls through to `needs-triage`. The user-feedback path is gated by a `needs-human-review` label so no code-modifying agent runs until a human signs off; the open-questions and triage paths are decoupled from human review.
 3. **Does work** — `/do-work` orchestrates a rolling pool of parallel issue-workers, each in an isolated git worktree. It dispatches up to `--concurrency` workers at once, opens PRs with auto-merge, and gracefully handles failing checks, red main CI, and PR pileups via specialized diversion workers.
 
@@ -121,18 +122,28 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit ux <url>` — web-ux + mobile-ux in parallel
 - `/audit security <url>` — deps, secrets in git, Firebase rules, headers, mobile manifests
 - `/audit a11y <url>` — Lighthouse a11y category + manual keyboard / screen-reader tour
+- `/audit seo <url>` — sitemap, structured data, OG/Twitter cards, canonical URLs, image alt text, internal link graph
+- `/audit privacy <url>` — GDPR / CCPA / COPPA: cookie banners, ATT prompts, account-deletion flow, ASC + Play privacy forms
+- `/audit pwa <url>` — manifest completeness, service worker behavior, offline fallback, install prompt UX, icon coverage
+- `/audit release-readiness` — CHANGELOG ↔ store-metadata sync, app-icon coverage, splash screens, deep-link asset files, version bumps
 - `/audit dx` — developer-experience catalog (lints, hooks, observability, contributor docs, etc.)
+- `/audit tech-debt` — stale TODO/FIXME markers, dead feature flags, deprecated internal APIs still in use, outdated deps
+- `/audit testing` — coverage holes on critical paths, empty / tautological / mock-only tests, CI gate completeness
+- `/audit docs` — README drift, broken links, docstring drift from signatures, missing ADRs, stale dated TODOs in docs
+- `/audit observability` — error-tracking effectiveness, structured-logging consistency, tracing coverage, alert config
+- `/audit api` — OpenAPI / GraphQL schema drift, missing pagination, inconsistent auth and error envelopes, breaking-change diffs
 - `/audit all <url>` — every audit in parallel
 - `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through). `/refine-feedback` still works as a back-compat alias.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`)
 - `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart.
-- `/shipyard:init` — _(coming in [#165](https://github.com/mattsears18/shipyard/issues/165))_ scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps.
+- `/shipyard:init` — scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps. See [`CLAUDE.md`'s "Configuration" section](./CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) for the layering model.
+- `/shipyard:config show|get|set|edit|validate` — inspect or update the effective merged config across the four layers (built-in defaults, user-global, repo, personal override).
+- `/shipyard:cost report` — query the persistent cost-history ledger at `~/.shipyard/cost-history.jsonl`; filter by repo, mode, model, or issue. See [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl).
+- `/shipyard:status` — live dashboard of in-flight `/shipyard:do-work` workers (mode, target, elapsed, tokens, stale detection).
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
 
 ## How it works
-
-> Full visual infographic in [#37](https://github.com/mattsears18/shipyard/issues/37) (in progress). Until then, here's the conceptual flow.
 
 The loop has four phases, and the orchestrator drives them on every iteration of `/do-work`:
 
@@ -152,7 +163,7 @@ Shipyard treats several label families as load-bearing — origin labels (`user-
 
 ### Observability — per-session token cost
 
-Every `/do-work` session writes per-session token-usage data to `~/.shipyard/sessions/<session-id>.json` and posts cost-tracking comments on the issues and PRs it touches, so you can see at a glance how much a given backlog burndown cost. Useful for tuning `--concurrency`, deciding which audits are worth running on a cron, and spotting agents that are spending too many tokens for the work they ship. Landed in [#179](https://github.com/mattsears18/shipyard/pull/179) / shipyard 1.3.30.
+Every `/do-work` session writes per-session token-usage data to `~/.shipyard/sessions/<session-id>.json` and posts cost-tracking comments on the issues and PRs it touches, so you can see at a glance how much a given backlog burndown cost. End-of-session, each run flushes a rolled-up record to the persistent ledger at `~/.shipyard/cost-history.jsonl`; query historical spend with `/shipyard:cost report` (filterable by repo, mode, model, or issue — see [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl)). Useful for tuning `--concurrency`, deciding which audits are worth running on a cron, and spotting agents that are spending too many tokens for the work they ship.
 
 ## What's been hardened
 
@@ -223,18 +234,26 @@ plugins/
     .claude-plugin/plugin.json
     commands/
       audit.md
+      config.md
+      cost.md
       do-work.md
+      do-work/                   # per-phase phase files loaded on demand by do-work.md
       do-work-RATIONALE.md       # design discussion companion
+      init.md
       my-turn.md
       refine-feedback.md         # back-compat alias for refine-issues
       refine-issues.md
+      status.md
     agents/
       a11y-auditor.md
+      api-auditor.md
+      docs-auditor.md
       dx-auditor.md
       issue-worker.md            # thin entry router; per-mode files under issue-worker/
       issue-worker/              # one file per mode (issue-work, fix-checks-only, fix-rebase, ...)
       lighthouse-auditor.md
       mobile-ux-auditor.md
+      observability-auditor.md
       privacy-auditor.md
       pwa-auditor.md
       release-readiness-auditor.md
@@ -354,4 +373,4 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the navigable index of operationa
 
 ---
 
-<sub>Last verified against shipyard 1.3.30.</sub>
+<sub>Last verified against shipyard 1.3.43.</sub>
