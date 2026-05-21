@@ -144,6 +144,17 @@ assert_contains "$rationale_path" "## Don't — extended rationale" \
 assert_count_at_least "$do_work_path" "shipyard:worker-preamble" 5 \
   "do-work.md still references shipyard:worker-preamble in ≥5 places"
 
+# (7) Both cleanup paths (step 3b at startup, step 3 at shutdown) reference
+#     the worktree-reap helper. Regression guard against issue #138 — if
+#     either call site reverts to the strict liveness check, the
+#     orchestrator's own PID will defer every agent worktree at shutdown.
+assert_count_at_least "$do_work_path" "scripts/worktree-reap.sh" 2 \
+  "do-work.md references scripts/worktree-reap.sh in ≥2 places (step 3 + 3b)"
+assert_contains "$do_work_path" "classify-lock" \
+  "do-work.md references the classify-lock subcommand"
+assert_contains "$do_work_path" "self-ancestor" \
+  "do-work.md mentions the self-ancestor classification (issue #138 fix)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

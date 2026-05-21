@@ -35,7 +35,7 @@ When the orchestrator's dispatch prompt specifies a branch name (e.g., `do-work/
 
 ## Detect-my-worktree-was-reaped escape hatch
 
-The orchestrator's end-of-session cleanup reaps `.claude/worktrees/agent-*` directories. It now liveness-checks the lock-holding PID before reaping (see `commands/do-work.md` end-of-session step 3), so a still-running agent's worktree should normally be deferred. But defense in depth: an agent whose worktree IS reaped mid-run must NOT silently fall through to operating in the primary checkout or in some foreign worktree — that's exactly the silent corruption the worktree-isolation rules exist to prevent.
+The orchestrator's end-of-session cleanup reaps `.claude/worktrees/agent-*` directories. It now classifies the lock-holding PID before reaping (see `commands/do-work.md` end-of-session step 3 and [`scripts/worktree-reap.sh`](../scripts/worktree-reap.sh)) — locks held by a still-running peer agent (`peer-alive`) are deferred, while locks held by the orchestrator's own PID chain (`self-ancestor`) are reaped because that's just the orchestrator retiring its own worktree. But defense in depth: an agent whose worktree IS reaped mid-run must NOT silently fall through to operating in the primary checkout or in some foreign worktree — that's exactly the silent corruption the worktree-isolation rules exist to prevent.
 
 **Before every git/gh operation in this template, verify your worktree is still on disk.** Save your worktree path once at session start:
 
