@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for working on `mattsears18/claude-plugins` — the home of the [`shipyard`](./plugins/shipyard/) plugin (and, eventually, other Claude Code plugins).
+Thanks for working on `mattsears18/shipyard` — the home of the [`shipyard`](./plugins/shipyard/) plugin (and, eventually, other Claude Code plugins).
 
 This doc is the **navigable index** to the operational conventions for contributing. It's intentionally lean: it links out to the authoritative sources rather than duplicating them, so the rules can't drift between this file and where they actually live.
 
@@ -10,7 +10,7 @@ If you're a first-time contributor (human or a fresh Claude Code session), start
 
 1. Clone the repo:
    ```sh
-   git clone https://github.com/mattsears18/claude-plugins.git
+   git clone https://github.com/mattsears18/shipyard.git
    cd claude-plugins
    ```
 2. Make sure you have `bash`, `gh` (authenticated via `gh auth login`), and [`shellcheck`](https://github.com/koalaman/shellcheck) installed. There are no other build-time dependencies — the plugin is a directory of markdown + bash scripts, no compile step.

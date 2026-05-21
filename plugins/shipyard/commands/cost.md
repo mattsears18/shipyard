@@ -1,6 +1,6 @@
 # `/shipyard:cost` — token-spend reports + current-session cost
 
-Thin wrapper around [`plugins/shipyard/scripts/cost-history.sh`](../scripts/cost-history.sh) (persistent cross-session ledger, [#163](https://github.com/mattsears18/claude-plugins/issues/163)) and [`plugins/shipyard/scripts/session-state.sh`](../scripts/session-state.sh) (per-session ledger, [#153](https://github.com/mattsears18/claude-plugins/issues/153)).
+Thin wrapper around [`plugins/shipyard/scripts/cost-history.sh`](../scripts/cost-history.sh) (persistent cross-session ledger, [#163](https://github.com/mattsears18/shipyard/issues/163)) and [`plugins/shipyard/scripts/session-state.sh`](../scripts/session-state.sh) (per-session ledger, [#153](https://github.com/mattsears18/shipyard/issues/153)).
 
 ## Storage layout
 
@@ -75,8 +75,8 @@ BY MODE
   orchestrator-overhead  $3.30
 
 TOP 5 MOST EXPENSIVE ISSUES
-  #128  mattsears18/claude-plugins  $14.20  (PR #189)
-  #142  mattsears18/claude-plugins  $9.80   (PR #195)
+  #128  mattsears18/shipyard  $14.20  (PR #189)
+  #142  mattsears18/shipyard  $9.80   (PR #195)
   ...
 
 TREND (weekly)
@@ -149,6 +149,6 @@ Default: **keep forever**. The data is tiny (≈ 500 bytes per session record, �
 - [`/shipyard:config`](./config.md) — `cost_tracking.enabled` and `exclude_repos_from_cost_tracking` opt-outs.
 - [`plugins/shipyard/scripts/cost-history.sh`](../scripts/cost-history.sh) — the underlying ledger / report tool.
 - [`plugins/shipyard/scripts/session-state.sh`](../scripts/session-state.sh) — the per-session ledger (`bump-tokens`, `read-tokens`).
-- Issue [#163](https://github.com/mattsears18/claude-plugins/issues/163) — this spec.
-- Issue [#153](https://github.com/mattsears18/claude-plugins/issues/153) — the per-session ledger this builds on.
-- Issue [#152](https://github.com/mattsears18/claude-plugins/issues/152) — the parent perf umbrella.
+- Issue [#163](https://github.com/mattsears18/shipyard/issues/163) — this spec.
+- Issue [#153](https://github.com/mattsears18/shipyard/issues/153) — the per-session ledger this builds on.
+- Issue [#152](https://github.com/mattsears18/shipyard/issues/152) — the parent perf umbrella.

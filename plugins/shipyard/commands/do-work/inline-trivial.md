@@ -4,7 +4,7 @@ A dispatch-time fast path that lets the orchestrator handle very small issues **
 
 Loaded on demand from [`steady-state.md`](./steady-state.md#dispatch-rules-used-by-step-7-and-step-c)'s step 3a (the `ready_issues` branch's eligibility check). The thin entry [`commands/do-work.md`](../do-work.md) stays in context across every phase for the [orchestrator-state struct list](../do-work.md#orchestrator-state); this file owns only the inline-eligibility heuristic and the inline-execution mechanics.
 
-Tracking issue: [#156](https://github.com/mattsears18/claude-plugins/issues/156). Part of [perf umbrella #152](https://github.com/mattsears18/claude-plugins/issues/152) — Phase 1.
+Tracking issue: [#156](https://github.com/mattsears18/shipyard/issues/156). Part of [perf umbrella #152](https://github.com/mattsears18/shipyard/issues/152) — Phase 1.
 
 ## When does the inline fast path fire?
 

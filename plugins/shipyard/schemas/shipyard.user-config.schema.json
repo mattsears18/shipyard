@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/mattsears18/claude-plugins/raw/main/plugins/shipyard/schemas/shipyard.user-config.schema.json",
+  "$id": "https://github.com/mattsears18/shipyard/raw/main/plugins/shipyard/schemas/shipyard.user-config.schema.json",
   "title": "Shipyard user-global config",
   "description": "Schema for ~/.shipyard/config.json (user-global, applies to every repo unless overridden by the repo-level shipyard.config.json or the per-repo .shipyard/config.local.json).",
   "type": "object",

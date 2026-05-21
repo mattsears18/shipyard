@@ -1,4 +1,4 @@
-# Repo-scoped rules for `mattsears18/claude-plugins`
+# Repo-scoped rules for `mattsears18/shipyard`
 
 These complement the global rules in `~/.claude/CLAUDE.md`. They apply only when working in this repo.
 
@@ -28,7 +28,7 @@ We intentionally don't prefix `user-feedback` with `origin:` for naming consiste
 
 ### State labels (auto-managed)
 
-These reflect transient state and are managed by `/shipyard:do-work`. Both live in the `blocked:*` namespace (renamed from `blocked` / `ci-blocked` in 1.3.29, [#148](https://github.com/mattsears18/claude-plugins/issues/148)) so the label itself communicates the block category without reading the comment trail. The old `blocked` / `ci-blocked` names are kept as deprecated aliases for one week after 1.3.29 to avoid breaking in-flight sessions.
+These reflect transient state and are managed by `/shipyard:do-work`. Both live in the `blocked:*` namespace (renamed from `blocked` / `ci-blocked` in 1.3.29, [#148](https://github.com/mattsears18/shipyard/issues/148)) so the label itself communicates the block category without reading the comment trail. The old `blocked` / `ci-blocked` names are kept as deprecated aliases for one week after 1.3.29 to avoid breaking in-flight sessions.
 
 - `blocked:agent` — added when an agent returns `blocked: <reason>`. The orchestrator never removes it on its own; the step 3d.2 sweep in `plugins/shipyard/commands/do-work.md` auto-clears it on referential `Blocked by #N` resolution, but otherwise it stays until a human or follow-up issue clears it.
 - `blocked:ci` — added when a PR exhausts the 3-attempt fix-checks cap (the orchestrator's circuit breaker). The step 3d.1 sweep in `plugins/shipyard/commands/do-work.md` auto-clears it when a new commit lands on the PR's head branch (the "stuck" premise no longer holds), letting shipyard retry.
@@ -37,13 +37,13 @@ Reserves space for future categories (`blocked:external` for upstream / vendor b
 
 ### Gate labels (intake → human review)
 
-- `needs-refinement` — **generic pipeline gate** (semantics generalized in 1.3.28, [#145](https://github.com/mattsears18/claude-plugins/issues/145)): "this issue isn't ready for `/shipyard:do-work` dispatch yet — a refiner needs to process it first." Applied conditionally at intake by `.github/workflows/intake-refinement-gate.yml` (external authors, bodies with `## Open questions` headings, bare one-liners, bot-authored). `/shipyard:refine-issues` (renamed from `/shipyard:refine-feedback` — alias preserved) branches by source signal: user-feedback gets classify+rewrite, open-questions get resolve-defaults, anything else falls through to `escalate-to-triage` (which swaps `needs-refinement` for `needs-triage`).
+- `needs-refinement` — **generic pipeline gate** (semantics generalized in 1.3.28, [#145](https://github.com/mattsears18/shipyard/issues/145)): "this issue isn't ready for `/shipyard:do-work` dispatch yet — a refiner needs to process it first." Applied conditionally at intake by `.github/workflows/intake-refinement-gate.yml` (external authors, bodies with `## Open questions` headings, bare one-liners, bot-authored). `/shipyard:refine-issues` (renamed from `/shipyard:refine-feedback` — alias preserved) branches by source signal: user-feedback gets classify+rewrite, open-questions get resolve-defaults, anything else falls through to `escalate-to-triage` (which swaps `needs-refinement` for `needs-triage`).
 - `needs-human-review` — **decoupled** from `needs-refinement` in 1.3.28. Specifically a human sign-off gate: applied only by the user-feedback classify+rewrite branch of `/shipyard:refine-issues`, the `external-author-gate.yml` workflow, and `issue-worker.md` step 6 for external-author PRs. The resolve-defaults and escalate-to-triage branches do NOT apply it — trusted-author issues that pass through resolve-defaults become dispatch-eligible immediately.
 - `needs-triage` — fall-through label applied by `/shipyard:refine-issues`' escalate-to-triage branch when no refiner rule matches. `/do-work` excludes it from dispatch; `/shipyard:my-turn` surfaces it for human triage.
 
 ## Configuration (`shipyard.config.json` + layered overrides)
 
-Shipyard runs against a 4-layer config (introduced in 1.3.31, [#165](https://github.com/mattsears18/claude-plugins/issues/165)). Effective config is the deep-merge of all four layers in order — later wins, arrays are replaced (not concatenated), and objects merge key-by-key recursively.
+Shipyard runs against a 4-layer config (introduced in 1.3.31, [#165](https://github.com/mattsears18/shipyard/issues/165)). Effective config is the deep-merge of all four layers in order — later wins, arrays are replaced (not concatenated), and objects merge key-by-key recursively.
 
 | Layer | Path | Committed? | Purpose |
 |---|---|---|---|
@@ -90,7 +90,7 @@ The schema rejects keys matching `/token|secret|api_key|password|credential/i` r
 
 ## Cost-tracking ledger (`~/.shipyard/cost-history.jsonl`)
 
-Persistent cross-session token-usage records live at `~/.shipyard/` (introduced in 1.3.32, [#163](https://github.com/mattsears18/claude-plugins/issues/163)). Every `/shipyard:do-work` session's end-of-session cleanup flushes a rolled-up record into this ledger before reaping the per-session state file.
+Persistent cross-session token-usage records live at `~/.shipyard/` (introduced in 1.3.32, [#163](https://github.com/mattsears18/shipyard/issues/163)). Every `/shipyard:do-work` session's end-of-session cleanup flushes a rolled-up record into this ledger before reaping the per-session state file.
 
 | Path | Format | Lifetime | Contents |
 |---|---|---|---|

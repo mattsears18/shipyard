@@ -184,4 +184,4 @@ The command is a thin wrapper. The assistant's job is to:
 - [`/shipyard:init`](./init.md) — bootstrap `shipyard.config.json` for a new repo.
 - [`plugins/shipyard/scripts/shipyard-config.sh`](../scripts/shipyard-config.sh) — the underlying loader / validator / writer.
 - [`plugins/shipyard/schemas/`](../schemas/) — the repo and user-global schemas.
-- Issue [#165](https://github.com/mattsears18/claude-plugins/issues/165) — the config-system spec.
+- Issue [#165](https://github.com/mattsears18/shipyard/issues/165) — the config-system spec.

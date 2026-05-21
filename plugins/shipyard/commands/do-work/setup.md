@@ -126,7 +126,7 @@ Cache lifetime is session-scoped. The cache is a latency optimization; it never 
 
 ### 0.9 `gh-cached.sh` wrapper (opt-in per call-site)
 
-Within a single orchestrator session (typically 5–15 minutes), GitHub state doesn't change much except for the artifacts shipyard itself is modifying. But the orchestrator re-queries the same data across phases — `gh pr list` at the start of dispatch, again in drain, again in summary; `gh issue list` at backlog fetch and again on the lightweight backlog re-check before every dispatch. Most of those answers haven't changed. `plugins/shipyard/scripts/gh-cached.sh` is a session-scoped wrapper that caches stdout from a `gh` call keyed by its argv, with a caller-supplied TTL, so the redundant re-fetches return from disk instead of re-hitting the GitHub API. Closes [#160](https://github.com/mattsears18/claude-plugins/issues/160) — phase 3 of the perf umbrella [#152](https://github.com/mattsears18/claude-plugins/issues/152).
+Within a single orchestrator session (typically 5–15 minutes), GitHub state doesn't change much except for the artifacts shipyard itself is modifying. But the orchestrator re-queries the same data across phases — `gh pr list` at the start of dispatch, again in drain, again in summary; `gh issue list` at backlog fetch and again on the lightweight backlog re-check before every dispatch. Most of those answers haven't changed. `plugins/shipyard/scripts/gh-cached.sh` is a session-scoped wrapper that caches stdout from a `gh` call keyed by its argv, with a caller-supplied TTL, so the redundant re-fetches return from disk instead of re-hitting the GitHub API. Closes [#160](https://github.com/mattsears18/shipyard/issues/160) — phase 3 of the perf umbrella [#152](https://github.com/mattsears18/shipyard/issues/152).
 
 **Shape.** Run `gh` through the wrapper instead of calling `gh` directly:
 
@@ -175,7 +175,7 @@ Idempotent. Runs in the same cleanup chain that reaps the session state file —
 
 ### 0.9.1 `gh-batch.sh` GraphQL wrapper (opt-in per call-site)
 
-Where `gh-cached.sh` reduces redundant *re-fetches* across phases, `gh-batch.sh` reduces *fan-out*: N sequential `gh pr view <M>` / `gh issue view <N>` calls collapse to a single `gh api graphql` query with aliased per-record sub-queries. Closes [#159](https://github.com/mattsears18/claude-plugins/issues/159) — phase 2 of the perf umbrella [#152](https://github.com/mattsears18/claude-plugins/issues/152).
+Where `gh-cached.sh` reduces redundant *re-fetches* across phases, `gh-batch.sh` reduces *fan-out*: N sequential `gh pr view <M>` / `gh issue view <N>` calls collapse to a single `gh api graphql` query with aliased per-record sub-queries. Closes [#159](https://github.com/mattsears18/shipyard/issues/159) — phase 2 of the perf umbrella [#152](https://github.com/mattsears18/shipyard/issues/152).
 
 **When to reach for it.** Any call-site that fires `gh pr view <M>` or `gh issue view <N>` in a loop over a known list of numbers is a candidate. Highest-leverage sites today:
 
@@ -669,7 +669,7 @@ The refined-and-now-`needs-human-review`-only issues will be picked up by the *n
 
 **Implementation note.** The refinement logic itself lives in `/refine-issues`. This step is a thin invocation — no duplication of the bucket spec, sentinel logic, or worker prompt template. If we later change the refinement prompt, we only update one file (`commands/refine-issues.md`).
 
-**Naming history:** the command was renamed from `/refine-feedback` in shipyard 1.3.28 ([#145](https://github.com/mattsears18/claude-plugins/issues/145)) when `needs-refinement` was generalized from a user-feedback-only intake to a universal pipeline gate. A back-compat alias still resolves `/refine-feedback` to the same spec.
+**Naming history:** the command was renamed from `/refine-feedback` in shipyard 1.3.28 ([#145](https://github.com/mattsears18/shipyard/issues/145)) when `needs-refinement` was generalized from a user-feedback-only intake to a universal pipeline gate. A back-compat alias still resolves `/refine-feedback` to the same spec.
 
 ### 4. Fetch + rank the backlog
 
@@ -842,7 +842,7 @@ Examples:
 
 ```
 /do-work · mattsears18/lightwork · main:🟢 · in-flight: 2/2 [#769, #768] · failing PRs: 3 (@me: 1)
-/do-work · mattsears18/claude-plugins · main:🟢 · in-flight: 3/4 [#63, #65, #67] · failing PRs: 0 (@me: 0) · [soft: plugins/shipyard/commands/do-work.md×3 ⚠️, CHANGELOG.md×3 ⚠️]
+/do-work · mattsears18/shipyard · main:🟢 · in-flight: 3/4 [#63, #65, #67] · failing PRs: 0 (@me: 0) · [soft: plugins/shipyard/commands/do-work.md×3 ⚠️, CHANGELOG.md×3 ⚠️]
 /do-work · mattsears18/lightwork · main:🔴 (run 18234567) · in-flight: 2/2 [⚠️ fix-main-ci, #769] · failing PRs: 12 ⚠️ (@me: 2) · diverting: fix-failing-prs-batch
 /do-work · mattsears18/lightwork · main:⏳ · in-flight: 0/2 [ ] · failing PRs: 0 (@me: 0)
 ```

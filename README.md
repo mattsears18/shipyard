@@ -8,7 +8,7 @@
 > edits files, pushes branches, opens PRs, and arms auto-merge on PRs once their CI goes green. Before
 > using it on a repo you care about:
 >
-> - **Treat it as experimental.** 1 star, [14+ open issues](https://github.com/mattsears18/claude-plugins/issues)
+> - **Treat it as experimental.** 1 star, [14+ open issues](https://github.com/mattsears18/shipyard/issues)
 >   including behavioral bugs around termination, dispatch fairness, and worker isolation. Behavior will
 >   change between commits.
 > - **Treat it as potentially unsafe.** Safety is enforced primarily through prompt discipline rather
@@ -50,7 +50,7 @@ Get from zero to your first auto-merging PR in about five minutes.
 ### 1. Install the plugin
 
 ```sh
-claude plugin marketplace add mattsears18/claude-plugins
+claude plugin marketplace add mattsears18/shipyard
 claude plugin install shipyard@mattsears-plugins
 ```
 
@@ -117,13 +117,13 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through). `/refine-feedback` still works as a back-compat alias.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers
 - `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart.
-- `/shipyard:init` — _(coming in [#165](https://github.com/mattsears18/claude-plugins/issues/165))_ scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps.
+- `/shipyard:init` — _(coming in [#165](https://github.com/mattsears18/shipyard/issues/165))_ scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps.
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
 
 ## How it works
 
-> Full visual infographic in [#37](https://github.com/mattsears18/claude-plugins/issues/37) (in progress). Until then, here's the conceptual flow.
+> Full visual infographic in [#37](https://github.com/mattsears18/shipyard/issues/37) (in progress). Until then, here's the conceptual flow.
 
 The loop has four phases, and the orchestrator drives them on every iteration of `/do-work`:
 
@@ -143,23 +143,23 @@ Shipyard treats several label families as load-bearing — origin labels (`user-
 
 ### Observability — per-session token cost
 
-Every `/do-work` session writes per-session token-usage data to `~/.shipyard/sessions/<session-id>.json` and posts cost-tracking comments on the issues and PRs it touches, so you can see at a glance how much a given backlog burndown cost. Useful for tuning `--concurrency`, deciding which audits are worth running on a cron, and spotting agents that are spending too many tokens for the work they ship. Landed in [#179](https://github.com/mattsears18/claude-plugins/pull/179) / shipyard 1.3.30.
+Every `/do-work` session writes per-session token-usage data to `~/.shipyard/sessions/<session-id>.json` and posts cost-tracking comments on the issues and PRs it touches, so you can see at a glance how much a given backlog burndown cost. Useful for tuning `--concurrency`, deciding which audits are worth running on a cron, and spotting agents that are spending too many tokens for the work they ship. Landed in [#179](https://github.com/mattsears18/shipyard/pull/179) / shipyard 1.3.30.
 
 ## What's been hardened
 
 A non-exhaustive list of safety properties the orchestrator and workers carry today. Each bullet links to the PR or issue where the property landed:
 
-- The orchestrator never goes idle while workable backlog or open `@me` PRs remain — a structured invariant line prints every turn so going-quiet-with-work-left is detectable ([#23](https://github.com/mattsears18/claude-plugins/issues/23)).
-- User feedback enters via a backend-mediated intake and is refined + human-gated before any code-modifying agent runs against it ([#24](https://github.com/mattsears18/claude-plugins/issues/24)).
-- Workers are forbidden from `git commit --no-verify` and equivalent hook bypasses, enforced both at the prompt and at the `Bash` permission layer in `plugin.json` ([#26](https://github.com/mattsears18/claude-plugins/issues/26)).
-- The orchestrator re-checks the backlog before every dispatch — issues filed mid-session don't have to wait for a periodic refresh to be picked up ([#29](https://github.com/mattsears18/claude-plugins/issues/29)).
-- Issue-worker dispatches are pinned to `isolation: "worktree"` via a `PreToolUse` hook. Workers operate in a dedicated worktree and never touch the user's primary checkout's HEAD ([#34](https://github.com/mattsears18/claude-plugins/issues/34)).
+- The orchestrator never goes idle while workable backlog or open `@me` PRs remain — a structured invariant line prints every turn so going-quiet-with-work-left is detectable ([#23](https://github.com/mattsears18/shipyard/issues/23)).
+- User feedback enters via a backend-mediated intake and is refined + human-gated before any code-modifying agent runs against it ([#24](https://github.com/mattsears18/shipyard/issues/24)).
+- Workers are forbidden from `git commit --no-verify` and equivalent hook bypasses, enforced both at the prompt and at the `Bash` permission layer in `plugin.json` ([#26](https://github.com/mattsears18/shipyard/issues/26)).
+- The orchestrator re-checks the backlog before every dispatch — issues filed mid-session don't have to wait for a periodic refresh to be picked up ([#29](https://github.com/mattsears18/shipyard/issues/29)).
+- Issue-worker dispatches are pinned to `isolation: "worktree"` via a `PreToolUse` hook. Workers operate in a dedicated worktree and never touch the user's primary checkout's HEAD ([#34](https://github.com/mattsears18/shipyard/issues/34)).
 
 ## See it in action
 
 Every PR opened by `/do-work` carries the `shipyard` label (renamed from `do-work` in 1.2.0). The repo's own merged history is the living demo:
 
-[**All `shipyard`-labeled closed PRs →**](https://github.com/mattsears18/claude-plugins/pulls?q=is%3Apr+is%3Aclosed+label%3Ashipyard)
+[**All `shipyard`-labeled closed PRs →**](https://github.com/mattsears18/shipyard/pulls?q=is%3Apr+is%3Aclosed+label%3Ashipyard)
 
 Each one was opened, fixed-up through CI failures (if any), and merged without a human touching the keyboard between issue triage and PR review.
 
@@ -257,7 +257,7 @@ CHANGELOG.md                     # per-version changelog (plugin version bumps)
 
 ## Optional: auto-file issues on skill/agent failure
 
-The `shipyard` plugin can automatically file a GitHub issue against `mattsears18/claude-plugins` whenever one of its own skills or agents appears to have failed during your session. The point: real failures become structured bug reports without anyone having to type one up.
+The `shipyard` plugin can automatically file a GitHub issue against `mattsears18/shipyard` whenever one of its own skills or agents appears to have failed during your session. The point: real failures become structured bug reports without anyone having to type one up.
 
 It is **opt-in** — nothing is filed unless you set:
 
@@ -290,7 +290,7 @@ If the failing session was operating on a **private codebase or private issue tr
 | Env var | Default | Effect |
 |---|---|---|
 | `CLAUDE_PLUGINS_AUTOREPORT` | unset | Must be `1` to enable. |
-| `CLAUDE_PLUGINS_AUTOREPORT_REPO` | `mattsears18/claude-plugins` | Target repo for auto-reports. |
+| `CLAUDE_PLUGINS_AUTOREPORT_REPO` | `mattsears18/shipyard` | Target repo for auto-reports. |
 | `CLAUDE_PLUGINS_AUTOREPORT_DRY` | unset | When `1`, the helper prints the would-be issue as JSON to stdout instead of calling `gh`. Used by the test suite and useful for local previews. |
 
 ### Issue shape

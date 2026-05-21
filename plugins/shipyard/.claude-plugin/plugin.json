@@ -1,13 +1,13 @@
 {
   "name": "shipyard",
-  "version": "1.3.42",
+  "version": "1.3.43",
   "description": "Autonomous engineering loop: audits surface work, /do-work refines and dispatches, parallel workers in isolated worktrees ship the fixes.",
   "author": {
     "name": "Matt Sears",
     "email": "mattsears18@gmail.com"
   },
-  "homepage": "https://github.com/mattsears18/claude-plugins",
-  "repository": "https://github.com/mattsears18/claude-plugins",
+  "homepage": "https://github.com/mattsears18/shipyard",
+  "repository": "https://github.com/mattsears18/shipyard",
   "license": "MIT",
   "keywords": ["orchestrator", "autonomous-agents", "backlog-burndown", "audit", "lighthouse", "ux", "security", "accessibility", "github-issues"],
   "permissions": {

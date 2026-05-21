@@ -4,6 +4,18 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.43 — 2026-05-21
+
+Repo renamed from `mattsears18/claude-plugins` (plural) to `mattsears18/shipyard` (singular, matches the only plugin shipping) per the decision in [#173](https://github.com/mattsears18/shipyard/issues/173). Executed in two stages tracked by [#196](https://github.com/mattsears18/shipyard/issues/196): Stage 1 was the GitHub `gh repo rename` and local-remote-URL update (done out-of-band by the maintainer); Stage 2 is this PR's file-content sweep — every literal `mattsears18/claude-plugins` reference replaced with `mattsears18/shipyard` across 33 tracked files (33 source-of-truth, spec, agent, command, hook, schema, and script files). Historical `CHANGELOG.md` entries (1.3.0 – 1.3.42) intentionally retain the old name — GitHub's auto-redirects keep those URLs resolving, and rewriting history adds noise without benefit.
+
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — `homepage` and `repository` fields (the marketplace-authoritative URLs) now point at `https://github.com/mattsears18/shipyard`. Version bumped to 1.3.43.
+- **`.github/CODEOWNERS`, `.github/ISSUE_TEMPLATE/config.yml`, `.github/workflows/external-author-gate.yml`, `.shellcheckrc`** — repo identity / discussions URL / issue-link references updated.
+- **`README.md`, `CLAUDE.md`, `CONTRIBUTING.md`** — top-level docs updated (26 hits in README alone — the marketplace install snippet and every issue cross-reference).
+- **All `plugins/shipyard/{commands,agents,skills,hooks,schemas,scripts}/**`** — every spec / agent / command / hook / schema / script file containing the literal updated via `git ls-files` + `sed` sweep.
+- **`shipyard.config.json`** — the repo's own config also carried a reference; updated.
+
+GitHub auto-redirects keep every old URL functional (clone, issues, PRs, marketplace listings), so existing clones and external bookmarks continue to work. The flatten of `plugins/shipyard/` → root (the option discussed in #196) is deferred to a follow-up; this PR is administrative only and intentionally avoids structural changes that would balloon the diff.
+
 ### 1.3.42 — 2026-05-21
 
 Adds an opt-in **inline-trivial fast path** to the orchestrator's dispatch decision tree — when a candidate issue is small enough and pattern-matchable, the orchestrator opens the file, makes the edit, commits, pushes, and opens the PR itself instead of dispatching a `shipyard:issue-worker` Agent tool call. Skips the ~13k-token worker boot per inline-eligible issue. Closes [#156](https://github.com/mattsears18/claude-plugins/issues/156) (Phase 1 of the perf umbrella [#152](https://github.com/mattsears18/claude-plugins/issues/152) — pairs with 1.3.24's per-mode-file split and 1.3.33's per-phase command split as the third architecture lever).

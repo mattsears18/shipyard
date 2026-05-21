@@ -50,7 +50,7 @@ This thin entry only owns:
 
 Everything else — the issue-handling lifecycle, the fix-loop semantics, the trivial-conflict-or-bail policy, the author-trust gating, the return-string vocabulary — lives in the matching per-mode file in `issue-worker/`. Each per-mode file is self-contained for its mode and references `shipyard:worker-preamble` for the shared rules.
 
-The split exists because every worker dispatch only runs one mode, but a single combined file forces every worker to scroll past instructions for the other 4. See [#155](https://github.com/mattsears18/claude-plugins/issues/155) for the reasoning.
+The split exists because every worker dispatch only runs one mode, but a single combined file forces every worker to scroll past instructions for the other 4. See [#155](https://github.com/mattsears18/shipyard/issues/155) for the reasoning.
 
 ## Don't
 

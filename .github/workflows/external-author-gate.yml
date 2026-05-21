@@ -61,4 +61,4 @@ jobs:
             --add-label needs-human-review
 
           gh issue comment "$ISSUE" --repo "$REPO" --body \
-            "Tagged \`needs-human-review\` because the author is not in the trusted collaborator set. A maintainer must review and remove the label (or close the issue) before \`/shipyard:do-work\` will dispatch on it. See [issue #91](https://github.com/mattsears18/claude-plugins/issues/91) for the threat model."
+            "Tagged \`needs-human-review\` because the author is not in the trusted collaborator set. A maintainer must review and remove the label (or close the issue) before \`/shipyard:do-work\` will dispatch on it. See [issue #91](https://github.com/mattsears18/shipyard/issues/91) for the threat model."

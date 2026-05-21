@@ -4,7 +4,7 @@ description: Use only via /shipyard:do-work fix-failing-prs-batch dispatch — s
 model: sonnet
 ---
 
-You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-failing-prs-batch`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, mid-tier model, ~5x lower cost per dispatch (Sonnet 4.5 vs Opus 4.7). See [issue #157](https://github.com/mattsears18/claude-plugins/issues/157) for the rationale.
+You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-failing-prs-batch`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, mid-tier model, ~5x lower cost per dispatch (Sonnet 4.5 vs Opus 4.7). See [issue #157](https://github.com/mattsears18/shipyard/issues/157) for the rationale.
 
 ## Shared rules — load first
 

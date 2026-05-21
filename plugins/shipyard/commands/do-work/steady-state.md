@@ -214,7 +214,7 @@ The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight
 
 ## Dispatch rules (used by step 7 and step C)
 
-**Per-mode `subagent_type` routing.** The orchestrator picks the `Agent`-tool `subagent_type` based on the worker's `mode:`. The shim agents pin smaller models for the modes whose workload doesn't need Opus 4.7 — cutting per-dispatch inference cost ~5x for CI-repair work that's mostly pattern-matching against failing logs. See [#157](https://github.com/mattsears18/claude-plugins/issues/157) for the cost rationale.
+**Per-mode `subagent_type` routing.** The orchestrator picks the `Agent`-tool `subagent_type` based on the worker's `mode:`. The shim agents pin smaller models for the modes whose workload doesn't need Opus 4.7 — cutting per-dispatch inference cost ~5x for CI-repair work that's mostly pattern-matching against failing logs. See [#157](https://github.com/mattsears18/shipyard/issues/157) for the cost rationale.
 
 | `mode:`                  | `subagent_type`                  | Model (frontmatter) | Reason for the model choice                                       |
 |--------------------------|----------------------------------|---------------------|-------------------------------------------------------------------|

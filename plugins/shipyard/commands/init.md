@@ -115,7 +115,7 @@ The command is intentionally a thin wrapper around `shipyard-config.sh`. The ass
 
 ## Related
 
-- Issue [#165](https://github.com/mattsears18/claude-plugins/issues/165) — the config-system spec this command implements.
+- Issue [#165](https://github.com/mattsears18/shipyard/issues/165) — the config-system spec this command implements.
 - [`/shipyard:config`](./config.md) — show / get / set / edit subcommands for managing the config post-init.
 - [`plugins/shipyard/scripts/shipyard-config.sh`](../scripts/shipyard-config.sh) — the underlying loader / validator / writer.
 - [`plugins/shipyard/schemas/shipyard.config.schema.json`](../schemas/shipyard.config.schema.json) — the repo-config schema.
