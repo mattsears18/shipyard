@@ -2,6 +2,31 @@
   <img src="docs/images/shipyard-marketing.png" alt="Shipyard: Turn Your Backlog into Shipped Work. /audit (auditors), third-party services, user feedback, and manual entry feed into the issue backlog stack; the orchestrator (/do-work) directs issue workers loading containers onto shipping vessels." width="100%" />
 </p>
 
+> ## 🚨 Experimental — read before you run this against anything important
+>
+> This is personal tooling. The shipyard plugin runs an **autonomous code-modification loop** — it
+> edits files, pushes branches, opens PRs, and arms auto-merge on PRs once their CI goes green. Before
+> using it on a repo you care about:
+>
+> - **Treat it as experimental.** 1 star, [14+ open issues](https://github.com/mattsears18/claude-plugins/issues)
+>   including behavioral bugs around termination, dispatch fairness, and worker isolation. Behavior will
+>   change between commits.
+> - **Treat it as potentially unsafe.** Safety is enforced primarily through prompt discipline rather
+>   than architectural sandboxing. The tool has broad permissions by design — file system, `git`, `gh`,
+>   hook execution.
+> - **Treat it as expensive.** Parallel `/do-work` workers each pay full per-context costs; recursive
+>   audit / refine flows can dispatch deep agent trees. Start with `--concurrency 1` and watch the
+>   billing dashboard before scaling.
+> - **No tests.** No automated test coverage on the skills, commands, or agents. Behavior verification
+>   is manual + dogfooding.
+> - **No API stability.** Slash-command shape, skill interfaces, and agent contracts evolve fast.
+>   Pin to a specific commit if you need reproducibility; expect drift between updates.
+> - **No support.** Personal repo, no SLA, no incident response, issues triaged at the author's
+>   discretion.
+>
+> Recommended posture for first-time use: a throwaway repo, `--concurrency 1`, default-deny Claude
+> Code permissions, and a billing alert on your Anthropic account.
+
 # mattsears-plugins
 
 Personal [Claude Code](https://docs.claude.com/en/docs/claude-code) plugins by Matt Sears. The headliner is **`shipyard`** — an autonomous engineering loop that finds work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers in isolated git worktrees.
