@@ -162,7 +162,9 @@ If `session-state.sh update` fails (exit code != 0), log `[session-state] update
 
 ### Cost-tracking write-through
 
-After every Agent dispatch returns, the orchestrator extracts the dispatch's `usage` payload (input/output/cache_read/cache_creation token counts; model id) and attributes it via `bump-tokens` before reconciling the return string. The attribution rules:
+After every Agent dispatch returns, the orchestrator extracts the dispatch's `usage` payload (input/output/cache_read/cache_creation token counts; model id) and attributes it via `bump-tokens` before reconciling the return string. **This is not optional, and the call site is [step A.0](./do-work/steady-state.md#a0-attribute-the-dispatchs-token-usage-mandatory--before-any-return-string-parsing) — not this section.** The numbered first-step framing is load-bearing: a previous version of these docs described the hook only in prose here and in the write-through table below, and the orchestrator silently skipped attribution across an entire 16-PR session ([#197](https://github.com/mattsears18/shipyard/issues/197)). The mechanical contract lives at the dispatch site (A.0); this section documents the *rules* the helper call follows.
+
+The attribution rules:
 
 - **Worker dispatches with an associated issue or PR** — pass `--issue <N>` (issue-work, fix-checks-only) and/or `--pr <M>` (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch) along with `--mode <mode>` and `--model <id>`. Both the per-issue/per-pr bucket and `.tokens.totals` get bumped; a `per_invocation` ring-buffer entry is recorded for trace.
 - **Orchestrator-side overhead** — calls without `--issue` or `--pr` only bump `.tokens.totals`. Use this for the orchestrator's own per-turn token cost (the scope-pre-flight pass at step 6, the periodic refresh at step D, etc.) — those don't attribute to a specific PR.

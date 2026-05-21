@@ -21,6 +21,32 @@ Never end the turn with prose. No "Next: …" narration, no status recap, no "I'
 
 The agent's last line tells you what happened.
 
+#### A.0. Attribute the dispatch's token usage (MANDATORY — before any return-string parsing)
+
+**This step is not optional.** Before parsing the agent's return string, before any of the per-mode handling below, **attribute the dispatch's token usage to the session ledger**. Without this call, the per-session `.tokens` block, the per-issue / per-PR attribution buckets, the durable PR cost-comment, and the cross-session ledger at `~/.shipyard/cost-history.jsonl` all stay empty — and the perf umbrella ([#152](https://github.com/mattsears18/shipyard/issues/152)) becomes unmeasurable. See [issue #197](https://github.com/mattsears18/shipyard/issues/197) for the regression that prompted this becoming step A.0 instead of a buried mention in the write-through table.
+
+Extract the `usage` payload from the Agent tool result — the harness emits it as a `<usage>` block in the task-notification message that wakes this turn. Required fields: `total_tokens`, `duration_ms`. If the harness also exposes `input` / `output` / `cache_read` / `cache_creation` separately, pass them through for finer-grained accounting; otherwise `total_tokens` alone is enough for first-pass attribution. Invoke:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
+  --session-id "<session-id>" \
+  --issue <N>            `# present for issue-work and fix-checks-only on issue-anchored PRs` \
+  --pr <M>               `# present for fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch (and issue-work after it shipped)` \
+  --input <input> --output <output> \
+  --cache-read <cache_read> --cache-creation <cache_creation> \
+  --mode <mode> --model <model-id>
+```
+
+Both `--issue` and `--pr` are optional from the helper's perspective — pass whichever the dispatch surfaced. `bump-tokens` will route the attribution into `.tokens.totals` always, into `.tokens.per_issue[<N>]` if `--issue` is present, and into `.tokens.per_pr[<M>]` if `--pr` is present.
+
+**Set the per-turn `tokens_attributed` flag to `true`** the moment `bump-tokens` returns successfully — step E's invariant line surfaces it for compliance auditing. On a turn where `bump-tokens` errors, leave the flag `false`, log `[bump-tokens] attribution failed: <exit code>; continuing`, and proceed with reconcile anyway. The dollar-cost data point is lost but the dispatch loop keeps moving; the flag's purpose is to make the gap visible, not to gate forward progress.
+
+**If the dispatch had no `usage` payload** (a harness gap — rare, and means upstream isn't surfacing the data), still proceed to A.1; log `[bump-tokens] no usage payload in dispatch result; skipping attribution` and leave `tokens_attributed=false`. Same don't-block-on-observational-data posture as the helper-error path.
+
+Once A.0 has fired (or its skip has been logged), proceed to A.1 and parse the return string per the per-mode handling below.
+
+#### A.1. Parse the return string
+
 For **issue work** (`shipped` / `blocked` / `errored`):
 
 - **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. **Append `<M>` to `session_prs`** (the set the [end-of-session drain](./drain.md#end-of-session-drain) watches). Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.
@@ -57,7 +83,30 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
 For **fix-checks work** (`green` / `noop` / `blocked`):
 
-- **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed — no re-add needed.) **Refresh the cost-tracking comment** for `<M>` using the same edit-or-create flow described in the [`shipped`-return cost-comment hook](#a-reconcile-the-return) — the worker's `bump-tokens` calls landed against this PR's bucket, so the comment body needs to reflect the new cumulative total. No-ops on a PR that never had a sentinel comment posted (no existing comment to update, no `shipped` event to anchor a fresh post).
+- **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed — no re-add needed.) **Refresh the cost-tracking comment** for `<M>` so the cumulative total includes this fix-checks dispatch's tokens (A.0 bumped them into `.tokens.per_pr[<M>]`). Same edit-or-create semantics as the `shipped` hook:
+
+  ```bash
+  # 1. Read the cost summary as a Markdown comment body (now includes the
+  # cumulative total across the original ship + every fix-checks follow-up).
+  BODY=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
+    --session-id "<session-id>" --pr <M> --format comment)
+
+  # 2. Edit the existing sentinel comment in place if one exists; otherwise
+  # create one. The PATCH path is the hot path here — a green return on a
+  # PR that was originally shipped this session will always have a
+  # sentinel comment to update.
+  EXISTING=$(gh pr view <M> --repo <owner/repo> \
+    --json comments --jq '[.comments[] | select(.body | startswith("<!-- do-work-cost-tracking -->"))][0].id // empty')
+
+  if [ -n "$EXISTING" ]; then
+    gh api -X PATCH "/repos/<owner/repo>/issues/comments/$EXISTING" \
+      -f body="$BODY" >/dev/null
+  else
+    gh pr comment <M> --repo <owner/repo> --body "$BODY" >/dev/null
+  fi
+  ```
+
+  No-ops on a PR that never had a sentinel comment posted (no existing comment to update, no `shipped` event to anchor a fresh post — `EXISTING` is empty and the create path posts the first comment with just this fix-checks pass's tokens). Same comment-post-error policy as the `shipped` hook: log `[cost-comment] PR #<M> refresh failed: <reason>; continuing` and proceed.
 
   **Trust-but-verify before accepting `green`.** The agent's `green` claim is load-bearing — downstream code treats green PRs as settled. Spot-check:
 
@@ -186,18 +235,18 @@ See [RATIONALE → Refresh trigger worked example](../do-work-RATIONALE.md#step-
 
 ### E. Invariant line (end of every steady-state turn)
 
-After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. Whenever you end a turn without one, you have skipped step C — go back and fix it. The `state=<state>` token also makes the per-turn write-through to the [session state file](../do-work.md#session-state-file) visible in-line.
+After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. Whenever you end a turn without one, you have skipped step C — go back and fix it. The `state=<state>` token also makes the per-turn write-through to the [session state file](../do-work.md#session-state-file) visible in-line. The `tokens_attributed=<bool>` token surfaces whether [step A.0](#a0-attribute-the-dispatchs-token-usage-mandatory--before-any-return-string-parsing)'s `bump-tokens` call actually fired on a reconcile turn — making spec-skipping visible the same way the `state=` token does for the session-state write-through.
 
 **Steady-state format** (after a normal dispatch turn):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · state=<state>
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · state=<state> · tokens_attributed=<true|false>
 ```
 
 **Idle-proof format** (used ONLY when step C produced no dispatch AND `in_flight < concurrency`):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · state=<state> · idle_reason="<reason>"
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · state=<state> · tokens_attributed=<true|false> · idle_reason="<reason>"
 ```
 
 `<state>` is one of:
@@ -207,6 +256,13 @@ After A → B → C → D, the **last thing emitted in the turn** is a single-li
 - `disabled` — step 1.5's `init` failed and the session is running without the file mirror.
 
 A missing `state=` token is the same contract violation as a missing invariant line — re-run the write-through then re-emit.
+
+`tokens_attributed=<true|false>` is the per-turn evidence flag for step A.0's MANDATORY attribution call:
+
+- **`true`** — step A.0's `bump-tokens` call fired and returned successfully this turn. Required outcome on every **reconcile turn** (a turn where step A actually parsed an agent's return).
+- **`false`** — step A.0 didn't fire this turn. Valid ONLY on **dispatch-only turns** (turns with no agent completion to reconcile — the initial pool fill at step 7, drain-poll turns where nothing returned, refresh-only turns triggered by the 5-min fallback).
+
+`tokens_attributed=false` on a reconcile turn is a **contract violation** — the same severity as a missing invariant line or a missing `state=` token. If you find yourself emitting it that way, you skipped A.0. Go back, fire the `bump-tokens` call against the dispatch's usage payload, then re-emit the invariant. The one exception is the **logged-skip case**: if A.0 ran but the dispatch result had no `<usage>` block (or the helper call errored), the orchestrator must have already emitted the corresponding `[bump-tokens] …` advisory line earlier in the turn; in that case `tokens_attributed=false` is honest about the gap rather than a silent skip. A missing `tokens_attributed=` token entirely is a contract violation regardless — re-run A.0's compliance check and re-emit.
 
 The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight drains)`, `draining=true`, `all ready_issues collide with in_flight paths`, `all ready_issues blocked by soft-cap on <path> (×<N> active)`, `all ready_issues collide with in_flight lockfile sections (<section>×<N>, ...)`, or a concrete diagnostic string. Vague reasons ("waiting for completions", "merge train draining", "nothing to do right now") are NOT acceptable.
 
