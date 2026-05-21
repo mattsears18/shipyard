@@ -210,6 +210,19 @@ Once enabled, hooks (`PostToolUse` on `Task|Agent` and `SubagentStop`) invoke `p
 3. **Builds a signature** from the skill/agent name + a digit-normalized error excerpt, then **searches open `auto-reported` issues** for a match. If found → adds a comment with the new occurrence. If not → files a fresh issue with `auto-reported` and `bug` labels.
 4. **Never breaks your session** — the helper traps errors and always exits 0. The hook runs the helper detached in the background so reports don't block the foreground.
 
+### What is transmitted
+
+Scrubbing covers **secret-shaped patterns** (the list in step 2 above) — it does not redact general prose. Each auto-report includes the following fields drawn from the live session, and any non-secret content in them is filed as-is:
+
+- **Invocation prompt** — the agent's task description, up to 1000 chars. For a `shipyard:issue-worker` dispatch this is the full task string (e.g. `work issue 42 in <owner>/<repo>`), which may include the target repo name and issue identifiers.
+- **Error details** — up to ~2000 chars of the failure output.
+- **Transcript excerpt** — the last 80 lines (up to 3000 chars) of the agent's session transcript. This is the raw record of the session and can include filenames, file contents read via the `Read` tool, `gh issue view` output, git diff output, and bash command output from the working session.
+- **Environment** — OS, shell, Claude Code version, model.
+
+If the failing session was operating on a **private codebase or private issue tracker**, those excerpts may carry filenames, code snippets, or issue text from that codebase into a public GitHub issue on the target auto-report repo. The scrubber has no way to distinguish "private project context" from "debug noise" — only secret-shaped tokens are removed.
+
+**Preview before opting in.** Use the dry-run mode (`CLAUDE_PLUGINS_AUTOREPORT_DRY=1`, documented below) to see exactly what *would* be filed without actually filing it. If you work with sensitive codebases, either preview reports this way before enabling live mode, or set `CLAUDE_PLUGINS_AUTOREPORT_REPO` to a private repo you control so the reports never become public.
+
 ### Configuration
 
 | Env var | Default | Effect |
