@@ -122,58 +122,54 @@ An item may match multiple signals (e.g. a PR is both `blocked:ci` AND DIRTY); c
 
 ## Output
 
-Print the ranked list to the terminal. **No file artifact for v1** — the data is ephemeral and the user wants to read it once, act, and move on. Format:
+Print the ranked list to the terminal. **No file artifact for v1** — the data is ephemeral and the user wants to read it once, act, and move on. The output format is intentionally terse: the user asked for "what do I need to do" — not "what's the state of the repo." Cut the framing, lead with the verb. Format:
 
 ```
-HUMAN ACTIONS NEEDED — <owner/repo> — <N> items (P0: <a>, P1: <b>, P2: <c>)
+1. #142 review and approve or request changes  <https://github.com/owner/repo/pull/142>
+2. #155 read refined body, set priority label, remove needs-human-review  <https://github.com/owner/repo/issues/155>
+3. #148 investigate failing check (`gh pr checks 148 --watch`), fix or escalate  <https://github.com/owner/repo/pull/148>
+4. #161 reply to @<other-login>'s question or close if stale  <https://github.com/owner/repo/issues/161>
+5. #134 finish draft and mark ready-for-review, or close (11d stale)  <https://github.com/owner/repo/pull/134>
 
-P0 — blocking other work
-  1. PR #142 — "feat(shipyard): new my-turn command"
-     awaiting your review · 3d old · <https://github.com/owner/repo/pull/142>
-     Next: review and approve or request changes
-
-  2. Issue #155 — "[user feedback] login crash on iOS 17"
-     needs-human-review since 3d ago · /shipyard:do-work is skipping
-     <https://github.com/owner/repo/issues/155>
-     Next: read the refined body, set a P0/P1/P2 priority label, remove `needs-human-review`
-
-P1 — decisions
-  3. PR #148 — "fix(api): rate-limit retries"
-     blocked:ci (3 fix attempts exhausted) · 1d old
-     <https://github.com/owner/repo/pull/148>
-     Next: investigate the failing check manually (`gh pr checks 148 --watch`), fix or escalate
-
-  4. Issue #161 — "Why does X return null when Y is set?"
-     @<$ME> pinged in last comment 2d ago by @<other-login>
-     <https://github.com/owner/repo/issues/161>
-     Next: reply to the question or close if no longer relevant
-
-P2 — housekeeping
-  5. Draft PR #134 — "wip: refactor session-state"
-     stale 11d · no recent commits
-     <https://github.com/owner/repo/pull/134>
-     Next: finish and mark ready-for-review, or close
+main: green · 1 blocked:ci PR
 ```
 
-Per item, render:
+### Rendering rules
 
-- **Index** (1-based, monotonic across all tiers — easy to refer to as "item 3" verbally)
-- **Artifact** — `PR #<num>` or `Issue #<num>` plus the title (truncate at 60 chars with `…`)
-- **Why-on-user** — one line, the signal that fired (`awaiting your review`, `blocked:ci`, etc.). If multiple signals fired, the highest-priority one is the primary; secondaries appear in parens (e.g. `awaiting your review (also: DIRTY)`).
-- **Age** — when the item entered its "blocked on human" state — uses `createdAt` for new items, `updatedAt` for label-change items. v1 heuristic: use the older of the two — slightly under-counts age but never over-counts.
-- **URL** — clickable `<https://...>` so terminals render it as a hyperlink.
-- **Next action** — one-line concrete next step the user can take. Examples: `review and approve or request changes`, `set a priority label and remove needs-human-review`, `investigate the failing check manually`, `reply to the question or close`.
+Per item — **one line by default**:
+
+- **Index** (1-based, monotonic across the entire list) followed by `.`
+- **Artifact ref** — `#<num>` only (no `PR`/`Issue` prefix — the URL discloses the type; the number is the disambiguator).
+- **Imperative action** — verb-first, sentence-case, no trailing period. This is the only mandatory content. Examples: `review and approve or request changes`, `investigate failing check, fix or escalate`, `reply to question or close`, `enable Email/Password in Firebase Console for <project>`, `set real values for placeholder secrets via firebase functions:secrets:set --project test`.
+- **Stale suffix** (optional) — append `(<N>d stale)` only when the item's age crosses a threshold worth flagging: **≥7d** for any item, or **≥1d** for `awaiting your review` (the highest-leverage block). Default: no age string. The point is a flag, not a metric.
+- **URL** — clickable `<https://...>` at end of line so terminals render it as a hyperlink. Two spaces before the URL for visual separation.
+
+**Drop by default:**
+
+- **Title restatement.** The action sentence carries the artifact's intent in active voice; the title is reference, not headline. Include only when the action genuinely doesn't disambiguate without it (rare — e.g. `#42 review (auth refactor)` to distinguish from `#43 review (logging migration)` when several PRs are queued).
+- **Per-item signal labels** (`needs-human-review`, `blocked:ci`, `awaiting your review`, `DIRTY`). The action sentence already encodes the signal; the label is metadata on the artifact for users who want the receipt.
+- **Tier headers** (`P0 — blocking other work`, etc.). Items are already ranked; the position is the priority. Internal ranking still uses P0/P1/P2 (see [Ranking](#ranking)) — the tiers just don't render.
+- **The opening `HUMAN ACTIONS NEEDED — …` banner.** Redundant — the user just typed the slash command.
+
+**Multi-line items.** Only when the next action genuinely doesn't fit on one line *and* breaking it loses information. Follow-up lines are indented and still action-shaped (continuation of the verb), never framing or restatement.
+
+**Optional footer line** — one line, terse, at the bottom of the list. Surface only if at least one is true: red main with no `fix-main-ci` PR open (`main: red`), open `blocked:ci` PRs (`<N> blocked:ci PRs`), or a clean state worth noting (`main: green`). Skip entirely if there's nothing structural worth flagging. Never a paragraph; never a recap of items already in the list.
+
+### Internal fields (used for ranking, not rendered)
+
+The ranking step still needs the underlying signals to produce the order — they just don't appear in the rendered output. The internal projection per item carries:
+
+- **Tier** — P0 / P1 / P2 (see [Ranking](#ranking)).
+- **Why-on-user** — the signal name that fired (`awaiting your review`, `blocked:ci`, `needs-human-review`, etc.). Used by the ranking + dedup logic; not rendered unless multiple signals merged into one row produced a non-obvious action verb, in which case a single inline `(also: <signal>)` suffix is permitted.
+- **Age** — `createdAt` for new items, `updatedAt` for label-change items (v1 heuristic: use the older of the two; under-counts but never over-counts). Used to trigger the stale suffix.
+- **URL** — surfaces unmodified.
 
 ### Empty state
 
-If passes A–D return zero items: print a single line and exit cleanly.
+If passes A–D return zero items: print a single friendly one-liner and exit cleanly. No banner, no multi-line prose — the empty case is the only case where the answer to "what do I need to do" is actively "nothing," and the rendering should mirror the content.
 
 ```
-HUMAN ACTIONS NEEDED — <owner/repo>
-
-Nothing on your plate — backlog is clean, no PRs awaiting your review,
-no orchestrator dead-ends needing a human. Time to start something new
-(`/shipyard:audit` if you want fresh issues filed) or take a break.
+Nothing on your plate — backlog is clean. Try /shipyard:audit to surface fresh work, or take a break.
 ```
 
 ### Limit overflow
@@ -204,3 +200,4 @@ If a backlog blows the budget, `--limit` already provides a knob; otherwise file
 - **Don't include items where the next action is obviously Claude's, not the user's.** A PR with failing checks but NOT carrying `blocked:ci` is still inside `/shipyard:do-work`'s fix-loop — surfacing it would tell the user to step on the orchestrator's work. The `blocked:ci` label is the explicit "Claude gave up, human must" signal; absence of it means leave it alone.
 - **Don't deep-dive on team membership for review requests.** v1 matches `$ME` directly against `reviewRequests`; team-via-membership lookups would add an extra `gh api` round-trip per PR and are out of scope. Users on teams will still see direct review requests in v1; team-level requests roll up via the GitHub UI's notification stream, which the user has anyway.
 - **Don't repeat work `/shipyard:do-work`'s upfront summary already does.** `/do-work`'s step 2 prints a buckets table with workable / skipped / blocked counts. That's a *backlog snapshot*; `/my-turn` is a *human-actions list*. They share inputs but have different shapes — don't try to merge them.
+- **Don't add framing back to the output.** No tier headers (`P0 — blocking other work`), no opening banner (`HUMAN ACTIONS NEEDED — …`), no closing prose paragraph (`Main CI on main is green, two PRs are still draining…`), no per-item title restatements, no per-item signal-label lines, no per-item age lines (except the stale suffix described in [Rendering rules](#rendering-rules)). The user asked for "what do I need to do" in imperative voice — every line of framing pushes the verb further down the screen. See [#164](https://github.com/mattsears18/claude-plugins/issues/164) for the real-user complaint that motivated cutting the framing in 1.3.35. When in doubt: would removing this line lose any *action* information? If no, remove it.

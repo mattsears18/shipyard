@@ -4,6 +4,33 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.35 — 2026-05-21
+
+Trims the `/shipyard:my-turn` output to one verb-first line per item — drops tier headers, the opening banner, per-item title restatements, per-item signal labels, the closing prose summary, and the per-item age line (replaced by a single optional `(<N>d stale)` suffix when the threshold fires). Closes [#164](https://github.com/mattsears18/claude-plugins/issues/164). Pure rendering change — survey passes, ranking logic, and the underlying tier classification (P0 / P1 / P2) are unchanged.
+
+Real user feedback after running the previous renderer: *"you gave me too much summary information and you didn't actually tell me what I need to do next. keep this concise and just tell me what to do."* The previous output dedicated 4 lines per item (index + title, signal + age + URL, "Next:" action) under tier headers, with a closing prose paragraph — a 10-item list rendered as ~50 lines of mostly-redundant scaffolding the user had to scan past to reach each verb. The new shape:
+
+```
+1. #142 review and approve or request changes  <https://github.com/owner/repo/pull/142>
+2. #155 read refined body, set priority label, remove needs-human-review  <https://github.com/owner/repo/issues/155>
+3. #148 investigate failing check (`gh pr checks 148 --watch`), fix or escalate  <https://github.com/owner/repo/pull/148>
+
+main: green · 1 blocked:ci PR
+```
+
+- **Single-line-per-item default.** `<index>. #<num> <imperative action>  <url>`. Multi-line only when the next action genuinely doesn't fit on one line *and* breaking it loses information — and the follow-up lines are still action-shaped, not framing.
+- **Verb-first action.** Sentence-case imperative (`enable Email/Password in Firebase Console for <project>`, `set real values for placeholder secrets via firebase functions:secrets:set --project test`), not artifact-first (`PR #142 — "feat(shipyard): …"`). The user reads the verb and knows what to do; the issue number and URL are reference, not headline.
+- **No tier headers.** Items are already ranked; their position in the list is the priority. Internal ranking still classifies into P0 / P1 / P2 (see [Ranking](./plugins/shipyard/commands/my-turn.md#ranking)) — the tiers just don't render. The classification stays load-bearing for ordering and for the `set the next action correctly` step.
+- **No per-item title restatement.** The action sentence carries the artifact's intent in active voice; the title is reference, not headline. Permitted only when several queued items would produce identical action verbs (e.g. `#42 review (auth refactor)` to disambiguate from `#43 review (logging migration)`) — rare.
+- **No per-item signal labels** (`needs-human-review`, `blocked:ci`, `awaiting your review`). The action sentence already encodes the signal; the label is metadata on the artifact for users who want the receipt. The internal projection still carries the `why-on-user` field for ranking + dedup; it just doesn't render unless the merged signals produced a non-obvious action verb (in which case a single inline `(also: <signal>)` suffix is permitted).
+- **No per-item age line.** Replaced by an optional `(<N>d stale)` suffix when the item's age crosses a threshold worth flagging: **≥7d** for any item, or **≥1d** for `awaiting your review` (the highest-leverage block). Default: no age string. Age becomes a flag, not a metric.
+- **No opening banner** (`HUMAN ACTIONS NEEDED — …`). Redundant — the user just typed the slash command. Cuts one line per invocation.
+- **No closing prose summary.** Replaced by an optional one-line terse footer (e.g. `main: green · 1 blocked:ci PR`) surfaced only when there's something structural worth flagging — red main with no `fix-main-ci` PR, open `blocked:ci` PRs, or a clean state worth noting. Skip entirely otherwise.
+- **Empty state** stays a single friendly one-liner (`Nothing on your plate — backlog is clean. Try /shipyard:audit to surface fresh work, or take a break.`) — no banner, no multi-line prose.
+- **New `Don't add framing back to the output` entry** in the `Don't` section, pinned to this issue, so future maintainers and refactor agents have a clear regression boundary. The test invariants (`P0`, `P1`, `P2`, `URL`, `age`, `Don't`, etc.) still match — the test asserts presence of the *concepts*, not the rendering shape, and the `/my-turn` spec preserves every required input source, every tier classification, every protected non-goal.
+
+Pure rendering change — no survey-pass changes, no `gh` call additions, no schema changes, no test invariant changes. Acceptance criteria from the issue body all met: single-line-per-item default, verb-first action, no tier headers, no closing prose summary, empty-state stays the friendly one-liner. The ranking logic that produces the order is unchanged — only the rendering of the ranked list changes.
+
 ### 1.3.34 — 2026-05-21
 
 Adds the `/shipyard:status` live dashboard and the per-slot `progress_current` / `progress_total` / `started_at` fields that feed it. Closes [#167](https://github.com/mattsears18/claude-plugins/issues/167). Builds on the per-session state file at `~/.shipyard/sessions/<session-id>.json` that landed in 1.3.30 — no separate per-worker status files, no new IPC surface.
