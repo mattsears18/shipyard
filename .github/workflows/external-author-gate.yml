@@ -1,0 +1,64 @@
+name: External-author gate
+
+# Auto-labels issues opened by authors who are NOT trusted collaborators with
+# `needs-human-review`. The label is an exclusion gate in
+# `plugins/shipyard/commands/do-work.md` step 4 — no automation will touch the
+# issue until a maintainer removes the label (or closes the issue).
+#
+# Rationale (issue #91): the existing `/refine-feedback` pipeline gates
+# user-feedback issues through `needs-human-review`, but only when an external
+# intake system applies the label. A stranger opening an issue directly on
+# GitHub bypasses that intake and lands fully eligible for `/do-work` dispatch
+# — i.e. a prompt-injection vector that could ride auto-merge straight to
+# `main`. This action closes that gap at the intake side; the dispatch-side
+# author allowlist closes it from the other direction. Both layers compose.
+#
+# Security note: all event-supplied values (issue number, author login, repo
+# slug) are passed through env vars rather than interpolated into `run:`
+# scripts directly — see
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write          # required: edit issues, add labels, post comments
+  contents: read         # required: read repo collaborators
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # Skip the gate entirely for bot-authored issues (Dependabot, etc.) — they
+    # cannot inject prompts the way a human can, and the noise of tagging them
+    # would obscure real signal.
+    if: github.event.issue.user.type != 'Bot'
+    steps:
+      - name: Label issues from untrusted authors
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Trusted set: collaborators with `push` permission on this repo.
+          # The repo owner is implicitly in this set — GitHub's collaborators
+          # endpoint includes them. Outside contributors / first-time issue
+          # filers are not.
+          allowlist=$(gh api --paginate "repos/$REPO/collaborators" \
+            --jq '.[] | select(.permissions.push==true) | .login')
+
+          if printf '%s\n' "$allowlist" | grep -qx -- "$AUTHOR"; then
+            echo "Author $AUTHOR is a trusted collaborator — no gate needed."
+            exit 0
+          fi
+
+          echo "Author $AUTHOR is NOT a trusted collaborator — applying gate."
+
+          gh issue edit "$ISSUE" --repo "$REPO" \
+            --add-label needs-human-review
+
+          gh issue comment "$ISSUE" --repo "$REPO" --body \
+            "Tagged \`needs-human-review\` because the author is not in the trusted collaborator set. A maintainer must review and remove the label (or close the issue) before \`/shipyard:do-work\` will dispatch on it. See [issue #91](https://github.com/mattsears18/claude-plugins/issues/91) for the threat model."
