@@ -1,0 +1,53 @@
+# /shipyard:do-work — Don't
+
+The orchestrator's rule list — load-bearing prohibitions across every phase. The *why* for each rule lives in [RATIONALE → Don't extended](../do-work-RATIONALE.md#don't--extended-rationale-for-the-load-bearing-rules); cross-references are inline where the full discussion matters. The thin entry [`commands/do-work.md`](../do-work.md) links here from the [phase routing summary](../do-work.md#phase-files).
+
+**Dispatch-loop discipline:**
+
+- **Don't go idle while `raw_backlog` or `ready_issues` has items.** Refill the pool on the same turn the last completion notification arrives. ([why](../do-work-RATIONALE.md#dont-go-idle-while-queues-hold-work))
+- **Don't conflate "pool drained" with "session complete."** The merge train continues without you; the dispatch loop dies if you stop dispatching. ([why](../do-work-RATIONALE.md#dont-conflate-pool-drained-with-session-complete))
+- **Don't exit the end-of-session drain while forward progress continues.** Exiting at a hard 15-min mark strands PRs that go red after the cap. ([why](../do-work-RATIONALE.md#dont-exit-the-drain-while-forward-progress-continues))
+- **Don't ask the user "should I keep working, summarize, park, or stop?"** Termination is mechanical (see [Termination](./drain.md#termination)). The only stop signal is the explicit `stop` / `drain` / `/do-work stop` phrase from [Soft drain](./drain.md#soft-drain).
+- **Don't emit recap / "Next: …" narration in lieu of dispatching.** A turn that frees a slot has shape: tool call → invariant line. No prose between them, no prose after them, no "Next:" sentence anywhere. Forbidden phrasings include "Next, I'll watch for …", "Waiting for completions to refill …", "The merge train will drain on its own …". ([why + DO/DON'T examples](../do-work-RATIONALE.md#dont-emit-recap--next--narration-in-lieu-of-dispatching))
+- **Don't poll for agent completion.** The harness notifies you. Polling burns turns and cache.
+- **Don't wait for the whole pool to drain before dispatching replacements.** Fill any single freed slot immediately.
+
+**Dispatch hygiene:**
+
+- Don't work on issues assigned to other users — soft-lock via `gh api user` check.
+- Don't merge manually. Use `--auto`. Auto-merge waits for green.
+- Don't disable required checks or weaken branch protection to make a PR pass.
+- Don't re-dispatch the same issue. Once the agent returns `blocked`, label it and never queue it again.
+- Don't fabricate acceptance criteria. The agent should infer reasonable ones from title + context; if even that's unclear, it returns `blocked`.
+- Don't dispatch two workers whose `claimed_paths.hard` overlap. The soft-collision tier relaxes this for additive docs paths up to `--soft-collision-concurrency` claimers — that's a different rule.
+- **Don't expect agents to resolve cross-worker merge conflicts on soft-collision paths — the orchestrator owns that.** Dispatch a drain-style fix-rebase worker on the second PR. ([why](../do-work-RATIONALE.md#dont-expect-agents-to-resolve-cross-worker-merge-conflicts-on-soft-collision-paths))
+- Don't dispatch a candidate whose `lockfile_sections` overlaps an in-flight worker's `lockfile_sections`. Generated lockfiles are not claimed as sections.
+- Don't dispatch without `run_in_background: true` and `isolation: "worktree"`. Two `PreToolUse` hooks defend the contract: [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) blocks missing `isolation: "worktree"`; [`enforce-edit-scope.sh`](../../hooks/enforce-edit-scope.sh) blocks writes from a worker's cwd to paths outside its worktree. Neither hook accepts a workaround.
+- Don't skip the initial scope pre-flight to "save time" — one rebase from a missed collision costs more than the whole pre-flight.
+- Don't skip the periodic failed-PR refresh.
+
+**Failure-handling discipline:**
+
+- Don't retry a `blocked:ci` PR. The label exists so the orchestrator stops banging on the same wall. **Exception:** [step 3d's auto-clear sweep](./setup.md#3-ensure-label-exists--recover-from-prior-session) removes the label at session start from any PR whose head commit is newer than the label's application timestamp (someone pushed since shipyard gave up — fresh chance, 3-attempt counter resets). The sweep is the only mechanism that removes `blocked:ci`; step A is the only mechanism that applies it.
+- **Don't accept a `green #<M>` return from a fix-checks-only worker without verifying the rollup.** ([why](../do-work-RATIONALE.md#dont-accept-a-green-return-without-verifying-the-rollup))
+- **Don't treat a fix-checks-only worker's narrative status string as authoritative.** ([why](../do-work-RATIONALE.md#dont-treat-a-narrative-status-string-as-authoritative))
+- **Don't dispatch fix-rebase outside the end-of-session drain.** Steady-state dispatch never produces a DIRTY PR; dispatching mid-session would churn branches auto-merge was about to rebase or race with a fix-checks worker.
+- **Don't retry a `blocked rebase` PR within the same session.** Each PR gets exactly one fix-rebase dispatch per drain; `rebase_blocked_prs` membership counts toward the drain's "settled" definition.
+
+**Worktree + filesystem discipline:**
+
+- **Don't write to the user's primary checkout under any circumstance.** After step 0.5, the orchestrator works exclusively in `.claude/worktrees/orchestrator-<session-id>`. ([why](../do-work-RATIONALE.md#dont-write-to-the-users-primary-checkout))
+- Don't run end-of-session cleanup from the user's primary checkout — run it from the orchestrator worktree. The exception is cleanup step 6, which removes the orchestrator worktree itself (metadata-only operation, primary HEAD never moves).
+- Don't cleanup branches by name or pattern — only by `[gone]` upstream.
+- Don't claim a worktree whose branch doesn't match `do-work/*` during orphan triage. That branch is not yours.
+- Don't run orphan triage while another `/do-work` session may be active on the same repo. If you suspect a parallel session, ask the user.
+- Don't remove the `shipyard` label on block, abandon, or any other outcome. `shipyard` stays put through the whole cycle; only `blocked:ci` comes and goes via step A (apply) and [step 3d's auto-clear sweep](./setup.md#3-ensure-label-exists--recover-from-prior-session) (remove).
+- **Don't omit the `shipyard:worker-preamble` skill reference from any dispatched agent's prompt.** Every dispatch prompt loads the skill instead of inlining the verbatim preamble. Closes [#107](https://github.com/mattsears18/claude-plugins/issues/107).
+- **Don't skip `git worktree unlock` before `git worktree remove --force`** on agent worktrees. Without unlocking, the remove fails with `cannot remove a locked working tree`.
+- **Don't reap a live-PID worktree — at startup OR at shutdown.** Always check the lock PID before unlocking / removing. ([why](../do-work-RATIONALE.md#dont-reap-a-live-pid-worktree--at-startup-or-at-shutdown))
+
+**Security boundary:**
+
+- **Don't dispatch a worker against an issue authored by a login not in `trusted_authors`.** This is the security boundary from [step 1.7](./setup.md#17-resolve-trusted-author-allowlist) and step 2's bucket 0.5 + step 4's client-side filter + step C's lightweight backlog re-check. ([threat model + maintainer override](../do-work-RATIONALE.md#dont-dispatch-a-worker-against-an-untrusted-author-issue))
+
+- **Don't rely solely on the dispatch-time author check for label integrity.** The author-based gate above blocks worker dispatch against stranger-authored issues, but routing labels on existing issues/PRs are mutated by any actor with `triage` permission — a rogue triager can still mass-apply `shipyard`, prematurely remove `needs-human-review`, or strip `blocked:ci` to reset the 3-attempt counter on a stuck PR. Defense-in-depth: the [`label-event-audit.yml`](../../../../.github/workflows/label-event-audit.yml) workflow watches every `labeled`/`unlabeled` event from untrusted actors and either reverts (Tier A: `shipyard`, `blocked:ci`, `needs-human-review`) or alerts (Tier B: `needs-refinement`, `P0`-`P2`, `wontfix`, `blocked:agent`, `needs-design`, `needs-triage`, `discussion`). See [issue #140](https://github.com/mattsears18/claude-plugins/issues/140) for the threat model.

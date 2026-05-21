@@ -44,6 +44,10 @@ cmd_path="$repo_root/plugins/shipyard/commands/refine-issues.md"
 alias_path="$repo_root/plugins/shipyard/commands/refine-feedback.md"
 workflow_path="$repo_root/.github/workflows/intake-refinement-gate.yml"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
+# After the issue #154 split, the do-work spec lives across an entry-router
+# + 5 per-phase files. Refinement-related content (step 2 bucketing, step 3a
+# label setup, step 3.5 refine invocation) lives in the setup phase file.
+do_work_setup_path="$repo_root/plugins/shipyard/commands/do-work/setup.md"
 my_turn_path="$repo_root/plugins/shipyard/commands/my-turn.md"
 claude_md_path="$repo_root/CLAUDE.md"
 readme_path="$repo_root/README.md"
@@ -232,21 +236,25 @@ if [[ -f "$workflow_path" ]]; then
     "intake gate does not echo body directly into run: (injection-safe)"
 fi
 
-# (4) do-work.md updates.
-assert_file_exists "$do_work_path" "commands/do-work.md exists"
-if [[ -f "$do_work_path" ]]; then
+# (4) do-work spec updates — the entry exists, the setup phase carries the
+# steps the #145 refiner refactor touched (step 2 bucketing, step 3a label
+# setup, step 3.5 refine invocation). After the issue #154 split these
+# steps live in commands/do-work/setup.md rather than in the entry.
+assert_file_exists "$do_work_path" "commands/do-work.md exists (thin entry)"
+assert_file_exists "$do_work_setup_path" "commands/do-work/setup.md exists (setup phase)"
+if [[ -f "$do_work_setup_path" ]]; then
   # Step 3.5 must invoke the renamed command.
-  assert_contains "$do_work_path" "/refine-issues" \
-    "do-work.md step 3.5 invokes /refine-issues"
+  assert_contains "$do_work_setup_path" "/refine-issues" \
+    "do-work/setup.md step 3.5 invokes /refine-issues"
 
   # needs-triage label-create must be in step 3a (the escalate-to-triage
   # branch depends on it existing).
-  assert_contains "$do_work_path" "gh label create needs-triage" \
-    "do-work.md step 3a creates the needs-triage label idempotently"
+  assert_contains "$do_work_setup_path" "gh label create needs-triage" \
+    "do-work/setup.md step 3a creates the needs-triage label idempotently"
 
   # The bucket-5.4 description must reflect the generic-gate semantics.
-  assert_contains "$do_work_path" "generic pipeline gate" \
-    "do-work.md step 2 describes needs-refinement as a generic gate"
+  assert_contains "$do_work_setup_path" "generic pipeline gate" \
+    "do-work/setup.md step 2 describes needs-refinement as a generic gate"
 fi
 
 # (5) my-turn.md update — the needs-refinement bucket should reference

@@ -36,6 +36,11 @@ fi
 
 skill_path="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
+# The dispatch prompts now live in commands/do-work/steady-state.md after
+# the issue #154 split. The worker-preamble references the test counts
+# against the dispatch prompts, so steady-state.md is the file under test
+# for assertion (2) below.
+steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 
 pass=0
 fail=0
@@ -129,25 +134,26 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md covers the shipyard label requirement"
 fi
 
-# (2) do-work.md must reference the skill from each of the five dispatch
-# prompts. We count by the canonical reference string the dispatch prompts
-# use to invoke the skill.
+# (2) The five dispatch prompts (in commands/do-work/steady-state.md after
+# the issue #154 split) must reference the skill. We count by the canonical
+# reference string the dispatch prompts use to invoke the skill.
 assert_file_exists "$do_work_path" "commands/do-work.md exists"
+assert_file_exists "$steady_state_path" "commands/do-work/steady-state.md exists"
 
-if [[ -f "$do_work_path" ]]; then
+if [[ -f "$steady_state_path" ]]; then
   # The five dispatch prompts should reference the skill — expect ≥5 references.
-  assert_count_at_least "$do_work_path" "shipyard:worker-preamble" 5 \
-    "do-work.md references the worker-preamble skill in ≥5 places (one per dispatch prompt)"
+  assert_count_at_least "$steady_state_path" "shipyard:worker-preamble" 5 \
+    "steady-state.md references the worker-preamble skill in ≥5 places (one per dispatch prompt)"
 
   # Regression guard: the verbatim "never \`cd\` outside it, never use \`gh pr
   # checkout\`" sentence must not be duplicated inside dispatch prompts
-  # anymore. We allow it to appear at most TWICE: once in the orchestrator's
-  # own worktree-discipline preamble (step 0.5 area, line ~70) and possibly
-  # once in the Don't section listing the rule. Five+ inline copies would
-  # mean the refactor regressed.
-  assert_count_at_most "$do_work_path" \
+  # anymore. The orchestrator's own worktree-discipline preamble lives in
+  # commands/do-work/setup.md step 0.5 (a single inline copy); the Don't
+  # rule lives in commands/do-work/dont.md (another). Five+ inline copies
+  # in any one file would mean the refactor regressed.
+  assert_count_at_most "$steady_state_path" \
     "never \`cd\` outside it, never use \`gh pr checkout\`" 2 \
-    "do-work.md no longer inlines the full worktree-discipline sentence in dispatch prompts"
+    "steady-state.md dispatch prompts no longer inline the full worktree-discipline sentence"
 fi
 
 echo

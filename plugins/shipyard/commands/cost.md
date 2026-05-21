@@ -145,7 +145,7 @@ Default: **keep forever**. The data is tiny (≈ 500 bytes per session record, �
 
 ## Related
 
-- [`/shipyard:do-work`](./do-work.md) — the orchestrator. End-of-session cleanup calls `cost-history.sh flush` ([step 7 of the cleanup chain](./do-work.md#end-of-session-cleanup)).
+- [`/shipyard:do-work`](./do-work.md) — the orchestrator. End-of-session cleanup calls `cost-history.sh flush` ([step 7 of the cleanup chain](./do-work/cleanup-summary.md#end-of-session-cleanup)).
 - [`/shipyard:config`](./config.md) — `cost_tracking.enabled` and `exclude_repos_from_cost_tracking` opt-outs.
 - [`plugins/shipyard/scripts/cost-history.sh`](../scripts/cost-history.sh) — the underlying ledger / report tool.
 - [`plugins/shipyard/scripts/session-state.sh`](../scripts/session-state.sh) — the per-session ledger (`bump-tokens`, `read-tokens`).

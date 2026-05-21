@@ -4,6 +4,25 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.33 — 2026-05-21
+
+Splits `plugins/shipyard/commands/do-work.md` (1745 lines, ~35k tokens) by phase, loaded on demand. Closes [#154](https://github.com/mattsears18/claude-plugins/issues/154) — Phase 1 of the perf umbrella [#152](https://github.com/mattsears18/claude-plugins/issues/152) and the largest single token-reduction lever in the umbrella. Companion to [#155](https://github.com/mattsears18/claude-plugins/issues/155)'s analogous `agents/issue-worker.md` split that landed in 1.3.24.
+
+Before this release, every `/shipyard:do-work` orchestrator invocation read the full 1745-line monolithic spec — but only ever executed one phase per turn (setup-then-pool-fill at startup; reconcile-release-dispatch during steady state; merge-train-watching during the end-of-session drain; reap-and-summarize at exit). Reading all five phases on every turn burned ~25k tokens of context that the current turn doesn't need. The split makes the entry a thin router (the orchestrator-state struct list + session-state-file schema + routing table) and lets the orchestrator load only the phase file relevant to whatever turn fires next.
+
+- **`plugins/shipyard/commands/do-work.md`** is now the **thin entry** (199 lines, down from 1745). Retains the orchestrator-state struct list, the session state file schema + helper subcommands + write-through table + cost-tracking write-through (load-bearing reference material every phase reads), the Args block, a phase-routing table, and a one-paragraph Don't summary that points at the full list.
+- **Five per-phase files at `plugins/shipyard/commands/do-work/`** carry the actual phase semantics:
+  - `setup.md` (817 lines) — steps 0.4 → 7 (opt-in check, worktree relocation, parallelization batch, label setup, prior-session recovery, refinement invocation, backlog fetch, divert checks, failed-PR snapshot, scope pre-flight, UI status line, initial pool fill).
+  - `steady-state.md` (282 lines) — the dispatch loop (turn contract, steps A reconcile / B release / C dispatch / D refresh / E invariant line, refresh trigger rules) + the full dispatch rules (two-tier collision, soft-cap, section-aware lockfile rule, prompt templates, author-trust dispatch gate).
+  - `drain.md` (108 lines) — Soft drain, Termination, End-of-session drain (per-poll bookkeeping, fix-rebase dispatch for `D_dirty` set, 120-min ceiling).
+  - `cleanup-summary.md` (342 lines) — End-of-session cleanup (reap agent worktrees, prune branches, flush cost ledger, retire session state file, reap orchestrator worktree last) + End-of-session summary + Write the consolidated report to disk.
+  - `dont.md` (49 lines) — the orchestrator's full rule list (dispatch-loop discipline, dispatch hygiene, failure-handling discipline, worktree + filesystem discipline) with rationale-link footnotes.
+- **No semantic changes.** Pure file-reorganization PR. Section content is preserved verbatim; only the markdown anchor references (`./do-work.md#anchor` → `./do-work/<phase>.md#anchor`) and path-style refs (`../scripts/` → `../../scripts/` from the new subdir depth) were rewritten. The orchestrator's behavior is identical to 1.3.32 — same dispatch order, same termination criteria, same drain forward-progress rule, same cleanup ordering, same Don't prohibitions.
+- **Cross-file anchor updates** in the sibling agents that point at do-work.md anchors: `agents/issue-worker.md`, `agents/issue-worker/fix-rebase.md`, `agents/issue-worker/fix-checks-only.md`, and `agents/issue-worker/issue-work.md` were rewritten to point at the new phase-file anchors. `commands/cost.md` and `commands/do-work-RATIONALE.md` were updated for the same reason.
+- **Mirrors the [#155](https://github.com/mattsears18/claude-plugins/issues/155) split pattern** that landed for `agents/issue-worker.md` in 1.3.24. Same shape: a thin entry-router file that names what's where, plus self-contained per-mode (or per-phase) files in a sibling directory.
+
+Pure additive — no behavior change, no schema removals, no new runtime dependencies. Acceptance criteria: thin entry < 200 lines (199 actual), every phase file self-contained and named clearly, phase-routing table indexes everything. Token-cost reduction vs 1.3.32 will land once #N1 (cost-tracking) is wired into the cross-session ledger queries — the structural change ships here.
+
 ### 1.3.32 — 2026-05-21
 
 Adds the persistent cross-session token-cost ledger at `~/.shipyard/cost-history.jsonl` and the `/shipyard:cost` reporting commands. Closes [#163](https://github.com/mattsears18/claude-plugins/issues/163) (Phase 0 of the perf umbrella [#152](https://github.com/mattsears18/claude-plugins/issues/152), companion to [#153](https://github.com/mattsears18/claude-plugins/issues/153)). Builds on the per-session ledger and `session-state.sh bump-tokens` / `read-tokens` machinery that landed in 1.3.30.
