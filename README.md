@@ -43,9 +43,10 @@ From inside any GitHub-connected repo, try one of these:
 # and autonomously file an issue per finding.
 /audit lighthouse https://your-app.example.com
 
-# Refine raw user-feedback issues into implementation-ready tickets
-# (rewrites the body, preserves the original, gates on human review).
-/refine-feedback
+# Refine issues that aren't ready for /do-work yet (source-branched):
+# user-feedback classify+rewrite, open-questions resolve-defaults, or
+# escalate-to-triage fall-through. /refine-feedback still works as an alias.
+/refine-issues
 ```
 
 ### 3. Watch the loop
@@ -71,7 +72,7 @@ When `/audit` runs, you'll see filed issues with severity labels (`P0`/`P1`/`P2`
 An autonomous engineering loop for web + mobile app development. Three things it does:
 
 1. **Finds work** — `/audit` runs deep audits across UX, performance, security, accessibility, DX, privacy, PWA readiness, release readiness, SEO, tech debt, and testing, and autonomously files GitHub issues for every finding.
-2. **Refines work** — `/refine-feedback` ingests raw user-feedback issues (filed into the repo by your app's feedback form via a backend proxy), classifies them (already-done / decline / legitimate), preserves the original text in a comment, and rewrites the body to be implementation-ready. Gated by a `needs-human-review` label so no code-modifying agent runs until a human signs off.
+2. **Refines work** — `/refine-issues` (formerly `/refine-feedback`) is a source-branched refiner: raw user-feedback issues get classified (already-done / decline / legitimate) and rewritten into implementation-ready tickets; Claude-filed feature requests with `## Open questions` get reasonable defaults committed; everything else falls through to `needs-triage`. The user-feedback path is gated by a `needs-human-review` label so no code-modifying agent runs until a human signs off; the open-questions and triage paths are decoupled from human review.
 3. **Does work** — `/do-work` orchestrates a rolling pool of parallel issue-workers, each in an isolated git worktree. It dispatches up to `--concurrency` workers at once, opens PRs with auto-merge, and gracefully handles failing checks, red main CI, and PR pileups via specialized diversion workers.
 
 **Slash commands:**
@@ -84,7 +85,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit a11y <url>` — Lighthouse a11y category + manual keyboard / screen-reader tour
 - `/audit dx` — developer-experience catalog (lints, hooks, observability, contributor docs, etc.)
 - `/audit all <url>` — every audit in parallel
-- `/refine-feedback` — process raw user-feedback issues (classify, preserve, rewrite, sign-off gate)
+- `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through). `/refine-feedback` still works as a back-compat alias.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
@@ -97,7 +98,7 @@ The loop has four phases, and the orchestrator drives them on every iteration of
 
 1. **Inputs.** Issues arrive from two sources. The `/audit` family files them autonomously — a Lighthouse pass on a live URL, a Chrome DevTools tour, a security sweep, an a11y audit, etc. — each finding becomes a labeled GitHub issue with severity (`P0`/`P1`/`P2`). Separately, your app's feedback form posts raw user reports via a backend proxy that opens issues carrying `user-feedback` + `needs-refinement`.
 
-2. **Refine.** `/refine-feedback` reads each raw user-feedback issue, classifies it (`already-done` / `decline` / `legitimate`), preserves the original text in a pinned comment, and rewrites the body to look like a normal engineering ticket — acceptance criteria, repro steps, suggested approach. The refined issue carries `needs-human-review`. No code-modifying agent will touch it until that label is removed.
+2. **Refine.** `/refine-issues` reads each issue carrying the generic `needs-refinement` pipeline gate (applied conditionally by `.github/workflows/intake-refinement-gate.yml` — external authors, bodies with unresolved `## Open questions`, bare one-liners, bot-authored). The refiner branches by source signal: raw user-feedback issues get classified (`already-done` / `decline` / `legitimate`), preserved, and rewritten into engineering tickets with `needs-human-review` set; Claude-filed feature requests with open questions get reasonable defaults committed and become dispatch-eligible immediately; everything else falls through to `needs-triage` for human review. No code-modifying agent will touch user-feedback issues until `needs-human-review` is removed.
 
 3. **Human review.** You scan the refined backlog, drop `needs-human-review` from the ones you want shipped, and run `/do-work`. This is the only required human step. Everything before it (audits filing, feedback refining) and everything after (dispatch, fix-up, merge) is autonomous.
 
@@ -131,7 +132,7 @@ Shipyard doesn't care **where** an issue came from — it only cares that the is
 - **Datadog / New Relic / Honeycomb** → file issues for SLO breaches and anomalies. Shipyard investigates and fixes the underlying cause.
 - **Dependabot / Renovate** → file PRs for outdated/vulnerable dependencies. Shipyard picks up the open issues those tools file and resolves them.
 - **GitHub Advanced Security / CodeQL** → file issues for code-scanning findings. Shipyard fixes the vulnerability or files a justified suppression.
-- **Customer support tools (Zendesk, Intercom)** → many have GitHub integrations that file issues from support tickets. Shipyard treats those just like user feedback (filed with the `user-feedback` label → refined → human-reviewed → worked; see [Refines work](#shipyard) above and the `/refine-feedback` flow).
+- **Customer support tools (Zendesk, Intercom)** → many have GitHub integrations that file issues from support tickets. Shipyard treats those just like user feedback (filed with the `user-feedback` label → refined → human-reviewed → worked; see [Refines work](#shipyard) above and the `/refine-issues` flow — the user-feedback classify+rewrite branch).
 - **Your own infrastructure** — anything you wire up via the GitHub API to file issues.
 
 The pattern: every "thing that's broken" becomes a GitHub issue, shipyard works the issue, the fix ships. The app becomes **effectively self-healing** — production errors don't sit until a human notices; they sit until shipyard's next dispatch.
@@ -151,7 +152,7 @@ The Sentry flow above is illustrative, not a case study — your mileage depends
 ### Caveats
 
 - **Quality of the upstream issue matters.** A clean Sentry stack trace is great; a one-line "something broke" issue is not. The better the auto-filer's report, the better the fix.
-- **User-feedback flows through refinement first.** Customer-support tools that file raw user complaints should label issues with `user-feedback` + `needs-refinement` + `needs-human-review` so `/refine-feedback` cleans them up and a human signs off before shipyard touches them.
+- **User-feedback flows through refinement first.** Customer-support tools that file raw user complaints should label issues with `user-feedback` + `needs-human-review` (the `intake-refinement-gate.yml` workflow handles `needs-refinement` automatically) so `/refine-issues`' classify+rewrite branch cleans them up and a human signs off before shipyard touches them.
 - **Not everything is auto-fixable.** Shipyard returns `blocked` on issues it can't repro or for which it can't infer a fix. Those still need humans — but they were going to need humans anyway. The win is on the long tail of "easy fixes that just sat there."
 - **Set sane labels at the auto-filer.** Most integrations let you specify labels at the issue-creation API call. Apply a priority label (`P0`/`P1`/`P2`) so the orchestrator ranks them correctly.
 
@@ -165,7 +166,9 @@ plugins/
     commands/
       audit.md
       do-work.md
-      refine-feedback.md
+      my-turn.md
+      refine-feedback.md         # back-compat alias for refine-issues
+      refine-issues.md
     agents/
       a11y-auditor.md
       dx-auditor.md
