@@ -4,6 +4,20 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.3.19 — 2026-05-20
+
+Replaces `/shipyard:do-work`'s step D fixed-cadence periodic refresh (every `--concurrency` completions) with an **event-driven + adaptive-backoff** trigger scheme so refresh cost stays low on quiet sessions and stays responsive on busy ones. Closes [#106](https://github.com/mattsears18/claude-plugins/issues/106).
+
+The previous cadence ran `completions / concurrency` refreshes per session — on a 30-completion, `--concurrency 2` session, that's 15 refreshes, each making multiple `gh` calls (main CI workflow lookup, all-authors failing-PR query, `@me` failing-PR query, scope-agent dispatches). Two problems with that. First, most refreshes returned no change on quiet sessions — main CI status only changes when something gets pushed to main, and the failing-PR count changes infrequently relative to issue-work completion rate, so the orchestrator burned `gh` quota and wall-clock on no-op work. Second, busy sessions hit the opposite failure mode — a PR pileup could grow past the 10-threshold and stay invisible for `concurrency` more completions before the next fixed-cadence refresh noticed.
+
+- **`commands/do-work.md` step D — replaced the "every `--concurrency` completions" sentence with a four-rule trigger scheme.** New `#### Refresh trigger rules` subsection enumerates: (1) just-reconciled `shipped` return fires; (2) just-reconciled `green` / `noop: already green` from fix-checks fires; (3) 5-minute time-based fallback fires unconditionally; (4) adaptive-skip carve-out — when triggers 1 or 2 would fire but `refresh_zero_delta_streak >= 3`, downgrade to deferral and let trigger 3 pick it up. Trigger 3 is exempt from the carve-out so the safety net always runs. Explicit non-trigger list: `blocked` / `errored` / non-resolving `noop` returns / `rebased` returns do NOT fire a refresh.
+- **New three-field refresh tracker added to orchestrator state.** `refresh_last_at` (timestamp of most recent refresh), `refresh_last_snapshot` (`{ main_ci_status, failing_pr_count_all, failed_prs_size }` for delta computation), `refresh_zero_delta_streak` (consecutive no-change refresh count). Initialized at step 4.5 completion. The `## Orchestrator state` section now reads "nine mental data structures plus a small three-field refresh tracker" instead of "nine mental data structures," with a brief paragraph pointing at step D for the full semantics.
+- **Delta computation rules.** A refresh produces a "change" when `main_ci.status` changes, when `failing_pr_count_all` crosses the 10 threshold in either direction (intra-side movement doesn't count — the divert decision doesn't flip), or when `failed_prs` gains new entries (decrements don't count — those happen via dispatch, not refresh). Change → reset streak to 0 and update snapshot. No change → increment streak, keep snapshot. Either way, `refresh_last_at` updates whenever a refresh actually ran.
+- **Sub-step 3 (scope refill) gated independently.** Already conditional on `ready_issues < --concurrency` in the prior spec, now called out explicitly so a full ready-queue doesn't trigger pointless scoping-agent dispatches when a refresh fires for the divert-check / failed-PR reasons. Sub-steps 1 and 2 still run on every refresh because they're checking external state the queue depth doesn't predict.
+- **Worked example documents the responsiveness tradeoff.** 30 completions, `--concurrency 2`: old cadence = 15 refreshes; new scheme = roughly 3 event-driven refreshes (then deferred) + however many 5-min fallbacks the session length triggers. The streak resets the moment any refresh — event-driven or time-based — produces a change, so a busy session where external state IS changing snaps back to full event-driven cadence automatically.
+
+Pure prompt edits; no tooling / hooks / scripts changed.
+
 ### 1.3.18 — 2026-05-20
 
 Parallelizes the setup-phase `gh` reads in `/shipyard:do-work` and elevates the `blocker_state` cache from "optimization tip" to "default-on session-local map." Closes [#101](https://github.com/mattsears18/claude-plugins/issues/101).
