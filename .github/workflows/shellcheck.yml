@@ -1,0 +1,78 @@
+name: Shell scripts (lint + tests)
+
+# Gates every PR (and every push to main) on:
+#   1. `shellcheck` clean on every `*.sh` under `plugins/`
+#   2. Existing test suites under `plugins/shipyard/{hooks,scripts}/tests/`
+#      executing green.
+#
+# Rationale (issue #102): the plugin ships shell scripts that run in users'
+# sessions with full shell privileges and handle inputs the plugin itself
+# treats as untrusted (agent `tool_response` payloads, file paths from JSON,
+# lockfile PIDs from disk). A future edit that introduces an `eval`, a bare
+# `$var` outside double-quotes inside `[ ... ]`, an unquoted heredoc, or a
+# word-splitting hazard would otherwise land silently. This workflow makes
+# the failure visible at PR time.
+#
+# Security note: the workflow only reads the checked-out tree. No secrets,
+# no event-payload interpolation into `run:` blocks, no `pull_request_target`.
+# See https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint shell scripts under plugins/
+        run: |
+          set -euo pipefail
+          # Pick up production scripts and test scripts. `find` is portable
+          # and avoids globstar issues on minimal shells.
+          mapfile -d '' scripts < <(find plugins -type f -name '*.sh' -print0)
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            echo "No shell scripts found — failing fast so a misconfigured glob doesn't pass the gate."
+            exit 1
+          fi
+          printf 'Linting %d script(s):\n' "${#scripts[@]}"
+          printf '  %s\n' "${scripts[@]}"
+          shellcheck "${scripts[@]}"
+
+  shell-tests:
+    name: shell tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run hook test suites
+        run: |
+          set -euo pipefail
+          # Run every *.test.sh under plugins/shipyard/{hooks,scripts}/tests/.
+          # Each suite is self-contained (its own tmpdir, its own cleanup) and
+          # exits non-zero on any failure.
+          mapfile -d '' suites < <(find plugins/shipyard -type f -name '*.test.sh' -print0)
+          if [ "${#suites[@]}" -eq 0 ]; then
+            echo "No test suites found — failing fast so a misconfigured glob doesn't pass the gate."
+            exit 1
+          fi
+          rc=0
+          for suite in "${suites[@]}"; do
+            printf '\n=== %s ===\n' "$suite"
+            if ! bash "$suite"; then
+              rc=1
+            fi
+          done
+          exit "$rc"
