@@ -235,18 +235,18 @@ See [RATIONALE → Refresh trigger worked example](../do-work-RATIONALE.md#step-
 
 ### E. Invariant line (end of every steady-state turn)
 
-After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. Whenever you end a turn without one, you have skipped step C — go back and fix it. The `state=<state>` token also makes the per-turn write-through to the [session state file](../do-work.md#session-state-file) visible in-line. The `tokens_attributed=<bool>` token surfaces whether [step A.0](#a0-attribute-the-dispatchs-token-usage-mandatory--before-any-return-string-parsing)'s `bump-tokens` call actually fired on a reconcile turn — making spec-skipping visible the same way the `state=` token does for the session-state write-through.
+After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. Whenever you end a turn without one, you have skipped step C — go back and fix it. The `state=<state>` token also makes the per-turn write-through to the [session state file](../do-work.md#session-state-file) visible in-line. The `tokens_attributed=<bool>` token surfaces whether [step A.0](#a0-attribute-the-dispatchs-token-usage-mandatory--before-any-return-string-parsing)'s `bump-tokens` call actually fired on a reconcile turn — making spec-skipping visible the same way the `state=` token does for the session-state write-through. The `last_fresh_fetch=<HH:MM:SS|"never">` token surfaces the most recent backlog re-fetch (step C's lightweight re-check, step D's periodic refresh, or [drain.md's termination-assertion step 4](./drain.md#termination-assertion)) — making the [#195 regression](https://github.com/mattsears18/shipyard/issues/195) (terminating without a fresh fetch) visible as a stale timestamp on the invariant line that's about to declare idle.
 
 **Steady-state format** (after a normal dispatch turn):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · state=<state> · tokens_attributed=<true|false>
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never">
 ```
 
 **Idle-proof format** (used ONLY when step C produced no dispatch AND `in_flight < concurrency`):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · state=<state> · tokens_attributed=<true|false> · idle_reason="<reason>"
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never"> · idle_reason="<reason>"
 ```
 
 `<state>` is one of:
@@ -263,6 +263,12 @@ A missing `state=` token is the same contract violation as a missing invariant l
 - **`false`** — step A.0 didn't fire this turn. Valid ONLY on **dispatch-only turns** (turns with no agent completion to reconcile — the initial pool fill at step 7, drain-poll turns where nothing returned, refresh-only turns triggered by the 5-min fallback).
 
 `tokens_attributed=false` on a reconcile turn is a **contract violation** — the same severity as a missing invariant line or a missing `state=` token. If you find yourself emitting it that way, you skipped A.0. Go back, fire the `bump-tokens` call against the dispatch's usage payload, then re-emit the invariant. The one exception is the **logged-skip case**: if A.0 ran but the dispatch result had no `<usage>` block (or the helper call errored), the orchestrator must have already emitted the corresponding `[bump-tokens] …` advisory line earlier in the turn; in that case `tokens_attributed=false` is honest about the gap rather than a silent skip. A missing `tokens_attributed=` token entirely is a contract violation regardless — re-run A.0's compliance check and re-emit.
+
+`last_fresh_fetch=<HH:MM:SS|"never">` is the per-turn evidence flag for whether the backlog has been re-fetched against the live tracker recently. It is set (UTC time-of-day) any time step C's lightweight backlog re-check fires, any time step D's periodic refresh fires, or any time [drain.md's termination-assertion step 4](./drain.md#termination-assertion) fires. Initial value is `"never"` until the first re-check runs in step 7's initial pool fill.
+
+- **Staleness guard on the terminating idle-proof.** When the idle-proof's `idle_reason="all queues empty (terminating after in_flight drains)"` (the path that triggers handoff to drain), the `last_fresh_fetch` timestamp MUST be **within the last 60 seconds** of `now`. If it's older — or `"never"` — the invariant line is INVALID: the orchestrator is about to declare termination without verifying the live backlog. Don't emit the line; instead, run the [drain.md termination-assertion step 4](./drain.md#termination-assertion) fetch now, stamp `last_fresh_fetch` with the result, append any net-new issues to `raw_backlog`, retry dispatch from step C, and re-emit the invariant line with the fresh timestamp. This is the mechanical guard against the [#195 failure mode](https://github.com/mattsears18/shipyard/issues/195) — "I'm about to terminate but my last fresh fetch was 2 hours ago" is a contract violation, not a valid terminating idle-proof.
+- The 60-second window matches step C's `gh-cached.sh --ttl 60` cache band — if the cache is still fresh, the orchestrator's about-to-terminate fetch hits the cache for ~0 token cost; if it's expired, the fetch goes live and the cost is one `gh` call.
+- A missing `last_fresh_fetch=` token entirely is a contract violation regardless — re-run a backlog re-fetch and re-emit.
 
 The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight drains)`, `draining=true`, `all ready_issues collide with in_flight paths`, `all ready_issues blocked by soft-cap on <path> (×<N> active)`, `all ready_issues collide with in_flight lockfile sections (<section>×<N>, ...)`, or a concrete diagnostic string. Vague reasons ("waiting for completions", "merge train draining", "nothing to do right now") are NOT acceptable.
 
