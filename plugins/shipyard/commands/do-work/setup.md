@@ -173,6 +173,62 @@ Idempotent. Runs in the same cleanup chain that reaps the session state file —
 
 **Observability.** `gh-cached.sh stats --session-id <id>` emits `{"hits": N, "misses": N, "invalidations": N, "bytes": N}` for the session — useful in end-of-session summary blocks and for the cost-tracking ledger when measuring perf wins against the baseline.
 
+### 0.9.1 `gh-batch.sh` GraphQL wrapper (opt-in per call-site)
+
+Where `gh-cached.sh` reduces redundant *re-fetches* across phases, `gh-batch.sh` reduces *fan-out*: N sequential `gh pr view <M>` / `gh issue view <N>` calls collapse to a single `gh api graphql` query with aliased per-record sub-queries. Closes [#159](https://github.com/mattsears18/claude-plugins/issues/159) — phase 2 of the perf umbrella [#152](https://github.com/mattsears18/claude-plugins/issues/152).
+
+**When to reach for it.** Any call-site that fires `gh pr view <M>` or `gh issue view <N>` in a loop over a known list of numbers is a candidate. Highest-leverage sites today:
+
+- **[Drain phase](./drain.md#drain-protocol) per-poll re-snapshot** — `D_dirty` / `R_new` / `P_settled` reconciles read per-PR fields for a known subset of session_prs every 60s. Use `pr-status` instead of N `gh pr view <M>` calls.
+- **[Step 0.8 blocker_state cache](#08-blocker_state-cache-default-on)** — populated lazily today; when N+ entries are missed at once (bucket-6/-7 cold start), `issue-state` fills the cache in one round-trip instead of N.
+- **[Step 3d.2](#3-ensure-label-exists--recover-from-prior-session) referential-blocker resolution** — the `Blocked by #N` sweep already cache-reads, but cold starts on a large stale-block backlog benefit from batching the lookups via `issue-state` + a single `pr-status` fallback for cases where the referenced number is a PR.
+- **Scope pre-flight scoping batches** — when N candidates' issue bodies need a fresh state check before dispatch.
+
+**Shape.**
+
+```bash
+# Batch PR status — same projection as `gh pr view <M> --json
+# number,state,mergeable,mergeStateStatus,statusCheckRollup,headRefName,headRefOid`
+# but for N PRs in one query. Emits one JSON object keyed by PR number string.
+"${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
+  --repo <owner/repo> \
+  --numbers "142 143 144"
+# → {"142": {"number":142,"state":"OPEN","mergeable":"MERGEABLE",...}, "143": {...}, "144": {...}}
+
+# Batch issue state + labels. Same shape — keyed by issue number string.
+"${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" issue-state \
+  --repo <owner/repo> \
+  --numbers "100,200,300"
+# → {"100": {"number":100,"state":"OPEN","labels":["P1","bug"]}, ...}
+```
+
+`--numbers` accepts space- or comma-separated integers. Non-numeric tokens fail loudly (exit 64) — defense in depth against any caller injecting unvalidated user input into the GraphQL body.
+
+**Limits and behavior.**
+
+- **Chunked at 50 aliases per query.** GraphQL has a soft node-cost limit; the wrapper auto-splits large `--numbers` lists into chunks and merges the JSON before emitting. Override via `SHIPYARD_GH_BATCH_CHUNK_SIZE`. Typical orchestrator fan-out (drain ≤10, blocker-state cache cold-start ≤20) fits in a single chunk.
+- **Missing artifacts drop silently.** A PR / issue that no longer exists (deleted, transferred, never existed) resolves to a null alias and is dropped from the output — the caller treats a missing key as "not trackable." Never fail the whole batch on one missing number.
+- **Failure fails the whole batch.** `gh api graphql` failure (rate limit, 5xx, malformed query) exits 2 with stderr forwarded. No partial output is emitted — callers retry the whole batch, not individual chunks.
+- **`mergeable` may return UNKNOWN.** GitHub computes it on-demand; `mergeStateStatus` (`CLEAN` / `DIRTY` / `BLOCKED` / `BEHIND` / `UNSTABLE`) is the more stable signal. Prefer `mergeStateStatus` where possible.
+
+**Composing with `gh-cached.sh`.** The two wrappers compose cleanly: run the batch helper through the cache wrapper to get both fan-in *and* cross-phase memoization. Suggested TTL bands:
+
+| Batch query | Suggested TTL | Reasoning |
+|---|---|---|
+| `gh-batch.sh pr-status` | **10s** | Same churn class as per-PR `statusCheckRollup` (10s band in [§0.9](#09-gh-cachedsh-wrapper-opt-in-per-call-site)) |
+| `gh-batch.sh issue-state` | **30s** | Issue state + labels change much slower than CI |
+
+The compose pattern (cached batch read):
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" run \
+  --session-id "<session-id>" --ttl 10 -- \
+  bash "${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
+    --repo <owner/repo> --numbers "142 143 144"
+```
+
+Cache hit → no GraphQL call. Cache miss → batched GraphQL call (1 round-trip for up to 50 numbers) cached for the next 10s.
+
 ### 1. Resolve repo + user
 
 These three reads are part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) — fire them in parallel with steps 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5, not serially before them.
