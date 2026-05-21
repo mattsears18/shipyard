@@ -1,6 +1,6 @@
 # Fix-rebase mode (drain-phase stale-base PR)
 
-The orchestrator dispatches this when the end-of-session [drain](../../commands/do-work.md#end-of-session-drain) finds an `@me` PR in `mergeStateStatus: DIRTY` with **no failing checks** — the PR is green-or-pending but its base is stale relative to the freshly-advanced default branch, so auto-merge won't fire until it's rebased onto current default.
+The orchestrator dispatches this when the end-of-session [drain](../../commands/do-work/drain.md#end-of-session-drain) finds an `@me` PR in `mergeStateStatus: DIRTY` with **no failing checks** — the PR is green-or-pending but its base is stale relative to the freshly-advanced default branch, so auto-merge won't fire until it's rebased onto current default.
 
 This is intentionally a **light-touch** mode. You are NOT fixing failing tests. You are NOT modifying the PR's scope. You are NOT touching the PR title / description / linked issue. The single goal is to take the PR's branch, rebase it onto current default, push, and return — letting CI re-run on the rebased head and auto-merge land it.
 

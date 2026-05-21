@@ -167,13 +167,16 @@ assert_jq "$repo_config" '.labels.blocked'       "blocked:agent"     "repo confi
 assert_jq "$repo_config" '.labels.ci_blocked'    "blocked:ci"        "repo config: labels.ci_blocked is blocked:ci"
 
 # --------------------------------------------------------------------------
-echo "== do-work.md opt-in gate (step 0.4)"
+echo "== do-work setup phase opt-in gate (step 0.4)"
 
-do_work_md="$repo_root/plugins/shipyard/commands/do-work.md"
-assert_file_contains "$do_work_md" '0.4 Check the repo-level opt-in' "do-work.md contains step 0.4"
-assert_file_contains "$do_work_md" 'shipyard-config.sh' "do-work.md references shipyard-config.sh"
-assert_file_contains "$do_work_md" 'shipyard.config.json' "do-work.md references the committed config file"
-assert_file_contains "$do_work_md" '/shipyard:init' "do-work.md points users at /shipyard:init"
+# After the issue #154 split, setup-phase content lives in
+# commands/do-work/setup.md rather than the entry. The opt-in gate (step 0.4)
+# is a setup-phase step.
+do_work_setup_md="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+assert_file_contains "$do_work_setup_md" '0.4 Check the repo-level opt-in' "do-work/setup.md contains step 0.4"
+assert_file_contains "$do_work_setup_md" 'shipyard-config.sh' "do-work/setup.md references shipyard-config.sh"
+assert_file_contains "$do_work_setup_md" 'shipyard.config.json' "do-work/setup.md references the committed config file"
+assert_file_contains "$do_work_setup_md" '/shipyard:init' "do-work/setup.md points users at /shipyard:init"
 
 # --------------------------------------------------------------------------
 echo "== CLAUDE.md documents the layers"
