@@ -1,0 +1,49 @@
+# gitleaks config — wired by .github/workflows/secret-scan.yml (issue #108).
+#
+# Strategy: extend the upstream default ruleset (which already covers the token
+# shapes called out in the acceptance criteria — ghp_*, sk-ant-*, AKIA*,
+# xox[bp]-*, PEM private keys) and allowlist only the intentional test
+# fixtures in `plugins/shipyard/scripts/tests/`. Those fixtures EXIST
+# specifically to exercise the runtime secret-scrubbing in
+# `scripts/report-plugin-error.sh` — taking them away to silence gitleaks
+# would defeat the test suite that the sibling finding #105 wants to wire to
+# CI. So gitleaks gets told "skip those specific files" rather than the
+# rules getting watered down repo-wide.
+#
+# The `extend` block pulls in gitleaks' default rules verbatim; we only add
+# our own allowlist on top.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist for intentional test fixtures and pattern-definition files"
+
+# Files that intentionally contain example/dummy tokens used to test the
+# in-repo secret-scrubbing logic. Adding a real secret to one of these files
+# would be a regression — but gitleaks can't distinguish "real" from
+# "example" by shape alone, and AWS's canonical dummy key
+# (AKIAIOSFODNN7EXAMPLE) is real-looking enough to trip any pattern match.
+# These files are reviewed at PR time alongside the scrubbing code they
+# exercise, which is the right human gate for them.
+paths = [
+    '''plugins/shipyard/scripts/tests/report-plugin-error\.test\.sh''',
+    # The scrubbing source itself contains the regex patterns it matches
+    # against — those are pattern definitions, not secrets, but a future
+    # rule tweak could false-positive on the regex bodies. Pre-emptively
+    # allowlist.
+    '''plugins/shipyard/scripts/report-plugin-error\.sh''',
+    # README documents which token shapes get scrubbed, using their
+    # prefixes (ghp_…, sk-ant-…) as illustration. The trailing ellipsis
+    # keeps the prefix below gitleaks' length thresholds in practice, but
+    # belt-and-suspenders allowlist in case the doc grows.
+    '''README\.md''',
+]
+
+# Allowlist AWS's published canonical example access key — used by AWS docs
+# and SDKs as the "do not use, this is an example" placeholder. Appears in
+# the test fixtures referenced above; included here as a stopRegex too in
+# case it shows up elsewhere (e.g. CHANGELOG quoting an issue body).
+regexes = [
+    '''AKIAIOSFODNN7EXAMPLE''',
+]
