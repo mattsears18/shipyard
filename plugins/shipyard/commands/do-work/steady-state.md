@@ -214,29 +214,41 @@ The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight
 
 ## Dispatch rules (used by step 7 and step C)
 
+**Per-mode `subagent_type` routing.** The orchestrator picks the `Agent`-tool `subagent_type` based on the worker's `mode:`. The shim agents pin smaller models for the modes whose workload doesn't need Opus 4.7 — cutting per-dispatch inference cost ~5x for CI-repair work that's mostly pattern-matching against failing logs. See [#157](https://github.com/mattsears18/claude-plugins/issues/157) for the cost rationale.
+
+| `mode:`                  | `subagent_type`                  | Model (frontmatter) | Reason for the model choice                                       |
+|--------------------------|----------------------------------|---------------------|-------------------------------------------------------------------|
+| `issue-work`             | `shipyard:issue-worker`          | default (Opus)      | Full code authorship, test design, PR composition — Opus stays.   |
+| `fix-checks-only`        | `shipyard:fix-checks-worker`     | `haiku`             | Pattern-match the failing log, apply targeted fix.                |
+| `fix-rebase`             | `shipyard:fix-rebase-worker`     | `haiku`             | Git mechanics — fetch + rebase + force-with-lease.                |
+| `fix-main-ci`            | `shipyard:fix-main-ci-worker`    | `sonnet`            | No PR context to anchor; broader investigation than fix-checks.   |
+| `fix-failing-prs-batch`  | `shipyard:fix-pr-batch-worker`   | `sonnet`            | Cross-PR pattern-spotting across ≤5 representative failures.      |
+
+Every shim agent forwards to the same per-mode spec under [`agents/issue-worker/<mode>.md`](../../agents/issue-worker/) — the model pin is the only behavioral difference between dispatching via the shim vs the original `shipyard:issue-worker` entry router (which still handles every mode for forward-compat, just on Opus). When in doubt about a mode's behavioral contract, read the per-mode file, not the shim.
+
 When filling a slot, walk this decision tree:
 
-1. **`divert_queue` non-empty?** → pop the front entry. Path-collision rules don't apply (these are synthetic, not file-claimed). Dispatch a worker in the matching mode. Only one diverted worker per kind can be in flight at a time (step 4.5 / step D enforce this on enqueue).
+1. **`divert_queue` non-empty?** → pop the front entry. Path-collision rules don't apply (these are synthetic, not file-claimed). Dispatch a worker in the matching mode (use the matching `subagent_type` from the table above). Only one diverted worker per kind can be in flight at a time (step 4.5 / step D enforce this on enqueue).
 
-   **For `fix-main-ci`** — prompt template:
+   **For `fix-main-ci`** — `subagent_type: "shipyard:fix-main-ci-worker"` (Sonnet-pinned). Prompt template:
 
    > **`mode: fix-main-ci`** — Restore green main on `<owner/repo>` in **fix-main-ci mode**. The earliest unfixed red run on the default branch (`<default-branch>`) is `<earliest_red_run_url>` at SHA `<earliest_red_sha>` — that's where the red streak started, and that's the run whose failure logs you should triage first. **Load the `shipyard:worker-preamble` skill before anything else** — it carries the shared worktree-isolation rules, the `--label shipyard` requirement, the auto-merge + snapshot + return pattern, and the worktree-reaped escape hatch that apply to every worker mode. Then follow the `agents/issue-worker/fix-main-ci.md` per-mode spec (loaded by the issue-worker entry router from `mode: fix-main-ci`): pre-flight (re-confirm main is still red), pull failed logs, triage the failure category, branch as `do-work/fix-main-ci-<short-sha>`, ship ONE minimal PR with no `Closes #N` line (this is a synthetic divert — no issue to close), enable auto-merge, snapshot, return.
    >
    > Hard cap: do NOT open more than one PR. The orchestrator will re-dispatch on the next step-D refresh if main is still red. Do NOT touch anything beyond the minimum needed to land main back to green. Return values: `shipped main-ci-fix via PR #<M>`, `noop: main already green`, or `blocked main-ci-fix: <reason>`.
 
-   **For `fix-failing-prs-batch`** — prompt template:
+   **For `fix-failing-prs-batch`** — `subagent_type: "shipyard:fix-pr-batch-worker"` (Sonnet-pinned). Prompt template:
 
    > **`mode: fix-failing-prs-batch`** — Investigate the failing-PR pileup on `<owner/repo>` in **fix-failing-prs-batch mode**. There are currently <failing_pr_count_all> open PRs across all authors with failing checks: <failing_pr_numbers>. **Load the `shipyard:worker-preamble` skill before anything else** — it carries the shared worktree-isolation rules, the `--label shipyard` requirement, the auto-merge + snapshot + return pattern, and the worktree-reaped escape hatch that apply to every worker mode. Then follow the `agents/issue-worker/fix-failing-prs-batch.md` per-mode spec (loaded by the issue-worker entry router from `mode: fix-failing-prs-batch`): pre-flight (re-confirm pileup), sample failing logs across up to 5 representative PRs, identify the **common root cause**, branch as `do-work/fix-pr-pileup-<short-timestamp>`, ship ONE PR that fixes at source (the other PRs go green on rebase), no `Closes #N` line, enable auto-merge, snapshot, return.
    >
    > Hard cap: ONE PR. If the failures don't share a root cause, return `blocked pr-batch-fix: no common root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)`. If the pileup resolved itself, return `noop: pileup already cleared`. Otherwise `shipped pr-batch-fix via PR #<M>`. The orchestrator re-dispatches on the next step-D refresh if the pileup persists.
 
-2. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim). Dispatch a fix-checks-only worker.
+2. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim). Dispatch a fix-checks-only worker (`subagent_type: "shipyard:fix-checks-worker"` — Haiku-pinned per the table above).
 
    Prompt template:
 
    > **`mode: fix-checks-only`** — Fix failing CI checks on PR #<M> in `<owner/repo>` (branch `<headRefName>`) in **fix-checks-only mode**. **Load the `shipyard:worker-preamble` skill before anything else** — it carries the shared worktree-isolation rules, the `--label shipyard` requirement, the auto-merge + snapshot + return pattern, and the worktree-reaped escape hatch that apply to every worker mode. Then follow the `agents/issue-worker/fix-checks-only.md` per-mode spec (loaded by the issue-worker entry router from `mode: fix-checks-only`). The PR is already open — do NOT open a new one, do NOT change scope, do NOT modify the PR title/description, do NOT close the linked issue from this PR. Land on the PR's head branch with the safe two-step: `git fetch origin <headRefName> && git switch <headRefName>`. Then run the fix-loop: pull failed logs (`gh run view <run-id> --repo <owner/repo> --log-failed`), reproduce locally if practical, fix the smallest thing, commit + push to the same branch, re-watch with `gh pr checks <M> --repo <owner/repo> --watch --interval 30`. Hard cap: 3 fix attempts. **`green #<M>` means a full CI run completed and passed AFTER your final push — not "pushed and queued."** If checks are still `PENDING` / `IN_PROGRESS` when you'd otherwise be ready to return, keep watching until the rollup resolves; returning `green` on a pending rollup violates the contract and the orchestrator will downgrade it to `pending` anyway (and log an advisory). If checks are already green by the time you start, return `noop: already green`. If you can't fix in 3 attempts, return `blocked: <last failing check> — <last error excerpt>`. **Leave your worktree on `<headRefName>` when you return.**
 
-   **For `fix-rebase` dispatches (drain-phase only — see [end-of-session drain](./drain.md#end-of-session-drain)):** the same `failed_prs`-style branch-targeted dispatch shape, but a different prompt template and a different return contract.
+   **For `fix-rebase` dispatches (drain-phase only — see [end-of-session drain](./drain.md#end-of-session-drain)):** the same `failed_prs`-style branch-targeted dispatch shape, but a different prompt template and a different return contract. Use `subagent_type: "shipyard:fix-rebase-worker"` (Haiku-pinned).
 
    Prompt template:
 
@@ -277,7 +289,7 @@ When filling a slot, walk this decision tree:
 
    This is the third defense-in-depth layer (after intake-side and dispatch-time filters). See [RATIONALE → Author-trust defense in depth](../do-work-RATIONALE.md#author-trust-computation--defense-in-depth).
 
-   Prompt template:
+   Use `subagent_type: "shipyard:issue-worker"` (default model — Opus). Prompt template:
 
    > **`mode: issue-work`** — Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. The originating issue's author trust is **`<originating_author_trust>`** — pass this through to your auto-merge step exactly as written (see `agents/issue-worker/issue-work.md`'s step 6, loaded by the issue-worker entry router from `mode: issue-work`). **Load the `shipyard:worker-preamble` skill before anything else** — it carries the shared worktree-isolation rules, the `--label shipyard` requirement, the auto-merge + snapshot + return pattern, and the worktree-reaped escape hatch that apply to every worker mode. Create your branch as `do-work/issue-<N>` — do not use any other name. Open a PR that closes the issue. Enable auto-merge **only when `originating_author_trust == "trusted"`**; when it's `external`, skip auto-merge and add the `needs-human-review` label to the PR plus a maintainer-must-merge comment (full mechanics in step 6 of `agents/issue-worker/issue-work.md`). Snapshot the current check state, and return — **do not `--watch` CI**. The orchestrator handles failed-check recovery on a periodic refresh. Use TDD when adding new behavior. If you hit a blocker before push (ambiguous scope, can't reproduce, etc.), return with `blocked: <reason>` — don't burn the session on one issue. **Leave your worktree on `do-work/issue-<N>` when you return.**
 
@@ -297,4 +309,4 @@ When filling a slot, walk this decision tree:
 
 6. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
 
-Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`. The harness will notify you on completion — that drives the next iteration of the steady-state loop.
+Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`, and the `subagent_type` matching the worker's `mode:` per the routing table at the top of this section. The harness will notify you on completion — that drives the next iteration of the steady-state loop.

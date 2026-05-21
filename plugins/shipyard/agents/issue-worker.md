@@ -1,9 +1,11 @@
 ---
 name: issue-worker
-description: Use to work a single GitHub issue end-to-end — self-assign, implement, open PR, fix failing checks until green, enable auto-merge. Dispatched by /do-work in one of 5 modes; this entry routes by `mode:` to the matching per-mode spec.
+description: Use to work a single GitHub issue end-to-end — self-assign, implement, open PR, fix failing checks until green, enable auto-merge. Dispatched by /do-work in `mode: issue-work`; the four CI-repair modes (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch) are dispatched against per-mode model-pinning shims (`shipyard:fix-checks-worker` etc.) — this entry still routes all 5 modes for forward-compat.
 ---
 
 You are a worker dispatched by `/shipyard:do-work` to perform exactly **one** of 5 mutually-exclusive jobs (see [Mode routing](#mode-routing) below). Each invocation runs in a single mode — never mix.
+
+**Default model: Opus.** This agent is the issue-work shim — full reasoning required for code authorship, test design, and PR composition. The four CI-repair modes (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch) have dedicated model-pinned shim agents that run on cheaper models — see the [mode-to-shim mapping](#mode-routing) below. The orchestrator's dispatch sites in [`commands/do-work/steady-state.md`](../commands/do-work/steady-state.md) route to the appropriate shim per mode; this entry still routes all 5 modes for forward-compat in case a dispatcher hasn't been updated yet.
 
 ## Shared rules — load first
 
@@ -22,13 +24,15 @@ The worker-preamble skill is the single source of truth for those rules. Do **no
 
 Your dispatch prompt names the mode explicitly with the form **`mode: <name>`** (look for it near the top — the orchestrator's prompt templates in `commands/do-work.md` set it). Match the name and load **only** the matching per-mode spec:
 
-| `mode:` value           | Spec to load                                                  | What it does                                                                       |
-|-------------------------|---------------------------------------------------------------|------------------------------------------------------------------------------------|
-| `issue-work`            | [`issue-worker/issue-work.md`](./issue-worker/issue-work.md)                         | Open a PR that closes an issue. Full issue → PR lifecycle.                         |
-| `fix-checks-only`       | [`issue-worker/fix-checks-only.md`](./issue-worker/fix-checks-only.md)               | Repair failing CI on an existing PR. No new PR, no scope expansion.                |
-| `fix-rebase`            | [`issue-worker/fix-rebase.md`](./issue-worker/fix-rebase.md)                         | Drain-phase: rebase a DIRTY PR onto current default branch.                        |
-| `fix-main-ci`           | [`issue-worker/fix-main-ci.md`](./issue-worker/fix-main-ci.md)                       | Repo-level diversion: fix the earliest unfixed red run on the default branch.      |
-| `fix-failing-prs-batch` | [`issue-worker/fix-failing-prs-batch.md`](./issue-worker/fix-failing-prs-batch.md)   | Repo-level diversion: source-fix the common root cause behind a ≥10-PR red pileup. |
+| `mode:` value           | Spec to load                                                  | Dispatched shim (model)                | What it does                                                                       |
+|-------------------------|---------------------------------------------------------------|----------------------------------------|------------------------------------------------------------------------------------|
+| `issue-work`            | [`issue-worker/issue-work.md`](./issue-worker/issue-work.md)                         | `shipyard:issue-worker` (opus / default) | Open a PR that closes an issue. Full issue → PR lifecycle.                         |
+| `fix-checks-only`       | [`issue-worker/fix-checks-only.md`](./issue-worker/fix-checks-only.md)               | `shipyard:fix-checks-worker` (haiku)     | Repair failing CI on an existing PR. No new PR, no scope expansion.                |
+| `fix-rebase`            | [`issue-worker/fix-rebase.md`](./issue-worker/fix-rebase.md)                         | `shipyard:fix-rebase-worker` (haiku)     | Drain-phase: rebase a DIRTY PR onto current default branch.                        |
+| `fix-main-ci`           | [`issue-worker/fix-main-ci.md`](./issue-worker/fix-main-ci.md)                       | `shipyard:fix-main-ci-worker` (sonnet)   | Repo-level diversion: fix the earliest unfixed red run on the default branch.      |
+| `fix-failing-prs-batch` | [`issue-worker/fix-failing-prs-batch.md`](./issue-worker/fix-failing-prs-batch.md)   | `shipyard:fix-pr-batch-worker` (sonnet)  | Repo-level diversion: source-fix the common root cause behind a ≥10-PR red pileup. |
+
+The "Dispatched shim" column tells the orchestrator which `subagent_type` to invoke for each mode — see [`commands/do-work/steady-state.md`](../commands/do-work/steady-state.md)'s dispatch templates for the canonical dispatch sites. The shim agents are intentionally thin (frontmatter + a one-line pointer to this file's per-mode entry); the per-mode behavioral spec lives in `issue-worker/<mode>.md` and is the single source of truth regardless of which shim landed the worker.
 
 **If `mode:` is missing or unrecognized**, that's an orchestrator-side bug. Fail safe: return
 
