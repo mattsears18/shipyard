@@ -25,19 +25,38 @@ The agent's last line tells you what happened.
 
 **This step is not optional.** Before parsing the agent's return string, before any of the per-mode handling below, **attribute the dispatch's token usage to the session ledger**. Without this call, the per-session `.tokens` block, the per-issue / per-PR attribution buckets, the durable PR cost-comment, and the cross-session ledger at `~/.shipyard/cost-history.jsonl` all stay empty — and the perf umbrella ([#152](https://github.com/mattsears18/shipyard/issues/152)) becomes unmeasurable. See [issue #197](https://github.com/mattsears18/shipyard/issues/197) for the regression that prompted this becoming step A.0 instead of a buried mention in the write-through table.
 
-Extract the `usage` payload from the Agent tool result — the harness emits it as a `<usage>` block in the task-notification message that wakes this turn. Required fields: `total_tokens`, `duration_ms`. If the harness also exposes `input` / `output` / `cache_read` / `cache_creation` separately, pass them through for finer-grained accounting; otherwise `total_tokens` alone is enough for first-pass attribution. Invoke:
+Extract the `usage` payload from the Agent tool result — the harness emits it as a `<usage>` block in the task-notification message that wakes this turn. The block has the shape:
+
+```
+<usage>
+  input_tokens: <int>
+  output_tokens: <int>
+  cache_read_input_tokens: <int>
+  cache_creation_input_tokens: <int>
+  total_tokens: <int>
+  duration_ms: <int>
+</usage>
+```
+
+**Pass all four token counts through to `bump-tokens` separately** — never collapse them into `--input <total_tokens>`. Output tokens are priced at 5× input on every Anthropic model the pricing table covers, and `cache_read_input_tokens` are priced at 10% of input. Collapsing the breakdown understates real session cost by 20-50% and makes prompt-cache hit-rate invisible. See [#225](https://github.com/mattsears18/shipyard/issues/225) for the regression that prompted this requirement (the previous spec allowed a "`total_tokens` alone is enough for first-pass attribution" fallback that callers took universally, leaving every per-invocation record with `output: 0` and `cache_*: 0`).
+
+Invoke:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
   --session-id "<session-id>" \
   --issue <N>            `# present for issue-work and fix-checks-only on issue-anchored PRs` \
   --pr <M>               `# present for fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch (and issue-work after it shipped)` \
-  --input <input> --output <output> \
-  --cache-read <cache_read> --cache-creation <cache_creation> \
+  --input <input_tokens> \
+  --output <output_tokens> \
+  --cache-read <cache_read_input_tokens> \
+  --cache-creation <cache_creation_input_tokens> \
   --mode <mode> --model <model-id>
 ```
 
-Both `--issue` and `--pr` are optional from the helper's perspective — pass whichever the dispatch surfaced. `bump-tokens` will route the attribution into `.tokens.totals` always, into `.tokens.per_issue[<N>]` if `--issue` is present, and into `.tokens.per_pr[<M>]` if `--pr` is present.
+All four `--input` / `--output` / `--cache-read` / `--cache-creation` flags are **required** — pass `0` explicitly if the harness reports the field as missing or zero (rare), don't omit the flag. Both `--issue` and `--pr` are optional from the helper's perspective — pass whichever the dispatch surfaced. `bump-tokens` will route the attribution into `.tokens.totals` always, into `.tokens.per_issue[<N>]` if `--issue` is present, and into `.tokens.per_pr[<M>]` if `--pr` is present.
+
+The `--model` value should be the harness-reported model id verbatim — `bump-tokens` resolves dated suffixes (`claude-haiku-4-5-20251001`) and bare aliases (`opus` / `sonnet` / `haiku`) against the pricing table internally (see #226).
 
 **Set the per-turn `tokens_attributed` flag to `true`** the moment `bump-tokens` returns successfully — step E's invariant line surfaces it for compliance auditing. On a turn where `bump-tokens` errors, leave the flag `false`, log `[bump-tokens] attribution failed: <exit code>; continuing`, and proceed with reconcile anyway. The dollar-cost data point is lost but the dispatch loop keeps moving; the flag's purpose is to make the gap visible, not to gate forward progress.
 
