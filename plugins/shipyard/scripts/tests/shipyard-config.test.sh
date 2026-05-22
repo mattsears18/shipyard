@@ -269,6 +269,49 @@ out=$("$helper" show --layer repo 2>&1)
 assert_contains "$out" '"policy": "never"' "show --layer repo emits the repo layer"
 
 # --------------------------------------------------------------------------
+echo "== show with array-valued leaves (regression: issue #214)"
+# `show` (the merged + source-annotated view) used to error with
+#   jq: error: Cannot index array with string "0"
+# whenever any effective-config leaf was an array element. The cause was
+# `cmd_show`'s jq helper round-tripping `paths(scalars)` (which yields
+# mixed-type arrays like ["trust","authors",0]) through join("." )+split(".")
+# which coerces the integer `0` to the string "0" and breaks `getpath`.
+# This regression test asserts the merged view works with a populated
+# `trust.authors` and emits the expected source annotations for each
+# array element.
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
+cat > "$repo/shipyard.config.json" <<'JSON'
+{
+  "version": 1,
+  "trust": { "authors": ["foo", "bar"] }
+}
+JSON
+
+out=$("$helper" show 2>&1)
+assert_exit_code "$?" 0 "show exits 0 with populated trust.authors array"
+assert_contains "$out" '"effective"' "show emits .effective on array-leaf config"
+assert_contains "$out" '"sources"'   "show emits .sources on array-leaf config"
+assert_contains "$out" '"foo"'       "show effective preserves trust.authors[0]"
+assert_contains "$out" '"bar"'       "show effective preserves trust.authors[1]"
+
+# Source annotations should attribute each array element to the layer it
+# came from — repo here. Round-trip through jq to extract just the sources
+# map so the assertion is robust to key ordering.
+src0=$(printf '%s\n' "$out" | jq -r '.sources["trust.authors.0"]')
+src1=$(printf '%s\n' "$out" | jq -r '.sources["trust.authors.1"]')
+assert_equals "$src0" "repo" "source of trust.authors.0 is repo"
+assert_equals "$src1" "repo" "source of trust.authors.1 is repo"
+
+# Defaults-side array leaves (inline_trivial.patterns) should resolve to
+# "defaults" — confirms the fix doesn't accidentally re-attribute them.
+src_pattern0=$(printf '%s\n' "$out" | jq -r '.sources["inline_trivial.patterns.0"]')
+assert_equals "$src_pattern0" "defaults" "defaults-side array element falls through to defaults"
+
+# Scalar leaves on the same config still annotate correctly.
+src_version=$(printf '%s\n' "$out" | jq -r '.sources.version')
+assert_equals "$src_version" "repo" "source of scalar leaf (version) is repo"
+
+# --------------------------------------------------------------------------
 echo "== usage errors"
 "$helper" 2>/dev/null
 assert_exit_code "$?" 64 "no args → exit 64 (usage)"
