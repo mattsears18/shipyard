@@ -28,5 +28,8 @@
   "concurrency": {
     "default": 2,
     "soft_collision": 3
+  },
+  "models": {
+    "issue_work": "claude-sonnet-4-6"
   }
 }
