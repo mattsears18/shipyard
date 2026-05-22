@@ -149,6 +149,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/shipyard:cost report` — query the persistent cost-history ledger at `~/.shipyard/cost-history.jsonl`; filter by repo, mode, model, or issue. See [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl).
 - `/shipyard:status` — live dashboard of in-flight `/shipyard:do-work` workers (mode, target, elapsed, tokens, stale detection).
 - `/shipyard:update` — one-keystroke shipyard update; runs `claude plugin marketplace update shipyard` then `claude plugin update shipyard@shipyard` and prompts you to run `/reload-plugins`. See the [Updating section](#updating) above.
+- `/shipyard:file-issue <description>` — discoverable one-keystroke entry point for filing a well-formed issue against the current repo. Loads the [`filing-github-issues`](plugins/shipyard/skills/filing-github-issues/SKILL.md) skill (Conventional Commits title, label discovery, duplicate search, body template) and the [`audit-rubrics`](plugins/shipyard/skills/audit-rubrics/SKILL.md) severity rules (P0/P1/P2), drafts the issue, files via `gh issue create`, returns the URL. For the human-in-the-loop case — auditors and `/do-work` workers file via the skill directly.
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
 
