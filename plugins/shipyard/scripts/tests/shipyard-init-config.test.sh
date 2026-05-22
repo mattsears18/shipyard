@@ -161,7 +161,7 @@ assert_jq "$repo_config" '.repo.owner'    "mattsears18"          "repo config: o
 assert_jq "$repo_config" '.repo.name'     "claude-plugins"       "repo config: name is claude-plugins"
 assert_jq "$repo_config" '.auto_merge.policy' "trusted-only"     "repo config: auto_merge.policy is trusted-only"
 assert_jq "$repo_config" '.trust.authors | contains(["mattsears18"])' "true" "repo config: trust.authors includes mattsears18"
-# The labels block must match the canonical 1.3.29 blocked:* namespace
+# The labels block must match the canonical blocked:* namespace
 assert_jq "$repo_config" '.labels.session_stamp' "shipyard"          "repo config: labels.session_stamp"
 assert_jq "$repo_config" '.labels.blocked'       "blocked:agent"     "repo config: labels.blocked is blocked:agent"
 assert_jq "$repo_config" '.labels.ci_blocked'    "blocked:ci"        "repo config: labels.ci_blocked is blocked:ci"
@@ -192,9 +192,8 @@ assert_file_contains "$claude_md" '/shipyard:config'      "CLAUDE.md references 
 echo "== Plugin version bump"
 
 plugin_json="$repo_root/plugins/shipyard/.claude-plugin/plugin.json"
-# Version must be at least 1.3.31 (the #165 ship). We don't pin to a specific
-# version because subsequent releases bump it further (#163 → 1.3.32, etc.) —
-# the regression we care about is "did the #165 work make it into a release?"
+# Version must be at least 1.3.31 — the floor where the shipyard.config.json
+# loader plus /shipyard:init / /shipyard:config landed.
 current_version=$(jq -r '.version' "$plugin_json" 2>/dev/null)
 if [[ -n "$current_version" ]]; then
   # Strip semver pre-release / build suffix if any, split into integers.

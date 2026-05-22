@@ -31,12 +31,9 @@ name: Label-event audit
 # Tier policy:
 #   - Tier A (security-sensitive): `shipyard`, `blocked:ci`,
 #     `needs-human-review` — REVERT the actor's change AND comment.
-#     Deprecated alias `ci-blocked` is also Tier A for the 1.3.29 grace
-#     period; remove after one week.
 #   - Tier B (routing-only): `needs-refinement`, `P0`, `P1`, `P2`,
 #     `wontfix`, `blocked:agent`, `needs-design`, `needs-triage`,
-#     `discussion` — alert-only (comment), no automatic revert. Deprecated
-#     alias `blocked` is also Tier B for the 1.3.29 grace period.
+#     `discussion` — alert-only (comment), no automatic revert.
 #   - Out of scope: free-form labels (`bug`, `enhancement`, `documentation`,
 #     `feature-request`, `good first issue`, `help wanted`, `invalid`,
 #     `question`, `user-feedback`) — those are tag-style and don't drive
@@ -210,15 +207,11 @@ jobs:
           tier=
           case "$label" in
             # Tier A (security-sensitive) — revert untrusted-actor changes.
-            # `ci-blocked` is retained as a deprecated alias for the 1.3.29
-            # grace period; remove after one week.
-            shipyard|blocked:ci|ci-blocked|needs-human-review)
+            shipyard|blocked:ci|needs-human-review)
               tier=A
               ;;
-            # Tier B (routing-only) — alert-only, no revert. `blocked` is
-            # retained as a deprecated alias of `blocked:agent` for the
-            # 1.3.29 grace period; remove after one week.
-            needs-refinement|P0|P1|P2|wontfix|blocked:agent|blocked|needs-design|needs-triage|discussion)
+            # Tier B (routing-only) — alert-only, no revert.
+            needs-refinement|P0|P1|P2|wontfix|blocked:agent|needs-design|needs-triage|discussion)
               tier=B
               ;;
             *)

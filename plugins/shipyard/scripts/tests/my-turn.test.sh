@@ -104,7 +104,6 @@ if [[ -f "$cmd_path" ]]; then
     "command pulls open issues via gh issue list"
   assert_contains "$cmd_path" "review" \
     "command covers PR review state"
-  # Renamed to `blocked:ci` in 1.3.29 (#148).
   assert_contains "$cmd_path" "blocked:ci" \
     "command surfaces blocked:ci PRs"
   assert_contains "$cmd_path" "needs-human-review" \

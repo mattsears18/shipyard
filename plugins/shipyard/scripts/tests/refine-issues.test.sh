@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
 # Test: the /shipyard:refine-issues command file exists with the three-branch
-# source-branched refiner semantics from issue #145, the back-compat alias at
-# refine-feedback.md routes to it, the intake-refinement-gate.yml workflow
+# source-branched refiner semantics, the intake-refinement-gate.yml workflow
 # encodes the four trigger conditions, and do-work.md / CLAUDE.md / README.md
-# all reference the renamed command + decoupled label semantics.
+# all reference it with the decoupled needs-human-review semantics.
 #
-# Background — issue #145: `needs-refinement` was previously a
-# user-feedback-only intake label, conflating "raw user text needs cleanup"
-# with "pipeline gate before /do-work dispatch." Claude-filed feature
-# requests with `## Open questions` had nowhere to land. This refactor
-# generalizes `needs-refinement` into a universal pipeline gate, splits
-# the refiner internally into three source-branched paths
-# (classify+rewrite / resolve-defaults / escalate-to-triage), and adds the
-# intake-refinement-gate.yml workflow to apply the label conditionally
-# at intake.
+# `needs-refinement` is a generic pipeline gate ("this issue isn't ready for
+# /do-work dispatch — a refiner needs to process it first"). The refiner has
+# three source-branched paths: classify+rewrite (user-feedback),
+# resolve-defaults (open questions), and escalate-to-triage (fall-through).
+# `needs-human-review` is decoupled — only the classify+rewrite branch
+# applies it.
 #
 # This test is the regression guard: if anyone deletes the command, drops a
-# branch from the source-branched refiner, breaks the back-compat alias,
-# removes the intake gate workflow, or backs out the needs-human-review
-# decoupling, the test fails.
+# branch from the source-branched refiner, removes the intake gate workflow,
+# or backs out the needs-human-review decoupling, the test fails.
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -41,7 +36,6 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 cmd_path="$repo_root/plugins/shipyard/commands/refine-issues.md"
-alias_path="$repo_root/plugins/shipyard/commands/refine-feedback.md"
 workflow_path="$repo_root/.github/workflows/intake-refinement-gate.yml"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
 # After the issue #154 split, the do-work spec lives across an entry-router
@@ -51,7 +45,6 @@ do_work_setup_path="$repo_root/plugins/shipyard/commands/do-work/setup.md"
 my_turn_path="$repo_root/plugins/shipyard/commands/my-turn.md"
 claude_md_path="$repo_root/CLAUDE.md"
 readme_path="$repo_root/README.md"
-plugin_json="$repo_root/plugins/shipyard/.claude-plugin/plugin.json"
 
 pass=0
 fail=0
@@ -97,7 +90,7 @@ assert_not_contains() {
   fi
 }
 
-echo "refine-issues / intake-refinement-gate regression tests (issue #145)"
+echo "refine-issues / intake-refinement-gate regression tests"
 echo
 
 # (1) Renamed command file exists with proper frontmatter.
@@ -113,8 +106,8 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "--dry-run" \
     "refine-issues accepts the --dry-run flag"
 
-  # The three source-branched paths from issue #145. These are the contract
-  # — every branch must be present, named consistently with the spec.
+  # The three source-branched paths. Every branch must be present, named
+  # consistently with the spec.
   assert_contains "$cmd_path" "classify+rewrite" \
     "refine-issues declares the classify+rewrite branch (user-feedback)"
   assert_contains "$cmd_path" "resolve-defaults" \
@@ -128,8 +121,7 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "Do NOT apply" \
     "refine-issues forbids applying needs-human-review from resolve-defaults"
 
-  # Escalate-to-triage must add needs-triage, not invent a new label
-  # (the refinement from the #145 comment thread).
+  # Escalate-to-triage must add needs-triage, not invent a new label.
   assert_contains "$cmd_path" "needs-triage" \
     "escalate-to-triage branch uses the existing needs-triage label"
 
@@ -152,17 +144,7 @@ if [[ -f "$cmd_path" ]]; then
     "refine-issues describes needs-refinement as a pipeline gate"
 fi
 
-# (2) Back-compat alias must exist and point at refine-issues.md.
-assert_file_exists "$alias_path" "commands/refine-feedback.md (back-compat alias) exists"
-if [[ -f "$alias_path" ]]; then
-  # The alias must mention it's an alias and point at the real spec.
-  assert_contains "$alias_path" "refine-issues" \
-    "refine-feedback alias references refine-issues"
-  assert_contains "$alias_path" "alias" \
-    "refine-feedback declares itself as an alias"
-fi
-
-# (3) Intake-refinement-gate.yml workflow.
+# (2) Intake-refinement-gate.yml workflow.
 assert_file_exists "$workflow_path" ".github/workflows/intake-refinement-gate.yml exists"
 
 if [[ -f "$workflow_path" ]]; then
@@ -191,7 +173,7 @@ if [[ -f "$workflow_path" ]]; then
   assert_contains "$workflow_path" "tr 'A-Z' 'a-z'" \
     "intake gate lowercase-normalizes author login"
 
-  # All four trigger conditions from issue #145 must be encoded.
+  # All four trigger conditions must be encoded.
   assert_contains "$workflow_path" "Open [qQ]uestions" \
     "intake gate detects '## Open questions' heading (condition 2)"
   assert_contains "$workflow_path" "Bot" \
@@ -236,14 +218,14 @@ if [[ -f "$workflow_path" ]]; then
     "intake gate does not echo body directly into run: (injection-safe)"
 fi
 
-# (4) do-work spec updates — the entry exists, the setup phase carries the
-# steps the #145 refiner refactor touched (step 2 bucketing, step 3a label
-# setup, step 3.5 refine invocation). After the issue #154 split these
-# steps live in commands/do-work/setup.md rather than in the entry.
+# (3) do-work spec — the entry exists, and the setup phase carries the
+# refinement-related steps (step 2 bucketing, step 3a label setup, step 3.5
+# refine invocation). These steps live in commands/do-work/setup.md rather
+# than in the thin entry.
 assert_file_exists "$do_work_path" "commands/do-work.md exists (thin entry)"
 assert_file_exists "$do_work_setup_path" "commands/do-work/setup.md exists (setup phase)"
 if [[ -f "$do_work_setup_path" ]]; then
-  # Step 3.5 must invoke the renamed command.
+  # Step 3.5 must invoke /refine-issues.
   assert_contains "$do_work_setup_path" "/refine-issues" \
     "do-work/setup.md step 3.5 invokes /refine-issues"
 
@@ -257,15 +239,14 @@ if [[ -f "$do_work_setup_path" ]]; then
     "do-work/setup.md step 2 describes needs-refinement as a generic gate"
 fi
 
-# (5) my-turn.md update — the needs-refinement bucket should reference
-# /shipyard:refine-issues, not the old name.
+# (4) my-turn.md — the needs-refinement bucket references /shipyard:refine-issues.
 assert_file_exists "$my_turn_path" "commands/my-turn.md exists"
 if [[ -f "$my_turn_path" ]]; then
   assert_contains "$my_turn_path" "/shipyard:refine-issues" \
     "my-turn.md references /shipyard:refine-issues"
 fi
 
-# (6) CLAUDE.md updated — describes the generalized label semantics.
+# (5) CLAUDE.md — describes the generic-gate label semantics.
 assert_file_exists "$claude_md_path" "CLAUDE.md exists"
 if [[ -f "$claude_md_path" ]]; then
   assert_contains "$claude_md_path" "generic pipeline gate" \
@@ -274,28 +255,13 @@ if [[ -f "$claude_md_path" ]]; then
     "CLAUDE.md documents the needs-human-review decoupling"
 fi
 
-# (7) README.md — slash command list mentions /refine-issues.
+# (6) README.md — slash command list mentions /refine-issues.
 assert_file_exists "$readme_path" "README.md exists"
 if [[ -f "$readme_path" ]]; then
   assert_contains "$readme_path" "/refine-issues" \
     "README.md slash-command list mentions /refine-issues"
-  # The repo layout block must list both files so the alias is visible.
   assert_contains "$readme_path" "refine-issues.md" \
     "README.md repo layout lists refine-issues.md"
-fi
-
-# (8) Plugin version was bumped (1.3.27 → 1.3.28 — these tests fire on
-# subsequent releases too, so we just check the bump landed by asserting
-# the new version is referenced in the CHANGELOG; the precise version
-# string in plugin.json is not load-bearing for the test, only that it's
-# >= 1.3.28).
-assert_file_exists "$plugin_json" "plugin.json exists"
-if [[ -f "$plugin_json" ]]; then
-  # The version must be at minimum 1.3.28 — newer is fine.
-  # Just assert it's not stuck at the pre-#145 version. This is the
-  # version-bump regression guard.
-  assert_not_contains "$plugin_json" '"version": "1.3.27"' \
-    "plugin.json version was bumped past 1.3.27 (the #145 fix lands at 1.3.28)"
 fi
 
 echo

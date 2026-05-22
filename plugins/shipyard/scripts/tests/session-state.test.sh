@@ -262,9 +262,9 @@ assert_equals "$rc" "rc=64" "update without --set exits 64"
 # --------------------------------------------------------------------------
 echo "== init writes the tokens field"
 # --------------------------------------------------------------------------
-# The session-state schema grew a `.tokens` block in 1.3.30 (issue #153) for
-# per-session token accounting. init MUST seed it to its empty shape so
-# subsequent bump-tokens / read-tokens calls never trip on a missing key.
+# The session-state schema includes a `.tokens` block for per-session token
+# accounting. init MUST seed it to its empty shape so subsequent bump-tokens
+# / read-tokens calls never trip on a missing key.
 
 tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-init" --repo "o/r" >/dev/null
