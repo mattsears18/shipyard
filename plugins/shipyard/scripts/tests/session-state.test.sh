@@ -382,6 +382,55 @@ assert_equals "$out" "1001000" "unknown model still records token counts"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+# Pricing — dated-suffix and bare-alias resolution (regression for #226).
+# The Anthropic API returns dated model ids (`claude-haiku-4-5-20251001`)
+# and some legacy dispatch sites pass bare aliases (`opus`); both must
+# resolve to the canonical row in the pricing table or every Haiku/Opus
+# dispatch costs $0.
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+
+# Dated suffix: claude-haiku-4-5-20251001 should match claude-haiku-4-5
+# (haiku input = $1/Mtok → 1M input = $1.00).
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-dated-haiku" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-dated-haiku" \
+  --input 1000000 --output 0 \
+  --model "claude-haiku-4-5-20251001" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-dated-haiku" --path ".tokens.totals.estimated_usd")
+assert_equals "$out" "1" "dated haiku suffix resolves to canonical pricing row"
+
+# Bare alias `opus` should resolve to claude-opus-4-7.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-alias-opus" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-alias-opus" \
+  --input 1000000 --output 0 \
+  --model "opus" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-alias-opus" --path ".tokens.totals.estimated_usd")
+assert_equals "$out" "15" "bare alias 'opus' resolves to canonical pricing row"
+
+# Bare alias `sonnet` should resolve to claude-sonnet-4-6.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-alias-sonnet" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-alias-sonnet" \
+  --input 1000000 --output 0 \
+  --model "sonnet" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-alias-sonnet" --path ".tokens.totals.estimated_usd")
+assert_equals "$out" "3" "bare alias 'sonnet' resolves to canonical pricing row"
+
+# Dated sonnet (future-proofing for when Anthropic rotates the suffix).
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-dated-sonnet" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-dated-sonnet" \
+  --input 1000000 --output 0 \
+  --model "claude-sonnet-4-6-20260601" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-dated-sonnet" --path ".tokens.totals.estimated_usd")
+assert_equals "$out" "3" "dated sonnet suffix resolves to canonical pricing row"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== bump-tokens — input validation"
 # --------------------------------------------------------------------------
 
