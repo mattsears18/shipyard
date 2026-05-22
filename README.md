@@ -101,16 +101,9 @@ Shipyard is moving fast — expect frequent releases. The one-keystroke path:
 /shipyard:update
 ```
 
-That runs the marketplace refresh and the plugin update in order, then prompts you to run `/reload-plugins` so the refreshed slash commands, agents, and hooks register. (A slash command can't reload the plugin it's a member of — same caveat as the manual flow below.)
+That runs the marketplace refresh and the plugin update in order, then prompts you to run `/reload-plugins` so the refreshed slash commands, agents, and hooks register. (A slash command can't reload the plugin it's a member of — that's why `/reload-plugins` is a separate step.)
 
-If `/shipyard:update` is unavailable (older installed version that predates the command) or you'd rather run the underlying commands directly, the manual fallback is:
-
-```sh
-claude plugin marketplace update shipyard
-claude plugin update shipyard@shipyard
-```
-
-Then `/reload-plugins` (or restart Claude Code on older versions).
+On a shipyard older than the version that introduced `/shipyard:update`, run the underlying `claude plugin` commands directly — see [`commands/update.md`](plugins/shipyard/commands/update.md).
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release. Pin to a specific commit if you need reproducibility — the experimental-status warning at the top of this README applies, and slash-command shape, skill interfaces, and agent contracts evolve between updates.
 
@@ -148,7 +141,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/shipyard:config show|get|set|edit|validate` — inspect or update the effective merged config across the four layers (built-in defaults, user-global, repo, personal override).
 - `/shipyard:cost report` — query the persistent cost-history ledger at `~/.shipyard/cost-history.jsonl`; filter by repo, mode, model, or issue. See [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl).
 - `/shipyard:status` — live dashboard of in-flight `/shipyard:do-work` workers (mode, target, elapsed, tokens, stale detection).
-- `/shipyard:update` — one-keystroke shipyard update; runs `claude plugin marketplace update shipyard` then `claude plugin update shipyard@shipyard` and prompts you to run `/reload-plugins`. See the [Updating section](#updating) above.
+- `/shipyard:update` — one-keystroke shipyard update; prompts you to run `/reload-plugins` once the refresh lands. See the [Updating section](#updating) above.
 - `/shipyard:file-issue <description>` — discoverable one-keystroke entry point for filing a well-formed issue against the current repo. Loads the [`filing-github-issues`](plugins/shipyard/skills/filing-github-issues/SKILL.md) skill (Conventional Commits title, label discovery, duplicate search, body template) and the [`audit-rubrics`](plugins/shipyard/skills/audit-rubrics/SKILL.md) severity rules (P0/P1/P2), drafts the issue, files via `gh issue create`, returns the URL. For the human-in-the-loop case — auditors and `/do-work` workers file via the skill directly.
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
