@@ -95,14 +95,22 @@ When `/audit` runs, you'll see filed issues with severity labels (`P0`/`P1`/`P2`
 
 ## Updating
 
-Shipyard is moving fast — expect frequent releases. To pull down the latest version:
+Shipyard is moving fast — expect frequent releases. The one-keystroke path:
+
+```sh
+/shipyard:update
+```
+
+That runs the marketplace refresh and the plugin update in order, then prompts you to run `/reload-plugins` so the refreshed slash commands, agents, and hooks register. (A slash command can't reload the plugin it's a member of — same caveat as the manual flow below.)
+
+If `/shipyard:update` is unavailable (older installed version that predates the command) or you'd rather run the underlying commands directly, the manual fallback is:
 
 ```sh
 claude plugin marketplace update shipyard
 claude plugin update shipyard@shipyard
 ```
 
-Then run `/reload-plugins` (or restart Claude Code on older versions) so the refreshed slash commands, agents, and hooks register.
+Then `/reload-plugins` (or restart Claude Code on older versions).
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release. Pin to a specific commit if you need reproducibility — the experimental-status warning at the top of this README applies, and slash-command shape, skill interfaces, and agent contracts evolve between updates.
 
@@ -140,6 +148,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/shipyard:config show|get|set|edit|validate` — inspect or update the effective merged config across the four layers (built-in defaults, user-global, repo, personal override).
 - `/shipyard:cost report` — query the persistent cost-history ledger at `~/.shipyard/cost-history.jsonl`; filter by repo, mode, model, or issue. See [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl).
 - `/shipyard:status` — live dashboard of in-flight `/shipyard:do-work` workers (mode, target, elapsed, tokens, stale detection).
+- `/shipyard:update` — one-keystroke shipyard update; runs `claude plugin marketplace update shipyard` then `claude plugin update shipyard@shipyard` and prompts you to run `/reload-plugins`. See the [Updating section](#updating) above.
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
 
