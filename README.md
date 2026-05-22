@@ -53,7 +53,7 @@ claude plugin marketplace add mattsears18/shipyard
 claude plugin install shipyard@shipyard
 ```
 
-Then run `/reload-plugins` (or restart Claude Code on older versions) so the new slash commands register.
+Then run `/reload-plugins` so the new slash commands register.
 
 ### 2. Run your first command
 
@@ -69,7 +69,7 @@ From inside any GitHub-connected repo, try one of these:
 
 # Refine issues that aren't ready for /do-work yet (source-branched):
 # user-feedback classify+rewrite, open-questions resolve-defaults, or
-# escalate-to-triage fall-through. /refine-feedback still works as an alias.
+# escalate-to-triage fall-through.
 /refine-issues
 
 # See what's blocked on YOU (PRs waiting on review, issues needing triage, etc.)
@@ -103,8 +103,6 @@ Shipyard is moving fast — expect frequent releases. The one-keystroke path:
 
 That runs the marketplace refresh and the plugin update in order, then prompts you to run `/reload-plugins` so the refreshed slash commands, agents, and hooks register. (A slash command can't reload the plugin it's a member of — that's why `/reload-plugins` is a separate step.)
 
-On a shipyard older than the version that introduced `/shipyard:update`, run the underlying `claude plugin` commands directly — see [`commands/update.md`](plugins/shipyard/commands/update.md).
-
 See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release. Pin to a specific commit if you need reproducibility — the experimental-status warning at the top of this README applies, and slash-command shape, skill interfaces, and agent contracts evolve between updates.
 
 ## What it does
@@ -134,7 +132,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit observability` — error-tracking effectiveness, structured-logging consistency, tracing coverage, alert config
 - `/audit api` — OpenAPI / GraphQL schema drift, missing pagination, inconsistent auth and error envelopes, breaking-change diffs
 - `/audit all <url>` — every audit in parallel
-- `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through). `/refine-feedback` still works as a back-compat alias.
+- `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through).
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`)
 - `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart.
 - `/shipyard:init` — scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps. See [`CLAUDE.md`'s "Configuration" section](./CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) for the layering model.
@@ -162,7 +160,7 @@ The result: you write issues (or let `/audit` write them), you sign off on the u
 
 ### Label conventions
 
-Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent` / `blocked:ci` — renamed from `blocked` / `ci-blocked` in 1.3.29), and gate labels (`needs-refinement`, `needs-human-review`, `needs-triage`). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
+Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent`, `blocked:ci`), and gate labels (`needs-refinement`, `needs-human-review`, `needs-triage`). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
 
 ### Observability — per-session token cost
 
@@ -180,7 +178,7 @@ A non-exhaustive list of safety properties the orchestrator and workers carry to
 
 ## See it in action
 
-**Shipyard is built with shipyard.** The majority of merged PRs in this repo were opened by `/do-work` workers — each one opened, fixed-up through CI failures (if any), and merged without a human touching the keyboard between issue triage and PR review. The `shipyard` label (renamed from `do-work` in 1.2.0) stamps every PR the orchestrator produces. Browse the living demo:
+**Shipyard is built with shipyard.** The majority of merged PRs in this repo were opened by `/do-work` workers — each one opened, fixed-up through CI failures (if any), and merged without a human touching the keyboard between issue triage and PR review. The `shipyard` label stamps every PR the orchestrator produces. Browse the living demo:
 
 - [**Issues →**](https://github.com/mattsears18/shipyard/issues?q=is%3Aissue) — the backlog the orchestrator has been working, plus the closed ones with their resolving PRs linked
 - [**`shipyard`-labeled closed PRs →**](https://github.com/mattsears18/shipyard/pulls?q=is%3Apr+is%3Aclosed+label%3Ashipyard) — the merged outputs
@@ -244,7 +242,6 @@ plugins/
       do-work-RATIONALE.md       # design discussion companion
       init.md
       my-turn.md
-      refine-feedback.md         # back-compat alias for refine-issues
       refine-issues.md
       status.md
     agents/
@@ -376,4 +373,4 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the navigable index of operationa
 
 ---
 
-<sub>Last verified against shipyard 1.3.43.</sub>
+<sub>Last verified against shipyard 1.3.44.</sub>
