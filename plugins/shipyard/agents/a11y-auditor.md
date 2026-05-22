@@ -38,6 +38,8 @@ npx --yes lighthouse@latest "<URL>" \
 
 Parse `report.report.json` for failing a11y audits (`color-contrast`, `button-name`, `link-name`, `image-alt`, `aria-*`, `label`, `tabindex`, `valid-lang`, `heading-order`, etc.).
 
+**`heading-order` is a finding, not informational.** Lighthouse marks `heading-order` (and the related `heading-levels` checks) as a manual-review audit in some configurations — treat any failing or non-passing `heading-order` result as a filed finding, not silently dropped. The audit fires on out-of-order heading levels, skipped levels, and (load-bearing for this auditor) **multiple `<h1>` elements on the same page**. A `heading-order` result that reads "Heading elements appear in a sequential descending order" with `score < 1` and a non-empty `details.items[]` is a real finding — parse `details.items[].node.snippet` for the offending elements and file.
+
 ### 2. Manual tour via Chrome DevTools MCP
 
 Mechanical Lighthouse misses interaction-level issues. For each major surface:
@@ -48,6 +50,8 @@ Mechanical Lighthouse misses interaction-level issues. For each major surface:
    - Missing `aria-label` on icon-only buttons
    - Form inputs without associated `<label>` or `aria-labelledby`
    - Headings out of order or skipped levels
+   - **Multiple `<h1>` elements on a non-modal page.** Render the document's heading hierarchy explicitly — count `<h1>` elements outside dialogs / `role="dialog"` containers. Two or more is a textbook WCAG 2.1 SC 1.3.1 (Info and Relationships) / 2.4.6 (Headings and Labels) violation: screen-reader users navigating by heading land on two "page titles" and can't tell which one identifies the page. A modal `<h1>` inside an explicitly-opened dialog is allowed; the page's underlying `<h1>` plus a second `<h1>` rendered as default-route-header chrome is not. This check is *separate* from Lighthouse's `heading-order` (which catches the same defect from a different angle) — file both as the same issue, citing both signals, rather than two issues for the same defect.
+   - A heading whose visible text equals the URL path segment (e.g. visible `"notifications"` on `/notifications`) — that's the signature of a framework default-header leaking through with no override. Even on its own (without a second `<h1>` stacked above/below it) it's an a11y smell, because the page's accessible name should match its purpose, not its URL slug.
    - Decorative images without `alt=""`, content images without descriptive alt
 3. Test keyboard navigation: use `press_key` for Tab / Shift-Tab / Enter / Space / Escape. Verify focus ring is visible (screenshot), focus order is logical, modals trap focus, Escape dismisses dialogs.
 4. `take_screenshot` to capture focus state at each Tab stop — **save it to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<route-or-finding-id>.png`, never to the repo root or any working directory.** The orchestrator promises the parent directory exists before dispatch (sibling to the consolidated `.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.html` report). If `take_screenshot` only accepts a `filePath` argument, pass the full relative path explicitly; if it auto-names, immediately `mv` the output into the target directory before continuing. Use a short, stable slug (e.g. `login-focus-tab3.png`, `modal-focus-trap.png`) so cross-links in issue bodies stay readable.
@@ -60,6 +64,7 @@ Mechanical Lighthouse misses interaction-level issues. For each major surface:
 - **Focus management** — visible focus ring, logical order, focus restored after modal close
 - **Skip links** — "skip to main content" present on long pages
 - **Landmarks** — `<main>`, `<nav>`, `<header>`, `<footer>` present and unique
+- **Heading hierarchy** — multiple `<h1>` on a non-modal page (WCAG 2.1 SC 1.3.1 / 2.4.6); skipped levels (h1 → h3 with no h2); heading text that matches the URL path segment (framework-default header bleed). See step 2's heading-outline check for the explicit trigger.
 - **Dynamic content** — `aria-live` regions for async updates, toast notifications
 - **Reduced motion** — `prefers-reduced-motion` respected for animations
 - **Language** — `<html lang>` set; per-section `lang` for multilingual content
