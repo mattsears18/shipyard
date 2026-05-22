@@ -42,11 +42,39 @@ For each surface:
 - Notification or activity panels
 - One error state (force one — bad URL, expired session)
 - Dark mode parity (if the app respects `prefers-color-scheme`)
-- Narrow viewport via `resize_page` to ~375×667 — does the layout hold?
+
+**Tour every surface at three viewports** via `resize_page`, capturing a screenshot at each. Single-viewport tours miss the most common web-side bug class in responsive apps: "works on desktop, broken on tablet/intermediate widths." The three target viewports are deliberate — they bracket the gaps a binary `wide`/`narrow` boolean leaves uncovered:
+
+- **Narrow** — 375×667 (iPhone SE portrait). Does the mobile layout hold?
+- **Tablet portrait** — 820×1180 (iPad Air portrait). The highest-value viewport in practice: narrow enough that desktop layouts don't fit, wide enough that mobile breakpoints don't kick in, and a heavily-used real device. This is where most "wide enough to think it's desktop, too narrow to fit desktop chrome" bugs live.
+- **Wide** — 1280×800 (laptop). Does the desktop layout hold?
 
 Use `list_console_messages` to spot runtime errors during the tour.
 
-### 2. Categorize findings
+### 2. Run structural smell checks on every surface
+
+These are high-signal heuristics that surface bugs a casual tour-with-screenshots misses. Run each check against the DOM snapshot + screenshots collected in step 1; each one detects a structural pattern that almost always indicates a real bug rather than taste. Treat findings here with the same severity / grouping rules as anything else (step 4 / step 5).
+
+**Duplicate / stacked page headers** (textbook signature: framework default-header bleeding through a nested layout):
+
+- Count rendered top-region headers per surface — semantic `<h1>` elements AND visually-bold "page title" bars (`role="header"`, or large-font / heavy-weight rows in the top ~15% of the viewport). A non-modal page with two stacked title-like headers in the top region is a finding. Modal `<h1>` inside an explicitly-opened dialog is allowed; the bar above the dialog backdrop is not part of "the page" for this check.
+- Flag a header whose visible text matches the URL path segment (e.g. visible `"notifications"` on `/notifications`, `"sessions"` on `/sessions`). That's the signature of a framework default-header leaking through with no override — almost always unintentional, and the user's "this looks jacked" instinct is correct every time.
+- Flag stacked horizontal bars of similar height + visual weight in the top region. Two title-shaped bars in a row is the duplicate-header silhouette regardless of what tag they render as.
+
+**Mobile-only UI shipping to the web build** (the component renders the same regardless of viewport, which is wrong on web):
+
+- **Fixed-width content centered in large dead space.** If more than ~50% of the viewport on a wide-desktop tour (≥1280×800) is unstyled / unused around a phone-sized card, that's almost always a mobile-shaped component that didn't get a web layout. Onboarding tours, modals-as-pages, and full-screen splash screens are the usual offenders.
+- **Bottom-anchored navigation chrome on web.** A `position: absolute; bottom: 0` tab-bar-like row on a route that ALSO has a visible sidebar is duplicate or broken-mobile — the sidebar IS the nav on web, so the bottom bar is leftover mobile chrome.
+- **Gesture verbs in copy on web routes.** "Tap", "swipe", "pinch", "long-press" on desktop pages mean the wrong thing — these are mobile-only copy strings that didn't get a web variant. False positives are rare and easy to whitelist when they happen.
+
+**Layout discontinuity across the three viewports** (re-uses the multi-viewport tour from step 1):
+
+- **Text overflow** — visible `text-overflow: ellipsis` clipping at content boundaries, or text content clipped mid-word at a column / cell / card edge. Especially watch the 820×1180 viewport where master-detail layouts squeeze the rightmost column.
+- **Hidden-via-overflow content** — content laid out off-screen via positive horizontal offsets that don't trigger scrollbars, so the user can't scroll to see it but it's also not deliberately hidden.
+- **Component shrunk below its declared min-width** — CSS `min-width` set but layout overrides it via flex / grid, producing visibly cramped components.
+- **Layout type changes drastically between adjacent viewports** — if the page is a 3-column master-detail at 1280×800 and the same page is unstyled-stacked-column at 820×1180, the responsive breakpoint is in the wrong place. Flag with screenshots from both viewports.
+
+### 3. Categorize findings
 
 Common buckets:
 
@@ -58,20 +86,21 @@ Common buckets:
 - **Empty / loading / error states** — missing, weak, or generic; flashes of empty content
 - **Copy** — confusing microcopy, inconsistent tone, error messages that don't tell the user what to do
 - **Navigation** — unclear back behavior, modal vs. route ambiguity, dead ends
-- **Responsive** — layout breaks at narrow widths, content cropped, overlapping elements
+- **Responsive** — layout breaks at narrow widths, content cropped, overlapping elements (the structural-smell heuristics in step 2 catch the high-signal subset; this bucket covers anything else)
+- **Structural smells** — duplicate page headers, mobile-only-UI-on-web, layout discontinuity across viewports (see step 2)
 - **Dark mode** — parity gaps with light mode
 
-### 3. Filter by severity
+### 4. Filter by severity
 
 Use the `shipyard:audit-rubrics` skill for severity definitions and grouping rules.
 
 **File P0–P2.** Every finding needs evidence (screenshot path or DOM snippet) — if you didn't capture it, drop it.
 
-### 4. Group ruthlessly
+### 5. Group ruthlessly
 
 One issue per coherent PR-scope. Same spacing inconsistency across five surfaces → one issue listing all five, not five issues. Aim for 5–15 total issues from a typical audit. If you're at 30, re-group.
 
-### 5. File the issues
+### 6. File the issues
 
 Use the `shipyard:filing-github-issues` skill for filing conventions. Conventional Commits titles. Include screenshot path or DOM snippet in every body.
 
@@ -79,7 +108,7 @@ Embed screenshots via relative path so the issue body renders the image inline w
 
 Default labels: `bug` (P0/P1 visual breaks), `enhancement` (missing/improvable surfaces), plus `web` and `design` / `a11y` where those labels exist in the repo.
 
-### 6. Clean up unreferenced screenshots
+### 7. Clean up unreferenced screenshots
 
 After all issues are filed, delete any screenshot you captured that did NOT end up referenced in an issue body. The signal-to-noise rule is the same as for findings: if it didn't earn a place in an issue, it's residue. Use the issue bodies you just filed as the source of truth — anything in `.shipyard/audits/<YYYY-MM-DD>/screenshots/` that isn't named in at least one filed issue gets `rm`'d. Don't touch screenshots from prior dates; only this run's directory is yours to clean.
 
@@ -93,7 +122,7 @@ DIR=".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
 
 Never delete files from the repo root or any other working directory — the routing in step 1 means there shouldn't be any audit screenshots outside `.shipyard/audits/<YYYY-MM-DD>/screenshots/` in the first place. If you find one (the tool ignored a `filePath` arg, or you forgot to `mv` it), move it into the correct directory before deciding whether it's referenced.
 
-### 7. Return summary
+### 8. Return summary
 
 ```
 Web UX audit of <URL>:
