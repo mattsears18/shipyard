@@ -551,21 +551,33 @@ cmd_show() {
 
   # Build a flat "key=source" projection for each layer at every leaf path.
   # Then for each leaf in `merged`, look up the latest layer that set it.
+  #
+  # Path-shape note (issue #214): `paths(scalars)` yields each path as a
+  # mixed array of strings (object keys) and integers (array indices) —
+  # e.g. `["trust","authors",0]`. We carry that mixed-type array as the
+  # canonical form for `getpath` lookups, and only stringify it (via
+  # `join(".")`) for the source-map output key. Round-tripping through
+  # `join`+`split` would coerce the integer `0` back to the string `"0"`
+  # and break `getpath` with `Cannot index array with string "0"`.
   printf '%s\n' "$merged" | jq --argjson d "$d" --argjson u "$u" --argjson r "$r" --argjson l "$l" '
-    # Flatten an object into a list of leaf paths with their values.
+    # Flatten an object into a list of leaf paths. `path` is the mixed-type
+    # array form (used for getpath lookups); the dotted string form is built
+    # on the source-map write side.
     def leaves:
       [ paths(scalars) as $p
-        | { path: ($p | join(".")), value: getpath($p) } ];
+        | { path: $p, value: getpath($p) } ];
 
+    # $path is the mixed-type array form (strings for object keys, integers
+    # for array indices). Empty path = whole object.
     def has_path($obj; $path):
-      if ($path == "") then ($obj | length > 0)
-      else ($obj | getpath($path | split(".")) != null) end ;
+      if ($path | length) == 0 then ($obj | length > 0)
+      else ($obj | getpath($path) != null) end ;
 
     . as $eff
     | ($eff | leaves) as $leaves
     | reduce $leaves[] as $leaf (
         {"effective": $eff, "sources": {}};
-        .sources[$leaf.path] = (
+        .sources[ ($leaf.path | map(tostring) | join(".")) ] = (
           if has_path($l; $leaf.path) then "local"
           elif has_path($r; $leaf.path) then "repo"
           elif has_path($u; $leaf.path) then "user"
