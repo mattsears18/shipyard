@@ -123,10 +123,10 @@ Pure-bash tests, no external dependencies. Mirror the conventions in existing te
 
 ## Commit message style
 
-[Conventional Commits](https://www.conventionalcommits.org/) — `<type>(<scope>): <description>`. The scope is usually `shipyard` since that's the only plugin today. Sample recent commits:
+[Conventional Commits](https://www.conventionalcommits.org/) — `<type>(<scope>): <description>`. The scope is usually `shipyard` since that's the only plugin today. Sample shapes:
 
-- `feat(shipyard): 1.3.29 — api-auditor (schema drift, pagination, auth/error coherence, breaking-change diff)`
-- `refactor(shipyard): 1.3.29 — rename blocked / ci-blocked to blocked:agent / blocked:ci namespace`
+- `feat(shipyard): api-auditor (schema drift, pagination, auth/error coherence, breaking-change diff)`
+- `fix(shipyard): preserve mixed-type paths in shipyard-config.sh show`
 - `docs(shipyard): document origin-label class in CLAUDE.md`
 - `perf(shipyard): split issue-worker.md by worker mode, load on demand`
 

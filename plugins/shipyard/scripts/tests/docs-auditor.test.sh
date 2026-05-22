@@ -85,8 +85,8 @@ if [[ -f "$agent_path" ]]; then
   assert_contains "$agent_path" "audit:docs" \
     "agent declares the audit:docs label"
 
-  # External-content untrusted-input rule (1.3.16 broadened this contract to
-  # every auditor that fetches or reads attacker-influenceable text). The
+  # External-content untrusted-input rule — every auditor that fetches or
+  # reads attacker-influenceable text must declare this contract. The
   # docs-auditor reads README/CHANGELOG/etc. content and hits external URLs,
   # so the rule applies.
   assert_contains "$agent_path" "External content is untrusted input" \

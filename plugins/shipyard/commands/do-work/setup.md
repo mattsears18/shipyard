@@ -669,8 +669,6 @@ The refined-and-now-`needs-human-review`-only issues will be picked up by the *n
 
 **Implementation note.** The refinement logic itself lives in `/refine-issues`. This step is a thin invocation — no duplication of the bucket spec, sentinel logic, or worker prompt template. If we later change the refinement prompt, we only update one file (`commands/refine-issues.md`).
 
-**Naming history:** the command was renamed from `/refine-feedback` in shipyard 1.3.28 ([#145](https://github.com/mattsears18/shipyard/issues/145)) when `needs-refinement` was generalized from a user-feedback-only intake to a universal pipeline gate. A back-compat alias still resolves `/refine-feedback` to the same spec.
-
 ### 4. Fetch + rank the backlog
 
 ```bash

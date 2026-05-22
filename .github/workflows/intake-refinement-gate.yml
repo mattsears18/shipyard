@@ -1,29 +1,14 @@
 name: Intake refinement gate
 
 # Conditionally applies `needs-refinement` on `issues.opened` (and `reopened`)
-# when an issue isn't ready for `/shipyard:do-work` dispatch yet. The label
-# acts as a generic pipeline gate (issue #145); the source-branched
-# `/shipyard:refine-issues` command then routes the issue to the correct
-# refinement branch (classify+rewrite for user-feedback, resolve-defaults for
-# open-questions, escalate-to-triage as the fall-through).
+# when an issue isn't ready for `/shipyard:do-work` dispatch yet. The label is
+# a generic pipeline gate; `/shipyard:refine-issues` then routes the issue to
+# the correct refinement branch (classify+rewrite for user-feedback,
+# resolve-defaults for open-questions, escalate-to-triage as the fall-through).
 #
-# Rationale (issue #145): the previous design conflated two concepts —
-# `needs-refinement` only ever meant "this is raw user feedback awaiting
-# `/refine-feedback`," and `needs-human-review` was applied alongside it by
-# the same backend at intake time. That left two gaps:
-#
-#   1. Claude-filed feature requests that include an `## Open questions`
-#      section have nowhere to land — `/do-work` dispatches them with the
-#      questions unresolved, or (if Claude mislabels) `/refine-feedback`
-#      skips them for not carrying `user-feedback`. They sit stuck.
-#   2. The label semantics couldn't extend to new refinement rules without
-#      changing the intake-side contract — every new rule would need a new
-#      label or new backend logic.
-#
-# This workflow is the conditional version of "apply `needs-refinement` to
-# every new issue" — the naive fix would over-trigger (every routine
-# trusted-author issue would get gated, defeating `/do-work`'s autonomy).
-# Instead the workflow checks for the specific shapes that genuinely need a
+# The gate is conditional rather than blanket-applied because every routine
+# trusted-author issue would otherwise get gated, defeating `/do-work`'s
+# autonomy. The workflow checks for the specific shapes that genuinely need a
 # refiner pass, and skips otherwise.
 #
 # Triggering conditions (any one match applies the label):

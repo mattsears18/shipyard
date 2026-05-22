@@ -5,13 +5,11 @@ name: External-author gate
 # `plugins/shipyard/commands/do-work.md` step 4 — no automation will touch the
 # issue until a maintainer removes the label (or closes the issue).
 #
-# Rationale (issue #91): the existing `/refine-feedback` pipeline gates
-# user-feedback issues through `needs-human-review`, but only when an external
-# intake system applies the label. A stranger opening an issue directly on
-# GitHub bypasses that intake and lands fully eligible for `/do-work` dispatch
-# — i.e. a prompt-injection vector that could ride auto-merge straight to
-# `main`. This action closes that gap at the intake side; the dispatch-side
-# author allowlist closes it from the other direction. Both layers compose.
+# A stranger opening an issue directly on GitHub would otherwise land fully
+# eligible for `/do-work` dispatch — a prompt-injection vector that could ride
+# auto-merge straight to `main`. This action closes that gap at the intake
+# side; the dispatch-side author allowlist closes it from the other direction.
+# Both layers compose.
 #
 # Security note: all event-supplied values (issue number, author login, repo
 # slug) are passed through env vars rather than interpolated into `run:`

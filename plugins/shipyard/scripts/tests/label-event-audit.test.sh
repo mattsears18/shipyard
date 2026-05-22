@@ -126,27 +126,21 @@ if [[ -f "$workflow_path" ]]; then
 
   # (6) Tier A labels (security-sensitive) — must include all three.
   # We grep for the labels as standalone tokens in the case branches.
-  # The canonical name is `blocked:ci` (renamed from `ci-blocked` in
-  # 1.3.29, #148); the workflow keeps `ci-blocked` as a deprecated alias
-  # for the one-week grace period, so either name passing this assertion
-  # is fine.
   assert_contains "$workflow_path" "shipyard" \
     "Tier A includes 'shipyard' label"
   assert_contains "$workflow_path" "blocked:ci" \
-    "Tier A includes 'blocked:ci' label (canonical name post-1.3.29)"
+    "Tier A includes 'blocked:ci' label"
   assert_contains "$workflow_path" "needs-human-review" \
     "Tier A includes 'needs-human-review' label"
 
   # (7) Tier B labels (routing-only, alert-only) — at least the ones called
-  # out in the acceptance criteria. The canonical name is `blocked:agent`
-  # (renamed from `blocked` in 1.3.29, #148); the workflow keeps `blocked`
-  # as a deprecated alias for the one-week grace period.
+  # out in the acceptance criteria.
   assert_contains "$workflow_path" "needs-refinement" \
     "Tier B includes 'needs-refinement' label"
   assert_contains "$workflow_path" "wontfix" \
     "Tier B includes 'wontfix' label"
   assert_contains "$workflow_path" "blocked:agent" \
-    "Tier B includes 'blocked:agent' label (canonical name post-1.3.29)"
+    "Tier B includes 'blocked:agent' label"
 
   # (8) Reverts tier A — must use both `--add-label` (on unlabeled events)
   # and `--remove-label` (on labeled events) to undo the actor's change.

@@ -9,8 +9,6 @@ Take issues that aren't yet ready for `/shipyard:do-work` dispatch and run a **s
 
 `/refine-issues` is the **single source of truth** for the refinement logic. `/do-work` invokes it on startup (step 3.5) — the same code path. If you change the refinement prompt, you change it here.
 
-> **Back-compat:** the previous name was `/refine-feedback`. An alias is preserved at `plugins/shipyard/commands/refine-feedback.md` so muscle memory keeps working during the transition. The two slash commands are equivalent — they both route to this spec. Future plugin versions may drop the alias.
-
 ## What "needs refinement" means (the generic gate)
 
 `needs-refinement` is a **pipeline gate**, not a workflow tag. It means "this issue isn't ready for `/do-work` dispatch — a refiner needs to process it first."
