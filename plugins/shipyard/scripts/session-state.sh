@@ -517,8 +517,24 @@ cmd_bump_tokens() {
 
   # Compose the full pipeline. `$usd_delta` is computed once at the top and
   # reused in every accumulator below.
+  #
+  # Pricing lookup is longest-prefix-match, not exact-match: the harness
+  # reports dated model ids like `claude-haiku-4-5-20251001`, and some
+  # callers pass bare aliases like `opus` / `sonnet` / `haiku`. The pricing
+  # table is keyed on the canonical undated id (`claude-haiku-4-5`); a
+  # longest-prefix match resolves the dated suffix, and a fallback alias
+  # table resolves bare aliases. Both fall through to a zero row only when
+  # the model is genuinely unknown to the table (closes #226).
   local jq_pipeline='
-    ($pricing[$model] // {input:0, output:0, cache_read:0, cache_creation:0}) as $p
+    {opus: "claude-opus-4-7", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5"} as $aliases
+    | ($aliases[$model] // $model) as $resolved
+    | (
+        $pricing
+        | to_entries
+        | map(select(.key as $k | $resolved | startswith($k)))
+        | sort_by(-(.key | length))
+        | (.[0].value // {input:0, output:0, cache_read:0, cache_creation:0})
+      ) as $p
     | (
         ($input * ($p.input // 0)
          + $output * ($p.output // 0)
