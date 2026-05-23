@@ -31,7 +31,7 @@
 An experimental [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin — an autonomous engineering loop that finds work via audits, refines raw user feedback into actionable tickets, and burns down the backlog with a rolling pool of parallel workers in isolated git worktrees.
 
 <p align="center">
-  <img src="docs/images/shipyard-infographic.svg" alt="Shipyard at a glance — autonomous engineering loop. Five stages (Sources → Refine + Review → Orchestrator → Workers → PR Pipeline) plus a &quot;What's been hardened&quot; footer band citing the safety properties (#34 worktree isolation, #26 no-hook-bypass, #23 always-dispatching, #29 pre-dispatch refresh, #24 user-feedback gating)." width="100%" />
+  <img src="docs/images/shipyard-infographic.svg" alt="Shipyard at a glance — autonomous engineering loop. Five stages (Sources → Refine + Review → Orchestrator → Workers → PR Pipeline). Two mid-band surfaces call out the cost-tracking ledger (per-PR comment + persistent ~/.shipyard/cost-history.jsonl) and the shipyard.config.json opt-in (committed repo policy + layered overrides + trusted-author allowlist gating auto-merge). The &quot;What's been hardened&quot; footer band enumerates the current safety properties: worktree isolation (#34), no-hook-bypass (#26), always-dispatching (#23), pre-dispatch refresh (#29), user-feedback gating (#24), PID-liveness orphan-sweep (#253), fresh-fetch termination (#195), mandatory token attribution (#197), label-event audit (#140), and per-worker rolling pre-flight (#233)." width="100%" />
 </p>
 
 *Shipyard at a glance — five stages of the autonomous engineering loop. Read the [How it works](#how-it-works) section below for details.*
