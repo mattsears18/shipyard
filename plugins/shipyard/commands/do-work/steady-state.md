@@ -137,6 +137,83 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   If either `gh` call errors (rate limit, permission denied), log `[cost-comment] PR #<M> post failed: <reason>; continuing` and proceed. Cost-tracking is observational — never block dispatch on a comment-post failure.
 
+  **Then reap the agent's worktree immediately — don't wait for end-of-session cleanup.** Closes [#282](https://github.com/mattsears18/shipyard/issues/282): the worker's local branch `do-work/issue-<N>` and worktree directory lingering until end-of-session cleanup is what locks subsequent same-session fix-rebase dispatches out of `git switch <head>` (git enforces one-worktree-per-branch). Reaping immediately on `shipped` frees the PR's head branch right when the merge train might next want to rebase it. The worker has already returned (this is what `shipped` IS), so its worktree is no-longer-live by definition — the classify-lock pass still runs as defensive belt-and-suspenders, but the expected classification is `dead` (process gone) or `self-ancestor` (lock held the orchestrator's PID per the harness convention).
+
+  ```bash
+  # Locate the agent worktree whose branch is do-work/issue-<N>. Walk
+  # .git/worktrees/agent-* and match on the HEAD ref. Same idiom as the
+  # concurrent-session guard further down in step C.
+  cd "$(git rev-parse --show-toplevel)"
+  # Bootstrap the orchestrator PID so classify-lock can short-circuit
+  # on our own session's locks (issue #263).
+  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+
+  for wt_dir in "$(git rev-parse --show-toplevel)/.git/worktrees"/agent-*; do
+    [ -d "$wt_dir" ] || continue
+    branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')
+    [ "$branch_ref" = "do-work/issue-<N>" ] || continue
+
+    name=$(basename "$wt_dir")
+    worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
+    [ -z "$worktree_path" ] && continue
+
+    classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
+      classify-lock "$wt_dir/locked")
+
+    # Extract the lock PID for the audit log (best effort; null literal
+    # when the lock file is missing or unparseable). Same pattern as
+    # cleanup-summary.md's reap loop.
+    lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+    [ -z "$lock_pid" ] && lock_pid="null"
+
+    if [ "$classification" = "peer-alive" ]; then
+      # Defensive: peer-alive on our just-returned agent shouldn't happen
+      # (the agent has returned, so its harness PID is dead or a
+      # self-ancestor). If we see it anyway, defer — end-of-session
+      # cleanup will sort it out and we don't risk yanking a worktree out
+      # from under a still-live process. Route the audit-log write
+      # through the `reap` subcommand so the deferral is traceable with
+      # the same shape as cleanup-summary.md (issue #284 single-source-
+      # of-truth).
+      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+        --action deferred \
+        --worktree-path "$worktree_path" \
+        --worktree-name "$name" \
+        --session-id "<session-id>" \
+        --reason "peer-alive" \
+        --lock-pid "$lock_pid" \
+        --phase "steady-state-A1-shipped" 2>/dev/null || true
+      break
+    fi
+
+    # no-lock / dead / self-ancestor — safe to reap. The `reap` helper
+    # performs the `git worktree unlock` + `git worktree remove --force`
+    # AND writes the audit-log line in one transaction (issue #284).
+    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      --action reaped \
+      --worktree-path "$worktree_path" \
+      --worktree-name "$name" \
+      --session-id "<session-id>" \
+      --classification "$classification" \
+      --lock-pid "$lock_pid" \
+      --phase "steady-state-A1-shipped" 2>/dev/null || true
+
+    # Drop the local branch ref so a same-session fix-rebase dispatch
+    # can recreate `do-work/issue-<N>` cleanly via `git switch` without
+    # tripping the "branch already exists in another worktree" check.
+    # `-D` (force) rather than `-d` because the branch may have unmerged
+    # commits relative to current local main — the canonical record is
+    # on origin, not this branch.
+    git branch -D "do-work/issue-<N>" 2>/dev/null || true
+    break   # at most one match per issue number
+  done
+  git worktree prune 2>/dev/null || true
+  ```
+
+  The reap and local-branch drop are **fire-and-forget** — every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race (the worktree was already reaped by a concurrent path, the lock file is gone, etc.) cannot abort the steady-state loop. If the reap silently fails for any reason, end-of-session cleanup is still the safety net. The end-of-session pass is intentionally NOT removed — it remains the ultimate sweep for any agent worktree that this immediate-reap path missed (blocked / errored returns, peer-alive defers, etc.).
+
+  **Audit-log shape.** The JSONL entries this step writes carry `"phase":"steady-state-A1-shipped"` so an operator inspecting `~/.shipyard/reap-audit.jsonl` can distinguish steady-state reaps from end-of-session reaps (which omit `phase` — see [`cleanup-summary.md`'s reap loop](./cleanup-summary.md#end-of-session-cleanup)). The `phase` suffix is appended by the `reap` helper natively (issue #284).
+
 - **reaped: my worktree was reaped while I was running** — the worker's worktree was torn down mid-run by the cleanup logic. This is external-infrastructure noise, NOT a logic failure. **Do NOT add `blocked:agent`.** Instead:
   1. Log the event: `[reap-recovery] #<N> worktree reaped mid-run (last push: <hash>); re-enqueuing for fresh dispatch.`
   2. Re-add `<N>` to `raw_backlog` (deduped; if already in `ready_issues` or `in_flight`, skip — the issue is already being handled). The next dispatch cycle will pick it up with a fresh worktree.

@@ -272,6 +272,43 @@ assert_count_at_least_across "issues/<M>/comments?per_page" 2 \
   "steady-state.md uses REST /issues/<M>/comments listing for sentinel lookup ≥2 times (#264)" \
   "$steady_state_path"
 
+# 9) Issue #282 — steady-state's `shipped #<N> via PR #<M>` reconcile must
+#    reap the issue-work agent worktree immediately (not defer to end-of-
+#    session). The fix-rebase drain-phase worker can't `git switch
+#    do-work/issue-<N>` if a stale issue-work worktree is still holding
+#    that branch (git enforces one-worktree-per-branch). The immediate-
+#    reap is what frees the branch ref. Three assertions pin this:
+#    - The reap call goes through worktree-reap.sh's `reap` subcommand
+#      (issue #284's single source of truth — every audit-log write must
+#      route through the helper).
+#    - The reap uses the `steady-state-A1-shipped` phase tag in the
+#      audit-log line so the source of the reap is traceable.
+#    - The local branch ref is dropped (`git branch -D do-work/issue-<N>`)
+#      so a same-session fix-rebase dispatch resolves `git switch` via
+#      origin's ref instead of the stale local ref.
+#    - cleanup-summary.md documents the relationship to the immediate-
+#      reap path so a future reader doesn't think end-of-session is the
+#      only reap site.
+#    - fix-rebase.md carries a defensive bail clause for the residual
+#      case where the head branch is still locked (peer-alive defer,
+#      transient failure of the immediate-reap path).
+assert_contains "$steady_state_path" \
+  '--phase "steady-state-A1-shipped"' \
+  "steady-state.md immediate-reap uses the steady-state-A1-shipped phase tag (#282)"
+assert_contains "$steady_state_path" \
+  'git branch -D "do-work/issue-<N>"' \
+  "steady-state.md immediate-reap drops the local branch ref so fix-rebase can resolve via origin (#282)"
+assert_count_at_least_across 'worktree-reap.sh" reap' 2 \
+  "steady-state.md routes immediate-reap calls through worktree-reap.sh reap (≥2: reaped + deferred branches) (#282)" \
+  "$steady_state_path"
+assert_contains "$cleanup_path" \
+  'Relationship to the immediate-reap in steady-state.md' \
+  "cleanup-summary.md documents the relationship to the steady-state immediate-reap (#282)"
+fix_rebase_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
+assert_contains "$fix_rebase_path" \
+  'locked in another worktree' \
+  "fix-rebase.md carries the defensive bail clause for the head-branch-locked residual case (#282)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
