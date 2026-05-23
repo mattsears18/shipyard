@@ -101,7 +101,12 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 
 ### 0.7 Setup parallelization contract (fire-once-batch)
 
-> **Skip when `concurrency == 1`.** At C=1 there is only ever one slot — no peer agents to coordinate against and no benefit from pre-populating a pool of more than one candidate. Skip the parallel batch entirely: run steps 1 → 7 serially (each as a single sequential call). Step 5's failing-PR snapshot is also deferred (see [Step 5](#5-snapshot-failing-prs)); step 6's scope pre-flight is just-in-time (see [Step 6](#6-initial-scope-pre-flight)); step 7 fires exactly one dispatch (see [Step 7](#7-initial-pool-fill)). Steps that are still required at C=1: worktree setup (step 0.5), config check (step 0.4), session-state init (step 1.5), trusted-author allowlist (step 1.7), backlog overview (step 2), label setup + cleanup (steps 3a–3c), refine pass (step 3.5), backlog fetch + rank (step 4), divert checks (step 4.5). The parallelization machinery — the `step_0_7_parallel_batch` timing window, the background bash group, the fire-once-batch burst — is purely coordination overhead at C=1 and is omitted. Readers should be able to see this gate as the explicit boundary between "C≥2 parallel setup" and "C=1 serial setup."
+> **Skip the parallel batch when `concurrency == 1` — but keep the background cleanup group.** At C=1 there is only ever one slot — no peer agents to coordinate against and no benefit from pre-populating a pool of more than one candidate. Skip the parallel batch (steps 1 → 5) entirely and run them serially. Step 5's failing-PR snapshot is also deferred (see [Step 5](#5-snapshot-failing-prs)); step 6's scope pre-flight is just-in-time (see [Step 6](#6-initial-scope-pre-flight)); step 7 fires exactly one dispatch (see [Step 7](#7-initial-pool-fill)). Steps that are still required at C=1:
+>
+> - **Foreground**: worktree setup (step 0.5), config check (step 0.4), session-state init (step 1.5), trusted-author allowlist (step 1.7), backlog overview (step 2), refine pass (step 3.5), backlog fetch + rank (step 4), divert checks (step 4.5).
+> - **Background cleanup group** (the `(...) &` subshell below — also fires at C=1): orphan session-file sweep (step 1.6), orphan orchestrator-worktree sweep ([step 1.6.5](#165-reap-orphan-orchestrator-worktrees)), label create (step 3a), agent-worktree reap (step 3b), orphan-branch triage (step 3c). These are independent of dispatch coordination — they're recovery work for state stranded by prior crashed sessions, and skipping them at C=1 would mean orphan files / worktrees from earlier C=1 crashes accumulate forever (issue #280 — the failure mode where a single-slot user's machine accrues unreaped orchestrator worktrees across crash-and-restart cycles).
+>
+> What IS skipped at C=1 is purely the *parallel coordination* machinery — the `step_0_7_parallel_batch` timing window, the fire-once-batch read burst, the pre-population of a candidate pool. The background group `(...) &` itself still fires; its contents are cleanup and never racing with the (single) dispatch slot. Readers should be able to see this gate as the explicit boundary between "C≥2 parallel setup with read burst" and "C=1 serial setup with read calls" — the cleanup background group is on the same side of the gate in both modes.
 >
 > **Per-step timing brackets stay required at every concurrency level.** The `setup-timing.sh start` / `end` brackets in steps 0.5, 1.7, 3.5, 4, and 6 are NOT "skip when C=1" — they're the data source for the #258 measurement umbrella and the cross-session perf ledger. The only `setup-timing` call that's skipped at C=1 is the `step_0_7_parallel_batch` window itself (the parallel batch isn't run, so there's nothing to time). Step 6.8's explicit `flush` call also stays required at every concurrency level — though [issue #283](https://github.com/mattsears18/shipyard/issues/283) added auto-flush hooks in `session-state.sh update` and `cost-history.sh flush` as defense in depth, so a forgotten 6.8 no longer silently drops the data.
 
@@ -152,6 +157,41 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
     "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "$orphan_id" 2>/dev/null || true
     "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" 2>/dev/null || true
   done
+
+  # 1.6.5 — Reap orphan orchestrator worktrees (issue #280). Parallel to step 1.6
+  # but for the worktree dirs themselves: a `.claude/worktrees/orchestrator-<dead-id>/`
+  # dir whose owning session has already terminated (file missing or PID dead).
+  # Without this sweep, the worktree dirs accumulate indefinitely whenever a
+  # prior session crashes before cleanup-summary.md step 6 retires its own
+  # worktree — step 1.6 only cleans up session FILES; step 3b only handles
+  # `agent-*` worktrees. The find-orphan-orchestrators helper applies the
+  # same liveness gate step 1.6 uses (file-missing OR `is-active` exits 1),
+  # so the inactivity definition stays consistent across both sweeps.
+  cd "$(git rev-parse --show-toplevel)"
+  REAP_AUDIT_LOG_ORCH="${SHIPYARD_HOME:-$HOME/.shipyard}/reap-audit.jsonl"
+  REAP_TS_ORCH=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  while read -r orph_path; do
+    [ -z "$orph_path" ] && continue
+    [ -d "$orph_path" ] || continue
+    orph_name=$(basename "$orph_path")
+    orph_session_id="${orph_name#orchestrator-}"
+    if git worktree remove --force "$orph_path" 2>/dev/null; then
+      printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"reaped-orphan-orchestrator","reaped_session_id":"%s","phase":"setup-1.6.5"}\n' \
+        "$REAP_TS_ORCH" "<session-id>" "$$" "$orph_name" "$orph_session_id" \
+        >> "$REAP_AUDIT_LOG_ORCH" 2>/dev/null || true
+    else
+      # Worktree might be unregistered with git (raw dir left behind on a
+      # crash). Fall back to plain `rm -rf` + a prune. Same audit shape with
+      # a "raw-rm" suffix on the action so the source is traceable.
+      if rm -rf "$orph_path" 2>/dev/null; then
+        printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"reaped-orphan-orchestrator-raw-rm","reaped_session_id":"%s","phase":"setup-1.6.5"}\n' \
+          "$REAP_TS_ORCH" "<session-id>" "$$" "$orph_name" "$orph_session_id" \
+          >> "$REAP_AUDIT_LOG_ORCH" 2>/dev/null || true
+      fi
+    fi
+  done < <("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" find-orphan-orchestrators \
+             --repo-root "$(pwd)" --current-session-id "<session-id>" 2>/dev/null)
+  git worktree prune 2>/dev/null || true
 
   # 3a — gh label create (10 idempotent labels). All idempotent; only needed by the
   # time the first agent applies a label, not before dispatch fires.
@@ -237,16 +277,17 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 SETUP_BACKGROUND_PID=$!
 ```
 
-The background group handles steps 1.6, 3a, 3b, and 3c. The parallel batch (steps 1 → 5) and the foreground-serial steps (1.7, 3.5, 4 → 7) all proceed without waiting on `$SETUP_BACKGROUND_PID`. End-of-session cleanup's step 7 (`cost-history.sh flush`) must `wait $SETUP_BACKGROUND_PID` before flushing to ensure the 1.6 orphan sweep has completed — the flush and the sweep both write to `cost-history.jsonl`, and both are idempotent, but the `wait` prevents a double-flush race on the same session file.
+The background group handles steps 1.6, 1.6.5, 3a, 3b, and 3c. The parallel batch (steps 1 → 5) and the foreground-serial steps (1.7, 3.5, 4 → 7) all proceed without waiting on `$SETUP_BACKGROUND_PID`. End-of-session cleanup's step 7 (`cost-history.sh flush`) must `wait $SETUP_BACKGROUND_PID` before flushing to ensure the 1.6 orphan sweep has completed — the flush and the sweep both write to `cost-history.jsonl`, and both are idempotent, but the `wait` prevents a double-flush race on the same session file.
 
 **The full execution model after this change:**
 
 ```
 step 0.7 opens timing window
   ├── background group (SETUP_BACKGROUND_PID) — fire and forget:
-  │     1.6  orphan session-file sweep
-  │     3a   gh label creates (parallel within group)
-  │     3b   stale worktree reap
+  │     1.6   orphan session-file sweep
+  │     1.6.5 orphan orchestrator-worktree sweep (issue #280)
+  │     3a    gh label creates (parallel within group)
+  │     3b    stale worktree reap
   │     3c   orphan worktree triage
   └── foreground parallel batch (steps 1 / 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5)
         └── after batch: step 1.7 → 3.5 → 4 → 4.5 aggregate → 6 → 7 (serial)
@@ -461,6 +502,49 @@ Both helpers are idempotent and exit 0 on already-flushed / already-reaped sessi
 **Cost-tracking degraded-recovery (issue #253's workaround).** Workers calling `session-state.sh bump-tokens` against a session whose file was reaped mid-session can pass `--allow-degraded-init` (with optional `--degraded-init-repo <r>`) to auto-recreate a fresh state file marked with `.degraded_recovery_at` rather than erroring exit-3. Cost data from before the disappear is lost (the file was gone), but every bump from the disappear forward lands somewhere durable — and the end-of-session ledger flush still has data to write. Callers that want strict "must-have-pre-existing-file" semantics simply omit the flag.
 
 **Don't block the session on sweep failures** — log `[orphan-reap] <reason>` and proceed. Recovery of historical data is observational; the dispatch loop's job comes first. If `SHIPYARD_KEEP_SESSIONS=1` is set (per the [step 8 cleanup-summary opt-out](./cleanup-summary.md#end-of-session-cleanup)), skip the sweep entirely — the user explicitly opted into keeping session files as permanent records.
+
+### 1.6.5 Reap orphan orchestrator worktrees
+
+> **Background step.** This step runs inside the background bash group fired from [step 0.7](#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. The canonical code lives in the background group above; this section documents the intent, race-safety rules, and skip condition. Do NOT duplicate the implementation here.
+
+**Sweep `.claude/worktrees/` for `orchestrator-<dead-session-id>/` directories left behind by prior sessions that crashed before reaching [`cleanup-summary.md`'s step 6 (orchestrator-worktree reap)](./cleanup-summary.md#end-of-session-cleanup).** Companion to [step 1.6](#16-reap-orphan-session-files-cost-ledger-recovery), which reaps orphan session *files*; this step reaps the *worktrees* themselves. Neither sweep was sufficient on its own:
+
+- **Step 1.6** only deletes the session JSON from `$SHIPYARD_HOME/sessions/`. The worktree dir under the repo's `.claude/worktrees/` is untouched, so a dead session's worktree dir accumulates indefinitely.
+- **Step 3b** only reaps `agent-*` worktrees (the per-dispatched-agent isolation worktrees). It scopes intentionally — `orchestrator-*` worktrees have different lock semantics and historically were retired by the owning session's own cleanup-summary step 6.
+
+When a prior session crashed *between* step 7→8 (cost-history flush + session-file cleanup) and step 6 (orchestrator-worktree reap), the session file is gone but the worktree lingers. See [issue #280](https://github.com/mattsears18/shipyard/issues/280) for the production trace: a single-slot user's `git worktree list` accumulated multiple `orchestrator-dowork-*` detached-HEAD entries across crash-and-restart cycles, none of which any spec-defined step would ever reap.
+
+The discovery uses [`worktree-reap.sh find-orphan-orchestrators`](../../scripts/worktree-reap.sh), which applies the same liveness gate as step 1.6 — `is-active` exits 0 if the owning session's PID is alive, exit 1 otherwise (missing file, missing/null pid, dead pid). Both the worktree-sweep and the session-file-sweep treat "file missing" as inactive: the common case for the bug is that prior cleanup got far enough to flush + delete the session file but stopped short of reaping its own worktree.
+
+```bash
+# (Pseudocode — the canonical implementation lives in step 0.7's
+# background group. This snippet illustrates the per-orphan action.)
+while read -r orph_path; do
+  orph_session_id=$(basename "$orph_path" | sed 's/^orchestrator-//')
+  if git worktree remove --force "$orph_path" 2>/dev/null; then
+    # Audit-log with action="reaped-orphan-orchestrator", phase="setup-1.6.5"
+  else
+    # Worktree might be unregistered (raw dir left after a crash); rm -rf
+    # fallback with action="reaped-orphan-orchestrator-raw-rm".
+    rm -rf "$orph_path"
+  fi
+done < <("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" find-orphan-orchestrators \
+           --repo-root "$(git rev-parse --show-toplevel)" \
+           --current-session-id "<session-id>")
+git worktree prune
+```
+
+**Audit-log shape** — same `~/.shipyard/reap-audit.jsonl` as steps 3 / 3b, but with a distinct `action` value so the source is traceable:
+
+- `action: "reaped-orphan-orchestrator"` — successful `git worktree remove --force`.
+- `action: "reaped-orphan-orchestrator-raw-rm"` — fallback when the worktree was unregistered with git (raw dir left after a crash); resolved via `rm -rf`.
+- Both carry a `reaped_session_id` field (the embedded session id of the orphan) and `phase: "setup-1.6.5"` so a future debugger can correlate against the prior session's run.
+
+The fallback to raw `rm -rf` is load-bearing for the production case in #280: `git worktree remove` fails when the worktree dir is on disk but `.git/worktrees/<name>/` metadata has already been pruned (or was never registered — e.g., a manual `mv` left an `orchestrator-*` dir without git tracking it). Without the fallback, the dir would linger across an unbounded number of subsequent `/do-work` sessions.
+
+**Skip condition.** Like step 1.6, this sweep is skipped entirely when `SHIPYARD_KEEP_SESSIONS=1` — the user is explicitly opting to keep historical state, and worktree dirs are part of that state.
+
+**Concurrency safety.** Because this step runs in the same background group as 1.6 (which already excludes the current session by id), there's no race against the orchestrator's own worktree — the helper filters `<current-session-id>` from its output before emitting paths. A concurrent peer `/do-work` orchestrator in another terminal *can* race here: if peer A is the dead session whose worktree we want to reap, and peer B started up at the exact same wall-clock second, peer B's `is-active` check might see A's pid as alive (because A hasn't yet finished crashing) and skip the reap. That's the conservative outcome — A's worktree gets cleaned up by the next session that starts after A's pid is actually gone. The race never produces a wrongful reap.
 
 ### 1.7 Resolve trusted-author allowlist
 
