@@ -168,7 +168,7 @@ For **fix-main-ci work** (`shipped` / `noop` / `blocked`):
 
 - **shipped main-ci-fix via PR #<M>** — record. **Append `<M>` to `session_prs`.** The diversion is "resolved" from the orchestrator's perspective the moment the PR is open with auto-merge; the next step-D refresh will detect main going green (and clear the divert flag) once the PR lands. Don't re-enqueue the diversion in the meantime — the in_flight slot is gone but the divert_queue check at step D guards against double-dispatch.
 - **noop: main already green** — main flipped green between divert dispatch and the agent's pre-flight. Record. Step D will repopulate if it goes red again.
-- **blocked main-ci-fix: <reason>** — log to the session summary. Do NOT auto-retry — back off and surface in the status line: `main:🔴 (run <id>) · diversion blocked: <reason>`. A human needs to intervene.
+- **blocked main-ci-fix: <reason>** — log to the session summary. Do NOT auto-retry — back off and surface in the status line: `main:🔴 (<workflow-summary>, run <id>) · diversion blocked: <reason>` (same `<workflow-summary>` format as the setup.md step 6.5 status-line spec). A human needs to intervene.
 
 For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
 

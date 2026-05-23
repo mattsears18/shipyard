@@ -949,15 +949,19 @@ Compute per-workflow status, then aggregate:
    - `conclusion in {failure, timed_out, startup_failure, cancelled, action_required}` → workflow is **red**
    - no completed run in the window (only `in_progress` / `queued` / `waiting` / `requested`) → workflow is **pending**
 3. Aggregate to a single `main_ci.status`:
-   - any workflow is **red** → `main_ci.status = "red"`. Use the *most recent* red run across all red workflows as `earliest_red_run_*` (most actionable for the fix-main-ci dispatch).
+   - any workflow is **red** → `main_ci.status = "red"`. Use the *most recent* red run across all red workflows as `earliest_red_run_*` (most actionable for the fix-main-ci dispatch). Collect **all** red workflow names into `red_workflow_names` (sorted alphabetically).
    - else any workflow is **pending** → `main_ci.status = "pending"`
    - else every workflow is **green** → `main_ci.status = "green"`
    - else (no runs at all in the window) → `main_ci.status = "unknown"`
 
-Cache `{ status, earliest_red_run_id, earliest_red_run_url, earliest_red_sha, checked_at: now }` in `main_ci`.
+Cache `{ status, earliest_red_run_id, earliest_red_run_url, earliest_red_sha, earliest_red_workflow_name, red_workflow_names, red_workflow_count, checked_at: now }` in `main_ci`.
+
+- `earliest_red_workflow_name` — the `workflowName` of the most recent red run (the same run whose `databaseId` is `earliest_red_run_id`). Used by the status line to show a single name in the compact format.
+- `red_workflow_names` — sorted list of all red workflow names. Used by the banner to show the full list.
+- `red_workflow_count` — `red_workflow_names.length`. Used by the status line truncation logic.
 
 - If `main_ci.status == "green"` → clear any `fix-main-ci` entry from `divert_queue`.
-- If `main_ci.status == "red"` → enqueue `{ kind: "fix-main-ci", target: "main", earliest_red_run_id, earliest_red_run_url, earliest_red_sha }` into `divert_queue` — unless an entry is already in `divert_queue` OR an `in_flight` slot is already working `kind: "fix-main-ci"` (don't double-dispatch the diversion).
+- If `main_ci.status == "red"` → enqueue `{ kind: "fix-main-ci", target: "main", earliest_red_run_id, earliest_red_run_url, earliest_red_sha, earliest_red_workflow_name, red_workflow_names, red_workflow_count }` into `divert_queue` — unless an entry is already in `divert_queue` OR an `in_flight` slot is already working `kind: "fix-main-ci"` (don't double-dispatch the diversion).
 - If `main_ci.status == "pending"` → don't enqueue; the next step-D refresh re-evaluates once a run completes.
 - If `main_ci.status == "unknown"` → don't enqueue.
 
@@ -1064,7 +1068,12 @@ Print before the initial pool fill, and again at the top of any turn where state
 
 Fields:
 
-- **main:** — `🟢 green`, `🔴 red (run <id>)`, `⏳ pending`, or `❔ unknown`. The run ID is `main_ci.earliest_red_run_id` when red.
+- **main:** — `🟢 green`, `🔴 red (<workflow-summary>, run <id>)`, `⏳ pending`, or `❔ unknown`. When red, `<workflow-summary>` is derived from `main_ci.red_workflow_count` and `main_ci.red_workflow_names`:
+  - 1 failing workflow → `<workflow-name>, run <id>` (e.g. `Deploy to Play Store, run 18234567`)
+  - 2–3 failing workflows → `<name1>, <name2>[, <name3>], run <id>` (list all names if they fit, truncate with `+N more` if needed to keep the status line under ~120 chars)
+  - 4+ failing workflows → `<red_workflow_count> workflows: <name1>, <name2>, +<N> more, run <id>` (limit to 2 names before `+N more`)
+
+  In all cases the run ID (`main_ci.earliest_red_run_id`) remains at the end of the parenthetical so the user can navigate directly to the failing run. No extra `gh` call — all data is in the `main_ci` cache from step 4.5a.
 - **in-flight labels** — comma-separated, derived from each entry's `kind`/`target`: issue → `#N`, fix-checks → `fix-checks #M`, fix-main-ci → `⚠️ fix-main-ci`, fix-failing-prs-batch → `⚠️ fix-prs-batch`. Empty list → `[ ]`.
 - **failing PRs:** — the all-authors count from `failing_pr_count_all`. The `(@me: <k>)` parenthetical comes from `failed_prs.length + in_flight fix-checks count`. Append ` ⚠️` to the count when it's ≥ 10 (matches the divert threshold).
 - **soft-suffix** — when one or more soft-collision paths are claimed by in-flight workers, append ` · [soft: <path>×<n>, <path>×<n>, ...]` listing each distinct claimed soft path and how many in-flight workers are holding it. Order by claim count desc, then alphabetical. Bracket and brackets are part of the surface (visually similar to the in-flight labels). Append ` ⚠️` to any path whose count equals `--soft-collision-concurrency` (the cap — next claimer on that path will park). Omit the suffix entirely when no soft-collision claims are active.
@@ -1075,7 +1084,8 @@ Examples:
 ```
 /do-work · mattsears18/lightwork · main:🟢 · in-flight: 2/2 [#769, #768] · failing PRs: 3 (@me: 1)
 /do-work · mattsears18/shipyard · main:🟢 · in-flight: 3/4 [#63, #65, #67] · failing PRs: 0 (@me: 0) · [soft: plugins/shipyard/commands/do-work.md×3 ⚠️, CHANGELOG.md×3 ⚠️]
-/do-work · mattsears18/lightwork · main:🔴 (run 18234567) · in-flight: 2/2 [⚠️ fix-main-ci, #769] · failing PRs: 12 ⚠️ (@me: 2) · diverting: fix-failing-prs-batch
+/do-work · mattsears18/lightwork · main:🔴 (Deploy to Play Store, run 18234567) · in-flight: 2/2 [⚠️ fix-main-ci, #769] · failing PRs: 12 ⚠️ (@me: 2) · diverting: fix-failing-prs-batch
+/do-work · mattsears18/lightwork · main:🔴 (3 workflows: Deploy to Play Store, Lighthouse CI, +1 more, run 18234567) · in-flight: 1/2 [⚠️ fix-main-ci] · failing PRs: 0 (@me: 0)
 /do-work · mattsears18/lightwork · main:⏳ · in-flight: 0/2 [ ] · failing PRs: 0 (@me: 0)
 ```
 
@@ -1092,10 +1102,24 @@ The status line is for at-a-glance state. **Banners** are for the moments where 
 ```
 
 ⚠️  MAIN CI RED — diverting next available slot to fix
+   Failed workflow: <earliest_red_workflow_name>
    Earliest red run: <earliest_red_run_url>
    Triggered at: <YYYY-MM-DDTHH:MM:SSZ>
 
 ```
+
+When `red_workflow_count > 1`, replace the single `Failed workflow:` line with a plural form listing all failing workflows from `red_workflow_names`:
+
+```
+
+⚠️  MAIN CI RED — diverting next available slot to fix
+   Failed workflows (3): Deploy to Play Store, Lighthouse CI, Visual Regression
+   Earliest red run: <earliest_red_run_url>
+   Triggered at: <YYYY-MM-DDTHH:MM:SSZ>
+
+```
+
+The workflow list in the banner is always the **full** `red_workflow_names` list (no truncation — banners are one-shot so verbosity is fine). Use a comma-separated inline list.
 
 **fix-main-ci dispatched (slot now in flight):**
 
