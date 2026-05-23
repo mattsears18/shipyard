@@ -83,6 +83,19 @@
 #              200 entries to keep the file small). Exit 3 if the session
 #              file does not exist.
 #
+#              `--degraded-total-only` is the harness-side gap fallback
+#              from #279: when the sub-agent task-notification <usage>
+#              block only emits `total_tokens` (no input/output/cache
+#              breakdown), callers pass `--input <total_tokens>
+#              --degraded-total-only` (other token flags MUST be omitted /
+#              zero). The bump lands in `.tokens.totals.input` and stamps
+#              `degraded: true` on the per_invocation entry; the
+#              session-level `.tokens.degraded_attribution_count`
+#              increments by 1 so the end-of-session summary can surface
+#              a banner. Cost will under-count (no output 5x multiplier,
+#              no cache 10% multiplier) but the data lands somewhere
+#              durable instead of being silently dropped at $0.
+#
 #   read-tokens — emit token data on stdout. `--format json` (default)
 #              prints the relevant slice; `--format comment` emits a
 #              ready-to-post Markdown comment body marked with the
@@ -161,6 +174,7 @@ Usage:
                                [--cache-read N] [--cache-creation N]
                                [--mode <kind>] [--model <id>]
                                [--allow-degraded-init] [--degraded-init-repo <r>]
+                               [--degraded-total-only]
   session-state.sh read-tokens --session-id <id>
                                [--issue N] [--pr N]
                                [--format json|comment]
@@ -514,6 +528,23 @@ cmd_bump_tokens() {
   # error out because of a missing string field.
   local allow_degraded_init=0
   local degraded_init_repo=""
+  # --degraded-total-only is a *separate* degraded path from
+  # --allow-degraded-init (which addresses #253's file-disappear race).
+  # It addresses #279's harness-side gap: when the Claude Code sub-agent
+  # task-notification <usage> block only emits `total_tokens` (no input/
+  # output/cache breakdown), the orchestrator's A.0 attribution can't pass
+  # the four required counts. Without this flag the only options are
+  # (a) skip the bump entirely — leaving every cost-tracking comment at
+  # $0 — or (b) silently collapse total_tokens into --input, which lies
+  # about the breakdown and was explicitly forbidden by #225. With the
+  # flag, callers pass `--input <total_tokens>` (other token flags MUST
+  # be omitted / zero), the bump lands in the input bucket, and the
+  # per_invocation entry is marked with `degraded: true` so downstream
+  # readers can distinguish degraded attribution from a real input-only
+  # invocation. The session-level `.tokens.degraded_attribution_count`
+  # counter increments on every degraded bump so the end-of-session
+  # summary can surface a one-line banner.
+  local degraded_total_only=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -528,9 +559,22 @@ cmd_bump_tokens() {
       --model) model="${2:-}"; shift 2 ;;
       --allow-degraded-init) allow_degraded_init=1; shift ;;
       --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
+      --degraded-total-only) degraded_total_only=1; shift ;;
       *) echo "bump-tokens: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
+
+  # --degraded-total-only callers must NOT pass any breakdown fields.
+  # The flag's contract is "I only have total_tokens — surface it on
+  # --input." Passing --output / --cache-read / --cache-creation
+  # alongside is a programming error (mixed-mode attribution would
+  # silently corrupt the data) — reject usage-error rather than guess.
+  if [[ "$degraded_total_only" -eq 1 ]]; then
+    if [[ "$output" != "0" ]] || [[ "$cache_read" != "0" ]] || [[ "$cache_creation" != "0" ]]; then
+      echo "bump-tokens: --degraded-total-only is exclusive with --output / --cache-read / --cache-creation (pass --input <total_tokens> only)" >&2
+      exit 64
+    fi
+  fi
 
   if [[ -z "$session_id" ]]; then
     echo "bump-tokens: --session-id is required" >&2
@@ -604,6 +648,7 @@ cmd_bump_tokens() {
     --arg issue "$issue"
     --arg pr "$pr"
     --argjson pricing "$(jq -c -n "$PRICING_JQ")"
+    --argjson degraded "$degraded_total_only"
   )
 
   local issue_branch=""
@@ -689,9 +734,13 @@ cmd_bump_tokens() {
         output: $output,
         cache_read: $cache_read,
         cache_creation: $cache_creation,
-        estimated_usd: $usd_delta
+        estimated_usd: $usd_delta,
+        degraded: ($degraded == 1)
       }]
     | .tokens.per_invocation = (.tokens.per_invocation | if length > 200 then .[-200:] else . end)
+    | (if $degraded == 1 then
+         .tokens.degraded_attribution_count = ((.tokens.degraded_attribution_count // 0) + 1)
+       else . end)
     | .updated_at = $now
   '
 

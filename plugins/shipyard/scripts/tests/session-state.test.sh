@@ -953,6 +953,136 @@ assert_equals "$out" "750" "bump on a recovered file accumulates normally (no do
 
 rm -rf "$tmphome"
 
+# --------------------------------------------------------------------------
+echo "== bump-tokens — degraded-total-only fallback (issue #279)"
+# --------------------------------------------------------------------------
+# Harness-side gap workaround for #279: when the Claude Code sub-agent
+# task-notification <usage> block only emits `total_tokens` (no
+# input/output/cache breakdown), the orchestrator's A.0 attribution
+# can't pass the four required counts. With --degraded-total-only,
+# callers pass `--input <total_tokens>`, the bump lands in the input
+# bucket, and the per_invocation entry is stamped degraded:true so
+# the end-of-session summary can surface a banner. The session-level
+# .tokens.degraded_attribution_count increments per degraded bump.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-degraded" --repo "o/r" >/dev/null
+
+# Mix one normal bump and one degraded bump on the same PR — they
+# should accumulate into totals/per_pr just like normal bumps, but
+# the degraded counter should only count the degraded ones.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-degraded" \
+  --issue 279 --pr 285 \
+  --input 1000 --output 500 \
+  --cache-read 200 --cache-creation 100 \
+  --mode issue-work --model claude-opus-4-7 >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-degraded" \
+  --issue 279 --pr 285 \
+  --input 86413 \
+  --mode issue-work --model claude-opus-4-7 \
+  --degraded-total-only >/dev/null
+
+# Totals accumulated across both bumps (totals don't care about degraded).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.totals.input")
+assert_equals "$out" "87413" "degraded bump accumulates --input into totals.input alongside normal bumps"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.totals.output")
+assert_equals "$out" "500" "degraded bump does NOT touch totals.output (zero contribution)"
+
+# Per_pr also accumulated.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.per_pr[\"285\"].input")
+assert_equals "$out" "87413" "degraded bump accumulates --input into per_pr bucket"
+
+# Per_invocation: first entry degraded=false, second degraded=true.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.per_invocation[0].degraded")
+assert_equals "$out" "false" "normal bump stamps per_invocation[0].degraded = false"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.per_invocation[1].degraded")
+assert_equals "$out" "true" "degraded bump stamps per_invocation[1].degraded = true"
+
+# Session-level degraded counter — only the degraded bump incremented it.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.degraded_attribution_count")
+assert_equals "$out" "1" "degraded_attribution_count increments by 1 per degraded bump"
+
+# A second degraded bump should bring the counter to 2.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-degraded" \
+  --input 12345 \
+  --mode issue-work --model claude-opus-4-7 \
+  --degraded-total-only >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.degraded_attribution_count")
+assert_equals "$out" "2" "second degraded bump increments degraded_attribution_count to 2"
+
+# Usage error: --degraded-total-only is mutually exclusive with non-zero
+# --output / --cache-read / --cache-creation. Reject with exit 64 rather
+# than silently mixing strict + degraded attribution.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-degraded" \
+  --input 1000 --output 500 \
+  --mode issue-work --model claude-opus-4-7 \
+  --degraded-total-only 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --output is rejected (exit 64)"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-degraded" \
+  --input 1000 --cache-read 100 \
+  --mode issue-work --model claude-opus-4-7 \
+  --degraded-total-only 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --cache-read is rejected (exit 64)"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-degraded" \
+  --input 1000 --cache-creation 100 \
+  --mode issue-work --model claude-opus-4-7 \
+  --degraded-total-only 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --cache-creation is rejected (exit 64)"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens — --degraded-total-only composes with --allow-degraded-init"
+# --------------------------------------------------------------------------
+# The two degraded flags address different failure modes (#253 file-
+# disappear vs. #279 harness-side gap) and should compose cleanly when
+# both are present. Verify a degraded-total-only bump against a missing
+# session file works end-to-end.
+
+tmphome=$(mktmphome)
+
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "both-degraded" \
+  --issue 279 --pr 285 \
+  --input 86413 \
+  --mode issue-work --model claude-opus-4-7 \
+  --allow-degraded-init --degraded-init-repo "o/r" \
+  --degraded-total-only 2>/dev/null
+rc=$?
+assert_equals "$rc" "0" "--degraded-total-only + --allow-degraded-init compose on missing file"
+
+# .degraded_recovery_at stamped (from --allow-degraded-init path).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "both-degraded" --path ".degraded_recovery_at")
+if [[ -n "$out" ]] && [[ "$out" != "null" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" ".degraded_recovery_at still stamped on file-disappear path"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (got: %s)\n' "$RED" "$RESET" ".degraded_recovery_at still stamped on file-disappear path" "$out"
+  fail=$((fail+1))
+fi
+
+# degraded_attribution_count incremented (from --degraded-total-only path).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "both-degraded" --path ".tokens.degraded_attribution_count")
+assert_equals "$out" "1" "degraded_attribution_count still increments on composed path"
+
+# Per_invocation entry stamped degraded=true.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "both-degraded" --path ".tokens.per_invocation[0].degraded")
+assert_equals "$out" "true" "per_invocation entry stamped degraded=true on composed path"
+
+rm -rf "$tmphome"
+
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]

@@ -94,14 +94,15 @@ The orchestrator mirrors every state structure above into a small JSON file at `
     "per_pr": {
       "200": { "input": 18203, "output": 4102, "cache_read": 8210, "cache_creation": 0, "estimated_usd": 0.59, "issue": 153 }
     },
-    "per_invocation": []
+    "per_invocation": [],
+    "degraded_attribution_count": 0
   }
 }
 ```
 
 Field names match the orchestrator-state structure names above 1:1 so a reader of either surface (file or prose) can cross-reference without translation. `started_at` and `updated_at` are always-present ISO-8601 UTC timestamps; `updated_at` advances on every successful `update` call so external watchers can detect change without diffing the body.
 
-The `tokens` block is the **per-session** cost ledger — written through `session-state.sh bump-tokens` after each Agent dispatch returns. `.tokens.totals` is cumulative across the session (including orchestrator overhead); `.tokens.per_issue[<N>]` and `.tokens.per_pr[<M>]` are attribution buckets the cost-comment hook in [step A reconcile](./do-work/steady-state.md#a-reconcile-the-return) reads when posting `<!-- do-work-cost-tracking -->`-marked comments on the resulting issue/PR. The persistent cross-session ledger at `~/.shipyard/cost-history.jsonl` is [#163](https://github.com/mattsears18/shipyard/issues/163)'s scope — out of scope here. `per_invocation` is a ring buffer capped at the most-recent 200 entries for traceability without unbounded file growth.
+The `tokens` block is the **per-session** cost ledger — written through `session-state.sh bump-tokens` after each Agent dispatch returns. `.tokens.totals` is cumulative across the session (including orchestrator overhead); `.tokens.per_issue[<N>]` and `.tokens.per_pr[<M>]` are attribution buckets the cost-comment hook in [step A reconcile](./do-work/steady-state.md#a-reconcile-the-return) reads when posting `<!-- do-work-cost-tracking -->`-marked comments on the resulting issue/PR. The persistent cross-session ledger at `~/.shipyard/cost-history.jsonl` is [#163](https://github.com/mattsears18/shipyard/issues/163)'s scope — out of scope here. `per_invocation` is a ring buffer capped at the most-recent 200 entries; each entry carries `degraded: <bool>`. `degraded_attribution_count` counts the degraded bumps (see [step A.0 degraded path](./do-work/steady-state.md#degraded-path--total-only-fallback-when-the-harness-usage-block-lacks-the-breakdown) — harness-gap fallback from [#279](https://github.com/mattsears18/shipyard/issues/279)) and drives the [end-of-session banner](./do-work/cleanup-summary.md#end-of-session-summary).
 
 ### Helper script — `plugins/shipyard/scripts/session-state.sh`
 
@@ -129,13 +130,13 @@ plugins/shipyard/scripts/session-state.sh update --session-id "<session-id>" \
 plugins/shipyard/scripts/session-state.sh is-active --session-id "<session-id>"
 
 # Bump token-usage counts after an Agent dispatch returns. --issue / --pr
-# optional. --allow-degraded-init + --degraded-init-repo are REQUIRED (see
-# steady-state.md A.0) — resilient to file-disappear-mid-session per #253.
+# optional. --allow-degraded-init + --degraded-init-repo REQUIRED (see
+# steady-state.md A.0). --degraded-total-only: harness-gap fallback (#279).
 plugins/shipyard/scripts/session-state.sh bump-tokens \
   --session-id "<session-id>" --issue <N> --pr <M> \
   --input <N> --output <N> --cache-read <N> --cache-creation <N> \
   --mode <mode> --model <model-id> \
-  --allow-degraded-init --degraded-init-repo "<owner/repo>"
+  --allow-degraded-init --degraded-init-repo "<owner/repo>" [--degraded-total-only]
 
 # Read aggregated token data. --format json (default) or comment (Markdown
 # body with the <!-- do-work-cost-tracking --> sentinel for idempotent posting).
