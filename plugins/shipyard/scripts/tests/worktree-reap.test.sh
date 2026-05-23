@@ -52,6 +52,16 @@
 #       matches it — defends against stale-env-var-recycled-PID match
 #                          → ancestor walk continues (no false short-circuit)
 #  14) issue #263 — bad flag values exit 2
+#  15-17) detect-orchestrator-pid match / no-match / exit code
+#  18-30) issue #280 — find-orphan-orchestrators subcommand covers:
+#         - empty layouts (no worktrees dir, no orchestrator-* entries)
+#         - happy-path orphan with missing session file
+#         - current session's own worktree never emitted
+#         - alive PID session file → not orphan
+#         - dead PID / null pid session file → orphan
+#         - multiple orphans → multiple lines
+#         - bad-usage cases (missing flags, unknown flag, positional arg)
+#         - --flag=value form parity with --flag value form
 #
 # Pure bash + `ps`. Run with:
 #   bash plugins/shipyard/scripts/tests/worktree-reap.test.sh
@@ -409,6 +419,163 @@ assert_equals "${result:-EMPTY}" "EMPTY" \
 bash "$helper" detect-orchestrator-pid this-comm-does-not-exist-anywhere >/dev/null 2>&1
 assert_exit_code "$?" "0" \
   "(17) detect-orchestrator-pid exits 0 even on no-match (caller decides)"
+
+# --- find-orphan-orchestrators (issue #280) ---
+#
+# These tests build a synthetic worktrees layout under $tmpdir and a
+# synthetic SHIPYARD_HOME so the discovery logic can be exercised
+# without touching the real repo or real session files. Each test
+# resets the fake layout before running.
+
+echo
+echo "find-orphan-orchestrators tests (issue #280)"
+echo
+
+# Build a fake repo-root with a worktrees dir.
+fake_repo="$tmpdir/fake-repo"
+mkdir -p "$fake_repo/.claude/worktrees"
+
+# Build a fake SHIPYARD_HOME with a sessions dir.
+fake_shipyard_home="$tmpdir/fake-shipyard"
+mkdir -p "$fake_shipyard_home/sessions"
+
+# Helper to invoke find-orphan-orchestrators with our fake SHIPYARD_HOME.
+run_find_orphans() {
+  SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
+    --repo-root "$fake_repo" \
+    --current-session-id "$1" 2>/dev/null
+}
+
+# Reset the fake layout to a known-empty state.
+reset_fake_layout() {
+  rm -rf "$fake_repo/.claude/worktrees"/orchestrator-*
+  rm -f "$fake_shipyard_home/sessions"/*.json
+}
+
+# --- (18) no worktrees dir at all → empty output, exit 0 ---
+no_wt_repo="$tmpdir/no-wt-repo"
+mkdir -p "$no_wt_repo"
+result=$(SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
+  --repo-root "$no_wt_repo" --current-session-id "current-sess" 2>/dev/null)
+exit_code=$?
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(18) no .claude/worktrees dir → empty output"
+assert_exit_code "$exit_code" "0" \
+  "(18a) no .claude/worktrees dir → exit 0"
+
+# --- (19) worktrees dir present but no orchestrator-* entries → empty ---
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/agent-abc"   # only agent-*, no orchestrator-*
+result=$(run_find_orphans "current-sess")
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(19) only agent-* worktrees, no orchestrator-* → empty output"
+
+# --- (20) orphan: orchestrator-<dead> with NO session file → emit ---
+# The exact failure mode the issue reports: prior session's cleanup got
+# far enough to flush + delete its session file, but crashed before
+# reaping its own worktree.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-dead-session-1"
+result=$(run_find_orphans "current-sess")
+assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-dead-session-1" \
+  "(20) orphan with no session file → emitted (the issue #280 repro case)"
+
+# --- (21) current session's own orchestrator worktree → NOT emitted ---
+# Even when its session file is missing — the in-flight session may
+# have race conditions around its own file, but we must NEVER reap
+# the running session's worktree out from under itself.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-current-sess"
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-dead-session-2"
+result=$(run_find_orphans "current-sess")
+assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-dead-session-2" \
+  "(21) current session's own worktree excluded even when own session file is missing"
+
+# --- (22) session file PRESENT with live PID → NOT emitted (peer-alive) ---
+# is-active should exit 0, this helper treats that as "active session,
+# skip." Use our own $$ as the live PID — same pattern as classify-lock
+# tests 4/5.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-live-session"
+cat > "$fake_shipyard_home/sessions/live-session.json" <<EOF
+{"session_id":"live-session","pid":$$}
+EOF
+result=$(run_find_orphans "current-sess")
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(22) session file present + PID alive → not emitted (defer)"
+
+# --- (23) session file PRESENT but PID dead → emitted (orphan) ---
+# Spawn-and-reap pattern (matches test 2 in the classify-lock suite).
+(true) &
+dead_pid_for_orph=$!
+wait "$dead_pid_for_orph" 2>/dev/null
+while ps -p "$dead_pid_for_orph" -o pid= >/dev/null 2>&1; do
+  sleep 0.05
+done
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-dead-pid-session"
+cat > "$fake_shipyard_home/sessions/dead-pid-session.json" <<EOF
+{"session_id":"dead-pid-session","pid":$dead_pid_for_orph}
+EOF
+result=$(run_find_orphans "current-sess")
+assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-dead-pid-session" \
+  "(23) session file present + PID dead → emitted (is-active exits non-zero)"
+
+# --- (24) session file PRESENT but pid is null → emitted (treated as inactive) ---
+# Older session files written before the pid field existed: is-active
+# falls through to exit 1 → orphan from this helper's perspective.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-null-pid-session"
+cat > "$fake_shipyard_home/sessions/null-pid-session.json" <<EOF
+{"session_id":"null-pid-session","pid":null}
+EOF
+result=$(run_find_orphans "current-sess")
+assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-null-pid-session" \
+  "(24) session file present + pid null → emitted (is-active treats null as inactive)"
+
+# --- (25) multiple orphans → multiple paths emitted (newline-delimited) ---
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-orphan-a"
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-orphan-b"
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-current-sess"
+result=$(run_find_orphans "current-sess" | sort)
+expected=$(printf '%s\n%s' \
+  "$fake_repo/.claude/worktrees/orchestrator-orphan-a" \
+  "$fake_repo/.claude/worktrees/orchestrator-orphan-b" | sort)
+assert_equals "$result" "$expected" \
+  "(25) multiple orphans → all emitted, current session excluded"
+
+# --- (26) bad usage — missing --repo-root → exit 2 ---
+SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
+  --current-session-id foo >/dev/null 2>&1
+assert_exit_code "$?" "2" \
+  "(26) missing --repo-root → exit 2"
+
+# --- (27) bad usage — missing --current-session-id → exit 2 ---
+SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
+  --repo-root "$fake_repo" >/dev/null 2>&1
+assert_exit_code "$?" "2" \
+  "(27) missing --current-session-id → exit 2"
+
+# --- (28) bad usage — unknown flag → exit 2 ---
+SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
+  --repo-root "$fake_repo" --current-session-id foo --unknown 2>/dev/null
+assert_exit_code "$?" "2" \
+  "(28) unknown flag → exit 2"
+
+# --- (29) bad usage — unexpected positional → exit 2 ---
+SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
+  --repo-root "$fake_repo" --current-session-id foo trailing-positional 2>/dev/null
+assert_exit_code "$?" "2" \
+  "(29) unexpected positional arg → exit 2"
+
+# --- (30) --flag=value form works for --repo-root and --current-session-id ---
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-equals-form-orphan"
+result=$(SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
+  --repo-root="$fake_repo" --current-session-id=current-sess 2>/dev/null)
+assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-equals-form-orphan" \
+  "(30) --flag=value form accepted for both flags"
 
 echo
 if (( fail > 0 )); then
