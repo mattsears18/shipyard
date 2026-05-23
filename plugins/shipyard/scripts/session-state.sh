@@ -297,7 +297,8 @@ cmd_init() {
          per_issue: {},
          per_pr: {},
          per_invocation: []
-       }
+       },
+       setup: null
      }' | atomic_write "$target"
 }
 

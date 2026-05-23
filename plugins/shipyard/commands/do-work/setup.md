@@ -63,6 +63,13 @@ esac
 
 **Before any other setup, the orchestrator MUST relocate every write into a dedicated worktree.** The user's primary checkout is strictly read-only for the rest of the session. The hard rule: every *write* (`Edit`, `Write`, `git commit`, `git reset`, `git branch <new>`, label setup, README/CHANGELOG/CLAUDE.md tweaks, `plugin.json` version bumps, etc.) goes through the orchestrator worktree. Read-only operations (`git status`, `gh issue list`, `gh pr view`, `find`, `grep`, `git worktree list`, `gh run list`, label-existence checks via `gh label list`, etc.) MAY run in either checkout.
 
+**Timing instrumentation (issue #238).** Bracket this step with `setup-timing.sh start` / `end` calls. Both are fire-and-forget (`2>/dev/null || true`) — never let a timing failure abort setup.
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+  --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
+```
+
 Create (or reuse) the orchestrator's worktree under `.claude/worktrees/orchestrator-<session-id>` from the tip of the default branch. `<session-id>` is the current Claude Code session identifier — stable across the run, distinct from each dispatched agent's `<id>`:
 
 ```bash
@@ -84,11 +91,28 @@ fi
 
 **From this point on, every subsequent `Bash` / `Edit` / `Write` tool call in the orchestrator's session runs with `<repo-root>/.claude/worktrees/orchestrator-<session-id>` as cwd.** Prepend `cd "$ORCH_WT" && ` (or pass `-C "$ORCH_WT"` to git) for any command whose effect lands on disk or on a branch ref. The user's primary checkout's HEAD MUST NOT change during this session — if you find yourself running a write-class command in the primary checkout, back up, switch to the orchestrator worktree, retry. See [RATIONALE → Why a dedicated worktree](../do-work-RATIONALE.md#step-05--why-a-dedicated-orchestrator-worktree) for the failure modes this prevents.
 
+```bash
+# Close the step_0_5_worktree timing window.
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+  --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
+```
+
 End-of-session cleanup also runs from the orchestrator worktree, and reaps the orchestrator's own worktree last — see [End-of-session cleanup](./cleanup-summary.md#end-of-session-cleanup) below.
 
 ### 0.7 Setup parallelization contract (fire-once-batch)
 
 **Steps 1 → 5 are a graph of read-only `gh` calls with no data dependencies on each other.** Fire them as a single parallel burst — either one `Bash` tool call wrapping `bash -c '... & ... & wait'`, or N parallel `Bash` tool calls in one orchestrator message. A serial walk through steps 1 → 5 is the failure mode this section prevents.
+
+**Timing instrumentation (issue #238).** The parallel batch as a whole is one timing window. Open the window just before firing the burst; close it once `wait` (or all parallel tool calls) return.
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+  --session-id "<session-id>" --phase step_0_7_parallel_batch 2>/dev/null || true
+# ... fire all parallel gh calls ...
+# ... wait for all to return ...
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+  --session-id "<session-id>" --phase step_0_7_parallel_batch 2>/dev/null || true
+```
 
 **Canonical setup batch — these reads have no data dependencies:**
 
@@ -292,6 +316,16 @@ Both helpers are idempotent and exit 0 on already-flushed / already-reaped sessi
 **Don't block the session on sweep failures** — log `[orphan-reap] <reason>` and proceed. Recovery of historical data is observational; the dispatch loop's job comes first. If `SHIPYARD_KEEP_SESSIONS=1` is set (per the [step 8 cleanup-summary opt-out](./cleanup-summary.md#end-of-session-cleanup)), skip the sweep entirely — the user explicitly opted into keeping session files as permanent records.
 
 ### 1.7 Resolve trusted-author allowlist
+
+**Timing instrumentation (issue #238).** Bracket this step:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+  --session-id "<session-id>" --phase step_1_7_trusted_authors 2>/dev/null || true
+# ... run resolution logic ...
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+  --session-id "<session-id>" --phase step_1_7_trusted_authors 2>/dev/null || true
+```
 
 **Security gate — must run before step 2's bucket pass and step 4's backlog fetch.** Populates the session-level `trusted_authors` set (the 9th orchestrator state struct — see the [state struct list](../do-work.md#orchestrator-state) at the top of this spec). The set decides which issue authors `/do-work` will dispatch workers against; everyone else lands in step 2's `Untrusted author` bucket and step 4's client-side filter drops them from the workable queue. This is the **first line of defense** against the public-repo prompt-injection / RCE threat documented in step 2's "Bucket 0.5 is a security gate" block — a stranger can open an issue with a body that reads like a legit bug report ("Suggested fix: add `helper.ts` with `<crafted payload>`"), but if their login isn't in `trusted_authors`, no worker is ever dispatched against it, so the body is never read as instructions.
 
@@ -691,6 +725,18 @@ Record `cleared_blocked` and `held_blocked` (plus the matching issue-number arra
 
 > **`--fast` skip:** When `--fast` is set, skip this entire step. Issues carrying `needs-refinement` remain unrefined this session; they will be processed by the next normal `/do-work` invocation. The `fast_skip_needs_refinement` count captured in step 2's `--fast` note surfaces in the end-of-session advisory block so the user knows how many refinement tasks were deferred. Proceed immediately to step 4.
 
+**Timing instrumentation (issue #238).** Bracket this step even when it runs with no `needs-refinement` issues — the wall clock still measures the `/refine-issues` invocation overhead:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+  --session-id "<session-id>" --phase step_3_5_refine_issues 2>/dev/null || true
+# /refine-issues --repo <owner/repo> --concurrency <N>
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+  --session-id "<session-id>" --phase step_3_5_refine_issues 2>/dev/null || true
+```
+
+When `--fast` causes this step to be **skipped entirely**, call only the `start` + `end` pair with a near-zero elapsed (both calls back-to-back), so the ledger contains a `0.0s` entry for the phase rather than a missing key. This makes cross-session aggregation consistent — the report can always average `step_3_5_refine_issues` without handling absent keys for `--fast` sessions separately.
+
 Invoke `/refine-issues` and **wait for it to complete** before proceeding to step 4. This processes every open issue carrying `needs-refinement` — the generic pipeline gate — and branches per-issue on source signal:
 
 - **classify+rewrite branch** (`user-feedback` + `needs-refinement`): classify as already-done / declined / legitimate, preserve original text in a comment, rewrite the body into the repo's issue template. Legitimate items get `needs-human-review` co-applied.
@@ -715,6 +761,16 @@ The refined-and-now-`needs-human-review`-only issues will be picked up by the *n
 **Implementation note.** The refinement logic itself lives in `/refine-issues`. This step is a thin invocation — no duplication of the bucket spec, sentinel logic, or worker prompt template. If we later change the refinement prompt, we only update one file (`commands/refine-issues.md`).
 
 ### 4. Fetch + rank the backlog
+
+**Timing instrumentation (issue #238).** Bracket this step including the auto-triage label-apply loop and client-side filter pass:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+  --session-id "<session-id>" --phase step_4_backlog_fetch_and_rank 2>/dev/null || true
+# ... run step 4 ...
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+  --session-id "<session-id>" --phase step_4_backlog_fetch_and_rank 2>/dev/null || true
+```
 
 ```bash
 gh issue list --repo <owner/repo> --state open --limit 100 \
@@ -832,6 +888,30 @@ Each entry → push onto `failed_prs`, **deduped against entries already in `fai
 The `-label:blocked:ci` filter is still correct because [step 3d's auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) already ran — refreshed PRs are unlabeled by 3d and flow through normally; only genuinely-stuck PRs still carry the label here. See [RATIONALE → Step 5 filter correctness](../do-work-RATIONALE.md#step-5--why-the--labelblockedci-filter-is-still-correct).
 
 ### 6. Initial scope pre-flight
+
+**Timing instrumentation (issue #238).** Bracket the entire batch of scoping-agent calls (start before dispatching all agents in parallel; end after all return and `ready_issues` / `deferred_issues` are populated). Also record the `scope_preflight` sub-block for the `/shipyard:cost report --show-setup` breakdown:
+
+```bash
+SCOPE_START_EPOCH=$(date -u +%s)
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+  --session-id "<session-id>" --phase step_6_scope_preflight 2>/dev/null || true
+
+# ... dispatch all scoping agents in parallel, wait for all returns ...
+
+SCOPE_END_EPOCH=$(date -u +%s)
+SCOPE_ELAPSED=$(( SCOPE_END_EPOCH - SCOPE_START_EPOCH ))
+
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+  --session-id "<session-id>" --phase step_6_scope_preflight 2>/dev/null || true
+
+# Record the per-candidate metrics for reporting.
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" record-scope-preflight \
+  --session-id "<session-id>" \
+  --candidates-scoped "${candidates_dispatched}" \
+  --ready-count "${#ready_issues[@]}" \
+  --deferred-count "${deferred_count}" \
+  --elapsed-seconds "${SCOPE_ELAPSED}" 2>/dev/null || true
+```
 
 Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel (one message, multiple `Agent` tool calls — these are short-lived and *not* backgrounded, so block until all return). Each returns **one of two shapes**:
 
@@ -965,6 +1045,17 @@ When a `fix-main-ci` or `fix-failing-prs-batch` worker returns, print a banner B
 **End-of-session — diversion summary block.** The end-of-session summary (below) carries a `Diversions:` block when `D > 0` — counts per kind, with shipped/noop/blocked breakdowns and PR numbers. That's how the user sees what diversions fired even if they weren't watching the session live.
 
 The rule of thumb is: banners are LOUD and one-shot (printed when the transition happens), the status line is the persistent at-a-glance view (re-printed whenever the underlying state changes). Both should appear together when a divert fires — banner first, then the updated status line immediately below it.
+
+### 6.8 Flush setup timing into session state
+
+**Before dispatching the first wave of workers**, flush the setup-timing sidecar into the session state file's `setup` block. This ensures the timing data survives even if the session terminates mid-run (e.g. a Claude Code crash between pool fill and the first completion notification). The flush is fire-and-forget — a failure must NOT block pool fill.
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" flush \
+  --session-id "<session-id>" 2>/dev/null || true
+```
+
+After this call the sidecar is gone and the session state file's `.setup` block contains the full per-phase wall-clock breakdown. The cost-history flush at end-of-session will pick it up automatically.
 
 ### 7. Initial pool fill
 
