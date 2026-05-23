@@ -84,6 +84,18 @@ Failure modes that fall back to "held": the PR's head branch was deleted (rare b
 
 **Secondary gates past the `Blocked by` line.** The body might say "Blocked by #881. Also don't start until Phase B has shipped AND there's a calendar month of organic-traffic data." This sweep only looks at the `Blocked by` reference; the secondary gate is a soft condition that's hard to detect mechanically. False-positives here are recoverable — the human re-adds `blocked:agent`, or the issue worker returns `blocked` after scoping. The cost of occasionally surfacing a still-soft-gated issue is far lower than the cost of leaving truly-unblocked issues invisible.
 
+## Step A.5 — why mid-session blocked-issue re-evaluation was added
+
+**The gap.** Step 3d.2 at session-start auto-clears `blocked:agent` labels when all `Blocked by #N` references resolve to CLOSED/MERGED. But it only runs once. If a session ships PR #X which closes issue #N, any issue that had `Blocked by #N` in its body stays hidden in `raw_backlog`'s exclusion set until the *next* `/do-work` invocation — even though the blocker is now gone. The cost was manual intervention: the user had to edit the blocked issue's body to remove the `Blocked by` line and re-add it to the backlog. See [#245](https://github.com/mattsears18/shipyard/issues/245) for the session reproducer.
+
+**Why fire on `shipped #<N> via PR #<M>` and not on a periodic timer.** A timer would mean running the search on every step-D refresh regardless of whether any blockers changed. The `shipped` return is the exact event that causes a blocker to close — firing precisely on that signal means zero false-positive sweeps on sessions where no blocked issues exist. The cost is one `gh pr view --json closingIssuesReferences` call per shipped PR plus one `gh issue list --label blocked:agent --search "Blocked by #N"` per closed issue — negligible compared to the dispatch cost of the shipped worker.
+
+**Why not synthetic-divert `shipped main-ci-fix` / `shipped pr-batch-fix` returns.** Those PRs don't close any issue (they have no `Closes #N` body line by spec — see the synthetic-divert dispatch templates in steady-state.md). `closingIssuesReferences` would be empty for them, so the step would be a no-op. Excluding them by return-string pattern avoids the one extra `gh pr view` call.
+
+**Why add to `raw_backlog` rather than `ready_issues`.** `ready_issues` is the scoped, collision-checked queue. The newly-unblocked issue hasn't been through scope pre-flight. Adding it to `raw_backlog` lets step C's rule 5 ("raw_backlog non-empty → trigger scope-refill burst") scope it normally on the same turn before dispatching — same path as any other issue that enters the backlog mid-session. If scope pre-flight would have deferred it, it defers; if it's ready, it's dispatched. The fast path (add → scope → dispatch) all happens in the same turn, so the effective latency is one extra `Agent` tool call for scope pre-flight, not a full session round-trip.
+
+**False-positive handling.** Same as step 3d.2: the issue might have secondary gates ("also wait for Phase B"). A false positive is recoverable — the issue worker returns `blocked` after scoping and the orchestrator applies `blocked:agent` again. The cost of one extra worker invocation on a false positive is far lower than leaving a genuinely-unblocked issue buried for an entire session.
+
 ## Step 4 — why the `author` field is fetched
 
 The `author` field on the `gh issue list` payload has two uses, both downstream of this fetch:
