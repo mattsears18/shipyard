@@ -83,8 +83,13 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   # 2. Look up the existing sentinel comment (if any) so we can edit
   # in-place instead of posting duplicates each time the cost grows
   # (e.g. across a fix-checks-only follow-up dispatch on the same PR).
-  EXISTING=$(gh pr view <M> --repo <owner/repo> \
-    --json comments --jq '[.comments[] | select(.body | startswith("<!-- do-work-cost-tracking -->"))][0].id // empty')
+  # Use the REST listing endpoint, not `gh pr view --json comments` —
+  # the latter returns each comment's GraphQL node-id (e.g.
+  # `IC_kwDONOH3Js8AAAAB...`), which the PATCH endpoint below does NOT
+  # accept; PATCH requires the numeric REST comment id that
+  # `/repos/<o/r>/issues/<M>/comments` returns as `.id`. See #264.
+  EXISTING=$(gh api "/repos/<owner/repo>/issues/<M>/comments?per_page=100" \
+    --jq '[.[] | select(.body | startswith("<!-- do-work-cost-tracking -->"))][0].id // empty')
 
   if [ -n "$EXISTING" ]; then
     gh api -X PATCH "/repos/<owner/repo>/issues/comments/$EXISTING" \
@@ -122,9 +127,13 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
   # 2. Edit the existing sentinel comment in place if one exists; otherwise
   # create one. The PATCH path is the hot path here — a green return on a
   # PR that was originally shipped this session will always have a
-  # sentinel comment to update.
-  EXISTING=$(gh pr view <M> --repo <owner/repo> \
-    --json comments --jq '[.comments[] | select(.body | startswith("<!-- do-work-cost-tracking -->"))][0].id // empty')
+  # sentinel comment to update. Use the REST listing endpoint for the
+  # same reason as the shipped hook above: `gh pr view --json comments`
+  # returns GraphQL node-ids that the PATCH endpoint rejects with 404,
+  # which silently falls through to the create branch and stacks
+  # duplicate cost-tracking comments. See #264.
+  EXISTING=$(gh api "/repos/<owner/repo>/issues/<M>/comments?per_page=100" \
+    --jq '[.[] | select(.body | startswith("<!-- do-work-cost-tracking -->"))][0].id // empty')
 
   if [ -n "$EXISTING" ]; then
     gh api -X PATCH "/repos/<owner/repo>/issues/comments/$EXISTING" \
