@@ -399,6 +399,56 @@ rm -rf "$repo/shipyard.config.json" "$repo/.shipyard"
 assert_equals "$("$helper" get concurrency.soft_collision_paths)" '["my/extra/**/*.md"]' "set --local round-trips an array"
 
 # --------------------------------------------------------------------------
+echo "== main_ci aggregation config (issue #262)"
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
+
+# Defaults: aggregation_mode = branch-protection, required_workflows = []
+assert_equals "$("$helper" get main_ci.aggregation_mode)" "branch-protection" "main_ci.aggregation_mode default is branch-protection"
+assert_equals "$("$helper" get main_ci.required_workflows)" "[]"             "main_ci.required_workflows default is empty array"
+assert_equals "$("$helper" get main_ci.aggregation_mode --with-source | cut -f2)" "defaults" "main_ci.aggregation_mode source is defaults"
+
+# Setting aggregation_mode = all-workflows (restores pre-#262 behavior)
+"$helper" set main_ci.aggregation_mode all-workflows --repo
+assert_equals "$("$helper" get main_ci.aggregation_mode)" "all-workflows"   "set aggregation_mode=all-workflows round-trips"
+assert_equals "$("$helper" get main_ci.aggregation_mode --with-source | cut -f2)" "repo" "source is repo after set"
+
+# Setting required_workflows explicitly
+"$helper" set main_ci.required_workflows '["CI","Lint"]' --repo
+assert_equals "$("$helper" get main_ci.required_workflows)" '["CI","Lint"]' "set required_workflows round-trips an array"
+
+# Schema validation rejects bad aggregation_mode enum
+"$helper" set main_ci.aggregation_mode banana --repo 2>/dev/null
+assert_exit_code "$?" 70 "main_ci.aggregation_mode rejects unknown enum value"
+
+# Schema validation rejects wrong type for required_workflows
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "main_ci": { "required_workflows": "CI" } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "main_ci.required_workflows rejects non-array value"
+
+# Schema validation rejects non-string items inside required_workflows
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "main_ci": { "required_workflows": ["CI", 42] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "main_ci.required_workflows rejects non-string items"
+
+# Schema validation rejects unknown main_ci fields (additionalProperties: false)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "main_ci": { "banana_mode": true } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "main_ci rejects unknown fields"
+
+# Layered override: local can flip aggregation_mode without touching the repo file
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard"
+"$helper" set main_ci.aggregation_mode all-workflows --repo
+"$helper" set main_ci.aggregation_mode branch-protection --local
+assert_equals "$("$helper" get main_ci.aggregation_mode)" "branch-protection" "local layer overrides repo for main_ci.aggregation_mode"
+assert_equals "$("$helper" get main_ci.aggregation_mode --with-source | cut -f2)" "local" "source reflects local layer after override"
+
+# --------------------------------------------------------------------------
 echo
 total=$((pass + fail))
 if [[ $fail -eq 0 ]]; then
