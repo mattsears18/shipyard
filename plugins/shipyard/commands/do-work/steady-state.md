@@ -442,8 +442,13 @@ Apply the **dispatch rules** to pick the next job:
 **Per-slot dispatch metadata write-through.** When a new slot lands in `.in_flight`, the orchestrator's write-through call MUST include the slot's `started_at` ISO-8601 UTC timestamp alongside `kind` / `target` / `claimed_paths` / `agent_id`. The timestamp powers [`/shipyard:status`](../status.md)'s `ELAPSED` column and the stale-worker detection — without it, every worker would render as "elapsed 0s, stale" the moment a new orchestrator instance reads the file. Per-slot `progress_current` / `progress_total` start as `null` and are managed by the worker via `session-state.sh set-progress --slot <id>` if the worker is doing batch work (the typical issue-work / fix-checks-only worker doesn't bother — the kind alone is enough). Example shape — see [the schema doc](../do-work.md#schema) for the canonical fields:
 
 ```bash
+# --allow-degraded-init survives the mid-session file-disappear race
+# (issue #281). Without it, a concurrent /do-work session's orphan-sweep
+# reaping this file mid-session would surface as exit 3 on the next
+# update call, leaving working memory out of sync with the file.
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update \
   --session-id "<session-id>" \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>" \
   --set ".in_flight.<slot-id> = {
     kind: \"issue\", target: <N>,
     claimed_paths: { hard: [...], soft: [...] },
