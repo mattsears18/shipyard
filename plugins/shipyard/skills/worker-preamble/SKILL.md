@@ -68,12 +68,37 @@ Before every git/gh write — `git commit`, `git push`, `gh pr create`, `gh pr m
 ```bash
 if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
   LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
-  echo "blocked: my worktree was reaped while I was running — work was abandoned (last push: ${LAST_PUSH:-none})"
+  echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi
 ```
 
-The exact return string is load-bearing: the orchestrator's step A reconcile parses it as a distinct outcome (no `blocked:ci` label, no retry — the work product, if any, is already in the remote branch from a prior `git push`). Do NOT try to `cd` to a different worktree, recreate your worktree, or operate in the primary checkout — exit immediately.
+The `reaped:` prefix is load-bearing and intentionally distinct from `blocked:`: the orchestrator's step A reconcile parses it as a **retryable** outcome — it re-enqueues the issue for a fresh dispatch rather than applying the `blocked:agent` label. The `blocked:` prefix is reserved for deterministic failures (ambiguous scope, cannot reproduce) where retrying would produce the same result; a mid-run reap is external-infrastructure noise, not a worker logic failure. Do NOT try to `cd` to a different worktree, recreate your worktree, or operate in the primary checkout — exit immediately.
+
+## Incremental progress posting (investigation-heavy work)
+
+For workers whose job involves a multi-step investigation before any commit lands (scope pre-flight analysis, diagnostic investigation, fix-checks root-cause search), a worktree reap mid-run destroys the findings before they can be communicated. To prevent silent value loss, **post investigation findings to the originating issue before attempting any git/gh write**:
+
+```bash
+# After reaching a diagnostic conclusion but BEFORE git commit / git push / gh pr create:
+gh issue comment <N> --repo <owner/repo> --body "$(cat <<'EOF'
+<!-- shipyard-worker-progress -->
+**Investigation finding (pre-push):** <your diagnostic summary here — file paths, line numbers, root cause, rejected hypotheses>
+
+This comment is posted before the final push so findings survive a mid-run worktree reap.
+EOF
+)"
+```
+
+**When to post a progress comment.** Post one if BOTH are true:
+1. You have produced a concrete finding that isn't yet in the remote (uncommitted work, diagnostic conclusion, scope decision).
+2. The finding would be permanently lost if your worktree were reaped in the next 30 seconds.
+
+**What the comment should contain.** Exactly what the orchestrator would have had to transcribe manually if your run was interrupted: file paths, line numbers, rejected alternatives, root-cause hypothesis. Not a progress update ("working on it") — findings only.
+
+**When NOT to post.** If you're about to push a commit that encodes the finding, the commit is the durable record — skip the comment. If the issue is a typo-fix and there are no intermediate findings, skip. The goal is to prevent loss, not to narrate every step.
+
+The `<!-- shipyard-worker-progress -->` sentinel lets the orchestrator identify and summarize these comments without re-reading the entire thread.
 
 ## Never `--no-verify`
 
