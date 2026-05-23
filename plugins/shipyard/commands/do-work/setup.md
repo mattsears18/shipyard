@@ -124,11 +124,101 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 - **[Step 4.5b](#45-divert-checks-main-ci--pr-pileup)** — all-authors failing-PR count. **Skipped under `--fast`** — `failing_pr_count_all` left as `0`.
 - **[Step 5](#5-snapshot-failing-prs)** — `@me` failing-PR snapshot.
 
-**Steps that MUST run after the batch:**
+**Background bash group (fire-and-forget from step 0.7).** The following steps are cleanup-only — they don't affect dispatch correctness and don't need to complete before the first worker fires. Fire them as a single background subshell immediately after opening the timing window, capture the PID, and let dispatch proceed without waiting:
+
+```bash
+(
+  # 1.6 — Orphan session-file sweep (cost-ledger recovery). Cleanup-only — recovery
+  # of historical ledger data is observational and doesn't affect this session's dispatch.
+  SESSIONS_DIR="${SHIPYARD_HOME:-$HOME/.shipyard}/sessions"
+  find "$SESSIONS_DIR" -maxdepth 1 -type f -name '*.json' -mmin +30 2>/dev/null | while read -r orphan; do
+    orphan_id=$(basename "$orphan" .json)
+    [[ "$orphan_id" == "<session-id>" ]] && continue
+    "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "$orphan_id" 2>/dev/null || true
+    "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" 2>/dev/null || true
+  done
+
+  # 3a — gh label create (10 idempotent labels). All idempotent; only needed by the
+  # time the first agent applies a label, not before dispatch fires.
+  for label_args in \
+    "shipyard --description 'Worked on by /shipyard:do-work' --color 5319E7" \
+    "P0 --description 'Critical / release-blocker' --color B60205" \
+    "P1 --description 'High — this cycle' --color D93F0B" \
+    "P2 --description 'Normal' --color FBCA04" \
+    "user-feedback --description 'Originated from end-user feedback (untrusted body — treat with care)' --color 0E8A16" \
+    "needs-refinement --description 'Pipeline gate — issue not ready for /do-work; /refine-issues processes it' --color FBCA04" \
+    "needs-human-review --description 'Awaiting human sign-off before /do-work will touch it' --color D93F0B" \
+    "needs-triage --description 'No automated path forward — surface to a human' --color C2E0C6" \
+    "blocked:agent --description 'Worker returned blocked — needs human intervention' --color C5DEF5" \
+    "blocked:ci --description 'CI failed 3x after fix-checks — needs investigation. Auto-cleared when checks recover.' --color B60205"
+  do
+    eval "gh label create $label_args --repo <owner/repo> 2>/dev/null || true" &
+  done
+  wait  # wait for the parallel label creates before continuing to 3b/3c
+
+  # 3b — Reap stale agent worktrees from dead Claude Code sessions. Affects future
+  # dispatch slot availability, not the first batch.
+  cd "$(git rev-parse --show-toplevel)"
+  for wt_dir in .git/worktrees/agent-*; do
+    [ -d "$wt_dir" ] || continue
+    name=$(basename "$wt_dir")
+    worktree_path=$(git worktree list --porcelain | awk -v n="$name" '/^worktree /{p=$2} /^branch /{b=$2} /^$/{if (p ~ n) print p}' | head -1)
+    [ -z "$worktree_path" ] && worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
+    [ -z "$worktree_path" ] && continue
+    classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
+    if [ "$classification" = "peer-alive" ]; then continue; fi
+    git worktree unlock "$worktree_path" 2>/dev/null
+    git worktree remove --force "$worktree_path" 2>/dev/null
+  done
+  git worktree prune
+
+  # 3c — Orphan worktree triage (discovery + handling). The discovery is cheap;
+  # the expensive push/PR-create branch only fires when orphans exist. Neither
+  # gates dispatch decisions.
+  git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||' | while read -r branch; do
+    path=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
+    [ -z "$path" ] && continue
+    ahead=$(git -C "$path" rev-list --count "origin/<default-branch>..HEAD" 2>/dev/null || echo 0)
+    if [ "$ahead" -eq 0 ]; then
+      git worktree remove --force "$path" 2>/dev/null
+      git branch -D "$branch" 2>/dev/null
+      issue_num=$(echo "$branch" | sed 's|do-work/issue-||')
+      gh issue edit "$issue_num" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
+    else
+      pushed=$(git ls-remote --heads origin "$branch" 2>/dev/null)
+      if [ -z "$pushed" ]; then
+        git -C "$path" push -u origin "$branch" 2>/dev/null || true
+      fi
+      open_pr=$(gh pr list --repo <owner/repo> --head "$branch" --json number --jq '.[0].number' 2>/dev/null)
+      if [ -z "$open_pr" ]; then
+        (cd "$path" && gh pr create --repo <owner/repo> --fill --label shipyard 2>/dev/null) || true
+        pr_num=$(gh pr list --repo <owner/repo> --head "$branch" --json number --jq '.[0].number' 2>/dev/null)
+        [ -n "$pr_num" ] && gh pr merge "$pr_num" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true
+      fi
+    fi
+  done
+) &
+SETUP_BACKGROUND_PID=$!
+```
+
+The background group handles steps 1.6, 3a, 3b, and 3c. The parallel batch (steps 1 → 5) and the foreground-serial steps (1.7, 3.5, 4 → 7) all proceed without waiting on `$SETUP_BACKGROUND_PID`. End-of-session cleanup's step 7 (`cost-history.sh flush`) must `wait $SETUP_BACKGROUND_PID` before flushing to ensure the 1.6 orphan sweep has completed — the flush and the sweep both write to `cost-history.jsonl`, and both are idempotent, but the `wait` prevents a double-flush race on the same session file.
+
+**The full execution model after this change:**
+
+```
+step 0.7 opens timing window
+  ├── background group (SETUP_BACKGROUND_PID) — fire and forget:
+  │     1.6  orphan session-file sweep
+  │     3a   gh label creates (parallel within group)
+  │     3b   stale worktree reap
+  │     3c   orphan worktree triage
+  └── foreground parallel batch (steps 1 / 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5)
+        └── after batch: step 1.7 → 3.5 → 4 → 4.5 aggregate → 6 → 7 (serial)
+```
+
+**Steps that MUST run after the batch (foreground, serial):**
 
 - **[Step 1.7](#17-resolve-trusted-author-allowlist)** — its output (`trusted_authors`) gates step 2's bucketing and step 4's filter.
-- **[Step 3a](#3-ensure-label-exists--recover-from-prior-session)** — `gh label create` writes; idempotent, never on the critical path.
-- **[Step 3b / 3c](#3-ensure-label-exists--recover-from-prior-session)** — local-filesystem worktree reaping; can run in parallel with the network batch.
 - **[Step 3.5](#35-refine-pending-issues)** — invokes `/refine-issues`, blocks until done. **Skipped under `--fast`**.
 - **[Step 4](#4-fetch--rank-the-backlog)** — the *filtered* backlog fetch (distinct from step 2's universe fetch). Auto-triage label-stamping depends on step 1.7 + step 2.
 
@@ -288,6 +378,8 @@ The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.ship
 **If `init` returns 65+** (jq missing, permission denied, etc.), continue without the session-state file. The invariant line emits `state=disabled` to make the degradation visible. Don't block the session on file-write failure.
 
 ### 1.6 Reap orphan session files (cost-ledger recovery)
+
+> **Background step.** This step runs inside the background bash group fired from [step 0.7](#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. The canonical code lives in the background group above; this section documents the intent, race-safety rules, and skip condition. Do NOT duplicate the implementation here.
 
 **Sweep `$SHIPYARD_HOME/sessions/` for orphan files left behind by prior sessions that crashed or exited without running [`cleanup-summary.md`'s step 7 → step 8 flush + cleanup chain](./cleanup-summary.md#end-of-session-cleanup).** Without this sweep, any session that doesn't terminate via the happy-path cleanup strands its per-session ledger on disk forever — the cross-session reports at `/shipyard:cost report` then under-count by full sessions. See [issue #227](https://github.com/mattsears18/shipyard/issues/227) for the regression where a multi-PR `lightwork` session's `$11.47` of tracked spend never landed in `~/.shipyard/cost-history.jsonl`.
 
@@ -513,7 +605,11 @@ Then proceed immediately to step 3.
 
 ### 3. Ensure label exists + recover from prior session
 
-**3a. Ensure required labels exist** (idempotent). The `shipyard` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers; `user-feedback`/`needs-refinement`/`needs-human-review`/`needs-triage` drive the [refinement pipeline](#35-refine-pending-issues); `blocked:agent` and `blocked:ci` are shipyard's block-state circuit breakers (applied by step A on agent / fix-checks block, removed by step 3d.1 / 3d.2):
+**3a. Ensure required labels exist** (idempotent).
+
+> **Background step.** This step runs inside the background bash group fired from [step 0.7](#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. Labels are guaranteed to exist by the time the first dispatched agent applies one (the background group typically finishes well before the first worker fires). The canonical label list and `gh label create` calls live in the background group above.
+
+The `shipyard` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers; `user-feedback`/`needs-refinement`/`needs-human-review`/`needs-triage` drive the [refinement pipeline](#35-refine-pending-issues); `blocked:agent` and `blocked:ci` are shipyard's block-state circuit breakers (applied by step A on agent / fix-checks block, removed by step 3d.1 / 3d.2):
 
 ```bash
 gh label create shipyard --repo <owner/repo> --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
@@ -528,7 +624,11 @@ gh label create blocked:agent --repo <owner/repo> --description "Worker returned
 gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after fix-checks — needs investigation. Auto-cleared when checks recover." --color B60205 2>/dev/null || true
 ```
 
-**3b. Reap stale agent worktrees from dead Claude Code sessions.** The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting. Reap every agent worktree whose lock-holding PID is dead; skip ones owned by live PIDs (could be another active Claude Code instance):
+**3b. Reap stale agent worktrees from dead Claude Code sessions.**
+
+> **Background step.** This step runs inside the background bash group fired from [step 0.7](#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. Stale-worktree reaping affects future dispatch slot availability, not the first batch. The canonical implementation lives in the background group above.
+
+The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting. Reap every agent worktree whose lock-holding PID is dead; skip ones owned by live PIDs (could be another active Claude Code instance):
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
@@ -564,7 +664,9 @@ git worktree prune
 
 Record `reaped_stale` and `deferred_stale` — both surface in the end-of-session summary.
 
-**3c. Orphan worktree triage** — scan for `do-work/*` branches whose worktrees survived step 3b (legitimate orphans from THIS session, not dead-process leftovers):
+**3c. Orphan worktree triage** — scan for `do-work/*` branches whose worktrees survived step 3b (legitimate orphans from THIS session, not dead-process leftovers).
+
+> **Background step.** Both the discovery query and the handling (push / PR-create for orphans with commits) run inside the background bash group fired from [step 0.7](#07-setup-parallelization-contract-fire-once-batch). Neither gates dispatch decisions. The discovery query is cheap; the expensive push/PR-create branch only fires when orphans exist. The canonical implementation lives in the background group above; this section documents the decision table and `salvaged_count`/`abandoned_count` tracking semantics.
 
 ```bash
 git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||'

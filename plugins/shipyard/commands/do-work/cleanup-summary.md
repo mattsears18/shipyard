@@ -92,7 +92,14 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, and `<deferred_live>`; pipe th
 
 7. **Flush the session's token data to the persistent cross-session ledger** — before the session file is deleted, append its rolled-up record to `~/.shipyard/cost-history.jsonl` so it survives into the next session's reports ([issue #163](https://github.com/mattsears18/shipyard/issues/163)):
 
+   **Wait on the setup background group first.** Step 0.7's background group (`$SETUP_BACKGROUND_PID`) includes the step 1.6 orphan-session-file sweep, which also writes to `cost-history.jsonl`. Both the sweep and this flush are idempotent, but they can race on the same session file if the background group is still running when end-of-session cleanup reaches step 7. The `wait` costs nothing when the group has already finished (the typical case — ~2s of background work vs. the full session duration):
+
    ```bash
+   # Wait for the setup background group to finish before flushing, to avoid
+   # a race between step 1.6's orphan sweep and this flush writing to the same
+   # cost-history.jsonl. Both are idempotent, but the wait eliminates the race.
+   wait "${SETUP_BACKGROUND_PID:-}" 2>/dev/null || true
+
    "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "<session-id>"
    ```
 
