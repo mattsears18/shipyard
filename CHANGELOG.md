@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.4.1 — 2026-05-23
+
+Adds a one-line `/shipyard:version` command that prints the installed plugin's version. Answers "what version of shipyard am I running?" without grepping `~/.claude/plugins/installed_plugins.json` or scrolling the marketplace listing. Pairs naturally with `/shipyard:update` — check what you have, then bump.
+
+- **`plugins/shipyard/commands/version.md`** — new command. Runs `jq -r '.version' "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json"` and prints stdout verbatim. `${CLAUDE_PLUGIN_ROOT}` resolves to the *installed* directory (under `~/.claude/plugins/cache/shipyard/shipyard/<version>/`), so the result reflects what's actually loaded — not whatever copy is checked out in a repo.
+
 ### 1.4.0 — 2026-05-23
 
 Bundled release for the `/shipyard:do-work` setup-perf umbrella plus two correctness bugs surfaced by the same `lightwork` session that filed the original umbrella. 10 PRs land together — every change in the umbrella spec ([#235](https://github.com/mattsears18/shipyard/issues/235)) plus the two unrelated bugs the parallel session shook loose. Net effect: setup latency drops materially on every `/do-work` invocation, the orchestrator stops over-deferring real work from working memory, and worker findings survive a mid-run worktree reap.
