@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.4.4 — 2026-05-23
+
+Fixes a false-positive `fix-main-ci` divert triggered when the most recent completed CI workflow run on the default branch is `cancelled` from GitHub's concurrency-group auto-cancellation (a newer commit superseded the in-flight run). Step 4.5a's per-workflow CI aggregation rule previously bucketed `cancelled` in the red set, treating normal supersession traffic as a CI failure verdict and burning a Sonnet-pinned `fix-main-ci` worker (~3 min, ~$2-3) per session to return `noop: main already green`. Closes [#261](https://github.com/mattsears18/shipyard/issues/261) (P1) — surfaced in session `dowork-20260523T173249Z-53595` against `mattsears18/lightwork` where CI's most-recent completed run was `cancelled` (supersession on 9445f569) while the next CI run on the newer SHA 0d700acd was `success`.
+
+- **`plugins/shipyard/commands/do-work/setup.md`** — step 4.5a's per-workflow loop now requires the most recent completed run to have `conclusion != "cancelled"` before treating it as the workflow's verdict. `cancelled` is removed from the red set; runs with that conclusion are skipped over while walking each workflow's history newest-first. If every completed run in the 60-run window is `cancelled`, the workflow's status falls through to **pending** rather than red, deferring re-evaluation to step-D's next refresh. Same skip rule covers hung-then-timeout and manual cancellations because none of them are actionable by `fix-main-ci` — there's no fix for a manual cancel; only the next run's verdict matters.
+- **`plugins/shipyard/commands/do-work-RATIONALE.md`** — added a third trap to the step 4.5a section explaining why `cancelled` is not a CI failure verdict, with the session-`dowork-20260523T173249Z-53595` worked example (cancelled on commit 9445f569, success on 0d700acd) so the next reader can trace the failure mode without re-deriving it.
+
 ### 1.4.3 — 2026-05-23
 
 Fixes a session-state race where a concurrent `/shipyard:do-work` orchestrator's step 1.6 orphan-sweep would reap a still-active peer session's state file based on mtime alone, losing cost-tracking data and triggering `bump-tokens` errors mid-session. Closes [#253](https://github.com/mattsears18/shipyard/issues/253) (P1) — surfaced in a 2026-05-23 session where the 30-min `-mmin +30` floor was insufficient because the peer orchestrator had legitimately gone quiet for >30 min during a long drain phase before the sweep ran.
