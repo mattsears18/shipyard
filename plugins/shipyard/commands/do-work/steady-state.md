@@ -526,6 +526,13 @@ When filling a slot, walk this decision tree:
    ```bash
    # Check every agent-* worktree whose branch matches do-work/issue-<N>
    peer_locked=false
+   # Declare our orchestrator PID so classify-lock distinguishes our own
+   # session's locks (self-ancestor) from genuine peer-session locks
+   # (peer-alive). Issue #263: without this, classify-lock's ancestor walk
+   # can mis-classify our own session's locks as peer-alive whenever an
+   # intermediate harness layer returns empty PPID, blocking dispatch
+   # against issues we're actively working.
+   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
    for wt_dir in "$(git rev-parse --show-toplevel)/.git/worktrees"/agent-*; do
      [ -d "$wt_dir" ] || continue
      # Read the branch ref from the worktree metadata

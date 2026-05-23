@@ -174,6 +174,13 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
   cd "$(git rev-parse --show-toplevel)"
   REAP_AUDIT_LOG="${SHIPYARD_HOME:-$HOME/.shipyard}/reap-audit.jsonl"
   REAP_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  # Detect the orchestrator's PID once per loop and export it so every
+  # classify-lock call short-circuits to `self-ancestor` when the lock
+  # holds our own PID (issue #263). The harness writes the orchestrator's
+  # PID into every dispatched agent's lock; without this declaration the
+  # ancestor walk inside classify-lock can fail to find it whenever an
+  # intermediate harness layer returns empty PPID.
+  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
   for wt_dir in .git/worktrees/agent-*; do
     [ -d "$wt_dir" ] || continue
     name=$(basename "$wt_dir")
@@ -680,6 +687,11 @@ The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing 
 cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
 reaped_stale=0
 deferred_stale=0
+# Declare our orchestrator PID so classify-lock can short-circuit reliably
+# (issue #263). The harness writes our PID into every agent lock file;
+# without an explicit declaration, classify-lock's ancestor walk can fail
+# to find it whenever an intermediate harness layer returns empty PPID.
+export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
 for wt_dir in .git/worktrees/agent-*; do
   [ -d "$wt_dir" ] || continue
   name=$(basename "$wt_dir")
