@@ -990,10 +990,12 @@ gh run list --repo <owner/repo> --branch <default-branch> \
 Compute per-workflow status, then aggregate:
 
 1. Group runs by `workflowName`. Within each group, keep `gh`'s newest-first `createdAt` order.
-2. For each workflow, find its most recent run whose `status == "completed"`. That's the workflow's current health:
+2. For each workflow, find its most recent run whose `status == "completed"` AND whose `conclusion != "cancelled"`. That's the workflow's current health:
    - `conclusion in {success, skipped, neutral}` → workflow is **green**
-   - `conclusion in {failure, timed_out, startup_failure, cancelled, action_required}` → workflow is **red**
-   - no completed run in the window (only `in_progress` / `queued` / `waiting` / `requested`) → workflow is **pending**
+   - `conclusion in {failure, timed_out, startup_failure, action_required}` → workflow is **red**
+   - no qualifying completed run in the window (only `in_progress` / `queued` / `waiting` / `requested`, or every completed run in the window was `cancelled`) → workflow is **pending**
+
+   `cancelled` runs are skipped over rather than treated as a verdict because the common cause on actively-developed repos is GitHub's concurrency-group auto-cancellation when a newer commit lands on the same branch (the *supersession* case) — that is normal traffic, not a CI failure, and the next non-cancelled run on a newer SHA carries the actual verdict. Hung-then-timeout cancellations and manual cancellations are also non-actionable by `fix-main-ci` (there's no "fix" for a manual cancel; only the next run's verdict matters), so the same skip-and-keep-looking rule applies uniformly across all cancellation causes. If every completed run for a workflow in the 60-run window is `cancelled`, the workflow's status falls through to **pending** and step-D's next refresh re-evaluates once a non-cancelled run completes. Closes [#261](https://github.com/mattsears18/shipyard/issues/261).
 3. Aggregate to a single `main_ci.status`:
    - any workflow is **red** → `main_ci.status = "red"`. Use the *most recent* red run across all red workflows as `earliest_red_run_*` (most actionable for the fix-main-ci dispatch). Collect **all** red workflow names into `red_workflow_names` (sorted alphabetically).
    - else any workflow is **pending** → `main_ci.status = "pending"`
