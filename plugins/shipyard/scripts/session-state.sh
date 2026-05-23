@@ -763,7 +763,7 @@ cmd_read_tokens() {
       \"| Cache read | \" + (\$scope.cache_read | tostring) + \" |\n\" +
       \"| Cache creation | \" + (\$scope.cache_creation | tostring) + \" |\n\" +
       \"| **Total tokens** | **\" + (\$total_tokens | tostring) + \"** |\n\" +
-      \"| Estimated cost (USD) | \" + (\$scope.estimated_usd | . * 10000 | round / 10000 | tostring) + \" |\n\" +
+      \"| Estimated cost (USD) | \" + (\$scope.estimated_usd | (. * 100 | round) as \$cents | \"\$\" + ((\$cents / 100 | floor) | tostring) + \".\" + ((\$cents % 100) | if . < 10 then \"0\\(.)\" else \"\\(.)\" end)) + \" |\n\" +
       \"| Worker invocations | \" + (\$count | tostring) + \" |\n\" +
       (if \$modes != \"\" then \"| Modes | \" + \$modes + \" |\n\" else \"\" end) +
       (if \$models != \"\" then \"| Models | \" + \$models + \" |\n\" else \"\" end) +
