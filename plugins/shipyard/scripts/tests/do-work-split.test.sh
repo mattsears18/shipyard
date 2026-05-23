@@ -5,7 +5,8 @@
 #
 # Spec runtime guarantees:
 #   - thin entry + RATIONALE + every phase file exists
-#   - thin entry stays < 200 lines (the routing-only contract from #154)
+#   - thin entry stays < 220 lines (the routing-only contract from #154,
+#     re-baselined after #195/#233/#246 added new orchestrator-state structs)
 #   - RATIONALE has ≥200 lines so the prose-rationale content genuinely
 #     landed there during #100's original split
 #   - the key anchors external files reference still exist (now in the
@@ -147,12 +148,15 @@ assert_file_exists "$drain_path" "commands/do-work/drain.md exists"
 assert_file_exists "$cleanup_path" "commands/do-work/cleanup-summary.md exists"
 assert_file_exists "$dont_path" "commands/do-work/dont.md exists"
 
-# (2) The thin entry stays under 200 lines. Acceptance criterion from
+# (2) The thin entry stays under 220 lines. Acceptance criterion from
 #     #154 — the entry is allowed to grow if a new orchestrator-state
-#     struct lands, but if it grows past 200 the split is over-engineered
-#     and we'd rather know.
-assert_line_count_at_most "$do_work_path" 200 \
-  "thin entry stays <= 200 lines (#154 acceptance criterion)"
+#     struct lands, but if it grows past the cap the split is over-engineered
+#     and we'd rather know. Re-baselined from 200 → 220 after #195
+#     (`last_fresh_fetch`), #233 (`scope_bg_count`), and #246 (refresh
+#     tracker + `deferred_issues` provenance) added legitimate struct
+#     documentation to the entry.
+assert_line_count_at_most "$do_work_path" 220 \
+  "thin entry stays <= 220 lines (#154 acceptance criterion)"
 
 # (3) RATIONALE has substantive content (≥200 lines) so the prose-rationale
 #     genuinely landed there during the #100 split.
