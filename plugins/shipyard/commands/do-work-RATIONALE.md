@@ -177,6 +177,38 @@ The section-aware rule replaces an older boolean `touches_lockfile` flag. The bo
 
 In normal operation step 2's bucket 0.5 and step 4's client-side filter have already dropped every external-author issue before it reaches `ready_issues`, so the candidate's trust is virtually always `trusted` at the dispatch point. The per-dispatch computation is **defense in depth** — the dispatch-side companion to the intake-side `external-author-gate` GitHub Action and the dispatch-time allowlist filter. If both principal gates somehow regress simultaneously (the GitHub Action is disabled, the orchestrator's bucket-0.5 / step-4 filter is bypassed), step 6 of the worker still refuses to arm auto-merge for an external-origin PR — labeling it `needs-human-review` instead.
 
+## Step E — over-defer self-check rationale
+
+The over-defer self-check (`defers_this_turn > 0 AND dispatched_this_turn == 0 AND in_flight < concurrency`) was added in response to issue [#246](https://github.com/mattsears18/shipyard/issues/246), a session against `mattsears18/lightwork` (session id `e4f91771`, 2026-05-23) that entered drain while 13 workable issues remained.
+
+**The failure mode.** After 5 PRs shipped, the termination assertion's step 4 fresh-fetched 13 net-new issues (`[884, 891, 1042, 1048, 1049, 1050, 1051, 1052, 1073, 1075, 1076, 1077, 1090]`). The spec says: if the net-new set is non-empty, append to `raw_backlog` and retry from step C. But the orchestrator had already added those issues to `deferred_issues` in working memory on earlier turns using its own judgment (not scope-agent returns). By the time the termination assertion ran, the `deferred_issues` subtraction made the net-new set appear empty — so drain fired.
+
+The per-turn `defers_this_turn` token makes this pattern visible: a turn with `defers_this_turn > 0 AND dispatched_this_turn == 0 AND in_flight < concurrency` is the telltale signature. When all three are true, the orchestrator is draining the workable queue through self-defers rather than through actual work, which is the failure mode.
+
+**Why the check isn't simply "never defer without a scope agent."** Orchestrator-judgment defers are sometimes legitimately appropriate mid-session — e.g., an issue whose body clearly describes a 10-step infrastructure migration that no one would expect a single worker to complete. Requiring a scope-agent invocation for every such issue would double the setup cost. The design is: allow orchestrator-judgment defers, but (a) tag them as such via `provenance: "orchestrator-judgment"`, (b) surface them in the invariant line so they're visible, and (c) re-validate them before drain fires. The over-defer self-check is the real-time signal; the pre-drain re-validation pass is the final gate.
+
+**Why `defers_this_turn` resets per turn rather than per session.** A session-level `defers_total` would obscure whether the deferring is concentrated in a few turns (likely legitimate: a scope-refill burst that returns a cluster of genuinely unworkable issues) versus spread uniformly across many turns (likely the "one at a time" over-deferring pattern). A per-turn counter exposes the pattern clearly at the turn level.
+
+## Pre-drain re-validation of `orchestrator-judgment` defers
+
+The pre-drain re-validation pass ([`drain.md` step 5](./do-work/drain.md#pre-drain-re-validation-of-orchestrator-judgment-defers)) exists because the termination assertion's step 4 contains a structural exploit: it subtracts `deferred_issues` issue numbers from the live backlog before computing the net-new set. An orchestrator that self-defers every remaining workable issue (via `provenance: "orchestrator-judgment"` entries) can make the net-new set appear empty and proceed to drain — even though 13 issues are still on the live tracker and would have been dispatchable.
+
+**The worked example (session `e4f91771`, 2026-05-23).** Three of the deferred issues were incorrectly self-deferred:
+
+| Issue | Orchestrator's defer reason | Why it was wrong |
+|---|---|---|
+| #1075 | "Gated on #1077 — pushing metadata to managed-publishing-ON Play creates approval-queue noise" | Soft concern (noise in an off-by-default setting), not a hard block. The referenced blocker (#1077) was open, but the defer reason was an over-cautious interpretation of that issue. |
+| #891 | "Blocked on #1052 per issue body's recommended fix path" | Issue body recommended SDK 56 upgrade as one fix path, not the only one. Targeted alternatives existed. |
+| #1090 | "Just-filed; fix requires interactive `eas credentials` setup OR sensitive credential wiring in CI" | Option B fix path (eas.json + CI materialization) was fully automatable. The orchestrator cited Option A's manual nature without investigating Option B. |
+
+After user intervention, the orchestrator re-evaluated without consulting any new spec — simply being less conservative on the second pass was sufficient to dispatch #1090 and #891. This means the self-defers were not grounded in code evidence; they were speculative.
+
+**Why re-validation against named-blocker state is the right mechanism for #1075-style defers.** If the defer reason names a specific blocker (`Gated on #1077`), the right check is: is #1077 still OPEN? If CLOSED or MERGED, the blocker has resolved and the defer is stale. A single `gh issue view` call per named blocker is cheap and definitive. No scope-agent invocation required for named-blocker defers — the state check is the answer.
+
+**Why scope-agent re-dispatch is the right mechanism for free-form defers.** If the defer reason is a free-form judgment without a specific named blocker ("too complex for a single worker", "needs external decision"), there's no mechanical state to check. The only authoritative answer comes from re-running scope pre-flight. The cost is one scope-agent invocation per free-form defer that actually reaches the pre-drain check — and if those invocations return "ready," the work gets done instead of being silently skipped.
+
+**Why the session-e4f91771 failure couldn't be caught by step 4's fresh fetch alone.** Step 4's fresh fetch compares the live backlog against the union of `in_flight`, `ready_issues`, `raw_backlog`, `deferred_issues`, and closed-this-session issues. An issue that's in `deferred_issues` is excluded from the net-new set regardless of whether the defer was authoritative. The step 4 check was correctly implemented (it did do a live fetch); the issue was that `deferred_issues` itself was artificially inflated by working-memory defers. The pre-drain step 5 is the fix: it shrinks `deferred_issues` by re-validating the orchestrator-judgment entries before the termination assertion can use the inflated set to declare "empty net-new."
+
 ## Soft drain — why it's safe to let agents finish
 
 Agents commit at logical milestones (TDD test → commit, implementation → commit) and PRs are opened with `--auto`. Letting an in-flight agent finish naturally never loses work. Killing it mid-edit could.
@@ -248,13 +280,13 @@ DO this instead:
 ```
 [Agent tool call dispatching slot 3 with next ready_issue]
 [Agent tool call dispatching slots 4-8 with next ready_issues (if also free)]
-[invariant] in_flight=8/8 · ready_issues=27 · failed_prs=1 · divert_queue=0 · raw_backlog=12 · dispatched_this_turn=6
+[invariant] in_flight=8/8 · ready_issues=27 · failed_prs=1 · divert_queue=0 · raw_backlog=12 · dispatched_this_turn=6 · defers_this_turn=0 · state=written · tokens_attributed=true · last_fresh_fetch=17:31:05
 ```
 
 Or, if every queue really is empty and `in_flight` is also empty:
 
 ```
-[invariant] in_flight=0/8 · ready_issues=0 · failed_prs=0 · divert_queue=0 · raw_backlog=0 · dispatched_this_turn=0 · idle_reason="all queues empty (terminating after in_flight drains)"
+[invariant] in_flight=0/8 · ready_issues=0 · failed_prs=0 · divert_queue=0 · raw_backlog=0 · dispatched_this_turn=0 · defers_this_turn=0 · state=written · tokens_attributed=true · last_fresh_fetch=17:35:12 · idle_reason="all queues empty (terminating after in_flight drains)"
 ```
 
 ### Don't accept a `green` return without verifying the rollup

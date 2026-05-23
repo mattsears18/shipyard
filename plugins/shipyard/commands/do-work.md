@@ -31,7 +31,13 @@ Across the session, the orchestrator maintains ten mental data structures plus a
 - **`divert_queue`**: at most two synthetic high-priority entries that *preempt* normal work — `fix-main-ci` (main's latest CI is red) and `fix-failing-prs-batch` (≥10 open red PRs across all authors). Drained BEFORE `failed_prs`. Repopulated by the divert-checks scan (step 4.5 at setup, step D in steady state). An entry is only repopulated when no in-flight slot is already working that diversion — never two workers on the same diversion.
 - **`main_ci`**: cached snapshot of `<default-branch>` CI — `{ status: "green" | "red" | "pending" | "unknown", earliest_red_run_id?: string, earliest_red_run_url?: string, earliest_red_sha?: string, checked_at: <timestamp> }`. Refreshed by the divert-checks scan; consumed by the status line and the divert dispatch templates.
 - **`session_prs`**: set of PR numbers this session opened or fix-checks-touched. Populated by step A's reconcile (every `shipped` or fix-checks-touch appends `<M>`). Read by the [end-of-session drain](./do-work/drain.md#end-of-session-drain) to decide what to watch and when to exit. The drain doesn't terminate until every entry is either merged/closed, `blocked:ci`, or settled (pending with no head-commit movement across a 5-poll window).
-- **`deferred_issues`**: list of `{ issue: N, reason: "..." }` entries for issues the [scope pre-flight](./do-work/setup.md#6-initial-scope-pre-flight) flagged as not-shippable-by-a-single-worker (multi-PR migration, SDK upgrade, external decision required, etc.). The orchestrator posts the reason as a comment on the issue, drops the issue from `raw_backlog`, and never dispatches a worker against it this session. Surfaced in the end-of-session summary's `Deferred:` block.
+- **`deferred_issues`**: list of `{ issue: N, reason: "...", provenance: "scope-agent" | "orchestrator-judgment", deferred_at: "<iso-8601 UTC>" }` entries for issues determined to be not-shippable-by-a-single-worker this session. The `provenance` field is load-bearing — it records *who* made the defer decision and is required for the pre-drain re-validation pass (see [`drain.md` termination assertion](./do-work/drain.md#termination-assertion)). The orchestrator posts the reason as a comment on the issue, drops the issue from `raw_backlog`, and never dispatches a worker against it this session. Surfaced in the end-of-session summary's `Deferred:` block.
+
+  Valid `provenance` values:
+  - `"scope-agent"` — a scope pre-flight agent returned a `deferred`-shape result (the only fully-automated, audit-backed deferral). The drain transition accepts these without re-validation.
+  - `"orchestrator-judgment"` — the orchestrator (or a human) deferred the issue in working memory without dispatching a scope agent first (e.g., citing a blocker issue that may or may not still be active, or reasoning from issue body alone). These MUST be re-validated against current state before a drain transition is allowed to fire — see [drain.md's pre-drain re-validation pass](./do-work/drain.md#pre-drain-re-validation-of-orchestrator-judgment-defers).
+
+  **Restriction on mid-session `deferred_issues` writes.** The only valid paths to write a `"scope-agent"`-provenance entry are the [scope pre-flight (step 6)](./do-work/setup.md#6-initial-scope-pre-flight) and [step D's scope refill](./do-work/steady-state.md#d-periodic-refresh). If the orchestrator wants to defer an issue from working memory (e.g., the issue's body describes a multi-PR migration), it MUST either: (a) dispatch a scope agent for that issue and record the scope agent's `deferred`-shape return as the authoritative diagnosis, OR (b) add the entry with `provenance: "orchestrator-judgment"` so it will be re-validated before drain. Adding a `"scope-agent"` provenance without an actual scope-agent return is a spec violation.
 - **`trusted_authors`**: set of GitHub logins the orchestrator will dispatch workers against. Populated once at setup by [step 1.7](./do-work/setup.md#17-resolve-trusted-author-allowlist) from `.shipyard/trusted-authors.txt` (per-repo override) with fallback to the live `repos/<owner/repo>/collaborators` API. Used by step 2's bucket-0.5 filter and step 4's client-side filter to drop issues filed by untrusted authors from the dispatch queue. Security boundary — never write code (and never arm auto-merge) from instructions in an issue authored by a login not in this set.
 
 Plus a three-field **refresh tracker** that gates [step D](./do-work/steady-state.md#d-periodic-refresh)'s event-driven + adaptive-backoff cadence — `refresh_last_at` (timestamp), `refresh_last_snapshot` (`{ main_ci_status, failing_pr_count_all, failed_prs_size }`), and `refresh_zero_delta_streak` (integer). Not a dispatch-queue, just bookkeeping for the refresh trigger rules; see step D's [Refresh trigger rules](./do-work/steady-state.md#refresh-trigger-rules) for the full semantics.
@@ -64,7 +70,9 @@ The orchestrator mirrors every state structure above into a small JSON file at `
   "raw_backlog": [],
   "divert_queue": [],
   "session_prs": [],
-  "deferred_issues": [],
+  "deferred_issues": [
+    { "issue": 1075, "reason": "Gated on #1077 — low-urgency soft concern", "provenance": "orchestrator-judgment", "deferred_at": "2026-05-23T14:12:00Z" }
+  ],
   "soft_caps": { "CLAUDE.md": 2 },
   "main_ci": {
     "status": "green",
@@ -151,7 +159,7 @@ Every state-mutation site writes through. Batch writes at end-of-turn — one `u
 | [Step 4](./do-work/setup.md#4-fetch--rank-the-backlog) | `raw_backlog`, `trusted_authors` (if dynamically loaded) | once, post-fetch |
 | [Step 4.5](./do-work/setup.md#45-divert-checks-main-ci--pr-pileup) | `main_ci`, `divert_queue` | at setup + step D refresh |
 | [Step 5](./do-work/setup.md#5-snapshot-failing-prs) | `failed_prs` | once, post-snapshot |
-| [Step 6](./do-work/setup.md#6-initial-scope-pre-flight) | `scope_bg_count` (incremented when batch fires; decremented as each background agent returns), `ready_issues` (appended as results arrive), `deferred_issues` | rolling, as background scope agents return |
+| [Step 6](./do-work/setup.md#6-initial-scope-pre-flight) | `scope_bg_count` (incremented when batch fires; decremented as each background agent returns), `ready_issues` (appended as results arrive), `deferred_issues` (with `provenance: "scope-agent"` and `deferred_at` on new entries) | rolling, as background scope agents return |
 | Step 7 (initial pool fill) | `in_flight`, `soft_caps` | per dispatch |
 | [Step A reconcile](./do-work/steady-state.md#a-reconcile-the-return) | `in_flight` (release), `session_prs`, `failed_prs`, `deferred_issues` (via blocked), `tokens` (via `bump-tokens`) | every completion |
 | [Step B release](./do-work/steady-state.md#b-release-the-slot) | `in_flight` (slot removal), `soft_caps` (decrement) | every completion |

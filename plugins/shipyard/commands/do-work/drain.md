@@ -55,7 +55,50 @@ See [RATIONALE → Termination](../do-work-RATIONALE.md#termination--why-the-mer
 
 **Drain-mode termination**: when `draining = true` (see [Soft drain](#soft-drain)), the exit condition collapses to step 1 only (`in_flight` empty) — steps 2–4 are skipped, `failed_prs` / `ready_issues` / `raw_backlog` are left as-is and rebuilt next session. The fresh-fetch in step 4 is deliberately bypassed: drain mode is the user's explicit "stop dispatching" signal, and surfacing new candidates would contradict that. The drain → cleanup → summary flow below still runs.
 
-Once the four-step assertion passes (or drain-mode collapses it to step 1), run end-of-session drain → cleanup → summary.
+### Pre-drain re-validation of `orchestrator-judgment` defers
+
+Once the four-step assertion passes (all queues empty, live backlog returns no net-new), the orchestrator MUST run a fifth step **before transitioning `drain.active = true`** — but ONLY when `deferred_issues` contains any entry with `provenance == "orchestrator-judgment"`:
+
+**Step 5 (fires ONLY when `deferred_issues` has `orchestrator-judgment` entries):** Re-validate each `orchestrator-judgment` entry against current state.
+
+For each entry in `deferred_issues` where `provenance == "orchestrator-judgment"`:
+
+1. **Re-read the defer reason.** Does it name a specific blocker issue or PR (e.g., "Gated on #1077", "Blocked on #1052")?
+   - If **yes**: look up the blocker's current state:
+     ```bash
+     gh issue view <blocker> --repo <owner/repo> --json state -q .state 2>/dev/null \
+       || gh pr view <blocker> --repo <owner/repo> --json state -q .state 2>/dev/null \
+       || echo "unresolvable"
+     ```
+     If the blocker is `CLOSED` or `MERGED` → the defer reason is **stale**. Remove this entry from `deferred_issues`, move the issue back to `raw_backlog`, log: `[pre-drain-revalidate] #<N> defer reason stale — blocker #<blocker> is now <state>; returned to raw_backlog`. Invalidate the `gh-cached.sh` backlog cache.
+     If the blocker is still `OPEN` → the defer reason is **still valid**. Leave the entry in `deferred_issues`.
+   - If **no** (the reason is a free-form judgment, not a named blocker): **dispatch a scope agent** for this issue now. A fresh scope pre-flight is the only way to get an authoritative, evidence-backed answer:
+     ```
+     [Dispatch scope agent for issue #<N> — pre-drain re-validation of orchestrator-judgment defer]
+     ```
+     - If the scope agent returns a **deferred shape**: update the entry's provenance to `"scope-agent"` (now it's authoritative). Leave in `deferred_issues`.
+     - If the scope agent returns a **ready shape**: remove from `deferred_issues`, push into `raw_backlog`. Log: `[pre-drain-revalidate] #<N> was orchestrator-judgment deferred but scope agent found it ready; returned to raw_backlog`.
+
+2. After processing all `orchestrator-judgment` entries, if `raw_backlog` gained any issues: run scope-refill via step D and retry dispatch from steady-state step C. **Do NOT proceed to drain.** The termination assertion (steps 1–4 above) must pass again.
+
+3. If no issues were re-admitted (all `orchestrator-judgment` defers were confirmed still-valid): emit the **pre-drain audit banner** and proceed to drain:
+
+   ```
+   PRE-DRAIN AUDIT
+       deferred_issues total: <N> (<M> added this session)
+       of those, scope-agent-backed: <K>  orchestrator-judgment: <J>
+       orchestrator-judgment entries all re-validated — blockers still active (or scope agent confirmed)
+       last live backlog fetch: <HH:MM:SS UTC>
+       proceeding to drain
+   ```
+
+   The banner is always emitted when step 5 ran — it is the audit trail for the user. When `deferred_issues` has zero `orchestrator-judgment` entries, step 5 is a no-op and the banner is skipped (no audit needed — all defers were scope-agent-backed).
+
+**Why this gate exists.** The termination assertion's step 4 subtracts `deferred_issues` numbers from the live backlog before checking net-new issues. This means the orchestrator can construct an "empty net-new set" entirely through self-defers — deferring every remaining workable issue using working-memory judgment, then declaring termination because the live backlog minus the deferred set is empty. The re-validation pass prevents this: before `drain.active` can flip, every `orchestrator-judgment` defer must be confirmed against current state. See [RATIONALE → Pre-drain re-validation](../do-work-RATIONALE.md#pre-drain-re-validation-of-orchestrator-judgment-defers) for the session that motivated this rule ([#246](https://github.com/mattsears18/shipyard/issues/246)).
+
+**Drain-mode termination:** when `draining = true`, step 5 is also skipped — drain mode is the user's "stop dispatching" signal, and re-evaluating deferred issues would contradict that intent.
+
+Once the four-step assertion passes AND step 5 re-validation clears (or was a no-op), run end-of-session drain → cleanup → summary.
 
 ## End-of-session drain
 
