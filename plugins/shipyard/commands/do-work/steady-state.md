@@ -336,7 +336,9 @@ Otherwise, the refresh is **event-driven with adaptive backoff** (see [refresh t
 
 1. **Divert-checks refresh** — re-run step 4.5 (main CI + all-authors failing PR count). Update `main_ci` and the `failing_pr_count_all` cache. Enqueue or clear `divert_queue` entries per the rules in step 4.5. This is the only place outside setup where diversions are evaluated. **`--fast` skip:** when `--fast` was set at session startup, skip this sub-step every time step D runs — leave `main_ci.status` and `failing_pr_count_all` as `"unknown"` / `0` for the session. The divert-checks cost is the mechanism `--fast` traded away; re-enabling them mid-session would undercut the savings.
 2. **Failed-PR scan (@me)** — re-run the step-5 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`).
-3. **Scope refill + auto-triage pass** — gated on `ready_issues` size `< --concurrency`. Take the next `2 × concurrency` from `raw_backlog` and dispatch scoping agents in parallel; apply the same per-entry handling as the [initial scope pre-flight](./setup.md#6-initial-scope-pre-flight) (ready entries → `ready_issues`; deferred entries → comment + `deferred_issues`, drop from `raw_backlog`). The periodic auto-triage label-stamping (P0/P1/P2) also runs here. Sub-steps 1 and 2 run regardless of queue depth — they check external state.
+3. **Scope refill + auto-triage pass (background)** — gated on `ready_issues` size `< --concurrency`. Fire the next `2 × concurrency` from `raw_backlog` as background scoping agents (`run_in_background: true`) — do NOT wait for them to return before proceeding to step C's dispatch. As each background scope agent completes, apply the same per-entry handling as the [initial scope pre-flight](./setup.md#6-initial-scope-pre-flight) (ready entries → `ready_issues` immediately; deferred entries → comment + `deferred_issues`, drop from `raw_backlog`). The periodic auto-triage label-stamping (P0/P1/P2) also runs here (synchronously, before firing the background scope burst). Sub-steps 1 and 2 run regardless of queue depth — they check external state.
+
+**Why background refill matters.** Under the previous synchronous model, every step-C `ready_issues empty but raw_backlog non-empty` case (dispatch rule 5) required blocking ~30 s for a full scope-refill burst before the freed slot could be filled. With background refill, the slot fill-decision uses whatever is already in `ready_issues`: if at least one pre-scoped entry is there, dispatch it immediately; the background refill tops up the queue while the new worker runs. The net effect is that the ~30 s scope-wait at step C never blocks a slot again after the initial batch (started at step 6) has seeded at least one entry into `ready_issues`.
 
 The refresh runs in the same turn as the completion handler and does **not** delay step C's dispatch. If `main_ci.status`, `divert_queue` membership, or the 10-threshold for `failing_pr_count_all` changed, also print the status line (see step 6.5).
 
@@ -374,14 +376,16 @@ After A → B → C → D, the **last thing emitted in the turn** is a single-li
 **Steady-state format** (after a normal dispatch turn):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never">
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never">
 ```
 
 **Idle-proof format** (used ONLY when step C produced no dispatch AND `in_flight < concurrency`):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never"> · idle_reason="<reason>"
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never"> · idle_reason="<reason>"
 ```
+
+`scope_bg=<s>` is the count of background scoping agents currently in flight (fired by step 6 or step D's scope-refill). When `<s> > 0`, results are arriving asynchronously into `ready_issues` — a `parked (scope refill in flight)` idle_reason is valid and expected. When `<s> == 0` and `ready_issues == 0` and `raw_backlog > 0`, that is a gap: no scoping is in progress and no scoped candidates are ready — fire a background scope-refill burst this turn before ending it.
 
 `<state>` is one of:
 - `written` — the turn's `session-state.sh update` call succeeded.
@@ -519,7 +523,7 @@ When filling a slot, walk this decision tree:
 
 4. **All `ready_issues` collide with `in_flight`?** → leave the slot empty for now. When the next completion frees up paths (hard release OR soft-cap decrement), retry. If nothing in `ready_issues` is ever compatible (rare — usually a same-path cluster on a hard path), wait for the colliding worker to return. The soft-cap path makes parking strictly less likely than under the old all-hard regime, so this case fires less often than it used to.
 
-5. **`ready_issues` empty but `raw_backlog` non-empty?** → trigger a scope-refill burst (step D's scope refill) in this same turn, then retry from step 3 with the refilled queue. Note that step C's lightweight backlog re-check has already topped up `raw_backlog` with any net-new issues filed since the last dispatch, so this rule fires whenever discovery succeeded but scoping hasn't caught up.
+5. **`ready_issues` empty but `raw_backlog` non-empty AND no background scope-refill in flight?** → trigger a background scope-refill burst (step D's scope refill sub-step 3) in this same turn — fire the scoping agents with `run_in_background: true`, do NOT wait for returns. Park the slot for now (`idle_reason="parked (scope refill in flight — ready_issues empty)"`). The slot will fill the moment the first background scope agent delivers a ready entry. If a background scope-refill is *already* in flight (fired by a prior dispatch turn), park without re-triggering — the in-flight agents will populate `ready_issues` shortly. Note that step C's lightweight backlog re-check has already topped up `raw_backlog` with any net-new issues filed since the last dispatch, so this rule fires whenever discovery succeeded but scoping hasn't caught up.
 
 6. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
 

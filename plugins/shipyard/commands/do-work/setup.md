@@ -1006,14 +1006,30 @@ The `-label:blocked:ci` filter is still correct because [step 3d's auto-clear sw
 
 > **Just-in-time when `concurrency == 1`.** At C=1 pre-flighting `2 × concurrency` (i.e., 2) candidates at setup is wasted token spend: by the time the single slot returns, rankings may have shifted (new comments, refined issues, closed blockers) and the pre-flighted decisions are stale. Instead, pre-flight **only the top candidate** immediately before each dispatch (inline with step 7 and step C). This converts the upfront batch-scope call into a single just-in-time call per dispatch. The rest of step 6's mechanics — ready/deferred shapes, `claimed_paths` partitioning, `deferred_issues` list, the comment-and-drop for deferred entries — are unchanged; only the timing (upfront vs per-dispatch) and the batch size (2 vs 1) change. Set `ready_issues = []` at startup; populate lazily.
 
-**Timing instrumentation (issue #238).** Bracket the entire batch of scoping-agent calls (start before dispatching all agents in parallel; end after all return and `ready_issues` / `deferred_issues` are populated). Also record the `scope_preflight` sub-block for the `/shipyard:cost report --show-setup` breakdown:
+**Rolling pre-flight (C≥2) — dispatch on the first result, don't wait for all.** The previous spec blocked until all `2 × concurrency` scoping agents returned before step 7 could fire — ~30 s of synchronous latency before the first worker launched. The rolling model fires the same batch in the background and dispatches as soon as ONE entry lands in `ready_issues`, hiding the remainder of the scope latency behind real worker execution. Closes [#233](https://github.com/mattsears18/shipyard/issues/233).
+
+**Execution model for C≥2:**
+
+```
+step 6 opens timing window
+  └── fire 2N scoping Agent calls with run_in_background: true
+        ↓ first result arrives → push to ready_issues → step 7 dispatches immediately
+        ↓ subsequent results arrive → push to ready_issues (queue fills while workers run)
+  timing window stays open until all background scope agents complete
+  record-scope-preflight fires after the last background agent returns
+```
+
+**Timing instrumentation (issue #238).** Open the timing window before firing the batch; close it after the last background scoping agent returns. The `record-scope-preflight` call is also deferred to that point so `ready-count` and `deferred-count` reflect the full batch.
 
 ```bash
 SCOPE_START_EPOCH=$(date -u +%s)
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_6_scope_preflight 2>/dev/null || true
 
-# ... dispatch all scoping agents in parallel, wait for all returns ...
+# ... fire all 2N scoping agents with run_in_background: true ...
+# ... step 7 dispatches the moment the first result lands in ready_issues ...
+# ... remaining scope results arrive asynchronously and push to ready_issues ...
+# ... after the LAST background scope agent completes: ...
 
 SCOPE_END_EPOCH=$(date -u +%s)
 SCOPE_ELAPSED=$(( SCOPE_END_EPOCH - SCOPE_START_EPOCH ))
@@ -1030,7 +1046,7 @@ SCOPE_ELAPSED=$(( SCOPE_END_EPOCH - SCOPE_START_EPOCH ))
   --elapsed-seconds "${SCOPE_ELAPSED}" 2>/dev/null || true
 ```
 
-Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel (one message, multiple `Agent` tool calls — these are short-lived and *not* backgrounded, so block until all return). Each returns **one of two shapes**:
+Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel with `run_in_background: true` (one message, multiple background `Agent` tool calls). Each returns **one of two shapes**:
 
 **Ready shape** (default — the candidate is shippable as a single-worker dispatch):
 
@@ -1048,9 +1064,9 @@ Scoping-agent prompt instruction: *If your read of the issue + codebase suggests
 
 `lockfile_sections` (ready shape only) is the set of root-manifest sections the candidate will touch — typically top-level keys in `package.json` (`overrides`, `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `scripts`, `engines`, `config`, `workspaces`, `resolutions`, `pnpm`, etc.). For non-`package.json` lockfile-class files (`Gemfile`, `go.mod`, `Cargo.toml`, `requirements.txt`, generated SQL migrations, root build config like `vite.config.ts` / `tsconfig.json`) use the filename as the section token (e.g., `"go.mod"`, `"Cargo.toml"`, `"migrations"`). Return an **empty array** for issues that don't touch any lockfile-class file. Budget ~30s per scoping agent.
 
-**Handling each returned entry:**
+**Handling each returned entry (fires as each background agent completes):**
 
-- **Ready entries** — partition each `files` array into `{ hard: [...], soft: [...] }` by matching each path against the soft-collision glob set defined in the [Dispatch rules](./steady-state.md#dispatch-rules-used-by-step-7-and-step-c) (default + any `--soft-collision-path` extensions). Paths that match a soft-collision glob go into `soft`; everything else goes into `hard`. The orchestrator does the partitioning — scoping agents return raw paths; they don't need to know about the tier distinction. Cache the partitioned result as the candidate's `claimed_paths`. Push onto `ready_issues` (preserving rank).
+- **Ready entries** — partition each `files` array into `{ hard: [...], soft: [...] }` by matching each path against the soft-collision glob set defined in the [Dispatch rules](./steady-state.md#dispatch-rules-used-by-step-7-and-step-c) (default + any `--soft-collision-path` extensions). Paths that match a soft-collision glob go into `soft`; everything else goes into `hard`. The orchestrator does the partitioning — scoping agents return raw paths; they don't need to know about the tier distinction. Cache the partitioned result as the candidate's `claimed_paths`. Push onto `ready_issues` (preserving rank). **If this is the first ready entry and step 7 has not yet dispatched, dispatch immediately** — do not wait for the remaining background scope agents to finish.
 - **Deferred entries** — do NOT push onto `ready_issues` and do NOT dispatch a worker. Instead:
   1. Post a comment on the issue: `Scope-preflight diagnosis (not auto-fixable as a single worker): <deferred reason>`. Use `gh issue comment <N> --repo <owner/repo> --body "..."`. If the comment fails (rate limit, permission), log an advisory and continue — don't block the pre-flight pass on a single comment failure.
   2. Append the entry `{ issue: N, reason: "<deferred reason>" }` to a session-level `deferred_issues` list (a new piece of orchestrator state — initialize as `[]` at startup alongside `ready_issues` / `raw_backlog`). This feeds the end-of-session summary's `Deferred:` block (see [End-of-session summary](./cleanup-summary.md#end-of-session-summary)).
@@ -1058,7 +1074,11 @@ Scoping-agent prompt instruction: *If your read of the issue + codebase suggests
 
 Remove every processed issue number from `raw_backlog` regardless of which shape was returned (ready *or* deferred) — both are "done" from the scoping pass's perspective.
 
-The same handling applies anywhere scoping runs (step 6 initial pre-flight + step D's scope refill + step C rule 5's refill burst). A scoping agent's return contract is identical across those call sites; the orchestrator branches on `deferred` presence the same way each time.
+**First-dispatch latency target.** The rolling model cuts first-dispatch latency from ~30 s (wait all 2N agents) to ~5–10 s (wait only the fastest scoping agent in the batch). Subsequent dispatches read directly from `ready_issues` — no scope-wait at all when at least one scoped entry is queued.
+
+**Edge case — all entries are deferred.** If every scoping agent in the initial batch returns a deferred shape (unlikely but possible), `ready_issues` stays empty. Step 7 cannot dispatch. Proceed to step 6.8 (setup timing flush) and record a `[scope-preflight] all candidates deferred — no initial dispatch` advisory; the steady-state loop will attempt scope-refill on the next turn.
+
+The same handling applies anywhere scoping runs (step 6 initial pre-flight + step D's background scope refill). A scoping agent's return contract is identical across those call sites; the orchestrator branches on `deferred` presence the same way each time.
 
 ### 6.5 Status line + state-change banners (UI)
 
