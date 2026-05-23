@@ -167,28 +167,28 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
   # `agent-*` worktrees. The find-orphan-orchestrators helper applies the
   # same liveness gate step 1.6 uses (file-missing OR `is-active` exits 1),
   # so the inactivity definition stays consistent across both sweeps.
+  #
+  # Issue #284 — the per-reap `git worktree remove` and the audit-log write
+  # are encapsulated in `worktree-reap.sh reap --action reaped-orphan-orchestrator`.
+  # The helper handles the rm -rf fallback internally (worktree-remove fails
+  # whenever the dir is on disk but no longer registered with git — typical
+  # crash-orphan case) and emits the appropriate `-raw-rm` action variant in
+  # the audit log when that path fires. Moving the audit-log write inside
+  # the helper is the single-source-of-truth fix: callers can't accidentally
+  # skip the audit step because the reap and the audit are one transaction.
   cd "$(git rev-parse --show-toplevel)"
-  REAP_AUDIT_LOG_ORCH="${SHIPYARD_HOME:-$HOME/.shipyard}/reap-audit.jsonl"
-  REAP_TS_ORCH=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   while read -r orph_path; do
     [ -z "$orph_path" ] && continue
     [ -d "$orph_path" ] || continue
     orph_name=$(basename "$orph_path")
     orph_session_id="${orph_name#orchestrator-}"
-    if git worktree remove --force "$orph_path" 2>/dev/null; then
-      printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"reaped-orphan-orchestrator","reaped_session_id":"%s","phase":"setup-1.6.5"}\n' \
-        "$REAP_TS_ORCH" "<session-id>" "$$" "$orph_name" "$orph_session_id" \
-        >> "$REAP_AUDIT_LOG_ORCH" 2>/dev/null || true
-    else
-      # Worktree might be unregistered with git (raw dir left behind on a
-      # crash). Fall back to plain `rm -rf` + a prune. Same audit shape with
-      # a "raw-rm" suffix on the action so the source is traceable.
-      if rm -rf "$orph_path" 2>/dev/null; then
-        printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"reaped-orphan-orchestrator-raw-rm","reaped_session_id":"%s","phase":"setup-1.6.5"}\n' \
-          "$REAP_TS_ORCH" "<session-id>" "$$" "$orph_name" "$orph_session_id" \
-          >> "$REAP_AUDIT_LOG_ORCH" 2>/dev/null || true
-      fi
-    fi
+    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      --action reaped-orphan-orchestrator \
+      --worktree-path "$orph_path" \
+      --worktree-name "$orph_name" \
+      --session-id "<session-id>" \
+      --reaped-session-id "$orph_session_id" \
+      --phase "setup-1.6.5" 2>/dev/null || true
   done < <("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" find-orphan-orchestrators \
              --repo-root "$(pwd)" --current-session-id "<session-id>" 2>/dev/null)
   git worktree prune 2>/dev/null || true
@@ -213,9 +213,12 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 
   # 3b — Reap stale agent worktrees from dead Claude Code sessions. Affects future
   # dispatch slot availability, not the first batch.
+  #
+  # Issue #284 — the actual `git worktree remove` and the audit-log JSONL write
+  # are encapsulated in `worktree-reap.sh reap`. The helper performs the
+  # remove (or skips it for `--action deferred`) and writes one audit line
+  # in a single transaction, so the audit log is impossible to skip.
   cd "$(git rev-parse --show-toplevel)"
-  REAP_AUDIT_LOG="${SHIPYARD_HOME:-$HOME/.shipyard}/reap-audit.jsonl"
-  REAP_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   # Detect the orchestrator's PID once per loop and export it so every
   # classify-lock call short-circuits to `self-ancestor` when the lock
   # holds our own PID (issue #263). The harness writes the orchestrator's
@@ -230,21 +233,30 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
     [ -z "$worktree_path" ] && worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
     [ -z "$worktree_path" ] && continue
     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
+    # Extract the lock PID for the audit log (best effort; null literal when
+    # the lock file is missing or unparseable).
+    lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+    [ -z "$lock_pid" ] && lock_pid="null"
     if [ "$classification" = "peer-alive" ]; then
-      # Audit log the deferral so future sessions can trace who held the lock.
-      lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1 || echo "unknown")
-      printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"deferred","reason":"peer-alive","lock_pid":%s,"phase":"setup-3b"}\n' \
-        "$REAP_TS" "<session-id>" "$$" "$name" "${lock_pid:-null}" \
-        >> "$REAP_AUDIT_LOG" 2>/dev/null || true
+      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+        --action deferred \
+        --worktree-path "$worktree_path" \
+        --worktree-name "$name" \
+        --session-id "<session-id>" \
+        --reason "peer-alive" \
+        --lock-pid "$lock_pid" \
+        --phase "setup-3b" 2>/dev/null || true
       continue
     fi
     git worktree unlock "$worktree_path" 2>/dev/null
-    if git worktree remove --force "$worktree_path" 2>/dev/null; then
-      lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1 || echo "unknown")
-      printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"reaped","classification":"%s","lock_pid":%s,"phase":"setup-3b"}\n' \
-        "$REAP_TS" "<session-id>" "$$" "$name" "$classification" "${lock_pid:-null}" \
-        >> "$REAP_AUDIT_LOG" 2>/dev/null || true
-    fi
+    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      --action reaped \
+      --worktree-path "$worktree_path" \
+      --worktree-name "$name" \
+      --session-id "<session-id>" \
+      --classification "$classification" \
+      --lock-pid "$lock_pid" \
+      --phase "setup-3b" 2>/dev/null || true
   done
   git worktree prune
 
@@ -520,25 +532,31 @@ The discovery uses [`worktree-reap.sh find-orphan-orchestrators`](../../scripts/
 # (Pseudocode — the canonical implementation lives in step 0.7's
 # background group. This snippet illustrates the per-orphan action.)
 while read -r orph_path; do
-  orph_session_id=$(basename "$orph_path" | sed 's/^orchestrator-//')
-  if git worktree remove --force "$orph_path" 2>/dev/null; then
-    # Audit-log with action="reaped-orphan-orchestrator", phase="setup-1.6.5"
-  else
-    # Worktree might be unregistered (raw dir left after a crash); rm -rf
-    # fallback with action="reaped-orphan-orchestrator-raw-rm".
-    rm -rf "$orph_path"
-  fi
+  orph_name=$(basename "$orph_path")
+  orph_session_id="${orph_name#orchestrator-}"
+  # Issue #284 — `worktree-reap.sh reap` handles BOTH the git-worktree-remove
+  # attempt AND the rm -rf fallback internally, and emits the appropriate
+  # action variant (`reaped-orphan-orchestrator` vs the `-raw-rm` suffix)
+  # in a single audit-log line.
+  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+    --action reaped-orphan-orchestrator \
+    --worktree-path "$orph_path" \
+    --worktree-name "$orph_name" \
+    --session-id "<session-id>" \
+    --reaped-session-id "$orph_session_id" \
+    --phase "setup-1.6.5"
 done < <("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" find-orphan-orchestrators \
            --repo-root "$(git rev-parse --show-toplevel)" \
            --current-session-id "<session-id>")
 git worktree prune
 ```
 
-**Audit-log shape** — same `~/.shipyard/reap-audit.jsonl` as steps 3 / 3b, but with a distinct `action` value so the source is traceable:
+**Audit-log shape** — same `~/.shipyard/reap-audit.jsonl` as steps 3 / 3b, but with a distinct `action` value so the source is traceable. The helper emits these variants for us (issue #284 moved the JSONL writes into [`worktree-reap.sh reap`](../../scripts/worktree-reap.sh) — see step 3b for the same pattern):
 
 - `action: "reaped-orphan-orchestrator"` — successful `git worktree remove --force`.
-- `action: "reaped-orphan-orchestrator-raw-rm"` — fallback when the worktree was unregistered with git (raw dir left after a crash); resolved via `rm -rf`.
-- Both carry a `reaped_session_id` field (the embedded session id of the orphan) and `phase: "setup-1.6.5"` so a future debugger can correlate against the prior session's run.
+- `action: "reaped-orphan-orchestrator-raw-rm"` — fallback when the worktree was unregistered with git (raw dir left after a crash); resolved via `rm -rf`. The helper chooses between these automatically; the caller passes the same `--action reaped-orphan-orchestrator` and the helper picks the right line based on which path actually succeeded.
+- `action: "reaped-orphan-orchestrator-failed"` — emitted only when BOTH `git worktree remove` and `rm -rf` failed (the dir is somehow non-removable — permissions, mount issue). Surfaces the failure for traceability rather than swallowing it silently.
+- Each line carries a `reaped_session_id` field (the embedded session id of the orphan) and `phase: "setup-1.6.5"` so a future debugger can correlate against the prior session's run.
 
 The fallback to raw `rm -rf` is load-bearing for the production case in #280: `git worktree remove` fails when the worktree dir is on disk but `.git/worktrees/<name>/` metadata has already been pruned (or was never registered — e.g., a manual `mv` left an `orchestrator-*` dir without git tracking it). Without the fallback, the dir would linger across an unbounded number of subsequent `/do-work` sessions.
 

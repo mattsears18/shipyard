@@ -102,8 +102,92 @@
 #       0  enumeration succeeded (output may be empty)
 #       2  bad usage (missing required flag)
 #
-# Pure bash + `ps`. No jq, no python, no awk — the helper has to be cheap
-# to call from the cleanup loop (potentially once per agent worktree).
+#   reap --action <reaped|deferred|reaped-orphan-orchestrator>
+#        --worktree-path <path> --worktree-name <name>
+#        --session-id <id> [--actor-pid <pid>]
+#        [--classification <c>] [--reason <r>] [--lock-pid <pid>]
+#        [--reaped-session-id <id>] [--phase <p>]
+#        [--skip-remove]
+#     Issue #284 — single source of truth for worktree-reap audit-log
+#     writes. Previously the audit-log `printf >> $REAP_AUDIT_LOG` was
+#     inlined at three call sites (setup.md 1.6.5 / 3b, cleanup-summary.md
+#     step 3). Every site shared roughly the same line shape, but the
+#     small per-site differences (phase, action, classification vs reason)
+#     made the lines look like "observability scaffolding" the orchestrator
+#     could skim past — and it did. `~/.shipyard/reap-audit.jsonl` never
+#     existed despite the spec calling for unconditional writes.
+#
+#     The `reap` subcommand encapsulates the entire reap-and-audit
+#     transaction so the orchestrator can't skip the audit step:
+#       1. Optionally perform the actual `git worktree remove --force`
+#          (skipped when `--skip-remove` is passed — used for "deferred"
+#          action, since the worktree isn't actually removed).
+#       2. For `reaped-orphan-orchestrator` action: if the worktree-remove
+#          fails (typical when the dir is on disk but no longer registered
+#          with git — common after a crash), fall back to `rm -rf` and
+#          emit the `-raw-rm` action variant in the audit line.
+#       3. Write exactly one JSONL line to `$SHIPYARD_HOME/reap-audit.jsonl`
+#          describing the outcome. The write is fire-and-forget (errors
+#          on the audit-log write are not fatal — a filesystem permission
+#          issue must never abort cleanup).
+#
+#     Action-to-line-shape mapping (matches the inline printf templates
+#     the three call sites used previously):
+#
+#       --action reaped:
+#         {"ts","session","actor_pid","worktree","action":"reaped",
+#          "classification","lock_pid","phase"?}
+#         Requires: --classification, --lock-pid (null literal accepted).
+#         Optional: --phase.
+#
+#       --action deferred:
+#         {"ts","session","actor_pid","worktree","action":"deferred",
+#          "reason","lock_pid","phase"?}
+#         Requires: --reason, --lock-pid (null literal accepted).
+#         Optional: --phase. Implies --skip-remove (caller is reporting
+#         that the remove was deliberately skipped).
+#
+#       --action reaped-orphan-orchestrator:
+#         Successful worktree-remove path:
+#           {"ts","session","actor_pid","worktree",
+#            "action":"reaped-orphan-orchestrator",
+#            "reaped_session_id","phase"?}
+#         rm -rf fallback path (worktree-remove failed):
+#           {"ts","session","actor_pid","worktree",
+#            "action":"reaped-orphan-orchestrator-raw-rm",
+#            "reaped_session_id","phase"?}
+#         Requires: --reaped-session-id.
+#         Optional: --phase (typically "setup-1.6.5").
+#
+#     Common fields:
+#       ts             — ISO-8601 UTC, derived inside the helper from
+#                        `date -u`. Caller does not pass.
+#       session        — `--session-id` (verbatim).
+#       actor_pid      — `--actor-pid` (defaults to $$).
+#       worktree       — `--worktree-name`. The basename of the lock /
+#                        worktree dir. Held distinct from --worktree-path
+#                        because the caller (especially cleanup-summary)
+#                        sometimes already strips to a basename for the
+#                        log shape but needs the absolute path for the
+#                        remove.
+#       lock_pid       — JSON value, NOT a quoted string. Pass `null` to
+#                        emit `"lock_pid":null`; pass an integer to emit
+#                        `"lock_pid":N`. Default when omitted: `null`.
+#
+#     Exit codes:
+#       0  audit-log line written. The reap operation may have succeeded
+#          OR the worktree-remove may have failed — for orphan-orchestrator
+#          the helper falls back to rm -rf; for reaped/deferred a failed
+#          remove still emits the audit line (the caller decides whether
+#          to log success or not). Exit 0 means the audit-line write
+#          itself was attempted; an actual write failure on the JSONL
+#          file (permissions, full disk) is fire-and-forget.
+#       2  bad usage (missing required flag, unknown action, invalid
+#          numeric value for actor-pid/lock-pid).
+#
+# Pure bash + `ps` + `date` + `git`. No jq, no python — the helper has to
+# be cheap to call from the cleanup loop (potentially once per agent
+# worktree).
 
 set -u
 
@@ -114,6 +198,13 @@ Usage:
   worktree-reap.sh detect-orchestrator-pid [<comm-name>]
   worktree-reap.sh find-orphan-orchestrators --repo-root <path> \
                                              --current-session-id <id>
+  worktree-reap.sh reap --action <reaped|deferred|reaped-orphan-orchestrator> \
+                        --worktree-path <path> --worktree-name <name> \
+                        --session-id <id> [--actor-pid <pid>] \
+                        [--classification <c>] [--reason <r>] \
+                        [--lock-pid <pid|null>] \
+                        [--reaped-session-id <id>] [--phase <p>] \
+                        [--skip-remove]
 
 classify-lock — Prints one of: no-lock | dead | self-ancestor | peer-alive
 
@@ -132,18 +223,46 @@ find-orphan-orchestrators — Emits one path per line for each orphan
                           is inactive (session file missing OR PID dead).
                           Empty stdout when there are no orphans.
 
+reap                    — Performs the worktree-remove (when applicable)
+                          and writes one append-only JSONL line to
+                          $SHIPYARD_HOME/reap-audit.jsonl describing the
+                          outcome. Issue #284 single source of truth for
+                          reap-audit writes — call sites no longer inline
+                          the printf >> $REAP_AUDIT_LOG line.
+                          Actions:
+                            reaped               — successful agent
+                                                    worktree reap
+                                                    (requires
+                                                    --classification,
+                                                    --lock-pid).
+                            deferred             — agent worktree reap
+                                                    skipped (peer-alive)
+                                                    (requires --reason,
+                                                    --lock-pid; implies
+                                                    --skip-remove).
+                            reaped-orphan-orchestrator
+                                                 — orchestrator-worktree
+                                                    orphan reap; tries
+                                                    git worktree remove,
+                                                    falls back to rm -rf
+                                                    and emits the
+                                                    -raw-rm variant
+                                                    (requires
+                                                    --reaped-session-id).
+
 Env vars:
   SHIPYARD_ORCHESTRATOR_PID  Explicit orchestrator PID for self-ancestor
                              short-circuit (classify-lock). Overridden by
                              --orchestrator-pid.
   SHIPYARD_HOME              Override session-file lookup root for
                              find-orphan-orchestrators (defaults to
-                             $HOME/.shipyard).
+                             $HOME/.shipyard). Also the root for
+                             reap-audit.jsonl writes used by `reap`.
 
 Exit codes:
   0  classification emitted (classify-lock) / PID printed or empty
      (detect-orchestrator-pid) / enumeration succeeded, output may be
-     empty (find-orphan-orchestrators)
+     empty (find-orphan-orchestrators) / audit-log write attempted (reap)
   2  usage error (missing path, malformed flag, missing required flag)
 EOF
 }
@@ -477,6 +596,268 @@ find_orphan_orchestrators() {
   return 0
 }
 
+# Issue #284 — single source of truth for reap-audit writes. Performs the
+# worktree-remove side effect (when applicable) and writes one JSONL line
+# to $SHIPYARD_HOME/reap-audit.jsonl per call.
+#
+# Three call sites that previously inlined the audit-log printf now route
+# through this function:
+#   - setup.md step 1.6.5  → --action reaped-orphan-orchestrator
+#   - setup.md step 3b     → --action reaped / --action deferred
+#   - cleanup-summary.md   → --action reaped / --action deferred
+#     step 3
+#
+# The transaction is "do the side effect, then write the audit log" so
+# the log always reflects what happened. The audit-log write itself is
+# fire-and-forget (filesystem permission issues are not fatal — same
+# posture as the original inline `>> $REAP_AUDIT_LOG 2>/dev/null || true`).
+#
+# Why this exists: the inline printf calls at the three sites were
+# functionally equivalent observability code that the orchestrator
+# repeatedly skimmed past as scaffolding. Result: the audit log never
+# materialized despite the spec calling for unconditional writes. Putting
+# the write inside a single helper subcommand makes it impossible for
+# the orchestrator to skip — the helper is the only thing that performs
+# the reap, so the audit line happens as part of the same transaction.
+reap_action() {
+  local action=""
+  local worktree_path=""
+  local worktree_name=""
+  local session_id=""
+  local actor_pid="$$"
+  local classification=""
+  local reason=""
+  # `lock_pid` is emitted as a JSON value (integer or null literal), NOT
+  # a quoted string — that's what the original inline templates produced,
+  # and tooling reading the log may try to use it as a number.
+  local lock_pid="null"
+  local reaped_session_id=""
+  local phase=""
+  local skip_remove=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --action)
+        action="${2:-}"
+        shift 2
+        ;;
+      --action=*)
+        action="${1#--action=}"
+        shift
+        ;;
+      --worktree-path)
+        worktree_path="${2:-}"
+        shift 2
+        ;;
+      --worktree-path=*)
+        worktree_path="${1#--worktree-path=}"
+        shift
+        ;;
+      --worktree-name)
+        worktree_name="${2:-}"
+        shift 2
+        ;;
+      --worktree-name=*)
+        worktree_name="${1#--worktree-name=}"
+        shift
+        ;;
+      --session-id)
+        session_id="${2:-}"
+        shift 2
+        ;;
+      --session-id=*)
+        session_id="${1#--session-id=}"
+        shift
+        ;;
+      --actor-pid)
+        actor_pid="${2:-}"
+        shift 2
+        ;;
+      --actor-pid=*)
+        actor_pid="${1#--actor-pid=}"
+        shift
+        ;;
+      --classification)
+        classification="${2:-}"
+        shift 2
+        ;;
+      --classification=*)
+        classification="${1#--classification=}"
+        shift
+        ;;
+      --reason)
+        reason="${2:-}"
+        shift 2
+        ;;
+      --reason=*)
+        reason="${1#--reason=}"
+        shift
+        ;;
+      --lock-pid)
+        lock_pid="${2:-null}"
+        shift 2
+        ;;
+      --lock-pid=*)
+        lock_pid="${1#--lock-pid=}"
+        [ -z "$lock_pid" ] && lock_pid="null"
+        shift
+        ;;
+      --reaped-session-id)
+        reaped_session_id="${2:-}"
+        shift 2
+        ;;
+      --reaped-session-id=*)
+        reaped_session_id="${1#--reaped-session-id=}"
+        shift
+        ;;
+      --phase)
+        phase="${2:-}"
+        shift 2
+        ;;
+      --phase=*)
+        phase="${1#--phase=}"
+        shift
+        ;;
+      --skip-remove)
+        skip_remove=1
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "reap: unknown flag: $1" >&2
+        return 2
+        ;;
+      *)
+        echo "reap: unexpected positional arg: $1" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  # Required-flag validation. Per-action additional requirements checked
+  # in the action dispatch below.
+  if [ -z "$action" ]; then
+    echo "reap: --action is required" >&2
+    return 2
+  fi
+  if [ -z "$worktree_path" ]; then
+    echo "reap: --worktree-path is required" >&2
+    return 2
+  fi
+  if [ -z "$worktree_name" ]; then
+    echo "reap: --worktree-name is required" >&2
+    return 2
+  fi
+  if [ -z "$session_id" ]; then
+    echo "reap: --session-id is required" >&2
+    return 2
+  fi
+
+  # actor_pid must be numeric.
+  if ! [[ "$actor_pid" =~ ^[0-9]+$ ]]; then
+    echo "reap: --actor-pid must be a non-negative integer (got: $actor_pid)" >&2
+    return 2
+  fi
+
+  # lock_pid is either `null` (literal) or a non-negative integer; we emit
+  # it unquoted in JSON so a caller passing anything else would produce
+  # invalid JSON. Catch it early.
+  if [ "$lock_pid" != "null" ] && ! [[ "$lock_pid" =~ ^[0-9]+$ ]]; then
+    echo "reap: --lock-pid must be 'null' or a non-negative integer (got: $lock_pid)" >&2
+    return 2
+  fi
+
+  # Resolve the audit-log path lazily. Mirrors the cost-history /
+  # session-state convention of `$SHIPYARD_HOME` overriding `$HOME/.shipyard`.
+  local shipyard_home="${SHIPYARD_HOME:-$HOME/.shipyard}"
+  # Ensure the dir exists — same fire-and-forget posture as the write itself.
+  # The mkdir is critical because the previous inline `printf >> $LOG` would
+  # fail silently when $SHIPYARD_HOME didn't exist (the `2>/dev/null || true`
+  # masked it). Forcing the dir creation here is what makes "first session
+  # produces at least one audit-log line" actually work on a fresh machine.
+  mkdir -p "$shipyard_home" 2>/dev/null || true
+
+  local audit_log="$shipyard_home/reap-audit.jsonl"
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  # Helper to append a JSON line. The line is constructed by callers below
+  # using printf %s — they're responsible for the comma-separation and
+  # field shape. The append itself is fire-and-forget (`|| true` posture)
+  # so a permission issue or full disk can never abort the reap loop.
+  emit_line() {
+    local line="$1"
+    printf '%s\n' "$line" >> "$audit_log" 2>/dev/null || true
+  }
+
+  # Format the optional ,"phase":"<p>" suffix. Empty when --phase wasn't
+  # set; the audit-line constructions below append it after the
+  # action-specific body.
+  local phase_suffix=""
+  if [ -n "$phase" ]; then
+    phase_suffix=",\"phase\":\"$phase\""
+  fi
+
+  case "$action" in
+    reaped)
+      if [ -z "$classification" ]; then
+        echo "reap: --classification is required when --action=reaped" >&2
+        return 2
+      fi
+      # Perform the actual worktree remove unless the caller explicitly
+      # asks us to skip (used when the caller has already removed it).
+      if [ "$skip_remove" -eq 0 ]; then
+        # Best-effort unlock first; matches the inline pattern.
+        git worktree unlock "$worktree_path" 2>/dev/null || true
+        git worktree remove --force "$worktree_path" 2>/dev/null || true
+      fi
+      emit_line "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"worktree\":\"$worktree_name\",\"action\":\"reaped\",\"classification\":\"$classification\",\"lock_pid\":$lock_pid$phase_suffix}"
+      ;;
+    deferred)
+      if [ -z "$reason" ]; then
+        echo "reap: --reason is required when --action=deferred" >&2
+        return 2
+      fi
+      # `deferred` means we DIDN'T remove the worktree — caller is logging
+      # the decision to defer. No `git worktree remove` should fire.
+      emit_line "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"worktree\":\"$worktree_name\",\"action\":\"deferred\",\"reason\":\"$reason\",\"lock_pid\":$lock_pid$phase_suffix}"
+      ;;
+    reaped-orphan-orchestrator)
+      if [ -z "$reaped_session_id" ]; then
+        echo "reap: --reaped-session-id is required when --action=reaped-orphan-orchestrator" >&2
+        return 2
+      fi
+      # Try the structured `git worktree remove --force` path first. On
+      # failure (typical when the worktree dir is on disk but no longer
+      # registered with git — common after a crash, see #280), fall back
+      # to `rm -rf` and emit the `-raw-rm` action variant so the source
+      # of the reap stays traceable.
+      local actual_action="reaped-orphan-orchestrator"
+      if [ "$skip_remove" -eq 0 ]; then
+        if ! git worktree remove --force "$worktree_path" 2>/dev/null; then
+          if rm -rf "$worktree_path" 2>/dev/null; then
+            actual_action="reaped-orphan-orchestrator-raw-rm"
+          else
+            # Both paths failed — the dir is somehow non-removable.
+            # We still emit an audit line so the failure is traceable;
+            # the caller's loop should continue rather than abort.
+            actual_action="reaped-orphan-orchestrator-failed"
+          fi
+        fi
+      fi
+      emit_line "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"worktree\":\"$worktree_name\",\"action\":\"$actual_action\",\"reaped_session_id\":\"$reaped_session_id\"$phase_suffix}"
+      ;;
+    *)
+      echo "reap: unknown --action: $action" >&2
+      return 2
+      ;;
+  esac
+
+  return 0
+}
+
 main() {
   local sub="${1:-}"
   case "$sub" in
@@ -498,6 +879,13 @@ main() {
       # function's docstring for the orphan definition.
       shift
       find_orphan_orchestrators "$@"
+      ;;
+    reap)
+      # Issue #284 — single source of truth for reap-audit log writes.
+      # See the reap_action function's docstring for the action-to-shape
+      # mapping and field semantics.
+      shift
+      reap_action "$@"
       ;;
     -h|--help|help|"")
       usage
