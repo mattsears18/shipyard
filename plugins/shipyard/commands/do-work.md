@@ -121,15 +121,9 @@ plugins/shipyard/scripts/session-state.sh init \
 # Read the whole file or one jq path.
 plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>" [--path ".session_prs"]
 
-# Merge one or more jq assignments atomically. Multiple --set args compose left-to-right.
-# --allow-degraded-init + --degraded-init-repo: RECOMMENDED for orchestrator-side
-# write-through calls (issue #281 — survives mid-session file-disappear race).
-# Same recovery contract as bump-tokens' --allow-degraded-init: an update against
-# a missing file recreates a fresh state file marked .degraded_recovery_at and
-# proceeds. Without these flags, an update against a missing file exits 3.
+# Merge jq assignments atomically. --allow-degraded-init: RECOMMENDED (#281 — survives mid-session file disappear).
 plugins/shipyard/scripts/session-state.sh update --session-id "<session-id>" \
-  --set '.session_prs += [96]' --set '.main_ci.status = "green"' \
-  --allow-degraded-init --degraded-init-repo "<owner/repo>"
+  --set '.session_prs += [96]' --set '.main_ci.status = "green"' --allow-degraded-init --degraded-init-repo "<owner/repo>"
 
 # Liveness check for the orphan-sweep (setup.md step 1.6). Exit 0 when file
 # exists AND .pid is alive (kill -0); exit 1 otherwise.
@@ -187,7 +181,7 @@ Every state-mutation site writes through. Batch writes at end-of-turn — one `u
 
 ### Failure mode — write-through breakage
 
-If `session-state.sh update` fails (exit code != 0), log `[session-state] update failed: <exit code> — session file out of sync with working memory; continuing` and continue the turn. Working memory is authoritative; the next turn's update cycle re-attempts the write. Do not stall dispatch on a file-write failure. Read-through failures (exit 3 mid-session) are handled inline by `--allow-degraded-init` (issue #281): the orchestrator's canonical `update` template includes `--allow-degraded-init --degraded-init-repo "<owner/repo>"`, so a mid-session file-disappear race auto-recreates the file (stamped `.degraded_recovery_at`) and the update proceeds. State from before the disappear is lost (the file was gone) and the `[orphan-reap]` audit log line records the loss-attribution. See [RATIONALE → Failure mode](./do-work-RATIONALE.md#failure-mode--write-through-breakage) for the full failure-mode discussion.
+If `session-state.sh update` fails (exit code != 0), log `[session-state] update failed: <exit code> — session file out of sync with working memory; continuing` and continue the turn. Working memory is authoritative; the next turn's update cycle re-attempts the write. Do not stall dispatch on a file-write failure. Mid-session exit-3 (file disappeared) is handled inline by `--allow-degraded-init` (issue #281) — the canonical `update` template above passes it by default. See [RATIONALE → Failure mode](./do-work-RATIONALE.md#failure-mode--write-through-breakage) for the full failure-mode discussion.
 
 ### Cost-tracking write-through
 
