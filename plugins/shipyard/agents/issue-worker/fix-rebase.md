@@ -21,6 +21,8 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
    git switch "$HEAD_REF"
    ```
 
+   **If `git switch` fails with "is already checked out at <path>"** — the head branch is locked in another agent worktree (typically the original issue-work worker's worktree, if the steady-state immediate-reap from [#282](https://github.com/mattsears18/shipyard/issues/282) didn't fire for any reason — peer-alive deferral, transient `gh` failure, etc.). Bail rather than working around it with a temporary `<head>-rebase` branch (the workaround #282 documented). Return `blocked rebase #<M>: head branch <HEAD_REF> locked in another worktree — needs manual rebase or end-of-session reap`. The drain will leave the PR alone and the next session's startup sweep clears the lock. Do NOT create a `<head>-rebase` temp branch — the artifacts can't be cleaned up cleanly, and the force-push to origin's head is the same operation regardless of which local branch holds it.
+
 2. **Pre-flight: confirm DIRTY is still the state.** State drifts between dispatch and you starting — another merge train tick may have already auto-merged this PR, or someone may have pushed a fix that resolved the dirty state, or new check failures may have appeared:
    ```bash
    gh pr view <M> --repo <owner/repo> --json mergeStateStatus,statusCheckRollup,state

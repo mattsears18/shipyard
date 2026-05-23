@@ -14,6 +14,8 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
 
 **Run from the orchestrator worktree** (set up in step 0.5) — NOT from the user's primary checkout. Reaping the orchestrator's own worktree happens last, after the user-facing summary prints — see step 6 below.
 
+**Relationship to the immediate-reap in steady-state.md.** Per [#282](https://github.com/mattsears18/shipyard/issues/282), the orchestrator's `shipped #<N>` reconcile in [steady-state.md step A.1](./steady-state.md#a1-parse-the-return-string) reaps the agent worktree for `do-work/issue-<N>` immediately rather than waiting for end-of-session. This means the end-of-session pass below typically sees only worktrees from `blocked` / `errored` returns, from `peer-alive` defers in the immediate-reap path, or from synthetic-divert workers (fix-main-ci, fix-failing-prs-batch — whose branches aren't `do-work/issue-N` so the steady-state match doesn't fire). The pass remains the ultimate sweep — never assume the immediate-reap path covered everything.
+
 1. Prune stale remote refs so merged-and-deleted branches surface as `[gone]`:
    ```bash
    git fetch --prune
