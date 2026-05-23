@@ -25,7 +25,7 @@ The agent's last line tells you what happened.
 
 **This step is not optional.** Before parsing the agent's return string, before any of the per-mode handling below, **attribute the dispatch's token usage to the session ledger**. Without this call, the per-session `.tokens` block, the per-issue / per-PR attribution buckets, the durable PR cost-comment, and the cross-session ledger at `~/.shipyard/cost-history.jsonl` all stay empty — and the perf umbrella ([#152](https://github.com/mattsears18/shipyard/issues/152)) becomes unmeasurable. See [issue #197](https://github.com/mattsears18/shipyard/issues/197) for the regression that prompted this becoming step A.0 instead of a buried mention in the write-through table.
 
-Extract the `usage` payload from the Agent tool result — the harness emits it as a `<usage>` block in the task-notification message that wakes this turn. The block has the shape:
+Extract the `usage` payload from the Agent tool result — the harness emits it as a `<usage>` block in the task-notification message that wakes this turn. The strict-path block has the shape:
 
 ```
 <usage>
@@ -37,6 +37,8 @@ Extract the `usage` payload from the Agent tool result — the harness emits it 
   duration_ms: <int>
 </usage>
 ```
+
+#### Strict path — full input/output/cache breakdown (preferred)
 
 **Pass all four token counts through to `bump-tokens` separately** — never collapse them into `--input <total_tokens>`. Output tokens are priced at 5× input on every Anthropic model the pricing table covers, and `cache_read_input_tokens` are priced at 10% of input. Collapsing the breakdown understates real session cost by 20-50% and makes prompt-cache hit-rate invisible. See [#225](https://github.com/mattsears18/shipyard/issues/225) for the regression that prompted this requirement (the previous spec allowed a "`total_tokens` alone is enough for first-pass attribution" fallback that callers took universally, leaving every per-invocation record with `output: 0` and `cache_*: 0`).
 
@@ -55,7 +57,37 @@ Invoke:
   --allow-degraded-init --degraded-init-repo "<owner/repo>"
 ```
 
-All four `--input` / `--output` / `--cache-read` / `--cache-creation` flags are **required** — pass `0` explicitly if the harness reports the field as missing or zero (rare), don't omit the flag. Both `--issue` and `--pr` are optional from the helper's perspective — pass whichever the dispatch surfaced. `bump-tokens` will route the attribution into `.tokens.totals` always, into `.tokens.per_issue[<N>]` if `--issue` is present, and into `.tokens.per_pr[<M>]` if `--pr` is present.
+All four `--input` / `--output` / `--cache-read` / `--cache-creation` flags are **required** on the strict path — pass `0` explicitly if the harness reports the field as missing or zero (rare), don't omit the flag. Both `--issue` and `--pr` are optional from the helper's perspective — pass whichever the dispatch surfaced. `bump-tokens` will route the attribution into `.tokens.totals` always, into `.tokens.per_issue[<N>]` if `--issue` is present, and into `.tokens.per_pr[<M>]` if `--pr` is present.
+
+#### Degraded path — total-only fallback (when the harness `<usage>` block lacks the breakdown)
+
+The strict path requires the harness to emit `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` in the sub-agent `<usage>` block. On some Claude Code harness versions (observed on Opus 4.7, 2026-05-23 — see [issue #279](https://github.com/mattsears18/shipyard/issues/279)) the block only emits **three** fields — `total_tokens`, `tool_uses`, `duration_ms` — with no input/output/cache split. The strict path cannot run; without a fallback, A.0 silently skips attribution session-wide, every cost-tracking comment renders `$0`, and the perf-umbrella ([#152](https://github.com/mattsears18/shipyard/issues/152)) becomes unmeasurable.
+
+When the `<usage>` block has `total_tokens` but no breakdown, fall back to the **degraded path** rather than skipping the bump entirely:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
+  --session-id "<session-id>" \
+  --issue <N> --pr <M> \
+  --input <total_tokens>          `# total_tokens lands in --input; other token flags MUST be omitted` \
+  --mode <mode> --model <model-id> \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>" \
+  --degraded-total-only
+```
+
+`--degraded-total-only` is mutually exclusive with non-zero `--output` / `--cache-read` / `--cache-creation` — passing those alongside is rejected with exit 64. The bump lands in `.tokens.totals.input` (and the per-issue / per-PR buckets if scoped); the per-invocation entry is stamped `degraded: true`, and `.tokens.degraded_attribution_count` increments by 1 so the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) can surface a banner.
+
+**Tradeoff — degraded vs. skip.** Routing total_tokens through `--input` under-counts cost: output tokens are priced at 5× input and `cache_read` at 10% of input, so a real dispatch with a 60/30/10 input/cached/output split prices at roughly 1.5× what the degraded fallback computes. The alternative — skipping the bump entirely when the breakdown is missing — produces `$0` on every cost-tracking comment, which the operator reads as "no work happened" rather than "attribution data lost." **Some signal is better than zero signal.** The degraded flag is the explicit marker that the number is a lower bound, and the end-of-session banner makes the gap visible session-wide.
+
+Per #225's no-collapse rule still holds for callers that *have* the breakdown — `--degraded-total-only` is reserved for the case where the harness genuinely doesn't expose the four counts.
+
+**One-line warning on first degraded hit per session.** The first time A.0 falls back to the degraded path in a given session, log a single advisory line:
+
+```
+[bump-tokens] <usage> block lacks input/output/cache breakdown — falling back to --degraded-total-only (cost will under-count; #279)
+```
+
+**Subsequent degraded bumps in the same session must NOT re-log this advisory** — at `--concurrency 2+` it'd produce one line per dispatch, drowning the steady-state turn output. Track the first-hit-per-session state in orchestrator working memory (a boolean flag — same scope as the `tokens_attributed` flag), set it the first time the path is taken, and skip the log on subsequent degraded bumps. The session-level `.tokens.degraded_attribution_count` in the state file is the durable counter; the one-line log is the operator-visible signal.
 
 The `--allow-degraded-init --degraded-init-repo "<owner/repo>"` pair is **required** on every `bump-tokens` call (closes [#253](https://github.com/mattsears18/shipyard/issues/253)'s cost-tracking workaround). It makes the helper resilient to a file-disappear-mid-session event — if a concurrent `/do-work` session's orphan-sweep reaped this session's state file, the helper auto-recreates a fresh state file marked with `.degraded_recovery_at` and proceeds with the bump rather than erroring exit-3. Cost data from before the disappear is lost, but every bump from the disappear forward lands somewhere durable. Without the flag pair, the orchestrator silently loses cost attribution for every subsequent reconcile turn (the failure mode the workaround fixes).
 
@@ -63,7 +95,7 @@ The `--model` value should be the harness-reported model id verbatim — `bump-t
 
 **Set the per-turn `tokens_attributed` flag to `true`** the moment `bump-tokens` returns successfully — step E's invariant line surfaces it for compliance auditing. On a turn where `bump-tokens` errors, leave the flag `false`, log `[bump-tokens] attribution failed: <exit code>; continuing`, and proceed with reconcile anyway. The dollar-cost data point is lost but the dispatch loop keeps moving; the flag's purpose is to make the gap visible, not to gate forward progress.
 
-**If the dispatch had no `usage` payload** (a harness gap — rare, and means upstream isn't surfacing the data), still proceed to A.1; log `[bump-tokens] no usage payload in dispatch result; skipping attribution` and leave `tokens_attributed=false`. Same don't-block-on-observational-data posture as the helper-error path.
+**If the dispatch had no `usage` payload at all** (the entire `<usage>` block is missing — distinct from the #279 case where the block exists but only carries `total_tokens`; a true full-payload-missing event is much rarer), still proceed to A.1; log `[bump-tokens] no usage payload in dispatch result; skipping attribution` and leave `tokens_attributed=false`. Same don't-block-on-observational-data posture as the helper-error path. The degraded-total-only path above handles the more common case where the block exists but lacks the four breakdown fields.
 
 Once A.0 has fired (or its skip has been logged), proceed to A.1 and parse the return string per the per-mode handling below.
 
