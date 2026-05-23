@@ -51,10 +51,13 @@ Invoke:
   --output <output_tokens> \
   --cache-read <cache_read_input_tokens> \
   --cache-creation <cache_creation_input_tokens> \
-  --mode <mode> --model <model-id>
+  --mode <mode> --model <model-id> \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>"
 ```
 
 All four `--input` / `--output` / `--cache-read` / `--cache-creation` flags are **required** — pass `0` explicitly if the harness reports the field as missing or zero (rare), don't omit the flag. Both `--issue` and `--pr` are optional from the helper's perspective — pass whichever the dispatch surfaced. `bump-tokens` will route the attribution into `.tokens.totals` always, into `.tokens.per_issue[<N>]` if `--issue` is present, and into `.tokens.per_pr[<M>]` if `--pr` is present.
+
+The `--allow-degraded-init --degraded-init-repo "<owner/repo>"` pair is **required** on every `bump-tokens` call (closes [#253](https://github.com/mattsears18/shipyard/issues/253)'s cost-tracking workaround). It makes the helper resilient to a file-disappear-mid-session event — if a concurrent `/do-work` session's orphan-sweep reaped this session's state file, the helper auto-recreates a fresh state file marked with `.degraded_recovery_at` and proceeds with the bump rather than erroring exit-3. Cost data from before the disappear is lost, but every bump from the disappear forward lands somewhere durable. Without the flag pair, the orchestrator silently loses cost attribution for every subsequent reconcile turn (the failure mode the workaround fixes).
 
 The `--model` value should be the harness-reported model id verbatim — `bump-tokens` resolves dated suffixes (`claude-haiku-4-5-20251001`) and bare aliases (`opus` / `sonnet` / `haiku`) against the pricing table internally (see #226).
 

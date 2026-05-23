@@ -108,7 +108,9 @@ The `tokens` block is the **per-session** cost ledger — written through `sessi
 Every write goes through the helper, which writes to `<target>.tmp.<pid>` and atomically renames into place. **Never edit the JSON directly with `Edit` / `Write` / `jq` / a shell heredoc** — none of those preserve the atomic-rename contract. Subcommands:
 
 ```bash
-# Set up the session file at startup (step 0.5).
+# Set up the session file at startup (step 0.5). init stamps a .pid (default
+# $PPID) so the orphan-sweep (setup.md step 1.6) can skip via `is-active`
+# while this process is alive — defends against #253's concurrent-sweep race.
 plugins/shipyard/scripts/session-state.sh init \
   --session-id "<session-id>" \
   --repo "<owner/repo>" \
@@ -122,11 +124,18 @@ plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>" [--pa
 plugins/shipyard/scripts/session-state.sh update --session-id "<session-id>" \
   --set '.session_prs += [96]' --set '.main_ci.status = "green"'
 
-# Bump token-usage counts after an Agent dispatch returns. --issue / --pr optional.
+# Liveness check for the orphan-sweep (setup.md step 1.6). Exit 0 when file
+# exists AND .pid is alive (kill -0); exit 1 otherwise.
+plugins/shipyard/scripts/session-state.sh is-active --session-id "<session-id>"
+
+# Bump token-usage counts after an Agent dispatch returns. --issue / --pr
+# optional. --allow-degraded-init + --degraded-init-repo are REQUIRED (see
+# steady-state.md A.0) — resilient to file-disappear-mid-session per #253.
 plugins/shipyard/scripts/session-state.sh bump-tokens \
   --session-id "<session-id>" --issue <N> --pr <M> \
   --input <N> --output <N> --cache-read <N> --cache-creation <N> \
-  --mode <mode> --model <model-id>
+  --mode <mode> --model <model-id> \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>"
 
 # Read aggregated token data. --format json (default) or comment (Markdown
 # body with the <!-- do-work-cost-tracking --> sentinel for idempotent posting).

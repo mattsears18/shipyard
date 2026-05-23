@@ -52,6 +52,17 @@
 #              we're guarding against is a half-cleanup, not a missing
 #              file).
 #
+#   is-active — liveness check used by the orphan-sweep (commands/do-work/
+#              setup.md step 1.6). Exit 0 if the session file exists AND
+#              its `.pid` is alive (per `kill -0 $pid`); exit 1 if any of
+#              those conditions fails. Designed to be the FIRST gate in
+#              the sweep — if `is-active` exits 0, the sweep skips the
+#              candidate regardless of mtime. Defends against the race
+#              where a quiet-but-alive orchestrator's file would otherwise
+#              be reaped by a concurrent sweep based on mtime alone
+#              (issue #253). The 30-min `find -mmin +30` mtime floor in
+#              step 1.6 stays as defense-in-depth against PID recycling.
+#
 #   bump-tokens — atomically add token-usage counts to the session's
 #              `.tokens` block. The `tokens` field tracks token spend
 #              at three levels of granularity: `totals` (cumulative
@@ -132,15 +143,17 @@ usage() {
 Usage:
   session-state.sh init        --session-id <id> --repo <owner/repo>
                                [--concurrency N] [--soft-collision-concurrency N]
-                               [--force]
+                               [--pid N] [--degraded-recovery] [--force]
   session-state.sh read        --session-id <id> [--path <jq-path>]
   session-state.sh update      --session-id <id> --set '<jq-expr>' [--set ...]
   session-state.sh cleanup     --session-id <id>
+  session-state.sh is-active   --session-id <id>
   session-state.sh bump-tokens --session-id <id>
                                [--issue N] [--pr N]
                                [--input N] [--output N]
                                [--cache-read N] [--cache-creation N]
                                [--mode <kind>] [--model <id>]
+                               [--allow-degraded-init] [--degraded-init-repo <r>]
   session-state.sh read-tokens --session-id <id>
                                [--issue N] [--pr N]
                                [--format json|comment]
@@ -152,9 +165,11 @@ Environment:
   SHIPYARD_HOME                base dir for sessions/ (default: $HOME/.shipyard)
 
 Exit codes:
-  0   success
+  0   success (is-active: file exists and pid is alive)
+  1   is-active: file missing OR pid unset OR pid dead
   2   refused to clobber (init w/o --force)
-  3   session file missing (read, update, bump-tokens, read-tokens, set-progress)
+  3   session file missing (read, update, bump-tokens w/o --allow-degraded-init,
+      read-tokens, set-progress)
   64  usage error
   65+ internal helper failure
 EOF
@@ -217,6 +232,23 @@ cmd_init() {
   local concurrency=2
   local soft_concurrency=3
   local force=0
+  # --pid is the orchestrator's process id at init time. The orphan-sweep
+  # in setup.md step 1.6 uses it (via `is-active`) to skip files belonging
+  # to a process that's still alive — defending against the race where a
+  # concurrent /do-work session's sweep would otherwise reap an active
+  # peer's file based on mtime alone (issue #253). Default to $PPID — the
+  # immediate parent of this script's bash, which in the orchestrator's
+  # call chain is the bash hook invoked by Claude Code. Callers that have
+  # a more authoritative pid (e.g. a wrapper that knows the orchestrator's
+  # actual pid) can override with --pid <N>. 0 means "do not stamp" —
+  # makes the field a no-op for callers (test fixtures) that don't want
+  # liveness checking.
+  local pid="${PPID:-0}"
+  # --degraded-recovery flags this init as a fallback path (bump-tokens
+  # auto-creating after a file-disappear-mid-session event, per issue
+  # #253's cost-tracking workaround). Stamps `.degraded_recovery_at` so
+  # the file is identifiable in audits and metrics.
+  local degraded_recovery=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -224,6 +256,8 @@ cmd_init() {
       --repo) repo="${2:-}"; shift 2 ;;
       --concurrency) concurrency="${2:-}"; shift 2 ;;
       --soft-collision-concurrency) soft_concurrency="${2:-}"; shift 2 ;;
+      --pid) pid="${2:-}"; shift 2 ;;
+      --degraded-recovery) degraded_recovery=1; shift ;;
       --force) force=1; shift ;;
       *) echo "init: unknown arg $1" >&2; usage; exit 64 ;;
     esac
@@ -237,6 +271,10 @@ cmd_init() {
   if [[ -z "$repo" ]]; then
     echo "init: --repo is required" >&2
     usage
+    exit 64
+  fi
+  if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    echo "init: --pid must be a non-negative integer (got: $pid)" >&2
     exit 64
   fi
 
@@ -253,19 +291,27 @@ cmd_init() {
   # its empty value so reads of fresh sessions never trip on missing keys.
   local now
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local degraded_at_json="null"
+  if [[ "$degraded_recovery" -eq 1 ]]; then
+    degraded_at_json="\"$now\""
+  fi
   jq -n \
     --arg session_id "$session_id" \
     --arg repo "$repo" \
     --argjson concurrency "$concurrency" \
     --argjson soft "$soft_concurrency" \
+    --argjson pid "$pid" \
+    --argjson degraded_recovery_at "$degraded_at_json" \
     --arg now "$now" \
     '{
        session_id: $session_id,
        repo: $repo,
        concurrency: $concurrency,
        soft_collision_concurrency: $soft,
+       pid: $pid,
        started_at: $now,
        updated_at: $now,
+       degraded_recovery_at: $degraded_recovery_at,
        in_flight: {},
        ready_issues: [],
        failed_prs: [],
@@ -408,6 +454,21 @@ cmd_bump_tokens() {
   local cache_creation=0
   local mode=""
   local model=""
+  # --allow-degraded-init makes bump-tokens resilient to a file-disappear-
+  # mid-session event (issue #253). When the session file has been reaped
+  # underneath us — e.g. by a concurrent /do-work session's orphan-sweep —
+  # the bump can recreate a fresh, minimally-populated state file (marked
+  # with .degraded_recovery_at so audits + metrics can distinguish it from
+  # a healthy init) and proceed with the bump. Bumps that happened before
+  # the disappear are still lost (the file is gone), but every bump from
+  # the disappear forward lands somewhere durable and the session-level
+  # ledger flush still has data to write at end-of-session. --degraded-
+  # init-repo supplies the repo string for the recovery init (since
+  # bump-tokens doesn't normally need to know the repo). Falls back to
+  # "unknown/unknown" when not supplied — better to keep the data than
+  # error out because of a missing string field.
+  local allow_degraded_init=0
+  local degraded_init_repo=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -420,6 +481,8 @@ cmd_bump_tokens() {
       --cache-creation) cache_creation="${2:-0}"; shift 2 ;;
       --mode) mode="${2:-}"; shift 2 ;;
       --model) model="${2:-}"; shift 2 ;;
+      --allow-degraded-init) allow_degraded_init=1; shift ;;
+      --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
       *) echo "bump-tokens: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
@@ -434,8 +497,30 @@ cmd_bump_tokens() {
   target=$(session_path "$session_id")
 
   if [[ ! -f "$target" ]]; then
-    echo "bump-tokens: $target does not exist (use init first)" >&2
-    exit 3
+    if [[ "$allow_degraded_init" -eq 1 ]]; then
+      # Degraded recovery: the file disappeared while the session was
+      # running (issue #253 — concurrent orphan-sweep race). Recreate a
+      # minimal session file marked as degraded-recovery, then fall
+      # through to the bump. Use the supplied repo string or a sentinel.
+      local recovery_repo="${degraded_init_repo:-unknown/unknown}"
+      # Stamp with this script's PPID — the bash that invoked us. Same
+      # default semantics as a normal init.
+      if ! cmd_init \
+            --session-id "$session_id" \
+            --repo "$recovery_repo" \
+            --degraded-recovery \
+            >/dev/null; then
+        echo "bump-tokens: degraded recovery init failed for $target" >&2
+        exit 68
+      fi
+      # Log the recovery to stderr — invisible to callers that 2>/dev/null
+      # but visible in the orchestrator transcript so the user knows
+      # cost-tracking degraded mid-session.
+      echo "bump-tokens: $target was missing — degraded-init recovered (cost data from before the disappear is lost)" >&2
+    else
+      echo "bump-tokens: $target does not exist (use init first)" >&2
+      exit 3
+    fi
   fi
 
   # Normalise unset counts to 0; reject negative deltas (the orchestrator
@@ -802,6 +887,75 @@ cmd_set_progress() {
   fi
 }
 
+# cmd_is_active — liveness check used by the orphan-sweep (setup.md step
+# 1.6). The race the sweep guards against: a concurrent /do-work session
+# in another terminal runs the sweep against this session's file. The
+# original implementation relied on `find -mmin +30` alone — that worked
+# when the orchestrator wrote through often, but failed (issue #253) when
+# an orchestrator legitimately went quiet for 30+ minutes (long-running
+# drain phases, CI watches) while still active and writing through later.
+#
+# The contract: exit 0 if the session is active (file exists AND `.pid`
+# is a non-zero integer AND the process is alive via `kill -0`); exit 1
+# otherwise. Missing file = not active = exit 1 (callers reading exit 1
+# should fall through to their own mtime / cleanup logic, NOT treat this
+# as a hard error).
+#
+# Why `kill -0`: POSIX defines `kill -0 <pid>` as a permission-and-existence
+# check — no signal is delivered, the kernel just resolves the pid and
+# returns 0 if it exists. The only false-positive vector is PID recycling:
+# the OS could reassign $pid to an unrelated process during our absence.
+# That's why setup.md step 1.6 stacks `is-active` AND the 30-min mtime
+# floor — both have to fail before reap, so a recycled-pid + recent-mtime
+# scenario still skips the reap.
+cmd_is_active() {
+  local session_id=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) session_id="${2:-}"; shift 2 ;;
+      *) echo "is-active: unknown arg $1" >&2; usage; exit 64 ;;
+    esac
+  done
+
+  if [[ -z "$session_id" ]]; then
+    echo "is-active: --session-id is required" >&2
+    usage
+    exit 64
+  fi
+
+  local target
+  target=$(session_path "$session_id")
+
+  # Missing file → not active. Quiet exit (no stderr) so callers can use
+  # `is-active` in if-conditions without producing noise.
+  if [[ ! -f "$target" ]]; then
+    exit 1
+  fi
+
+  # Read `.pid` defensively — old session files written before this field
+  # existed will have `.pid` = null. Treat null / 0 / missing as "no
+  # liveness signal," fall through to exit 1 so the caller's mtime backstop
+  # decides. A live, recently-touched file from an older shipyard version
+  # is still protected by the 30-min mtime floor in step 1.6.
+  local pid
+  pid=$(jq -r '.pid // 0' "$target" 2>/dev/null)
+  if [[ -z "$pid" ]] || [[ "$pid" == "null" ]] || [[ "$pid" == "0" ]]; then
+    exit 1
+  fi
+  if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    # Corrupt pid field — treat as "no liveness signal." The mtime backstop
+    # still applies in the caller.
+    exit 1
+  fi
+
+  if kill -0 "$pid" 2>/dev/null; then
+    exit 0
+  fi
+
+  exit 1
+}
+
 cmd_cleanup() {
   local session_id=""
 
@@ -854,6 +1008,7 @@ case "$subcmd" in
   bump-tokens)  cmd_bump_tokens "$@" ;;
   read-tokens)  cmd_read_tokens "$@" ;;
   set-progress) cmd_set_progress "$@" ;;
+  is-active)    cmd_is_active "$@" ;;
   -h|--help|help)
     usage
     exit 0

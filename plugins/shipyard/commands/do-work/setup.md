@@ -132,10 +132,21 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 (
   # 1.6 — Orphan session-file sweep (cost-ledger recovery). Cleanup-only — recovery
   # of historical ledger data is observational and doesn't affect this session's dispatch.
+  # Layered protection (issue #253): the 30-min mtime floor catches files that haven't
+  # been written through recently AND the `is-active` PID-liveness check skips files
+  # whose owning process is still alive. Both have to fail before reap — protects
+  # against the race where a peer orchestrator went quiet for >30 min (long drain,
+  # CI watch) but is still actively running and will write through again.
   SESSIONS_DIR="${SHIPYARD_HOME:-$HOME/.shipyard}/sessions"
   find "$SESSIONS_DIR" -maxdepth 1 -type f -name '*.json' -mmin +30 2>/dev/null | while read -r orphan; do
     orphan_id=$(basename "$orphan" .json)
     [[ "$orphan_id" == "<session-id>" ]] && continue
+    # PID-liveness gate: if the orchestrator that owns this file is still alive,
+    # skip the reap regardless of mtime. is-active exits 0 when the file's .pid
+    # is alive (per kill -0). Exit 1 on missing file, missing/null pid, or dead pid.
+    if "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" is-active --session-id "$orphan_id" 2>/dev/null; then
+      continue
+    fi
     "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "$orphan_id" 2>/dev/null || true
     "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" 2>/dev/null || true
   done
@@ -404,12 +415,27 @@ The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.ship
 # modified in the last 30 minutes (the 30-min floor is a race-safety
 # margin against a concurrent /do-work session that's about to flush its
 # own file — we never reap something another orchestrator might still
-# be writing to).
+# be writing to). Stacked with a PID-liveness check (`is-active`) for
+# defense in depth — see issue #253 for the failure mode where the
+# mtime floor alone was insufficient.
 SESSIONS_DIR="${SHIPYARD_HOME:-$HOME/.shipyard}/sessions"
 find "$SESSIONS_DIR" -maxdepth 1 -type f -name '*.json' -mmin +30 2>/dev/null | while read -r orphan; do
   orphan_id=$(basename "$orphan" .json)
   if [[ "$orphan_id" == "<session-id>" ]]; then
     continue  # skip our own session
+  fi
+  # PID-liveness gate (#253). is-active exits 0 when the session file's
+  # `.pid` is alive (per `kill -0 $pid`); exit 1 otherwise (missing file,
+  # missing/null pid, dead pid). If the owning process is alive, skip the
+  # reap regardless of mtime — defends against the race where a quiet-but-
+  # alive orchestrator's file would otherwise get reaped during a long
+  # drain phase or CI watch (the failure trace in #253). PID recycling is
+  # still possible but the mtime floor above is the second gate against
+  # that — both have to fail to reap, so a recycled pid + fresh mtime
+  # scenario still skips.
+  if "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" is-active --session-id "$orphan_id" 2>/dev/null; then
+    echo "[orphan-reap] skipped $orphan_id (pid alive)"
+    continue
   fi
   # Flush is idempotent — re-flushing a session id already in the ledger
   # is a no-op. Cleanup is also idempotent.
@@ -420,6 +446,10 @@ done
 ```
 
 Both helpers are idempotent and exit 0 on already-flushed / already-reaped sessions, so this sweep is safe to re-run. The 30-minute floor is the race-safety boundary against a concurrent `/do-work` orchestrator in another terminal that's about to flush its own file — we never reap something another orchestrator might still be writing to. (Concurrent orchestrators are uncommon but possible — multiple repos, multiple terminals; the floor is the cheap safe default.)
+
+**Two gates, not one (issue #253).** The mtime floor alone failed in production when an orchestrator went quiet for >30 minutes during a long drain phase — the peer's sweep then reaped the still-active session's state file mid-write. The fix layers a PID-liveness gate (`session-state.sh is-active`) **before** the mtime check: if the owning process is alive, skip the reap regardless of mtime. The `.pid` field is stamped into the session file at `session-state.sh init` time (defaulting to `$PPID`, overridable via `--pid <N>`). `is-active` reads that field and runs `kill -0 $pid` to check liveness. Both gates have to fail before a file is reaped, so even a recycled-pid + recent-mtime scenario (the only known failure mode of `is-active`) still skips. Sessions written by older shipyard versions have no `.pid` field — `is-active` exits 1 in that case, falling through to mtime-only behaviour for the migration period.
+
+**Cost-tracking degraded-recovery (issue #253's workaround).** Workers calling `session-state.sh bump-tokens` against a session whose file was reaped mid-session can pass `--allow-degraded-init` (with optional `--degraded-init-repo <r>`) to auto-recreate a fresh state file marked with `.degraded_recovery_at` rather than erroring exit-3. Cost data from before the disappear is lost (the file was gone), but every bump from the disappear forward lands somewhere durable — and the end-of-session ledger flush still has data to write. Callers that want strict "must-have-pre-existing-file" semantics simply omit the flag.
 
 **Don't block the session on sweep failures** — log `[orphan-reap] <reason>` and proceed. Recovery of historical data is observational; the dispatch loop's job comes first. If `SHIPYARD_KEEP_SESSIONS=1` is set (per the [step 8 cleanup-summary opt-out](./cleanup-summary.md#end-of-session-cleanup)), skip the sweep entirely — the user explicitly opted into keeping session files as permanent records.
 

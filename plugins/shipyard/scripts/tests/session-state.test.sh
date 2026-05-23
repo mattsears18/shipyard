@@ -666,6 +666,243 @@ shopt -u nullglob
 assert_equals "${leftover# }" "" "set-progress leaves no .tmp files behind after successful write"
 rm -rf "$tmphome"
 
+# --------------------------------------------------------------------------
+echo "== is-active — PID liveness gate (issue #253)"
+# --------------------------------------------------------------------------
+# The orphan-sweep in commands/do-work/setup.md step 1.6 needs a way to
+# skip session files whose owning orchestrator is still alive — the
+# 30-min mtime floor alone was insufficient because an orchestrator can
+# legitimately go quiet for >30 minutes during long drain phases or CI
+# watches. is-active layers a PID-liveness check on top of mtime: exit 0
+# if the file exists AND its .pid is alive (kill -0); exit 1 otherwise.
+
+tmphome=$(mktmphome)
+
+# init now stamps a .pid field. Default is $PPID — the bash that invoked
+# the script (which in the orchestrator's call chain is the bash hook
+# invoked by Claude Code).
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "live" --repo "o/r" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "live" --path ".pid")
+# The default-PPID value of `out` depends on the bash that ran the test;
+# verify it's a non-zero integer (the load-bearing property — a stamped pid).
+if [[ "$out" =~ ^[0-9]+$ ]] && [[ "$out" != "0" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "init stamps .pid as non-zero integer by default"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (got: %s)\n' "$RED" "$RESET" "init stamps .pid as non-zero integer by default" "$out"
+  fail=$((fail+1))
+fi
+
+# Explicit --pid overrides the default.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "live-pid" --repo "o/r" --pid 12345 --force >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "live-pid" --path ".pid")
+assert_equals "$out" "12345" "init --pid <N> overrides default"
+
+# --pid 0 means "don't stamp a liveness pid" — the field is 0, which
+# is-active treats as "no signal" and exits 1.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "no-pid" --repo "o/r" --pid 0 --force >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "no-pid" --path ".pid")
+assert_equals "$out" "0" "init --pid 0 stamps zero (no liveness signal)"
+
+# --pid rejects non-numeric input.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "bad-pid" --repo "o/r" --pid "abc" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "init --pid rejects non-numeric value"
+
+# is-active against a live pid (our own — guaranteed alive while we run).
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "alive" --repo "o/r" --pid "$$" --force >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" is-active --session-id "alive"
+rc=$?
+assert_equals "$rc" "0" "is-active exits 0 when .pid is alive"
+
+# is-active against a dead pid. Spawn `sleep 60` in background, capture
+# its pid, kill it, wait until it actually exits, then test. We can't
+# pick an arbitrary high number (might be reused); we have to deliberately
+# create-and-kill a process to guarantee the pid is dead at test time.
+sleep 60 &
+DEAD_PID=$!
+kill -9 "$DEAD_PID" 2>/dev/null
+wait "$DEAD_PID" 2>/dev/null || true
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "dead" --repo "o/r" --pid "$DEAD_PID" --force >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" is-active --session-id "dead" 2>/dev/null
+rc=$?
+assert_equals "$rc" "1" "is-active exits 1 when .pid is dead"
+
+# is-active against a missing file → exit 1 (quiet, no stderr noise).
+SHIPYARD_HOME="$tmphome" bash "$helper" is-active --session-id "nonexistent" 2>/dev/null
+rc=$?
+assert_equals "$rc" "1" "is-active exits 1 when session file is missing"
+
+# is-active against a file with .pid = 0 → exit 1 (no signal).
+SHIPYARD_HOME="$tmphome" bash "$helper" is-active --session-id "no-pid" 2>/dev/null
+rc=$?
+assert_equals "$rc" "1" "is-active exits 1 when .pid is 0"
+
+# is-active against a legacy file with no .pid field (simulate by
+# building the file by hand without --pid). Use jq to strip the field
+# after init so the file shape mimics a session written by an older
+# shipyard version.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "legacy" --repo "o/r" --force >/dev/null
+session_file="$tmphome/sessions/legacy.json"
+jq 'del(.pid)' "$session_file" > "$session_file.tmp" && mv "$session_file.tmp" "$session_file"
+SHIPYARD_HOME="$tmphome" bash "$helper" is-active --session-id "legacy" 2>/dev/null
+rc=$?
+assert_equals "$rc" "1" "is-active exits 1 when .pid field is absent (legacy file)"
+
+# is-active against a file with corrupt .pid (string instead of int) → exit 1.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "corrupt" --repo "o/r" --force >/dev/null
+session_file="$tmphome/sessions/corrupt.json"
+jq '.pid = "garbage"' "$session_file" > "$session_file.tmp" && mv "$session_file.tmp" "$session_file"
+SHIPYARD_HOME="$tmphome" bash "$helper" is-active --session-id "corrupt" 2>/dev/null
+rc=$?
+assert_equals "$rc" "1" "is-active exits 1 when .pid is non-numeric (corrupt file)"
+
+# Usage error: --session-id required.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" is-active 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "is-active without --session-id exits 64"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== concurrent-sweep race regression (issue #253)"
+# --------------------------------------------------------------------------
+# The exact bug from #253: concurrent /do-work session B runs the orphan-
+# sweep against session A's still-active file. Simulate the sweep loop
+# verbatim (mtime check + is-active gate) and assert A's file survives
+# regardless of mtime. Without the is-active gate, a file >30 min old
+# whose orchestrator is still alive would get reaped; with it, the live
+# pid blocks the reap.
+
+tmphome=$(mktmphome)
+
+# Session A: alive (our pid), file mtime artificially aged via `touch`.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "alive-old" --repo "o/r" --pid "$$" >/dev/null
+alive_file="$tmphome/sessions/alive-old.json"
+# Force mtime to 2 hours ago — well past the 30-min floor.
+# touch -t consumes [[CC]YY]MMDDhhmm in LOCAL time on macOS (BSD touch).
+# Use local-time `date` here (no -u) so the resulting mtime is actually
+# in the past — the previous version used `date -u` which would set the
+# mtime 2H ago in UTC, which on a -0400 host is 2H in the FUTURE local,
+# and `find -mmin +30` correctly refused to match it.
+touch -t "$(date -v-2H +%Y%m%d%H%M 2>/dev/null || date -d '2 hours ago' +%Y%m%d%H%M)" "$alive_file" 2>/dev/null
+
+# Session B: dead pid, also aged. This one SHOULD get reaped.
+sleep 60 &
+DEAD_PID=$!
+kill -9 "$DEAD_PID" 2>/dev/null
+wait "$DEAD_PID" 2>/dev/null || true
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "dead-old" --repo "o/r" --pid "$DEAD_PID" >/dev/null
+dead_file="$tmphome/sessions/dead-old.json"
+touch -t "$(date -v-2H +%Y%m%d%H%M 2>/dev/null || date -d '2 hours ago' +%Y%m%d%H%M)" "$dead_file" 2>/dev/null
+
+# Simulate the step 1.6 sweep verbatim. The PID-liveness gate runs first;
+# if it exits 0 (alive), the candidate is skipped regardless of mtime.
+# Actions are appended to $tmphome/sweep.log so we can assert on them
+# after the (subshell-isolated) while-loop returns.
+SESSIONS_DIR="$tmphome/sessions"
+find "$SESSIONS_DIR" -maxdepth 1 -type f -name '*.json' -mmin +30 2>/dev/null | while read -r orphan; do
+  orphan_id=$(basename "$orphan" .json)
+  if SHIPYARD_HOME="$tmphome" bash "$helper" is-active --session-id "$orphan_id" 2>/dev/null; then
+    echo "skipped:$orphan_id" >> "$tmphome/sweep.log"
+    continue
+  fi
+  echo "reaped:$orphan_id" >> "$tmphome/sweep.log"
+  SHIPYARD_HOME="$tmphome" bash "$helper" cleanup --session-id "$orphan_id" 2>/dev/null
+done
+
+sweep_log=$(cat "$tmphome/sweep.log" 2>/dev/null || echo "")
+
+# Alive session's file survives.
+assert_file_exists "$alive_file" "concurrent sweep does NOT reap an alive session's file (pid liveness gate blocks it)"
+assert_contains "$sweep_log" "skipped:alive-old" "sweep records alive-old as skipped (pid alive)"
+
+# Dead session's file is reaped (the sweep still works for genuine
+# orphans — the gate only protects live ones).
+assert_file_missing "$dead_file" "concurrent sweep reaps a dead session's file (pid liveness fails, mtime old)"
+assert_contains "$sweep_log" "reaped:dead-old" "sweep records dead-old as reaped (pid dead)"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens — degraded-init recovery (issue #253 workaround)"
+# --------------------------------------------------------------------------
+# Cost-tracking workaround for #253: when the session file gets reaped
+# mid-session (e.g. by a concurrent sweep that ran before the PID gate
+# landed, or by a recycled-pid + recent-mtime edge case), bump-tokens
+# with --allow-degraded-init recreates a fresh state file marked with
+# .degraded_recovery_at and proceeds with the bump rather than erroring
+# exit-3. Cost data from before the disappear is lost, but every bump
+# from the disappear forward lands somewhere durable.
+
+tmphome=$(mktmphome)
+
+# Don't init first — simulate the post-reap state where the file is
+# already gone. With --allow-degraded-init the bump auto-recreates.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "recovered" \
+  --issue 253 --pr 999 \
+  --input 1000 --output 500 --cache-read 200 --cache-creation 100 \
+  --mode issue-work --model claude-opus-4-7 \
+  --allow-degraded-init --degraded-init-repo "owner/repo" 2>/dev/null
+rc=$?
+assert_equals "$rc" "0" "bump-tokens with --allow-degraded-init succeeds when file is missing"
+
+# File was auto-created.
+recovered_file="$tmphome/sessions/recovered.json"
+assert_file_exists "$recovered_file" "bump-tokens --allow-degraded-init creates the session file"
+
+# .degraded_recovery_at is set (load-bearing for audit/metrics filtering).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "recovered" --path ".degraded_recovery_at")
+if [[ -n "$out" ]] && [[ "$out" != "null" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" ".degraded_recovery_at stamped on recovery init"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (got: %s)\n' "$RED" "$RESET" ".degraded_recovery_at stamped on recovery init" "$out"
+  fail=$((fail+1))
+fi
+
+# .repo persists from --degraded-init-repo.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "recovered" --path ".repo")
+assert_equals "$out" "owner/repo" "--degraded-init-repo persists into .repo"
+
+# The bump actually landed in the recovered file.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "recovered" --path ".tokens.totals.input")
+assert_equals "$out" "1000" "bump-tokens lands the input count after degraded-init recovery"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "recovered" --path ".tokens.per_pr[\"999\"].input")
+assert_equals "$out" "1000" "bump-tokens lands the per_pr bucket after degraded-init recovery"
+
+# Without --allow-degraded-init, a missing file still exits 3 (unchanged
+# behaviour for callers that explicitly want strict semantics).
+SHIPYARD_HOME="$tmphome" bash "$helper" cleanup --session-id "recovered" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "recovered" --input 100 --mode issue-work --model claude-opus-4-7 2>/dev/null; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "bump-tokens without --allow-degraded-init on missing file still exits 3"
+
+# --allow-degraded-init without --degraded-init-repo falls back to
+# "unknown/unknown" (data still lands; better to keep than error out
+# on a missing optional metadata field).
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "no-repo" --input 500 --output 200 \
+  --mode issue-work --model claude-opus-4-7 \
+  --allow-degraded-init 2>/dev/null
+rc=$?
+assert_equals "$rc" "0" "bump-tokens --allow-degraded-init without --degraded-init-repo still succeeds"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "no-repo" --path ".repo")
+assert_equals "$out" "unknown/unknown" "missing --degraded-init-repo falls back to unknown/unknown sentinel"
+
+# A subsequent bump on a recovered file should NOT re-trigger recovery —
+# it should just accumulate normally.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "no-repo" --input 250 \
+  --mode issue-work --model claude-opus-4-7 \
+  --allow-degraded-init 2>/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "no-repo" --path ".tokens.totals.input")
+assert_equals "$out" "750" "bump on a recovered file accumulates normally (no double-init)"
+
+rm -rf "$tmphome"
+
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]
