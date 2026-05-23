@@ -34,7 +34,7 @@ The orchestrator's rule list — load-bearing prohibitions across every phase. T
 - **Don't accept a `green #<M>` return from a fix-checks-only worker without verifying the rollup.** ([why](../do-work-RATIONALE.md#dont-accept-a-green-return-without-verifying-the-rollup))
 - **Don't treat a fix-checks-only worker's narrative status string as authoritative.** ([why](../do-work-RATIONALE.md#dont-treat-a-narrative-status-string-as-authoritative))
 - **Don't dispatch fix-rebase outside the end-of-session drain.** Steady-state dispatch never produces a DIRTY PR; dispatching mid-session would churn branches auto-merge was about to rebase or race with a fix-checks worker.
-- **Don't retry a `blocked rebase` PR within the same session.** Each PR gets exactly one fix-rebase dispatch per drain; `rebase_blocked_prs` membership counts toward the drain's "settled" definition.
+- **Don't retry a `blocked rebase` PR within the same session.** A `blocked rebase` return signals a non-trivial conflict that won't resolve on retry; `rebase_blocked_prs` membership counts toward the drain's "settled" definition. **`rebased` returns are different** — a successfully-rebased PR that goes DIRTY again from a sibling merge IS eligible for re-dispatch (the merge train can still win that race), subject to the 3-successful-rebase rate-limit cap tracked in `rebase_success_counts`. See [drain.md's per-poll actions](./drain.md#per-poll-actions) for the split-gate rationale and [#265](https://github.com/mattsears18/shipyard/issues/265) for the race the split fixes.
 
 **Worktree + filesystem discipline:**
 
