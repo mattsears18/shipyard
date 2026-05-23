@@ -908,7 +908,12 @@ Client-side filter:
 - **Drop issues whose `author.login` (lowercased) is NOT in `trusted_authors`.** This is the dispatch-time security gate — see [step 1.7](#17-resolve-trusted-author-allowlist) for how the set is populated. An issue filed by a stranger on a public repo lands in step 2's `Untrusted author` bucket and never enters the workable queue, even if all the other filters pass. Belt-and-suspenders with the step-2 bucket pass: step 2 surfaces the count to the user; step 4 enforces the actual drop at dispatch time. Both read the same `trusted_authors` cache so they can never disagree.
 - Drop issues assigned to a user **other than** the gh-authenticated user (they own it).
 - Drop issues whose body contains `Blocked by #N` where #N is still open.
-- Drop the issue if `gh pr list --search "in:body Closes #<N>"` returns an open PR (belt-and-suspenders against the `-linked:pr` qualifier).
+- Drop the issue if any of the following returns a result — belt-and-suspenders against the `-linked:pr` qualifier. All three commands must include `--state open` so that a closed-without-merging PR doesn't incorrectly suppress the issue:
+  ```bash
+  gh pr list --repo <owner/repo> --state open --search 'in:body "Closes #<N>"' --json number,title,url
+  gh pr list --repo <owner/repo> --state open --search 'in:body "Fixes #<N>"' --json number,title,url
+  gh pr list --repo <owner/repo> --state open --search 'in:body "Resolves #<N>"' --json number,title,url
+  ```
 
 Sort the survivors:
 
