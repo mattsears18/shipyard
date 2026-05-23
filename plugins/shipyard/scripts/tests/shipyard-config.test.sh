@@ -345,6 +345,60 @@ echo '{"version":1,"auto_merge":{"policy":"bogus"}}' > "$repo/.shipyard/config.l
 assert_exit_code "$?" 70 "validate fails when local layer is invalid"
 
 # --------------------------------------------------------------------------
+echo "== concurrency.soft_collision_paths (issue #254)"
+# Per-repo extension of the built-in soft-collision glob set. The orchestrator
+# unions this array with the spec'd default set + any --soft-collision-path
+# CLI flags at dispatch time; the loader's job is just to expose it.
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
+
+# A valid array of glob strings should validate and round-trip through get
+cat > "$repo/shipyard.config.json" <<'JSON'
+{
+  "version": 1,
+  "concurrency": {
+    "default": 2,
+    "soft_collision": 3,
+    "soft_collision_paths": [
+      "plugins/shipyard/commands/**/*.md",
+      "plugins/shipyard/agents/**/*.md"
+    ]
+  }
+}
+JSON
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "valid soft_collision_paths array passes validation"
+out=$("$helper" get concurrency.soft_collision_paths)
+assert_contains "$out" "plugins/shipyard/commands/**/*.md" "get exposes soft_collision_paths[0]"
+assert_contains "$out" "plugins/shipyard/agents/**/*.md"   "get exposes soft_collision_paths[1]"
+assert_equals "$("$helper" get concurrency.soft_collision_paths --with-source | cut -f2)" "repo" "source is repo"
+
+# An empty array is also valid (opt-out / placeholder shape)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "concurrency": { "soft_collision_paths": [] } }
+JSON
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "empty soft_collision_paths array passes validation"
+
+# Wrong type (object instead of array) is rejected
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "concurrency": { "soft_collision_paths": {} } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "non-array soft_collision_paths rejected"
+
+# Non-string array items are rejected (items: { type: string })
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "concurrency": { "soft_collision_paths": ["ok.md", 42] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "non-string soft_collision_paths item rejected"
+
+# set --repo can write the field with --local for personal overrides too
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard"
+"$helper" set concurrency.soft_collision_paths '["my/extra/**/*.md"]' --local
+assert_equals "$("$helper" get concurrency.soft_collision_paths)" '["my/extra/**/*.md"]' "set --local round-trips an array"
+
+# --------------------------------------------------------------------------
 echo
 total=$((pass + fail))
 if [[ $fail -eq 0 ]]; then

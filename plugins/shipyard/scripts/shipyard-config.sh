@@ -150,7 +150,8 @@ DEFAULTS_JQ='{
   },
   "concurrency": {
     "default": 2,
-    "soft_collision": 3
+    "soft_collision": 3,
+    "soft_collision_paths": []
   }
 }'
 
