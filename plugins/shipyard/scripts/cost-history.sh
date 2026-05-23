@@ -112,7 +112,7 @@ Usage:
   cost-history.sh flush  --session-id <id> [--dry-run]
   cost-history.sh report [--last 7d|30d|90d|all] [--repo <owner/repo>]
                          [--by-issue] [--by-mode] [--by-model] [--top N]
-                         [--trend] [--format markdown|csv|json]
+                         [--trend] [--show-setup] [--format markdown|csv|json]
   cost-history.sh reset  [--yes]
   cost-history.sh export --to <path>.tar.gz
   cost-history.sh read   [--ledger sessions|issues]
@@ -222,7 +222,8 @@ cmd_flush() {
 
   # Project the session record. The schema mirrors the issue body's
   # design — session metadata + tokens block + by-model + by-mode rollups
-  # computed from per_invocation.
+  # computed from per_invocation. Also persists the `setup` timing block
+  # (issue #238) when the session state contains it.
   local session_record
   session_record=$(jq -c \
     --arg now "$now" '
@@ -272,7 +273,8 @@ cmd_flush() {
                 }
               })
             | from_entries
-          )
+          ),
+          setup: ($s.setup // null)
         }
     ' "$source")
 
@@ -377,6 +379,7 @@ cmd_report() {
   local by_model=0
   local top=""
   local trend=0
+  local show_setup=0
   local format="markdown"
 
   while [[ $# -gt 0 ]]; do
@@ -388,6 +391,7 @@ cmd_report() {
       --by-model) by_model=1; shift ;;
       --top)    top="${2:-}"; shift 2 ;;
       --trend)  trend=1; shift ;;
+      --show-setup) show_setup=1; shift ;;
       --format) format="${2:-markdown}"; shift 2 ;;
       *) echo "report: unknown arg $1" >&2; usage; exit 64 ;;
     esac
@@ -557,11 +561,51 @@ cmd_report() {
 
   case "$format" in
     json)
+      # When --show-setup is requested, include a setup_timing aggregate in
+      # the JSON output so callers can pipe into jq for further analysis.
+      local setup_agg='null'
+      if [[ "$show_setup" -eq 1 ]]; then
+        setup_agg=$(printf '%s' "$sessions" | jq -c '
+          [ .[] | select(.setup != null) ] as $inst
+          | if ($inst | length) == 0 then null
+            else {
+              sessions_with_timing: ($inst | length),
+              wall_clock: {
+                mean: ($inst | map(.setup.wall_clock_seconds // 0) | add / length),
+                median: (
+                  ($inst | map(.setup.wall_clock_seconds // 0) | sort) as $s
+                  | ($s | length) as $n
+                  | if ($n % 2) == 1 then $s[($n / 2 | floor)]
+                    else (($s[($n / 2) - 1] + $s[$n / 2]) / 2)
+                    end
+                )
+              },
+              phases: (
+                [ $inst[]
+                  | select(.setup.phases != null)
+                  | .setup.phases | to_entries[]
+                  | { phase: .key, seconds: .value }
+                ]
+                | group_by(.phase)
+                | map({
+                    key: .[0].phase,
+                    value: {
+                      mean: (map(.seconds) | add / length),
+                      count: length
+                    }
+                  })
+                | from_entries
+              )
+            }
+            end
+        ')
+      fi
       jq -n \
         --argjson rollup "$rollup" \
         --argjson sessions "$sessions" \
         --argjson issues "$issues" \
         --argjson trend "$trend_buckets" \
+        --argjson setup_timing "$setup_agg" \
         --arg cutoff "$cutoff_iso" \
         --arg last "$last" \
         '{
@@ -569,7 +613,8 @@ cmd_report() {
           rollup: $rollup,
           trend: $trend,
           sessions: $sessions,
-          issues: $issues
+          issues: $issues,
+          setup_timing: $setup_timing
         }'
       ;;
     csv)
@@ -595,7 +640,7 @@ cmd_report() {
       render_markdown_report \
         "$cutoff_iso" "$last" "$repo_filter" \
         "$rollup" "$sessions" "$issues" "$trend_buckets" \
-        "$by_issue" "$by_mode" "$by_model" "$trend" "$top"
+        "$by_issue" "$by_mode" "$by_model" "$trend" "$top" "$show_setup"
       ;;
   esac
 }
@@ -615,6 +660,7 @@ render_markdown_report() {
   local by_model="${10}"
   local trend="${11}"
   local top="${12}"
+  local show_setup="${13:-0}"
 
   local now_iso
   now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -690,6 +736,55 @@ render_markdown_report() {
         "  $" + (.estimated_usd | . * 100 | round / 100 | tostring) +
         "  (" + (.sessions | tostring) +
         (if .sessions == 1 then " session" else " sessions" end) + ")"
+    '
+  fi
+
+  if [[ "$show_setup" -eq 1 ]]; then
+    # Aggregate setup timing across all sessions in range. For each session
+    # that has a `setup` block, extract the wall_clock_seconds total and the
+    # per-phase durations. Compute the median and mean wall-clock, plus the
+    # mean per-phase. Sessions without a `setup` block (recorded before this
+    # feature landed) are silently excluded from the aggregate.
+    printf '\nSETUP PHASE TIMING (sessions with instrumentation)\n'
+    printf '%s' "$sessions" | jq -r '
+      [ .[] | select(.setup != null) ] as $instrumented
+      | ($instrumented | length) as $n
+      | if $n == 0 then
+          "  No sessions with setup timing recorded yet.\n  Run at least one /shipyard:do-work session after upgrading to see data here."
+        else
+          # Wall-clock aggregate
+          ($instrumented | map(.setup.wall_clock_seconds // 0) | sort) as $wcs
+          | ($wcs | add / $n) as $mean_wall
+          | (if ($n % 2) == 1
+              then $wcs[($n / 2 | floor)]
+              else (($wcs[($n / 2) - 1] + $wcs[$n / 2]) / 2)
+              end) as $median_wall
+          # Per-phase means across sessions
+          | [ $instrumented[]
+              | select(.setup.phases != null)
+              | .setup.phases
+              | to_entries[]
+              | { phase: .key, seconds: .value }
+            ] as $all_phase_entries
+          | ($all_phase_entries
+              | group_by(.phase)
+              | map({
+                  phase: .[0].phase,
+                  mean: (map(.seconds) | add / length),
+                  count: length
+                })
+              | sort_by(-.mean)
+            ) as $phase_means
+          # Render
+          | "  Sessions with timing: " + ($n | tostring) +
+            "\n  Wall clock — mean: " + ($mean_wall | . * 10 | round / 10 | tostring) + "s" +
+            "  median: " + ($median_wall | . * 10 | round / 10 | tostring) + "s" +
+            "\n\n  Per-phase means (slowest first):" +
+            ($phase_means | map(
+                "\n    " + .phase + ": " + (.mean | . * 10 | round / 10 | tostring) + "s" +
+                "  (n=" + (.count | tostring) + ")"
+              ) | join(""))
+        end
     '
   fi
 

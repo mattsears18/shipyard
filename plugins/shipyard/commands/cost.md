@@ -27,6 +27,7 @@ Cross-session files are user-scoped (one ledger across every repo shipyard runs 
 /shipyard:cost report --by-model             # add the by-Anthropic-model breakdown
 /shipyard:cost report --top 10               # 10 most expensive issues in range
 /shipyard:cost report --trend                # weekly cost trend
+/shipyard:cost report --show-setup           # add per-phase setup timing breakdown (issue #238)
 /shipyard:cost report --format markdown      # default
 /shipyard:cost report --format csv           # for spreadsheets (sessions only)
 /shipyard:cost report --format json          # for further processing (full rollup)
@@ -59,10 +60,12 @@ TOTALS
 Want more detail? Try '/shipyard:cost report --by-issue --top 20'.
 ```
 
+**`--show-setup`** adds a `SETUP PHASE TIMING` section that aggregates per-phase wall-clock data across sessions. Only sessions recorded after the #238 instrumentation landed contribute — older sessions don't have a `setup` block. Once ≥ 3 instrumented sessions exist, the per-phase means become actionable for prioritizing the perf work in #235 (#231, #232, #233).
+
 The deeper flags compose:
 
 ```
-$ /shipyard:cost report --last 7d --by-model --by-mode --by-issue --top 5 --trend
+$ /shipyard:cost report --last 7d --by-model --by-mode --by-issue --top 5 --trend --show-setup
 ... TOTALS block (last 7d) ...
 
 BY MODEL
@@ -82,6 +85,18 @@ TOP 5 MOST EXPENSIVE ISSUES
 TREND (weekly)
   2026-05-13  $76.26  (10 sessions)
   2026-05-20  $42.10  (3 sessions)
+
+SETUP PHASE TIMING (sessions with instrumentation)
+  Sessions with timing: 13
+  Wall clock — mean: 32.4s  median: 28.1s
+
+  Per-phase means (slowest first):
+    step_6_scope_preflight: 24.1s  (n=13)
+    step_3_5_refine_issues: 3.8s   (n=13)
+    step_4_backlog_fetch_and_rank: 2.1s  (n=13)
+    step_0_7_parallel_batch: 1.9s  (n=13)
+    step_1_7_trusted_authors: 0.9s  (n=13)
+    step_0_5_worktree: 0.4s  (n=13)
 ```
 
 ## `--format csv` and `--format json`
