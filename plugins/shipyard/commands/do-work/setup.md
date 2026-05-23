@@ -93,11 +93,11 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 **Canonical setup batch — these reads have no data dependencies:**
 
 - **[Step 1](#1-resolve-repo--user)** — repo + user metadata (3 `gh` calls).
-- **[Step 2](#2-backlog-overview)** — issue universe (`gh issue list --state open` + `linked:pr` search).
-- **[Step 3d.1](#3-ensure-label-exists--recover-from-prior-session)** — `blocked:ci` PR list. Per-PR `events` + `commits` lookups are a second-tier parallel batch keyed off the first-tier result.
-- **[Step 3d.2](#3-ensure-label-exists--recover-from-prior-session)** — `blocked:agent`-label issue list. Per-issue blocker-state lookups read through the [`blocker_state` cache](#08-blocker_state-cache-default-on).
-- **[Step 4.5a](#45-divert-checks-main-ci--pr-pileup)** — main CI status (`gh run list --branch <default-branch> --limit 60`).
-- **[Step 4.5b](#45-divert-checks-main-ci--pr-pileup)** — all-authors failing-PR count.
+- **[Step 2](#2-backlog-overview)** — issue universe (`gh issue list --state open` + `linked:pr` search). **Skipped under `--fast`** — but count `needs-refinement`, `blocked:ci`, `blocked:agent` issues first (see step 2's `--fast` note).
+- **[Step 3d.1](#3-ensure-label-exists--recover-from-prior-session)** — `blocked:ci` PR list. Per-PR `events` + `commits` lookups are a second-tier parallel batch keyed off the first-tier result. **Skipped under `--fast`** (the initial `gh pr list --label blocked:ci --json number --jq 'length'` count still runs for advisory reporting — see step 3d.1's `--fast` note).
+- **[Step 3d.2](#3-ensure-label-exists--recover-from-prior-session)** — `blocked:agent`-label issue list. Per-issue blocker-state lookups read through the [`blocker_state` cache](#08-blocker_state-cache-default-on). **Skipped under `--fast`** (the initial `gh issue list --label blocked:agent --json number --jq 'length'` count still runs for advisory reporting — see step 3d.2's `--fast` note).
+- **[Step 4.5a](#45-divert-checks-main-ci--pr-pileup)** — main CI status (`gh run list --branch <default-branch> --limit 60`). **Skipped under `--fast`** — `main_ci.status` left as `"unknown"`.
+- **[Step 4.5b](#45-divert-checks-main-ci--pr-pileup)** — all-authors failing-PR count. **Skipped under `--fast`** — `failing_pr_count_all` left as `0`.
 - **[Step 5](#5-snapshot-failing-prs)** — `@me` failing-PR snapshot.
 
 **Steps that MUST run after the batch:**
@@ -105,7 +105,7 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 - **[Step 1.7](#17-resolve-trusted-author-allowlist)** — its output (`trusted_authors`) gates step 2's bucketing and step 4's filter.
 - **[Step 3a](#3-ensure-label-exists--recover-from-prior-session)** — `gh label create` writes; idempotent, never on the critical path.
 - **[Step 3b / 3c](#3-ensure-label-exists--recover-from-prior-session)** — local-filesystem worktree reaping; can run in parallel with the network batch.
-- **[Step 3.5](#35-refine-pending-issues)** — invokes `/refine-issues`, blocks until done.
+- **[Step 3.5](#35-refine-pending-issues)** — invokes `/refine-issues`, blocks until done. **Skipped under `--fast`**.
 - **[Step 4](#4-fetch--rank-the-backlog)** — the *filtered* backlog fetch (distinct from step 2's universe fetch). Auto-triage label-stamping depends on step 1.7 + step 2.
 
 **Steps 6+ stay serial.** Scope pre-flight (step 6) depends on `raw_backlog` from step 4; initial pool fill (step 7) depends on `ready_issues` from step 6.
@@ -323,6 +323,17 @@ Both helpers are idempotent and exit 0 on already-flushed / already-reaped sessi
 The count `<K>` includes the repo owner (which is always in the set). The advisory is one line — not a block, not a list of logins — so the startup output stays scannable.
 
 ### 2. Backlog overview
+
+> **`--fast` skip:** When `--fast` is set, skip the full universe fetch and the UI table. Instead, run three cheap counts for advisory reporting in the end-of-session `--fast was used` block:
+>
+> ```bash
+> # These three run in parallel as part of the parallelization batch even under --fast.
+> gh issue list --repo <owner/repo> --state open --label needs-refinement --json number --jq 'length'
+> gh pr list --repo <owner/repo> --state open --label blocked:ci --json number --jq 'length'
+> gh issue list --repo <owner/repo> --state open --label blocked:agent --json number --jq 'length'
+> ```
+>
+> Save the three counts as `fast_skip_needs_refinement`, `fast_skip_blocked_ci`, and `fast_skip_blocked_agent`. Proceed immediately to step 3.
 
 Before any other setup, fetch every open issue and print an upfront summary of what will be worked on, what will be skipped, and why. The user reads this once at the start of the session and uses it to (a) calibrate expectations for how many issues this run will close, and (b) start unblocking the blocked work in parallel while the orchestrator runs. The summary is **informational only** — print it, then continue with step 3. No confirmation needed.
 
@@ -548,6 +559,8 @@ Any results here that DON'T correspond to a `do-work/*` worktree on disk are "di
 
 **3d.1. Auto-clear stale `blocked:ci` labels.** The label is sticky on purpose, but a new commit on the PR's head branch means the premise ("no movement since shipyard gave up") is no longer true. Auto-clear those PRs so they flow back into step 5's failing-PR snapshot for another 3 attempts. This sweep is the *only* place `blocked:ci` is removed by the orchestrator (step A applies; 3d.1 removes; no other step touches it).
 
+> **`--fast` skip:** When `--fast` is set, skip this entire sweep. The initial `blocked:ci` count (`fast_skip_blocked_ci`) captured in step 2's `--fast` note is sufficient for the advisory summary — stale `blocked:ci` labels persist until the next normal session. Set `cleared_ciblocked=0` and `held_ciblocked=0`.
+
 Fire the initial PR list as part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch); per-PR `events` + `commits` lookups are a second-tier parallel batch. The serial loop below is shown for readability:
 
 ```bash
@@ -597,6 +610,8 @@ Record `cleared_ciblocked` and `held_ciblocked` (plus the matching PR-number arr
 **Regression guard.** The `commit_ts > label_ts` comparison enforces "auto-clear fires only when a new commit has landed since the label was applied." If the comparison can't be computed (head branch deleted, events aged out of the ~90-day pagination window, network blip), hold — the safe default is to preserve the block. See [RATIONALE → Step 3d sweeps](../do-work-RATIONALE.md#step-3d--why-the-blockedci--blockedagent-sweeps-have-different-shapes).
 
 **3d.2. Auto-clear stale `blocked:agent` labels.** Issues carrying `Blocked by #N` references in their body stay labeled even after all referenced blockers merge — step 4's `-label:blocked:agent` filter then silently hides them. Same auto-clear pattern as `blocked:ci` but the condition is referential: clear when every `Blocked by #N` reference resolves to a CLOSED or MERGED issue. Sweep runs after 3d.1, before step 4's backlog fetch.
+
+> **`--fast` skip:** When `--fast` is set, skip this entire sweep. The initial `blocked:agent` count (`fast_skip_blocked_agent`) captured in step 2's `--fast` note is sufficient for the advisory summary — stale `blocked:agent` labels persist until the next normal session. Set `cleared_blocked=0` and `held_blocked=0`.
 
 Fire the initial issue list in the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch); per-issue blocker lookups read through the [`blocker_state` cache](#08-blocker_state-cache-default-on). Serial loop shown for readability:
 
@@ -674,6 +689,8 @@ Record `cleared_blocked` and `held_blocked` (plus the matching issue-number arra
 
 ### 3.5 Refine pending issues
 
+> **`--fast` skip:** When `--fast` is set, skip this entire step. Issues carrying `needs-refinement` remain unrefined this session; they will be processed by the next normal `/do-work` invocation. The `fast_skip_needs_refinement` count captured in step 2's `--fast` note surfaces in the end-of-session advisory block so the user knows how many refinement tasks were deferred. Proceed immediately to step 4.
+
 Invoke `/refine-issues` and **wait for it to complete** before proceeding to step 4. This processes every open issue carrying `needs-refinement` — the generic pipeline gate — and branches per-issue on source signal:
 
 - **classify+rewrite branch** (`user-feedback` + `needs-refinement`): classify as already-done / declined / legitimate, preserve original text in a comment, rewrite the body into the repo's issue template. Legitimate items get `needs-human-review` co-applied.
@@ -745,6 +762,8 @@ Sort the survivors:
 This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exist (next step) → loop ends immediately; report "backlog empty" and stop.
 
 ### 4.5 Divert checks (main CI + PR pileup)
+
+> **`--fast` skip:** When `--fast` is set, skip both 4.5a and 4.5b. Leave `main_ci.status = "unknown"` and `failing_pr_count_all = 0`. `divert_queue` stays empty. The user accepts the risk of dispatching into a red `main` or a ≥10-PR pileup — this is the documented tradeoff in the `--fast` arg description. The step-D periodic refresh does NOT run divert checks either when `--fast` was set (to preserve the latency savings for the full session). Note the skip in the end-of-session `--fast was used` advisory block.
 
 Two repo-health conditions can preempt all normal work. Run these checks at setup, repopulate `divert_queue`, then continue. The same checks re-run during the periodic refresh (step D).
 
