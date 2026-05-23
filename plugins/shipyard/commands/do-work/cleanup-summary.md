@@ -172,6 +172,15 @@ Reaped from prior sessions: <reaped_stale> stale agent worktrees (dead-PID locks
 Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches; <deferred_live> still-running agent worktrees deferred (next session will sweep)
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
+
+⚠️  --fast was used this session — skipped:
+  - Backlog overview UI (step 2)
+  - /refine-issues (step 3.5): <fast_skip_needs_refinement> issue(s) still carry needs-refinement
+  - blocked:ci sweep (step 3d.1): <fast_skip_blocked_ci> PR(s) may have recoverable CI
+  - blocked:agent sweep (step 3d.2): <fast_skip_blocked_agent> issue(s) may have all blockers closed
+  - Divert checks (steps 4.5a + 4.5b): main CI status not verified; failing-PR pileup not counted
+
+  Run a normal /shipyard:do-work session soon to pick up the deferred work.
 ```
 
 **End-of-session bucket-table rules** (match step 2's modes with one addition):
@@ -187,6 +196,7 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 - `Drain-phase rebases`: omit the line entirely when both counts are zero.
 - `Diversions:` block: omit entirely when `D == 0`. `Final repo health` always prints.
 - `Deferred:` line: omit when `deferred_issues` is empty. When non-empty, render one `#N — <first sentence of reason>` per entry (truncate at first sentence or 80 chars). Full reason is posted as a comment on each issue.
+- `--fast was used` block: omit when `--fast` was NOT passed. When `--fast` was passed, always print this block at the end of the summary — even when all four counts are zero (the user needs to know the checks didn't run). The four counts (`fast_skip_needs_refinement`, `fast_skip_blocked_ci`, `fast_skip_blocked_agent`) come from the cheap reads in step 2's `--fast` note.
 
 The lifetime line is sourced from two queries run just before printing the summary:
 

@@ -1,6 +1,6 @@
 ---
 description: Continuously work through open GitHub issues — pick the best ones, implement in parallel worktrees, open PRs, enable auto-merge, then loop. Runs until zero matching issues remain.
-argument-hint: [--repo owner/repo] [--label LABEL ...] [--prioritize-label LABEL] [--concurrency N]
+argument-hint: [--repo owner/repo] [--label LABEL ...] [--prioritize-label LABEL] [--concurrency N] [--fast]
 ---
 
 # /do-work
@@ -17,6 +17,7 @@ Burns down the issue backlog with a **rolling worker pool**. Keeps `--concurrenc
 - **--concurrency N** (optional, default `2`): the size of the rolling worker pool — i.e. the number of agents the orchestrator keeps in flight at any moment. Set to `1` for sequential.
 - **--soft-collision-concurrency N** (optional, default `3`): the cap on how many in-flight workers may simultaneously claim any **soft-collision** path (additive docs files — see [Dispatch rules](./do-work/steady-state.md#dispatch-rules-used-by-step-7-and-step-c)). Set to `1` to opt out of soft-collision tiering entirely (every path collision becomes hard). Set higher to allow more parallelism on docs-heavy backlogs at the cost of more merge-conflict resolution work for the orchestrator at PR-land time.
 - **--soft-collision-path GLOB** (optional, repeatable): extend the default soft-collision path set with additional globs. Defaults to a curated set of additive docs files (see [Dispatch rules](./do-work/steady-state.md#dispatch-rules-used-by-step-7-and-step-c)); these add on top, they don't replace.
+- **--fast** (optional): skip non-load-bearing setup steps to reduce startup latency. What `--fast` skips: backlog overview UI (step 2), `/refine-issues` invocation (step 3.5), `blocked:ci` auto-clear sweep (step 3d.1), `blocked:agent` auto-clear sweep (step 3d.2), and both divert checks (steps 4.5a + 4.5b). What `--fast` keeps: config opt-in (0.4), worktree relocation (0.5), repo+user resolution (1), session state (1.5), trusted-author allowlist (1.7), orphan worktree triage (3c), backlog fetch+rank+triage (4), scope pre-flight (6), and dispatch (7). The 30s scope-preflight floor still applies. When `--fast` is used, the end-of-session summary includes a block listing what was skipped and advisory counts. Use when `needs-refinement` issues are present and startup time matters more than acting on them immediately.
 
 ## Orchestrator state
 
