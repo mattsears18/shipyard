@@ -113,6 +113,20 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1"
+  local needle="$2"
+  local label="$3"
+  if grep -qF -- "$needle" "$file" 2>/dev/null; then
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$label"
+    printf '    forbidden string still present in %s: %s\n' "$file" "$needle"
+    fail=$((fail+1))
+  else
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  fi
+}
+
 # Sum a fixed-string count across multiple files; useful for assertions
 # like "worker-preamble appears ≥5 times across all phase files combined."
 assert_count_at_least_across() {
@@ -236,6 +250,27 @@ assert_count_at_least_across "self-ancestor" 1 \
 assert_count_at_least_across "do-work-RATIONALE.md" 10 \
   "RATIONALE cross-referenced ≥10 times across entry + per-phase files" \
   "$do_work_path" "$setup_path" "$steady_state_path" "$drain_path" "$cleanup_path" "$dont_path"
+
+# (10) Cost-comment refresh uses the REST listing endpoint for comment IDs
+#      (issue #264). `gh pr view --json comments` returns GraphQL node-ids
+#      (e.g. `IC_kwDO...`) for each comment, which the REST PATCH endpoint
+#      `/repos/<o/r>/issues/comments/<id>` does not accept — the PATCH
+#      404s and the else branch posts a fresh comment, stacking duplicates.
+#      Both `shipped` and `green/noop` reconcile paths in steady-state.md
+#      must use the REST `/issues/<M>/comments` listing (returns numeric
+#      ids), not `gh pr view --json comments`. The buggy fingerprint is
+#      tight — the `--json comments --jq` pair scoping for the
+#      `do-work-cost-tracking` sentinel only ever appears in the cost-
+#      refresh hook, so this assertion has no false positives.
+assert_not_contains "$steady_state_path" \
+  '--json comments --jq' \
+  "steady-state.md does not use gh pr view --json comments for sentinel lookup (#264)"
+# The fix uses the REST `/issues/<M>/comments` listing endpoint, which
+# returns numeric REST ids compatible with the PATCH endpoint. Both call
+# sites (shipped and green/noop reconcile branches) must reference it.
+assert_count_at_least_across "issues/<M>/comments?per_page" 2 \
+  "steady-state.md uses REST /issues/<M>/comments listing for sentinel lookup ≥2 times (#264)" \
+  "$steady_state_path"
 
 echo
 if (( fail > 0 )); then
