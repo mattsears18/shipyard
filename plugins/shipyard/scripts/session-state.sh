@@ -46,6 +46,12 @@
 #              `.session_prs += [96]` or `.main_ci.status = "green"`.
 #              Exit 3 if the session file does not exist (no file is
 #              created — update is "modify existing state," not "create").
+#              Opportunistically auto-flushes the setup-timing sidecar
+#              (issue #283) when `.setup` is null and a sidecar exists —
+#              guarantees the orchestrator's per-phase timing data lands
+#              in the session file even if step 6.8's explicit flush is
+#              skipped. Pass `--skip-timing-autoflush` to disable (used
+#              by setup-timing.sh's own flush to avoid recursion).
 #
 #   cleanup  — remove the session file at end-of-session. Idempotent
 #              (re-runs after the file is gone exit 0 — the failure mode
@@ -146,6 +152,7 @@ Usage:
                                [--pid N] [--degraded-recovery] [--force]
   session-state.sh read        --session-id <id> [--path <jq-path>]
   session-state.sh update      --session-id <id> --set '<jq-expr>' [--set ...]
+                               [--skip-timing-autoflush]
   session-state.sh cleanup     --session-id <id>
   session-state.sh is-active   --session-id <id>
   session-state.sh bump-tokens --session-id <id>
@@ -388,11 +395,18 @@ cmd_read() {
 cmd_update() {
   local session_id=""
   local -a sets=()
+  # Internal flag — disables the opportunistic auto-flush of the
+  # setup-timing sidecar (see below). Used by setup-timing.sh's own flush
+  # call into `update` to avoid recursive auto-flush. Not part of the
+  # documented public CLI surface; callers outside this script should
+  # leave it off.
+  local skip_timing_autoflush=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --session-id) session_id="${2:-}"; shift 2 ;;
       --set) sets+=("${2:-}"); shift 2 ;;
+      --skip-timing-autoflush) skip_timing_autoflush=1; shift ;;
       *) echo "update: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
@@ -414,6 +428,37 @@ cmd_update() {
   if [[ ! -f "$target" ]]; then
     echo "update: $target does not exist (use init first)" >&2
     exit 3
+  fi
+
+  # Self-healing setup-timing flush (issue #283). The orchestrator is
+  # supposed to call `setup-timing.sh flush` at step 6.8, but the
+  # flush is structurally easy to skip (one bash block buried in a
+  # long step body, fire-and-forget posture hides silent skips,
+  # `concurrency == 1` skip-list misread as "skip every timing call").
+  # `cmd_update` is called dozens of times per session for working-
+  # memory mirroring, so opportunistically firing the flush here turns
+  # the orchestrator-side discipline into a mechanical guarantee: if a
+  # sidecar exists and `.setup` is still null, the next update closes
+  # the gap. Cheap check (one stat + one jq) on every update; the
+  # actual flush only fires at most once per session because after
+  # success `.setup` is no longer null. The `--skip-timing-autoflush`
+  # flag is set by setup-timing.sh's own flush call back into update
+  # so this branch doesn't recurse on itself.
+  if [[ "$skip_timing_autoflush" -eq 0 ]]; then
+    local sidecar="${target%.json}.timing.json"
+    if [[ -f "$sidecar" ]]; then
+      local current_setup
+      current_setup=$(jq -r '.setup // "null"' "$target" 2>/dev/null)
+      if [[ "$current_setup" == "null" ]]; then
+        # Locate setup-timing.sh relative to this script. Fire-and-forget:
+        # a flush failure must NOT block the caller's update.
+        local this_dir
+        this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        if [[ -f "${this_dir}/setup-timing.sh" ]]; then
+          "${this_dir}/setup-timing.sh" flush --session-id "$session_id" 2>/dev/null || true
+        fi
+      fi
+    fi
   fi
 
   # Compose all --set expressions into a single jq pipeline. Each --set is

@@ -496,6 +496,116 @@ assert_equals "$contents" "cost-history-issues.jsonl,cost-history.jsonl," \
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== flush — auto-flushes pending setup-timing sidecar (issue #283)"
+# --------------------------------------------------------------------------
+# Regression test for the bug described in #283: the orchestrator records
+# per-phase timing data into a sidecar (`<session>.timing.json`) but the
+# explicit `setup-timing.sh flush` at step 6.8 is structurally easy to
+# skip (long-step embedding, fire-and-forget posture, C=1 skip-list
+# misread). When skipped, the session-state file's `.setup` block stays
+# null and the cross-session ledger record we write here loses the data.
+# The fix: `cost-history.sh flush` opportunistically calls
+# `setup-timing.sh flush` BEFORE reading `.setup`, so a pending sidecar
+# is always materialized before the ledger record snapshots it.
+
+tmphome=$(mktemp -d)
+sid="autoflush-${BASHPID:-$$}"
+
+# 1. Init session, record phase timing into the sidecar, but DELIBERATELY
+#    do NOT call `setup-timing.sh flush` — this is the bug scenario.
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "$sid" --repo "test/repo" >/dev/null
+
+setup_timing_helper="${here}/../setup-timing.sh"
+SHIPYARD_HOME="$tmphome" bash "$setup_timing_helper" start \
+  --session-id "$sid" --phase step_0_5_worktree 2>/dev/null
+sleep 1
+SHIPYARD_HOME="$tmphome" bash "$setup_timing_helper" end \
+  --session-id "$sid" --phase step_0_5_worktree 2>/dev/null
+
+# Pre-flush sanity: the sidecar exists, but .setup is still null.
+sidecar="${tmphome}/sessions/${sid}.timing.json"
+assert_file_exists "$sidecar" "autoflush: sidecar present before cost-history flush"
+
+pre_setup=$(SHIPYARD_HOME="$tmphome" bash "$session_helper" read \
+  --session-id "$sid" --path '.setup')
+assert_equals "$pre_setup" "null" \
+  "autoflush: .setup is null in session state before cost-history flush"
+
+# 2. Run cost-history flush. Auto-flush hook should materialize .setup.
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "$sid"
+assert_equals "$?" "0" "autoflush: cost-history flush exits 0"
+
+# 3. The ledger record must carry the per-phase setup data — NOT null.
+ledger="${tmphome}/cost-history.jsonl"
+assert_file_exists "$ledger" "autoflush: ledger file written"
+
+setup_in_record=$(jq -c '.setup' "$ledger")
+if [[ "$setup_in_record" != "null" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+    "autoflush: ledger record .setup is NOT null after cost-history flush"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+    "autoflush: ledger record .setup is NOT null after cost-history flush"
+  printf '    actual: %s\n' "$setup_in_record"
+  fail=$((fail+1))
+fi
+
+# Must carry the phase we recorded.
+phase_seconds=$(jq -r '.setup.phases.step_0_5_worktree' "$ledger")
+if [[ "$phase_seconds" =~ ^[0-9]+$ ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+    "autoflush: ledger record carries step_0_5_worktree phase duration"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+    "autoflush: ledger record carries step_0_5_worktree phase duration"
+  printf '    actual: %s\n' "$phase_seconds"
+  fail=$((fail+1))
+fi
+
+# 4. Sidecar should be cleaned up by the auto-flush.
+if [[ ! -e "$sidecar" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+    "autoflush: sidecar cleaned up after cost-history flush"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+    "autoflush: sidecar cleaned up after cost-history flush"
+  fail=$((fail+1))
+fi
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== flush — no sidecar present is still a clean no-op"
+# --------------------------------------------------------------------------
+# Make sure the auto-flush hook doesn't error when there's nothing to
+# flush. Normal sessions where the explicit flush DID run reach
+# cost-history flush with no sidecar present — the auto-flush call must
+# be a clean no-op in that case.
+
+tmphome=$(mktemp -d)
+sid="autoflush-nosidecar-${BASHPID:-$$}"
+
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "$sid" --repo "test/repo" >/dev/null
+
+# Run cost-history flush with no sidecar — should succeed cleanly.
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "$sid"
+assert_equals "$?" "0" \
+  "autoflush: cost-history flush exits 0 when no sidecar present"
+
+# Ledger record should still be written (with .setup as null since
+# nothing was ever recorded).
+ledger="${tmphome}/cost-history.jsonl"
+assert_file_exists "$ledger" \
+  "autoflush: ledger record written even with no sidecar"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== usage — unknown subcommand / missing args"
 # --------------------------------------------------------------------------
 

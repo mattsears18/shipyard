@@ -205,6 +205,27 @@ cmd_flush() {
     return 0
   fi
 
+  # Self-healing setup-timing flush (issue #283). The orchestrator is
+  # supposed to call `setup-timing.sh flush` at step 6.8 before dispatch,
+  # but the spec embeds the flush in a long step body and readers commonly
+  # skim past it — especially at `concurrency == 1` where step 0.7's
+  # "skip the parallel batch" guidance was misread as "skip every
+  # timing call." Result: sessions whose sidecars contain real per-phase
+  # data still landed in the ledger with `setup: null`, dropping the data
+  # we explicitly added in #238 to measure. Defense in depth: before
+  # reading `.setup` from the session file, auto-flush any pending
+  # timing sidecar so the ledger record always captures what was
+  # actually instrumented. `setup-timing.sh flush` is idempotent (no-op
+  # when the sidecar is gone) and writes through `session-state.sh
+  # update` — same atomic-write guarantees as the rest of the file's
+  # mutations. Fire-and-forget: a flush failure must NOT block the
+  # cost-history flush from running.
+  local this_dir
+  this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -f "${this_dir}/setup-timing.sh" ]]; then
+    "${this_dir}/setup-timing.sh" flush --session-id "$session_id" 2>/dev/null || true
+  fi
+
   local session_target issue_target
   session_target=$(session_ledger_path)
   issue_target=$(issue_ledger_path)
