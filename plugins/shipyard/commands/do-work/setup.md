@@ -155,7 +155,18 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
       continue
     fi
     "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "$orphan_id" 2>/dev/null || true
-    "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" 2>/dev/null || true
+    # --reap-audit (issue #281) writes one JSONL line to
+    # ~/.shipyard/reap-audit.jsonl capturing the reaped session's
+    # pid / repo / tokens / mtime, plus the reaper's session id and pid,
+    # so a subsequent "where did my session file go?" investigation has
+    # forensic data. The line lands in the same JSONL file as worktree-reap
+    # audit entries (issue #284) so a reader can correlate session-file and
+    # worktree reaps for the same session.
+    "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" \
+      --reap-audit \
+      --reaper-session-id "<session-id>" \
+      --reason "orphan-sweep-step-1.6" \
+      --phase "setup-1.6" 2>/dev/null || true
   done
 
   # 1.6.5 — Reap orphan orchestrator worktrees (issue #280). Parallel to step 1.6
@@ -502,7 +513,16 @@ find "$SESSIONS_DIR" -maxdepth 1 -type f -name '*.json' -mmin +30 2>/dev/null | 
   # Flush is idempotent — re-flushing a session id already in the ledger
   # is a no-op. Cleanup is also idempotent.
   "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "$orphan_id" 2>/dev/null || true
-  "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" 2>/dev/null || true
+  # --reap-audit (issue #281) records one JSONL line per reap to
+  # ~/.shipyard/reap-audit.jsonl with the reaped session's metadata
+  # (pid, repo, tokens, mtime) + the reaper's session-id / pid. Without
+  # this line, a "where did my session file go?" investigation has no
+  # forensic trail. Same JSONL file as worktree-reap.sh's audit log (#284).
+  "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" \
+    --reap-audit \
+    --reaper-session-id "<session-id>" \
+    --reason "orphan-sweep-step-1.6" \
+    --phase "setup-1.6" 2>/dev/null || true
   echo "[orphan-reap] flushed + reaped $orphan_id"
 done
 ```
@@ -511,7 +531,9 @@ Both helpers are idempotent and exit 0 on already-flushed / already-reaped sessi
 
 **Two gates, not one (issue #253).** The mtime floor alone failed in production when an orchestrator went quiet for >30 minutes during a long drain phase — the peer's sweep then reaped the still-active session's state file mid-write. The fix layers a PID-liveness gate (`session-state.sh is-active`) **before** the mtime check: if the owning process is alive, skip the reap regardless of mtime. The `.pid` field is stamped into the session file at `session-state.sh init` time (defaulting to `$PPID`, overridable via `--pid <N>`). `is-active` reads that field and runs `kill -0 $pid` to check liveness. Both gates have to fail before a file is reaped, so even a recycled-pid + recent-mtime scenario (the only known failure mode of `is-active`) still skips. Sessions written by older shipyard versions have no `.pid` field — `is-active` exits 1 in that case, falling through to mtime-only behaviour for the migration period.
 
-**Cost-tracking degraded-recovery (issue #253's workaround).** Workers calling `session-state.sh bump-tokens` against a session whose file was reaped mid-session can pass `--allow-degraded-init` (with optional `--degraded-init-repo <r>`) to auto-recreate a fresh state file marked with `.degraded_recovery_at` rather than erroring exit-3. Cost data from before the disappear is lost (the file was gone), but every bump from the disappear forward lands somewhere durable — and the end-of-session ledger flush still has data to write. Callers that want strict "must-have-pre-existing-file" semantics simply omit the flag.
+**Cost-tracking degraded-recovery (issue #253's workaround, extended by #281).** Workers calling `session-state.sh bump-tokens` against a session whose file was reaped mid-session can pass `--allow-degraded-init` (with optional `--degraded-init-repo <r>`) to auto-recreate a fresh state file marked with `.degraded_recovery_at` rather than erroring exit-3. [Issue #281](https://github.com/mattsears18/shipyard/issues/281) extended the same flag to `session-state.sh update` — the orchestrator's working-memory mirror writes now survive a mid-session disappear without forcing a manual `init --force`. Data from before the disappear is lost (the file was gone), but every write from the disappear forward lands somewhere durable. Callers that want strict "must-have-pre-existing-file" semantics simply omit the flag — the original exit-3 behaviour is preserved by default so silent typos / wrong-session-id mistakes still surface.
+
+**Reap-audit logging (issue #281).** When step 1.6 reaps a peer's session file, it now calls `cleanup --reap-audit --reaper-session-id <session-id>`, which captures the reaped file's metadata (pid, repo, tokens.totals, degraded_attribution_count, mtime, started_at, updated_at) and writes one JSONL line to `~/.shipyard/reap-audit.jsonl` with `action: "reaped-session-file"`. Same audit-log file as worktree-reap.sh emits (issue #284), so a reader can correlate session-file reaps with worktree reaps for the same session id. Without this, a "where did my session file go?" investigation has no forensic trail — just the symptomatic `exit 3` from a downstream write. The audit-log write is fire-and-forget — a permission error / disk-full / corrupt source JSON never aborts the reap (the reap itself is the load-bearing work; the audit line is observability).
 
 **Don't block the session on sweep failures** — log `[orphan-reap] <reason>` and proceed. Recovery of historical data is observational; the dispatch loop's job comes first. If `SHIPYARD_KEEP_SESSIONS=1` is set (per the [step 8 cleanup-summary opt-out](./cleanup-summary.md#end-of-session-cleanup)), skip the sweep entirely — the user explicitly opted into keeping session files as permanent records.
 
