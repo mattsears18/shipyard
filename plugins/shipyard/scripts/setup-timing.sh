@@ -55,6 +55,17 @@
 #     after a successful flush. Idempotent — re-flush is a no-op if the
 #     sidecar is gone.
 #
+#     Two defense-in-depth mechanisms also auto-fire this flush when step
+#     6.8's explicit invocation is skipped (issue #283):
+#       - `session-state.sh update` opportunistically auto-flushes a
+#         pending sidecar whenever `.setup` is still null, so the timing
+#         data lands during normal write-through.
+#       - `cost-history.sh flush` auto-flushes a pending sidecar before
+#         reading `.setup`, so the cross-session ledger always captures
+#         the per-phase data the orchestrator collected.
+#     The explicit step 6.8 call is still preferred (cheap, eager) but
+#     no longer load-bearing for ledger correctness.
+#
 #   read --session-id <id> [--format json|text]
 #     Emit the current timing state (sidecar if present, otherwise the
 #     session-state `setup` block). Useful for debugging.
@@ -398,9 +409,11 @@ cmd_flush() {
   fi
 
   # Merge via session-state.sh update so we get the same atomic-write
-  # guarantee and the `updated_at` bookend.
+  # guarantee and the `updated_at` bookend. Pass --skip-timing-autoflush
+  # so the update doesn't recurse back into this flush (issue #283).
   if ! "$session_state_helper" update \
        --session-id "$session_id" \
+       --skip-timing-autoflush \
        --set ".setup = $setup_block"; then
     echo "flush: session-state.sh update failed" >&2
     exit 68

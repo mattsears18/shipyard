@@ -398,6 +398,117 @@ assert_equals "$ready" "3" "integration: scope_preflight.ready correct"
 rm -rf "$home"
 
 # --------------------------------------------------------------------------
+echo "== session-state.sh update — auto-flushes pending sidecar (issue #283)"
+# --------------------------------------------------------------------------
+# When `session-state.sh update` runs and `.setup` is null but a sidecar
+# exists, it must auto-flush so the orchestrator's per-phase timing
+# never gets silently dropped (the failure mode that motivated #283).
+
+home=$(mktmphome)
+sid="test-update-autoflush-$$"
+init_session "$home" "$sid"
+
+# Populate sidecar but skip the explicit flush.
+SHIPYARD_HOME="$home" "$helper" start --session-id "$sid" --phase step_0_5_worktree >/dev/null 2>&1
+SHIPYARD_HOME="$home" "$helper" end   --session-id "$sid" --phase step_0_5_worktree >/dev/null 2>&1
+
+sidecar="${home}/sessions/${sid}.timing.json"
+assert_file_exists "$sidecar" "update-autoflush: sidecar present before update"
+
+# Sanity: .setup is null before update.
+pre_setup=$(SHIPYARD_HOME="$home" "$session_helper" read --session-id "$sid" --path '.setup')
+assert_equals "$pre_setup" "null" "update-autoflush: .setup is null before update"
+
+# Run an unrelated update — should trigger the auto-flush as a side effect.
+SHIPYARD_HOME="$home" "$session_helper" update \
+  --session-id "$sid" \
+  --set '.session_prs += [42]' >/dev/null 2>&1
+assert_exit "$?" "0" "update-autoflush: update with sidecar pending exits 0"
+
+# Now .setup must be populated.
+post_setup=$(SHIPYARD_HOME="$home" "$session_helper" read --session-id "$sid" --path '.setup')
+assert_contains "$post_setup" '"step_0_5_worktree"' \
+  "update-autoflush: .setup populated by auto-flush during update"
+
+# Sidecar should be gone (flushed).
+assert_file_missing "$sidecar" "update-autoflush: sidecar removed after auto-flush"
+
+# Run another update — should NOT trigger a second auto-flush (no sidecar present)
+# and must not error.
+SHIPYARD_HOME="$home" "$session_helper" update \
+  --session-id "$sid" \
+  --set '.session_prs += [43]' >/dev/null 2>&1
+assert_exit "$?" "0" "update-autoflush: subsequent update without sidecar still exits 0"
+
+rm -rf "$home"
+
+# --------------------------------------------------------------------------
+echo "== session-state.sh update — --skip-timing-autoflush opts out"
+# --------------------------------------------------------------------------
+# Internal flag used by setup-timing.sh's flush call into update to
+# prevent recursion. With the flag set, the auto-flush MUST NOT fire
+# even when a sidecar is present.
+
+home=$(mktmphome)
+sid="test-update-skip-autoflush-$$"
+init_session "$home" "$sid"
+
+SHIPYARD_HOME="$home" "$helper" start --session-id "$sid" --phase step_0_5_worktree >/dev/null 2>&1
+SHIPYARD_HOME="$home" "$helper" end   --session-id "$sid" --phase step_0_5_worktree >/dev/null 2>&1
+
+sidecar="${home}/sessions/${sid}.timing.json"
+
+SHIPYARD_HOME="$home" "$session_helper" update \
+  --session-id "$sid" \
+  --skip-timing-autoflush \
+  --set '.session_prs += [99]' >/dev/null 2>&1
+assert_exit "$?" "0" "update --skip-timing-autoflush exits 0"
+
+# Sidecar should STILL be there — auto-flush was suppressed.
+assert_file_exists "$sidecar" \
+  "update --skip-timing-autoflush: sidecar NOT consumed by update"
+
+post_setup=$(SHIPYARD_HOME="$home" "$session_helper" read --session-id "$sid" --path '.setup')
+assert_equals "$post_setup" "null" \
+  "update --skip-timing-autoflush: .setup still null after update"
+
+rm -rf "$home"
+
+# --------------------------------------------------------------------------
+echo "== setup-timing flush — internal call into update does not recurse"
+# --------------------------------------------------------------------------
+# setup-timing.sh's own `cmd_flush` invokes session-state.sh update to
+# write the .setup block. That call must pass --skip-timing-autoflush
+# so it doesn't recurse back into the auto-flush branch (which would
+# itself invoke setup-timing flush again).
+#
+# Recursion would manifest as: setup-timing flush -> update -> auto-flush
+# detects sidecar still present (race — depending on order of operations)
+# -> setup-timing flush again -> infinite loop or stale data. The fix
+# routes the internal call with the skip flag so the auto-flush branch
+# is bypassed.
+
+home=$(mktmphome)
+sid="test-flush-no-recurse-$$"
+init_session "$home" "$sid"
+
+SHIPYARD_HOME="$home" "$helper" start --session-id "$sid" --phase step_0_5_worktree >/dev/null 2>&1
+SHIPYARD_HOME="$home" "$helper" end   --session-id "$sid" --phase step_0_5_worktree >/dev/null 2>&1
+
+# Explicit flush (the normal step 6.8 path). Must complete in a single
+# pass — no infinite recursion.
+timeout 5 bash -c "SHIPYARD_HOME='$home' '$helper' flush --session-id '$sid' >/dev/null 2>&1"
+assert_exit "$?" "0" "explicit flush completes (no recursion)"
+
+# Verify the .setup block actually landed (not just "completed without
+# erroring" — must contain the phase we recorded).
+post_setup=$(SHIPYARD_HOME="$home" "$session_helper" read --session-id "$sid" --path '.setup')
+assert_contains "$post_setup" '"step_0_5_worktree"' \
+  "explicit flush: .setup contains expected phase after no-recurse flush"
+
+rm -rf "$home"
+
+# --------------------------------------------------------------------------
 printf '\n%sPASS%s: %d  %sFAIL%s: %d\n' \
   "$GREEN" "$RESET" "$pass" "$RED" "$RESET" "$fail"
 
