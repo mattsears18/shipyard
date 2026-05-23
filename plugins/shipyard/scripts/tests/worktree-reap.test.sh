@@ -577,6 +577,303 @@ result=$(SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestr
 assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-equals-form-orphan" \
   "(30) --flag=value form accepted for both flags"
 
+# ============================================================================
+# Issue #284 — `reap` subcommand: single source of truth for reap-audit
+# writes.
+#
+# Coverage goals:
+#   - Audit-log line appears in $SHIPYARD_HOME/reap-audit.jsonl after every
+#     reap call, regardless of whether the actual remove succeeded.
+#   - Action-specific line shapes match what the inline printf templates
+#     in setup.md / cleanup-summary.md used to emit (so existing tooling
+#     reading the log doesn't see a behavior change).
+#   - Required-flag validation surfaces as exit 2 with a useful stderr.
+#   - SHIPYARD_HOME / $HOME/.shipyard precedence works.
+#   - `--skip-remove` path doesn't invoke git.
+#   - Orphan-orchestrator raw-rm fallback path emits the -raw-rm action
+#     variant when git worktree remove fails (typical for crash-orphaned
+#     dirs that were never registered with git).
+# ============================================================================
+
+echo
+echo "worktree-reap.sh reap subcommand tests (issue #284)"
+echo
+
+reap_home="$tmpdir/reap-home"
+reap_repo="$tmpdir/reap-repo"
+
+reset_reap_layout() {
+  rm -rf "$reap_home" "$reap_repo"
+  mkdir -p "$reap_home"
+  mkdir -p "$reap_repo"
+  # Initialize a real git repo so `git worktree remove` calls don't error
+  # at the `not in a git repo` layer and we exercise the actual code path.
+  (
+    cd "$reap_repo" || exit 1
+    git init -q
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+  ) >/dev/null 2>&1
+}
+
+# Run `reap` with $SHIPYARD_HOME pointed at the test dir, cwd inside the
+# test repo. Returns the command's exit code; stderr is captured to a
+# file so the caller can inspect on failure.
+run_reap() {
+  (
+    cd "$reap_repo" || exit 99
+    SHIPYARD_HOME="$reap_home" bash "$helper" reap "$@" 2>"$tmpdir/reap.stderr"
+  )
+}
+
+audit_log="$reap_home/reap-audit.jsonl"
+
+# --- (31) reap --action=reaped writes the agent-reap shape ---
+reset_reap_layout
+run_reap \
+  --action reaped \
+  --worktree-path "$reap_repo/.git/worktrees/agent-test1" \
+  --worktree-name "agent-test1" \
+  --session-id "test-session-1" \
+  --actor-pid 12345 \
+  --classification "self-ancestor" \
+  --lock-pid 999999 \
+  --skip-remove
+exit_code=$?
+assert_exit_code "$exit_code" "0" \
+  "(31) reap --action=reaped exits 0"
+
+if [ ! -f "$audit_log" ]; then
+  printf '  %sFAIL%s  (31a) audit log not created at %s\n' "$RED" "$RESET" "$audit_log"
+  fail=$((fail+1))
+else
+  line=$(cat "$audit_log")
+  # The line should contain action, classification, lock_pid (as integer
+  # not string), and worktree name. We don't assert exact equality on the
+  # ts field — just check each substring is present. Field order is the
+  # current emission order (ts, session, actor_pid, worktree, action,
+  # classification, lock_pid[, phase]) — assert per-substring rather than
+  # whole-pattern so a future cosmetic reordering doesn't break tests.
+  shape_ok=1
+  case "$line" in *'"worktree":"agent-test1"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"action":"reaped"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"classification":"self-ancestor"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"lock_pid":999999'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"session":"test-session-1"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"actor_pid":12345'*) ;; *) shape_ok=0 ;; esac
+  if [ "$shape_ok" = "1" ]; then
+    printf '  %sPASS%s  (31a) audit log contains expected reaped-action fields\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (31a) audit-log shape mismatch — line was: %s\n' "$RED" "$RESET" "$line"
+    fail=$((fail+1))
+  fi
+fi
+
+# --- (32) reap --action=reaped includes --phase in audit line when set ---
+reset_reap_layout
+run_reap \
+  --action reaped \
+  --worktree-path "$reap_repo/.git/worktrees/agent-test2" \
+  --worktree-name "agent-test2" \
+  --session-id "test-session-2" \
+  --classification "dead" \
+  --lock-pid null \
+  --phase "setup-3b" \
+  --skip-remove
+line=$(cat "$audit_log")
+shape_ok=1
+case "$line" in *'"phase":"setup-3b"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"lock_pid":null'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"classification":"dead"'*) ;; *) shape_ok=0 ;; esac
+if [ "$shape_ok" = "1" ]; then
+  printf '  %sPASS%s  (32) audit line includes phase=setup-3b and lock_pid=null literal\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (32) audit-log shape mismatch — line was: %s\n' "$RED" "$RESET" "$line"
+  fail=$((fail+1))
+fi
+
+# --- (33) reap --action=deferred writes the deferred shape ---
+reset_reap_layout
+run_reap \
+  --action deferred \
+  --worktree-path "$reap_repo/.git/worktrees/agent-test3" \
+  --worktree-name "agent-test3" \
+  --session-id "test-session-3" \
+  --reason "peer-alive" \
+  --lock-pid 88888 \
+  --phase "cleanup-3"
+exit_code=$?
+assert_exit_code "$exit_code" "0" \
+  "(33) reap --action=deferred exits 0"
+
+line=$(cat "$audit_log")
+shape_ok=1
+case "$line" in *'"action":"deferred"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"reason":"peer-alive"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"lock_pid":88888'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"phase":"cleanup-3"'*) ;; *) shape_ok=0 ;; esac
+if [ "$shape_ok" = "1" ]; then
+  printf '  %sPASS%s  (33a) audit log contains expected deferred-action fields\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (33a) audit-log shape mismatch — line was: %s\n' "$RED" "$RESET" "$line"
+  fail=$((fail+1))
+fi
+
+# --- (34) reap --action=reaped-orphan-orchestrator with rm-fallback path ---
+# The worktree dir exists on disk but isn't registered with git (typical
+# crash-orphan). git worktree remove will fail; the helper should fall
+# back to rm -rf and emit the -raw-rm action variant.
+reset_reap_layout
+orphan_dir="$reap_repo/.claude/worktrees/orchestrator-dead-session-9"
+mkdir -p "$orphan_dir"
+echo "stale" > "$orphan_dir/leftover.txt"
+run_reap \
+  --action reaped-orphan-orchestrator \
+  --worktree-path "$orphan_dir" \
+  --worktree-name "orchestrator-dead-session-9" \
+  --session-id "current-session" \
+  --reaped-session-id "dead-session-9" \
+  --phase "setup-1.6.5"
+exit_code=$?
+assert_exit_code "$exit_code" "0" \
+  "(34) reap --action=reaped-orphan-orchestrator exits 0"
+
+# Dir should have been removed (rm -rf fallback fired).
+if [ ! -d "$orphan_dir" ]; then
+  printf '  %sPASS%s  (34a) orphan dir removed via rm -rf fallback\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (34a) orphan dir still present at %s\n' "$RED" "$RESET" "$orphan_dir"
+  fail=$((fail+1))
+fi
+
+line=$(cat "$audit_log")
+shape_ok=1
+case "$line" in *'"action":"reaped-orphan-orchestrator-raw-rm"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"reaped_session_id":"dead-session-9"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"phase":"setup-1.6.5"'*) ;; *) shape_ok=0 ;; esac
+if [ "$shape_ok" = "1" ]; then
+  printf '  %sPASS%s  (34b) audit line carries -raw-rm action variant\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (34b) expected -raw-rm action variant; line was: %s\n' "$RED" "$RESET" "$line"
+  fail=$((fail+1))
+fi
+
+# --- (35) multiple reap calls append, don't overwrite ---
+reset_reap_layout
+run_reap --action reaped --worktree-path "$reap_repo/a" --worktree-name "a" \
+  --session-id "s1" --classification "dead" --lock-pid null --skip-remove
+run_reap --action reaped --worktree-path "$reap_repo/b" --worktree-name "b" \
+  --session-id "s1" --classification "dead" --lock-pid null --skip-remove
+line_count=$(wc -l < "$audit_log" | tr -d ' ')
+assert_equals "$line_count" "2" \
+  "(35) two reap calls produce two audit-log lines (append-only)"
+
+# --- (36) audit log dir is created when SHIPYARD_HOME doesn't exist ---
+# This is the bug from the issue body: $HOME/.shipyard didn't exist on
+# first-session machines, so the inline `printf >> $REAP_AUDIT_LOG` silently
+# failed (the `|| true` masked it). The helper must mkdir -p before write.
+reset_reap_layout
+rm -rf "$reap_home"  # confirm it's gone
+run_reap --action reaped --worktree-path "$reap_repo/c" --worktree-name "c" \
+  --session-id "s1" --classification "dead" --lock-pid null --skip-remove
+if [ -f "$audit_log" ]; then
+  printf '  %sPASS%s  (36) audit log materialized after first reap on fresh machine (SHIPYARD_HOME did not exist)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (36) audit log NOT created when SHIPYARD_HOME did not pre-exist — this is the bug #284 was filed for\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (37) bad usage: --action required → exit 2 ---
+run_reap --worktree-path "$reap_repo/x" --worktree-name "x" --session-id s
+assert_exit_code "$?" "2" \
+  "(37) missing --action → exit 2"
+
+# --- (38) bad usage: --classification required when --action=reaped ---
+run_reap --action reaped --worktree-path "$reap_repo/x" --worktree-name "x" \
+  --session-id s --lock-pid null --skip-remove
+assert_exit_code "$?" "2" \
+  "(38) reaped without --classification → exit 2"
+
+# --- (39) bad usage: --reason required when --action=deferred ---
+run_reap --action deferred --worktree-path "$reap_repo/x" --worktree-name "x" \
+  --session-id s --lock-pid null
+assert_exit_code "$?" "2" \
+  "(39) deferred without --reason → exit 2"
+
+# --- (40) bad usage: --reaped-session-id required when --action=reaped-orphan-orchestrator ---
+run_reap --action reaped-orphan-orchestrator \
+  --worktree-path "$reap_repo/x" --worktree-name "x" --session-id s
+assert_exit_code "$?" "2" \
+  "(40) reaped-orphan-orchestrator without --reaped-session-id → exit 2"
+
+# --- (41) bad usage: unknown --action → exit 2 ---
+run_reap --action bogus --worktree-path "$reap_repo/x" --worktree-name "x" \
+  --session-id s --skip-remove
+assert_exit_code "$?" "2" \
+  "(41) unknown --action → exit 2"
+
+# --- (42) bad usage: --lock-pid must be 'null' or non-negative integer ---
+run_reap --action reaped --worktree-path "$reap_repo/x" --worktree-name "x" \
+  --session-id s --classification "dead" --lock-pid "not-a-pid" --skip-remove
+assert_exit_code "$?" "2" \
+  "(42) --lock-pid with non-numeric, non-'null' value → exit 2"
+
+# --- (43) bad usage: --actor-pid must be numeric ---
+run_reap --action reaped --worktree-path "$reap_repo/x" --worktree-name "x" \
+  --session-id s --classification "dead" --lock-pid null --actor-pid "abc" --skip-remove
+assert_exit_code "$?" "2" \
+  "(43) --actor-pid with non-numeric value → exit 2"
+
+# --- (44) --flag=value form parity for all reap flags ---
+reset_reap_layout
+run_reap \
+  --action=reaped \
+  --worktree-path="$reap_repo/.git/worktrees/agent-eq" \
+  --worktree-name=agent-eq \
+  --session-id=session-eq \
+  --actor-pid=42 \
+  --classification=no-lock \
+  --lock-pid=null \
+  --phase=setup-3b \
+  --skip-remove
+assert_exit_code "$?" "0" \
+  "(44) --flag=value form accepted for all reap flags"
+line=$(cat "$audit_log")
+shape_ok=1
+case "$line" in *'"action":"reaped"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"classification":"no-lock"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"phase":"setup-3b"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"actor_pid":42'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"worktree":"agent-eq"'*) ;; *) shape_ok=0 ;; esac
+if [ "$shape_ok" = "1" ]; then
+  printf '  %sPASS%s  (44a) --flag=value form produces expected audit line\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (44a) audit-line shape mismatch with --flag=value form — line was: %s\n' "$RED" "$RESET" "$line"
+  fail=$((fail+1))
+fi
+
+# --- (45) deferred action does NOT invoke git worktree remove (no error
+# even when worktree-path is bogus, because we never call git). This is a
+# behavioral guard: deferred means "we are reporting the decision to defer";
+# the remove must not fire.
+reset_reap_layout
+run_reap --action deferred \
+  --worktree-path "/no/such/path/at/all" \
+  --worktree-name "agent-bogus" \
+  --session-id "session-d" \
+  --reason "peer-alive" \
+  --lock-pid 1
+assert_exit_code "$?" "0" \
+  "(45) deferred action with bogus path doesn't error (no remove invoked)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
