@@ -114,6 +114,11 @@
       "properties": {
         "default": { "type": "integer", "minimum": 1 },
         "soft_collision": { "type": "integer", "minimum": 1 },
+        "soft_collision_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Per-repo extension of the built-in soft-collision glob set. The orchestrator unions this array with the built-in default set (defined in commands/do-work/steady-state.md's Dispatch rules) AND any --soft-collision-path CLI flags at dispatch time. Arrays here are additive, not replacing — the layered merge of config (last-wins) still applies, but the *consumer* (orchestrator) does the three-way union. Globs follow bash globstar semantics: `**` matches across path segments, `*` matches within a segment. See issue #254 for the dogfooding rationale (shipyard's own do-work spec files force effective concurrency=1 without this extension)."
+        },
         "_comment": { "type": "string" }
       }
     }

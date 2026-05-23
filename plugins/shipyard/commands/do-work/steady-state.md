@@ -486,14 +486,19 @@ When filling a slot, walk this decision tree:
 
      > **No-op when `concurrency == 1`.** At C=1 there is no main-concurrency cap to burst past and no peer slots to share a path with. The `--soft-collision-concurrency` tier becomes a pure overhead check that always says "one slot, dispatch this." Skip the soft-cap counter entirely — don't track `claimed_paths.soft`, don't decrement on return, don't consult `--soft-collision-concurrency`. Treat every path as a hard path for the (no-op) C=1 collision check above.
 
-     Append-style files where edits land in independent sections and merge conflicts are trivially human-resolvable at PR-land time. Default soft-collision glob set:
-     - `CHANGELOG.md`
-     - `CLAUDE.md`
-     - `README.md`
-     - `E2E_TESTS.md`
-     - `docs/**/*.md`
-     - `plugins/*/commands/*.md` and `plugins/*/agents/*.md` and `plugins/*/skills/**/SKILL.md` (spec markdown — append-style across sessions running on the shipyard plugin repo itself, so the meta-bottleneck doesn't park most slots)
-     - any glob passed via `--soft-collision-path` (additive — extends the default set, never replaces it)
+     Append-style files where edits land in independent sections and merge conflicts are trivially human-resolvable at PR-land time. The effective soft-collision glob set is the **union of three layers**:
+
+     1. **Built-in default set** (always present, defined here):
+        - `CHANGELOG.md`
+        - `CLAUDE.md`
+        - `README.md`
+        - `E2E_TESTS.md`
+        - `docs/**/*.md`
+        - `plugins/*/commands/*.md` and `plugins/*/agents/*.md` and `plugins/*/skills/**/SKILL.md` (spec markdown — append-style across sessions running on the shipyard plugin repo itself, so the meta-bottleneck doesn't park most slots)
+     2. **Per-repo config** — any globs in `concurrency.soft_collision_paths` from the merged [`shipyard.config.json`](../../../../CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) (resolved by `shipyard-config.sh load`). Added in [#254](https://github.com/mattsears18/shipyard/issues/254) so repos with their own deeply-nested spec / docs trees can extend the default set without touching plugin code. The shipyard repo itself uses this surface to register `plugins/shipyard/commands/**/*.md`, `plugins/shipyard/agents/**/*.md`, and `plugins/shipyard/skills/**/*.md` — without these, the built-in `plugins/*/commands/*.md` glob (one segment deep) fails to match the nested `plugins/shipyard/commands/do-work/setup.md` etc., and every issue touching the do-work spec hard-collides.
+     3. **CLI flags** — any globs passed via `--soft-collision-path` (repeatable). Same additive semantics; extends the union, never replaces it.
+
+     The orchestrator computes the union once at session startup (after `shipyard-config.sh load` resolves the merged config) and uses it for the rest of the session. Concretely: `effective_set = built_in_defaults ∪ config.concurrency.soft_collision_paths ∪ cli_flags`. Duplicates collapse — a glob present in two layers is still one entry in the effective set.
 
      A candidate may claim a soft path up to `--soft-collision-concurrency` simultaneous claimers per **distinct path** (default `3`). A fourth worker claiming a saturated path parks. Soft paths never collide with hard paths of the same file — they're evaluated against the soft cap, not the hard-collision rule. See [RATIONALE → Soft-collision tier](../do-work-RATIONALE.md#dispatch-rules--why-soft-collision-tiering-exists) for the per-path-vs-per-claimer semantics and the rationale.
 

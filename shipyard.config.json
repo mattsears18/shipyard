@@ -27,7 +27,12 @@
   },
   "concurrency": {
     "default": 2,
-    "soft_collision": 3
+    "soft_collision": 3,
+    "soft_collision_paths": [
+      "plugins/shipyard/commands/**/*.md",
+      "plugins/shipyard/agents/**/*.md",
+      "plugins/shipyard/skills/**/*.md"
+    ]
   },
   "models": {
     "issue_work": "claude-sonnet-4-6"
