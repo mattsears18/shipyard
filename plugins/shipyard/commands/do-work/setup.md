@@ -161,6 +161,8 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
   # 3b — Reap stale agent worktrees from dead Claude Code sessions. Affects future
   # dispatch slot availability, not the first batch.
   cd "$(git rev-parse --show-toplevel)"
+  REAP_AUDIT_LOG="${SHIPYARD_HOME:-$HOME/.shipyard}/reap-audit.jsonl"
+  REAP_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   for wt_dir in .git/worktrees/agent-*; do
     [ -d "$wt_dir" ] || continue
     name=$(basename "$wt_dir")
@@ -168,9 +170,21 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
     [ -z "$worktree_path" ] && worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
     [ -z "$worktree_path" ] && continue
     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
-    if [ "$classification" = "peer-alive" ]; then continue; fi
+    if [ "$classification" = "peer-alive" ]; then
+      # Audit log the deferral so future sessions can trace who held the lock.
+      lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1 || echo "unknown")
+      printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"deferred","reason":"peer-alive","lock_pid":%s,"phase":"setup-3b"}\n' \
+        "$REAP_TS" "<session-id>" "$$" "$name" "${lock_pid:-null}" \
+        >> "$REAP_AUDIT_LOG" 2>/dev/null || true
+      continue
+    fi
     git worktree unlock "$worktree_path" 2>/dev/null
-    git worktree remove --force "$worktree_path" 2>/dev/null
+    if git worktree remove --force "$worktree_path" 2>/dev/null; then
+      lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1 || echo "unknown")
+      printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"reaped","classification":"%s","lock_pid":%s,"phase":"setup-3b"}\n' \
+        "$REAP_TS" "<session-id>" "$$" "$name" "$classification" "${lock_pid:-null}" \
+        >> "$REAP_AUDIT_LOG" 2>/dev/null || true
+    fi
   done
   git worktree prune
 

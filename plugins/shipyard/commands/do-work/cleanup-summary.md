@@ -31,6 +31,10 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    cd "$(git rev-parse --show-toplevel)"
    reaped_worktrees=0
    deferred_live=0
+   REAP_AUDIT_LOG="${SHIPYARD_HOME:-$HOME/.shipyard}/reap-audit.jsonl"
+   REAP_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+   REAP_ACTOR_PID=$$
+
    for wt_dir in .git/worktrees/agent-*; do
      [ -d "$wt_dir" ] || continue
      name=$(basename "$wt_dir")
@@ -47,6 +51,11 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
        # its worktree out from under it destroys in-flight or unpushed
        # work product. Defer.
        deferred_live=$((deferred_live + 1))
+       # Audit log the deferral so future sessions can trace who held the lock.
+       lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1 || echo "unknown")
+       printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"deferred","reason":"peer-alive","lock_pid":%s}\n' \
+         "$REAP_TS" "<session-id>" "$REAP_ACTOR_PID" "$name" "${lock_pid:-null}" \
+         >> "$REAP_AUDIT_LOG" 2>/dev/null || true
        continue
      fi
 
@@ -54,10 +63,17 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      git worktree unlock "$worktree_path" 2>/dev/null
      if git worktree remove --force "$worktree_path" 2>/dev/null; then
        reaped_worktrees=$((reaped_worktrees + 1))
+       # Audit log every successful reap: who did it, when, and why (classification).
+       lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1 || echo "unknown")
+       printf '{"ts":"%s","session":"%s","actor_pid":%s,"worktree":"%s","action":"reaped","classification":"%s","lock_pid":%s}\n' \
+         "$REAP_TS" "<session-id>" "$REAP_ACTOR_PID" "$name" "$classification" "${lock_pid:-null}" \
+         >> "$REAP_AUDIT_LOG" 2>/dev/null || true
      fi
    done
    git worktree prune
    ```
+
+   The audit log at `~/.shipyard/reap-audit.jsonl` is append-only JSONL. Each line records: `ts` (ISO-8601 UTC), `session` (orchestrator session id), `actor_pid` (the reaping process), `worktree` (the `.git/worktrees/<name>` directory name), `action` (`reaped` or `deferred`), `classification` (from `worktree-reap.sh` — `no-lock`, `dead`, `self-ancestor`), and `lock_pid` (the PID from the lock file, or `null` if unparseable). The log write is fire-and-forget (`|| true`) — a filesystem permission issue must never abort the cleanup loop. When a worker later returns `reaped: my worktree was reaped while I was running`, the orchestrator can cross-reference this log to understand which session did the reaping and why. The log is not purged automatically — users who want to cap its size can truncate manually; a typical `/do-work` session adds at most a few lines.
 
 4. **Reap `[gone]` branches.** Worktrees that were attached to merged-then-deleted branches are already gone (step 3 cleared them); now delete the orphaned local branch refs. The `[gone]` upstream marker is what makes this safe — only branches whose remote was deleted post-merge match. Open / blocked / in-flight PRs still have live remotes, so they're untouched:
 

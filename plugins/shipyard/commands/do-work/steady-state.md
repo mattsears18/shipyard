@@ -97,6 +97,12 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   If either `gh` call errors (rate limit, permission denied), log `[cost-comment] PR #<M> post failed: <reason>; continuing` and proceed. Cost-tracking is observational — never block dispatch on a comment-post failure.
 
+- **reaped: my worktree was reaped while I was running** — the worker's worktree was torn down mid-run by the cleanup logic. This is external-infrastructure noise, NOT a logic failure. **Do NOT add `blocked:agent`.** Instead:
+  1. Log the event: `[reap-recovery] #<N> worktree reaped mid-run (last push: <hash>); re-enqueuing for fresh dispatch.`
+  2. Re-add `<N>` to `raw_backlog` (deduped; if already in `ready_issues` or `in_flight`, skip — the issue is already being handled). The next dispatch cycle will pick it up with a fresh worktree.
+  3. Remove the `@me` assignee so the fresh dispatch's self-assign soft-lock works: `gh issue edit <N> --repo <owner/repo> --remove-assignee @me 2>/dev/null || true`
+  4. Look for a `<!-- shipyard-worker-progress -->` comment on the issue (the worker may have posted incremental findings before the reap). If found, include its URL in the `[reap-recovery]` log entry so the next dispatch worker can read it at step 2 in issue-work.md.
+
 - **blocked #<N>** — comment on the issue summarizing the blocker, add the `blocked:agent` label, continue.
 - **errored** — record in the session log, continue.
 
@@ -505,7 +511,28 @@ When filling a slot, walk this decision tree:
      > **No-op when `concurrency == 1`.** At C=1 there are no peer slots and no contention on any lockfile section — the section-collision check always resolves to "no collision." Skip the `lockfile_sections` claim-and-check pass entirely. Don't record `lockfile_sections` in the `in_flight` entry and don't check against them in step C. The scope pre-flight still returns `lockfile_sections` in its ready shape so the session-state schema remains valid, but the orchestrator simply ignores the field at dispatch time.
 
      If the candidate's `lockfile_sections` is non-empty, treat each section as an additional claim and check against the union of in-flight `lockfile_sections`. Blocked by section collision only when at least one section appears in some in-flight worker's set — disjoint sections co-run. The candidate must also pass the hard/soft path-collision rules; section-collision is additional to, not a replacement for, file-path checks. Generated lockfiles (`package-lock.json` / `pnpm-lock.yaml` / `go.sum` / `Cargo.lock`) are never claimed as sections. See [RATIONALE → Section-aware lockfile collision](../do-work-RATIONALE.md#dispatch-rules--section-aware-lockfile-collision).
-   - Otherwise (no lockfile sections claimed, no hard/soft collisions): self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label shipyard`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `shipyard` label.
+   - Otherwise (no lockfile sections claimed, no hard/soft collisions): **run the concurrent-session guard** (see below), then self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label shipyard`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `shipyard` label.
+
+   **Concurrent-session guard (per-dispatch, before self-assign).** Check whether any peer Claude Code instance (a different orchestrator PID) already holds a live lock on any `agent-*` worktree that targets the same issue number `<N>`. This prevents two parallel `/do-work` sessions from independently dispatching against the same issue and racing to push to the same `do-work/issue-<N>` branch.
+
+   ```bash
+   # Check every agent-* worktree whose branch matches do-work/issue-<N>
+   peer_locked=false
+   for wt_dir in "$(git rev-parse --show-toplevel)/.git/worktrees"/agent-*; do
+     [ -d "$wt_dir" ] || continue
+     # Read the branch ref from the worktree metadata
+     branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')
+     [ "$branch_ref" = "do-work/issue-<N>" ] || continue
+     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
+     if [ "$classification" = "peer-alive" ]; then
+       peer_locked=true
+       break
+     fi
+   done
+   ```
+
+   - `peer_locked=false` → no concurrent session is working this issue. Proceed to self-assign and dispatch.
+   - `peer_locked=true` → a live peer holds a lock on a `do-work/issue-<N>` worktree. Park the candidate: log `[concurrent-session-guard] #<N> skipped — peer-alive lock on do-work/issue-<N> worktree; issue already being worked by another /do-work instance.` and move to the next candidate in `ready_issues` (same as a hard-path collision — don't block the slot entirely, just skip this candidate). The issue will become available in the next session once the peer's worktree is reaped.
 
    **Author-trust computation (per-dispatch).** Before composing the prompt, compute `originating_author_trust` for the candidate:
 
