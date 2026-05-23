@@ -149,7 +149,7 @@ DEFAULTS_JQ='{
     "comment_on_issue": false
   },
   "concurrency": {
-    "default": 2,
+    "default": 1,
     "soft_collision": 3,
     "soft_collision_paths": []
   },

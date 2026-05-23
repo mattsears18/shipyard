@@ -112,7 +112,12 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "default": { "type": "integer", "minimum": 1 },
+        "default": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Default size of the /do-work rolling worker pool when no --concurrency CLI flag is passed. Defaults to 1 (sequential) — most repos bump a manifest (plugin.json) or version row (CHANGELOG.md) on every PR, which the dispatch rules treat as a HARD path collision, parking every second-slot candidate. Set to 2 or higher only on repos where most PRs don't claim a shared manifest/version path and realized parallelism is real. See issue #268 for the dogfooding rationale."
+        },
         "soft_collision": { "type": "integer", "minimum": 1 },
         "soft_collision_paths": {
           "type": "array",

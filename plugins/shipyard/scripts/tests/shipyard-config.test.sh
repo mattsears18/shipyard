@@ -121,6 +121,12 @@ assert_contains "$out" '"issue_work": "claude-opus-4-7"' "load emits default mod
 assert_equals "$("$helper" get auto_merge.policy)" "trusted-only" "get auto_merge.policy returns default"
 assert_equals "$("$helper" get models.issue_work)" "claude-opus-4-7" "get models.issue_work returns default"
 
+# concurrency.default — issue #268: built-in default is 1 (sequential) because
+# most repos that follow the "cut a release per PR" convention hard-collide on
+# plugin.json / version-row paths and the second slot parks. Asserting the
+# literal here prevents an accidental flip back to 2.
+assert_equals "$("$helper" get concurrency.default)" "1" "get concurrency.default returns 1 (issue #268)"
+
 # get on an unknown path
 "$helper" get nonexistent.path 2>/dev/null
 assert_exit_code "$?" 3 "get unknown path exits 3"
