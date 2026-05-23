@@ -1083,6 +1083,178 @@ assert_equals "$out" "true" "per_invocation entry stamped degraded=true on compo
 
 rm -rf "$tmphome"
 
+# --------------------------------------------------------------------------
+echo "== update — degraded-init recovery (issue #281)"
+# --------------------------------------------------------------------------
+# Issue #281: cmd_update exited 3 with no recovery when the session file
+# disappeared mid-session (e.g. a concurrent /do-work session's orphan-
+# sweep reaping our file). cmd_bump_tokens had carried --allow-degraded-
+# init since #253; this test asserts the same recovery path now exists
+# for update. State from before the disappear is lost, but every update
+# from the disappear forward lands somewhere durable.
+
+tmphome=$(mktmphome)
+
+# Don't init first — simulate post-reap state. Without --allow-degraded-init
+# update exits 3 (preserved default behaviour).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "281-recovery" --set '.drain.active = true' 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "update without --allow-degraded-init on missing file exits 3 (preserved)"
+
+# With --allow-degraded-init, the file gets recreated and the update applies.
+SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "281-recovery" \
+  --set '.drain.active = true' \
+  --allow-degraded-init --degraded-init-repo "owner/repo" 2>/dev/null
+rc=$?
+assert_equals "$rc" "0" "update with --allow-degraded-init succeeds when file is missing"
+
+# File was auto-created.
+assert_file_exists "$tmphome/sessions/281-recovery.json" "update --allow-degraded-init creates the session file"
+
+# .degraded_recovery_at is set (audit/metrics signal).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "281-recovery" --path ".degraded_recovery_at")
+if [[ -n "$out" ]] && [[ "$out" != "null" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" ".degraded_recovery_at stamped on update-recovery init"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (got: %s)\n' "$RED" "$RESET" ".degraded_recovery_at stamped on update-recovery init" "$out"
+  fail=$((fail+1))
+fi
+
+# .repo persists from --degraded-init-repo.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "281-recovery" --path ".repo")
+assert_equals "$out" "owner/repo" "update --degraded-init-repo persists into .repo"
+
+# The --set expression actually landed.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "281-recovery" --path ".drain.active")
+assert_equals "$out" "true" "update --set landed after degraded-init recovery"
+
+# Missing --degraded-init-repo falls back to "unknown/unknown" sentinel.
+SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "281-no-repo" \
+  --set '.in_flight = {}' \
+  --allow-degraded-init 2>/dev/null
+rc=$?
+assert_equals "$rc" "0" "update --allow-degraded-init without --degraded-init-repo still succeeds"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "281-no-repo" --path ".repo")
+assert_equals "$out" "unknown/unknown" "missing --degraded-init-repo falls back to unknown/unknown sentinel"
+
+# Subsequent update on a recovered file should NOT re-trigger init; it just
+# updates. Verify by setting a field and checking it persists across writes
+# without resetting other fields.
+SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "281-recovery" \
+  --set '.drain.polls = 5' \
+  --allow-degraded-init 2>/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "281-recovery" --path ".drain.polls")
+assert_equals "$out" "5" "second update on recovered file applies normally (no re-init)"
+# .drain.active set in first update should still be true (not reset by re-init).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "281-recovery" --path ".drain.active")
+assert_equals "$out" "true" "first-update .drain.active survives second update (no re-init)"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== cleanup --reap-audit (issue #281)"
+# --------------------------------------------------------------------------
+# Acceptance criterion 2 from #281: 'an audit-log entry exists for every
+# reap, with enough information to reconstruct cause.' The setup.md step
+# 1.6 orphan-sweep now calls cleanup --reap-audit --reaper-session-id <id>
+# so each session-file reap appends one JSONL line to
+# ~/.shipyard/reap-audit.jsonl with the reaped session's metadata + the
+# reaper's session-id and pid.
+
+tmphome=$(mktmphome)
+
+# Stand up a session to be reaped. Bump some tokens so .tokens.totals
+# is non-zero — the audit line should capture them.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "victim" --repo "victim/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "victim" --input 10000 --output 5000 --cache-read 2000 \
+  --mode issue-work --model claude-opus-4-7 >/dev/null
+
+# Reap with --reap-audit. The audit log lands in $SHIPYARD_HOME/reap-audit.jsonl.
+SHIPYARD_HOME="$tmphome" bash "$helper" cleanup \
+  --session-id "victim" \
+  --reap-audit \
+  --reaper-session-id "reaper-281" \
+  --reaper-pid "12345" \
+  --reason "orphan-sweep-step-1.6" \
+  --phase "setup-1.6" 2>/dev/null
+rc=$?
+assert_equals "$rc" "0" "cleanup --reap-audit exits 0"
+
+# Victim file is gone.
+if [[ -f "$tmphome/sessions/victim.json" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "cleanup --reap-audit removes the reaped session file"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "cleanup --reap-audit removes the reaped session file"
+  pass=$((pass+1))
+fi
+
+# Audit log was written.
+audit_log="$tmphome/reap-audit.jsonl"
+assert_file_exists "$audit_log" "cleanup --reap-audit writes the audit-log file"
+
+# One JSONL line written (audit log is append-only).
+line_count=$(wc -l <"$audit_log" | tr -d ' ')
+assert_equals "$line_count" "1" "exactly one audit-log line written per reap"
+
+# Audit line contains the load-bearing fields. Parse with jq and check
+# each one rather than substring-matching the raw line.
+audit_line=$(cat "$audit_log")
+out=$(printf '%s' "$audit_line" | jq -r '.action')
+assert_equals "$out" "reaped-session-file" "audit line action = reaped-session-file"
+out=$(printf '%s' "$audit_line" | jq -r '.reaped_session_id')
+assert_equals "$out" "victim" "audit line carries reaped_session_id"
+out=$(printf '%s' "$audit_line" | jq -r '.reaper_session_id')
+assert_equals "$out" "reaper-281" "audit line carries reaper_session_id"
+out=$(printf '%s' "$audit_line" | jq -r '.reaper_pid')
+assert_equals "$out" "12345" "audit line carries reaper_pid"
+out=$(printf '%s' "$audit_line" | jq -r '.reaped_repo')
+assert_equals "$out" "victim/repo" "audit line captures the reaped session's repo"
+out=$(printf '%s' "$audit_line" | jq -r '.reaped_tokens_totals.input')
+assert_equals "$out" "10000" "audit line captures reaped_tokens_totals.input (loss attribution)"
+out=$(printf '%s' "$audit_line" | jq -r '.reaped_tokens_totals.output')
+assert_equals "$out" "5000" "audit line captures reaped_tokens_totals.output"
+out=$(printf '%s' "$audit_line" | jq -r '.reason')
+assert_equals "$out" "orphan-sweep-step-1.6" "audit line carries reason"
+out=$(printf '%s' "$audit_line" | jq -r '.phase')
+assert_equals "$out" "setup-1.6" "audit line carries phase"
+
+# reaped_pid should be a number (the session's PPID at init time), not null.
+out=$(printf '%s' "$audit_line" | jq -r '.reaped_pid | type')
+assert_equals "$out" "number" "audit line carries reaped_pid as a number"
+
+# Usage error: --reap-audit without --reaper-session-id is rejected.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "victim2" --repo "v/r" >/dev/null 2>&1
+SHIPYARD_HOME="$tmphome" bash "$helper" cleanup \
+  --session-id "victim2" --reap-audit 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "--reap-audit without --reaper-session-id exits 64"
+
+# Cleanup without --reap-audit does NOT write to the audit log.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "self-cleanup" --repo "s/r" >/dev/null
+prev_lines=$(wc -l <"$audit_log" | tr -d ' ')
+SHIPYARD_HOME="$tmphome" bash "$helper" cleanup --session-id "self-cleanup" 2>/dev/null
+curr_lines=$(wc -l <"$audit_log" | tr -d ' ')
+assert_equals "$curr_lines" "$prev_lines" "cleanup without --reap-audit does not write audit-log line"
+
+# Idempotency: cleaning up an already-gone session with --reap-audit is a no-op
+# (no audit line, no error). Matches the existing cleanup contract.
+SHIPYARD_HOME="$tmphome" bash "$helper" cleanup \
+  --session-id "already-gone" \
+  --reap-audit --reaper-session-id "reaper-281" 2>/dev/null
+rc=$?
+assert_equals "$rc" "0" "cleanup --reap-audit on missing file is idempotent (exit 0)"
+final_lines=$(wc -l <"$audit_log" | tr -d ' ')
+assert_equals "$final_lines" "$prev_lines" "cleanup --reap-audit on missing file does not write audit line"
+
+rm -rf "$tmphome"
+
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]
