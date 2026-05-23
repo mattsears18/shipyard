@@ -166,7 +166,10 @@ Usage:
   session-state.sh read        --session-id <id> [--path <jq-path>]
   session-state.sh update      --session-id <id> --set '<jq-expr>' [--set ...]
                                [--skip-timing-autoflush]
+                               [--allow-degraded-init] [--degraded-init-repo <r>]
   session-state.sh cleanup     --session-id <id>
+                               [--reap-audit --reaper-session-id <id>
+                                [--reaper-pid N] [--reason <str>] [--phase <str>]]
   session-state.sh is-active   --session-id <id>
   session-state.sh bump-tokens --session-id <id>
                                [--issue N] [--pr N]
@@ -181,6 +184,7 @@ Usage:
   session-state.sh set-progress --session-id <id>
                                --slot <slot-id>
                                [--current N|null] [--total N|null]
+                               [--allow-degraded-init] [--degraded-init-repo <r>]
 
 Environment:
   SHIPYARD_HOME                base dir for sessions/ (default: $HOME/.shipyard)
@@ -189,8 +193,8 @@ Exit codes:
   0   success (is-active: file exists and pid is alive)
   1   is-active: file missing OR pid unset OR pid dead
   2   refused to clobber (init w/o --force)
-  3   session file missing (read, update, bump-tokens w/o --allow-degraded-init,
-      read-tokens, set-progress)
+  3   session file missing (read, update / bump-tokens / set-progress without
+      --allow-degraded-init, read-tokens)
   64  usage error
   65+ internal helper failure
 EOF
@@ -415,12 +419,36 @@ cmd_update() {
   # documented public CLI surface; callers outside this script should
   # leave it off.
   local skip_timing_autoflush=0
+  # --allow-degraded-init and --degraded-init-repo extend the same recovery
+  # path bump-tokens has carried since issue #253 to the `update` subcommand
+  # (issue #281). The original repro: an orchestrator-side `update` call
+  # during the drain phase returned exit 3 because a concurrent /do-work
+  # session's orphan-sweep had reaped this session's file (the PID-liveness
+  # gate failed in some still-unidentified way, but the failure was real:
+  # `lightwork-20260523T193509Z-9686` lost its state mid-session). bump-
+  # tokens had a degraded-recovery path; update did not. Result: the
+  # orchestrator had to call `init --force` by hand to recover, and any
+  # working-memory mirroring `update` between the disappear and the manual
+  # init-force silently failed at exit 3.
+  #
+  # With this flag set, an `update` against a missing file recreates a
+  # minimal state file via `cmd_init --degraded-recovery` (same shape and
+  # `.degraded_recovery_at` stamp as bump-tokens) and then proceeds with
+  # the update. State from before the disappear is lost (the file was
+  # gone), but every subsequent update lands somewhere durable. Callers
+  # that want strict "must-have-pre-existing-file" semantics simply omit
+  # the flag — the original exit-3 behaviour is preserved by default to
+  # avoid masking real bugs (forgotten init, wrong session-id, etc.).
+  local allow_degraded_init=0
+  local degraded_init_repo=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --session-id) session_id="${2:-}"; shift 2 ;;
       --set) sets+=("${2:-}"); shift 2 ;;
       --skip-timing-autoflush) skip_timing_autoflush=1; shift ;;
+      --allow-degraded-init) allow_degraded_init=1; shift ;;
+      --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
       *) echo "update: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
@@ -440,8 +468,29 @@ cmd_update() {
   target=$(session_path "$session_id")
 
   if [[ ! -f "$target" ]]; then
-    echo "update: $target does not exist (use init first)" >&2
-    exit 3
+    if [[ "$allow_degraded_init" -eq 1 ]]; then
+      # Degraded recovery: the file disappeared while the session was
+      # running (issue #281 — same race surface as #253's bump-tokens
+      # recovery, but for the `update` codepath). Recreate a minimal
+      # session file marked as degraded-recovery, then fall through to
+      # the update. Use the supplied repo string or a sentinel.
+      local recovery_repo="${degraded_init_repo:-unknown/unknown}"
+      if ! cmd_init \
+            --session-id "$session_id" \
+            --repo "$recovery_repo" \
+            --degraded-recovery \
+            >/dev/null; then
+        echo "update: degraded recovery init failed for $target" >&2
+        exit 68
+      fi
+      # Log the recovery to stderr — invisible to callers that 2>/dev/null
+      # but visible in the orchestrator transcript so the user knows
+      # session state was recreated mid-session.
+      echo "update: $target was missing — degraded-init recovered (state from before the disappear is lost)" >&2
+    else
+      echo "update: $target does not exist (use init first)" >&2
+      exit 3
+    fi
   fi
 
   # Self-healing setup-timing flush (issue #283). The orchestrator is
