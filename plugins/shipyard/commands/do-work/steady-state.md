@@ -345,8 +345,14 @@ When filling a slot, walk this decision tree:
 
    **Two collision tiers.** Path claims are partitioned into two buckets, with different parallelism rules:
 
+   > **Skip when `concurrency == 1`.** At C=1 there is only ever one slot in flight — no peers to collide with. The path-collision check is a pure overhead pass that always resolves to "no collision" because `in_flight` is either empty or holds exactly one slot (the current worker, which has already been released by step B before step C runs). Skip the collision computation entirely; proceed directly to self-assign and dispatch. The `claimed_paths` partitioning step in the just-in-time scope pre-flight (step 6 C=1 note) still runs so the session-state write-through has a valid `claimed_paths` shape — but the check against `in_flight` is a no-op.
+
    - **Hard collision (park rule).** Source files where parallel edits clobber the same lines — `app.json`, `firestore.rules`, `vercel.json`, most `.ts/.tsx/.js/.jsx/.py/.go/.rs` source, generated SQL migrations, build configs (`vite.config.ts`, `next.config.js`, `tsconfig.json`, `pyproject.toml`, etc.). Existing rule applies: if any candidate `hard` path matches (exact paths + parent-dir prefixes; `src/auth/login.ts` collides with `src/auth/`) any in-flight `hard` OR `soft` path, the candidate is blocked. Park the slot until the colliding worker returns.
-   - **Soft collision (capped concurrency).** Append-style files where edits land in independent sections and merge conflicts are trivially human-resolvable at PR-land time. Default soft-collision glob set:
+   - **Soft collision (capped concurrency).**
+
+     > **No-op when `concurrency == 1`.** At C=1 there is no main-concurrency cap to burst past and no peer slots to share a path with. The `--soft-collision-concurrency` tier becomes a pure overhead check that always says "one slot, dispatch this." Skip the soft-cap counter entirely — don't track `claimed_paths.soft`, don't decrement on return, don't consult `--soft-collision-concurrency`. Treat every path as a hard path for the (no-op) C=1 collision check above.
+
+     Append-style files where edits land in independent sections and merge conflicts are trivially human-resolvable at PR-land time. Default soft-collision glob set:
      - `CHANGELOG.md`
      - `CLAUDE.md`
      - `README.md`
@@ -366,7 +372,11 @@ When filling a slot, walk this decision tree:
 
    When a worker returns, its slot's `claimed_paths.hard` and `claimed_paths.soft` are both released — decrement the soft-cap counters for every soft path the slot was holding.
 
-   - **Section-aware lockfile rule.** If the candidate's `lockfile_sections` is non-empty, treat each section as an additional claim and check against the union of in-flight `lockfile_sections`. Blocked by section collision only when at least one section appears in some in-flight worker's set — disjoint sections co-run. The candidate must also pass the hard/soft path-collision rules; section-collision is additional to, not a replacement for, file-path checks. Generated lockfiles (`package-lock.json` / `pnpm-lock.yaml` / `go.sum` / `Cargo.lock`) are never claimed as sections. See [RATIONALE → Section-aware lockfile collision](../do-work-RATIONALE.md#dispatch-rules--section-aware-lockfile-collision).
+   - **Section-aware lockfile rule.**
+
+     > **No-op when `concurrency == 1`.** At C=1 there are no peer slots and no contention on any lockfile section — the section-collision check always resolves to "no collision." Skip the `lockfile_sections` claim-and-check pass entirely. Don't record `lockfile_sections` in the `in_flight` entry and don't check against them in step C. The scope pre-flight still returns `lockfile_sections` in its ready shape so the session-state schema remains valid, but the orchestrator simply ignores the field at dispatch time.
+
+     If the candidate's `lockfile_sections` is non-empty, treat each section as an additional claim and check against the union of in-flight `lockfile_sections`. Blocked by section collision only when at least one section appears in some in-flight worker's set — disjoint sections co-run. The candidate must also pass the hard/soft path-collision rules; section-collision is additional to, not a replacement for, file-path checks. Generated lockfiles (`package-lock.json` / `pnpm-lock.yaml` / `go.sum` / `Cargo.lock`) are never claimed as sections. See [RATIONALE → Section-aware lockfile collision](../do-work-RATIONALE.md#dispatch-rules--section-aware-lockfile-collision).
    - Otherwise (no lockfile sections claimed, no hard/soft collisions): self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label shipyard`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `shipyard` label.
 
    **Author-trust computation (per-dispatch).** Before composing the prompt, compute `originating_author_trust` for the candidate:

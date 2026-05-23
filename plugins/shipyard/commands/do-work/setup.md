@@ -101,6 +101,8 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 
 ### 0.7 Setup parallelization contract (fire-once-batch)
 
+> **Skip when `concurrency == 1`.** At C=1 there is only ever one slot — no peer agents to coordinate against and no benefit from pre-populating a pool of more than one candidate. Skip the parallel batch entirely: run steps 1 → 7 serially (each as a single sequential call). Step 5's failing-PR snapshot is also deferred (see [Step 5](#5-snapshot-failing-prs)); step 6's scope pre-flight is just-in-time (see [Step 6](#6-initial-scope-pre-flight)); step 7 fires exactly one dispatch (see [Step 7](#7-initial-pool-fill)). Steps that are still required at C=1: worktree setup (step 0.5), config check (step 0.4), session-state init (step 1.5), trusted-author allowlist (step 1.7), backlog overview (step 2), label setup + cleanup (steps 3a–3c), refine pass (step 3.5), backlog fetch + rank (step 4), divert checks (step 4.5). The parallelization machinery — the `step_0_7_parallel_batch` timing window, the background bash group, the fire-once-batch burst — is purely coordination overhead at C=1 and is omitted. Readers should be able to see this gate as the explicit boundary between "C≥2 parallel setup" and "C=1 serial setup."
+
 **Steps 1 → 5 are a graph of read-only `gh` calls with no data dependencies on each other.** Fire them as a single parallel burst — either one `Bash` tool call wrapping `bash -c '... & ... & wait'`, or N parallel `Bash` tool calls in one orchestrator message. A serial walk through steps 1 → 5 is the failure mode this section prevents.
 
 **Timing instrumentation (issue #238).** The parallel batch as a whole is one timing window. Open the window just before firing the burst; close it once `wait` (or all parallel tool calls) return.
@@ -983,6 +985,8 @@ Both checks are cheap (two `gh` calls) and the cached results power the status l
 
 ### 5. Snapshot failing PRs
 
+> **Lazy-load when `concurrency == 1`.** At C=1 the orchestrator runs sequentially — at most one slot is ever in flight. The failing-PR set is only relevant when there's a free moment to dispatch a fix-checks worker, and a free moment is guaranteed to exist whenever the single slot returns and all queues are empty. Skip this query at setup and defer it to the first idle turn in the steady-state loop (step D's Failed-PR scan). Set `failed_prs = []` at startup. The `-label:blocked:ci` filter note still applies when the deferred query eventually runs.
+
 This read is part of the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) — fire it in parallel with steps 1 / 2 / 3d.1 / 3d.2 / 4.5a / 4.5b. The filtering / deduping logic runs locally on the returned JSON.
 
 ```bash
@@ -999,6 +1003,8 @@ Each entry → push onto `failed_prs`, **deduped against entries already in `fai
 The `-label:blocked:ci` filter is still correct because [step 3d's auto-clear sweep](#3-ensure-label-exists--recover-from-prior-session) already ran — refreshed PRs are unlabeled by 3d and flow through normally; only genuinely-stuck PRs still carry the label here. See [RATIONALE → Step 5 filter correctness](../do-work-RATIONALE.md#step-5--why-the--labelblockedci-filter-is-still-correct).
 
 ### 6. Initial scope pre-flight
+
+> **Just-in-time when `concurrency == 1`.** At C=1 pre-flighting `2 × concurrency` (i.e., 2) candidates at setup is wasted token spend: by the time the single slot returns, rankings may have shifted (new comments, refined issues, closed blockers) and the pre-flighted decisions are stale. Instead, pre-flight **only the top candidate** immediately before each dispatch (inline with step 7 and step C). This converts the upfront batch-scope call into a single just-in-time call per dispatch. The rest of step 6's mechanics — ready/deferred shapes, `claimed_paths` partitioning, `deferred_issues` list, the comment-and-drop for deferred entries — are unchanged; only the timing (upfront vs per-dispatch) and the batch size (2 vs 1) change. Set `ready_issues = []` at startup; populate lazily.
 
 **Timing instrumentation (issue #238).** Bracket the entire batch of scoping-agent calls (start before dispatching all agents in parallel; end after all return and `ready_issues` / `deferred_issues` are populated). Also record the `scope_preflight` sub-block for the `/shipyard:cost report --show-setup` breakdown:
 
@@ -1189,6 +1195,8 @@ The rule of thumb is: banners are LOUD and one-shot (printed when the transition
 After this call the sidecar is gone and the session state file's `.setup` block contains the full per-phase wall-clock breakdown. The cost-history flush at end-of-session will pick it up automatically.
 
 ### 7. Initial pool fill
+
+> **Fire one when `concurrency == 1`.** At C=1 the "pool" is a single slot. Skip the parallel `Agent` burst and dispatch exactly one worker: apply the dispatch rules from [steady-state dispatch rules](./steady-state.md#dispatch-rules-used-by-step-7-and-step-c) to pick the top candidate, run the just-in-time scope pre-flight for that one candidate (per the C=1 note in [step 6](#6-initial-scope-pre-flight)), then dispatch a single `Agent` call (no `run_in_background: true` needed — the slot is already available). Return control immediately after dispatch; the steady-state loop handles the rest.
 
 Dispatch up to `--concurrency` workers in parallel — one message with N background `Agent` calls (`run_in_background: true`, `isolation: "worktree"`, and `subagent_type` matching the worker's `mode:` per the [per-mode subagent_type routing table](./steady-state.md#dispatch-rules-used-by-step-7-and-step-c) — `shipyard:issue-worker` for `mode: issue-work`, `shipyard:fix-checks-worker` for `mode: fix-checks-only`, etc.). For each slot, pick the next job using the **dispatch rules** below.
 
