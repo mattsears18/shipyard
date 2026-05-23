@@ -509,6 +509,56 @@ assert_contains "$out" "4102" "comment format includes the output token count"
 assert_contains "$out" "claude-opus-4-7" "comment format includes the model"
 assert_contains "$out" "issue-work" "comment format includes the mode"
 
+# USD formatting contract (issue #277): the Estimated cost (USD) row must
+# render as `$X.YZ` — dollar sign prefix + exactly 2 decimal places (cents).
+# Raw float output like `0.593` or `3.9216` makes the metric look like a
+# unitless ratio rather than a currency amount. This pins the format so a
+# future jq refactor can't regress.
+#
+# 18203 input + 4102 output + 8210 cache_read at opus-4-7 pricing
+# (15 / 75 / 1.5 USD per 1M tokens):
+#   18203 * 15/1e6 + 4102 * 75/1e6 + 8210 * 1.5/1e6 = 0.27305 + 0.30765 + 0.01232 = 0.59302
+# rounds to $0.59.
+assert_contains "$out" "| Estimated cost (USD) | \$0.59 |" "USD cost rendered as \$X.YZ with dollar prefix + 2 decimals"
+
+# Negative regression check: the unrounded raw-float string (`0.593`) must
+# NOT appear in the comment body. If this fires, the formatter was bypassed.
+if [[ "$out" == *"| Estimated cost (USD) | 0.593 |"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "USD cost no longer renders as raw float"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "USD cost no longer renders as raw float"
+  pass=$((pass+1))
+fi
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== read-tokens — USD formatting edge cases (issue #277)"
+# --------------------------------------------------------------------------
+# Pin the USD-formatting contract against a few rounding and zero edge cases
+# so future template changes can't silently regress the format.
+
+# Zero-cost edge case: a fresh session with no bump-tokens calls renders
+# `$0.00`, not `$0` or raw `0`.
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-zero" --repo "o/r" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-zero" --format comment)
+assert_contains "$out" "| Estimated cost (USD) | \$0.00 |" "zero-token session renders as \$0.00"
+rm -rf "$tmphome"
+
+# Rounding edge case: a token count that produces a value with >2 decimal
+# places must round to cents (banker's rounding via jq's `round`). 18203
+# input tokens alone at opus-4-7 pricing = 0.27305 -> $0.27.
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-round" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-round" --input 18203 \
+  --mode issue-work --model claude-opus-4-7 >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-round" --format comment)
+assert_contains "$out" "| Estimated cost (USD) | \$0.27 |" "0.27305 USD rounds to \$0.27"
+rm -rf "$tmphome"
+
 # Bad --format value -> usage error.
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens \
   --session-id "tok-c" --pr 200 --format invalid 2>&1; echo "rc=$?")
