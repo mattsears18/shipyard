@@ -184,7 +184,6 @@ Usage:
   session-state.sh set-progress --session-id <id>
                                --slot <slot-id>
                                [--current N|null] [--total N|null]
-                               [--allow-degraded-init] [--degraded-init-repo <r>]
 
 Environment:
   SHIPYARD_HOME                base dir for sessions/ (default: $HOME/.shipyard)
@@ -193,8 +192,8 @@ Exit codes:
   0   success (is-active: file exists and pid is alive)
   1   is-active: file missing OR pid unset OR pid dead
   2   refused to clobber (init w/o --force)
-  3   session file missing (read, update / bump-tokens / set-progress without
-      --allow-degraded-init, read-tokens)
+  3   session file missing (read, update / bump-tokens without
+      --allow-degraded-init, read-tokens, set-progress)
   64  usage error
   65+ internal helper failure
 EOF
@@ -1101,10 +1100,37 @@ cmd_is_active() {
 
 cmd_cleanup() {
   local session_id=""
+  # --reap-audit (issue #281, acceptance criterion 2) — when set, writes
+  # a single JSONL line to $SHIPYARD_HOME/reap-audit.jsonl BEFORE the
+  # rm -f. The line captures everything the file would otherwise carry
+  # to its grave: the reaped session's pid, started_at, updated_at, repo,
+  # token totals (so the loss is quantified), degraded_attribution_count,
+  # and the timestamp of the reap. Plus the reaper's session id and pid
+  # — that's the attribution criterion 2 calls for: when a peer's sweep
+  # reaps our file, the next investigator can see who did it and when.
+  #
+  # Off by default. The end-of-session cleanup-summary.md step 7 path
+  # does NOT pass --reap-audit because that's a happy-path delete (the
+  # session is genuinely done), not a "reap." Only setup.md step 1.6's
+  # peer-sweep callsite passes it, since that IS a reap-of-someone-else.
+  # The format mirrors worktree-reap.sh's audit-log lines (same JSONL
+  # file) — see issue #284 for the worktree-side encoding. The
+  # action is "reaped-session-file" so a reader can distinguish session-
+  # file reaps from worktree reaps.
+  local reap_audit=0
+  local reaper_session_id=""
+  local reaper_pid="$$"
+  local reason=""
+  local phase=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --session-id) session_id="${2:-}"; shift 2 ;;
+      --reap-audit) reap_audit=1; shift ;;
+      --reaper-session-id) reaper_session_id="${2:-}"; shift 2 ;;
+      --reaper-pid) reaper_pid="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      --phase) phase="${2:-}"; shift 2 ;;
       *) echo "cleanup: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
@@ -1112,6 +1138,19 @@ cmd_cleanup() {
   if [[ -z "$session_id" ]]; then
     echo "cleanup: --session-id is required" >&2
     usage
+    exit 64
+  fi
+
+  # --reap-audit requires --reaper-session-id so the audit-log line
+  # actually identifies the reaper. Reject usage-error rather than
+  # emit a line with an empty reaper field — that would be unparseable
+  # forensic data later.
+  if [[ "$reap_audit" -eq 1 ]] && [[ -z "$reaper_session_id" ]]; then
+    echo "cleanup: --reap-audit requires --reaper-session-id" >&2
+    exit 64
+  fi
+  if [[ "$reap_audit" -eq 1 ]] && ! [[ "$reaper_pid" =~ ^[0-9]+$ ]]; then
+    echo "cleanup: --reaper-pid must be a non-negative integer (got: $reaper_pid)" >&2
     exit 64
   fi
 
@@ -1123,6 +1162,65 @@ cmd_cleanup() {
   # is corrupt, or the cleanup ran on the wrong session-id) — not a
   # session whose file is already gone.
   if [[ -f "$target" ]]; then
+    # If --reap-audit is set, capture the reaped session's state BEFORE
+    # we rm it so the audit line carries the loss-attribution data.
+    # Best-effort: a corrupt JSON gets `null` for each captured field,
+    # which is still better than no audit entry at all.
+    if [[ "$reap_audit" -eq 1 ]]; then
+      local shipyard_home="${SHIPYARD_HOME:-$HOME/.shipyard}"
+      mkdir -p "$shipyard_home" 2>/dev/null || true
+      local audit_log="$shipyard_home/reap-audit.jsonl"
+      local ts
+      ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+      # mtime of the reaped file in seconds-since-epoch; helps determine
+      # how stale the file was at the moment of reap. macOS and Linux
+      # `stat` flags differ — try GNU first, fall back to BSD.
+      local mtime_epoch
+      mtime_epoch=$(stat -c %Y "$target" 2>/dev/null || stat -f %m "$target" 2>/dev/null || echo "null")
+      [[ -z "$mtime_epoch" ]] && mtime_epoch="null"
+
+      # Build the audit line with the reaped session's metadata. We use
+      # jq to construct the JSON so quoting / typing is correct.
+      # `--argjson` for numeric and null fields; `--arg` for strings.
+      # Any field missing from the source file becomes JSON null in the
+      # output line — the schema is best-effort, not strict.
+      local audit_line
+      audit_line=$(jq -c -n \
+        --arg ts "$ts" \
+        --arg reaped_session_id "$session_id" \
+        --arg reaper_session_id "$reaper_session_id" \
+        --argjson reaper_pid "$reaper_pid" \
+        --arg reason "$reason" \
+        --arg phase "$phase" \
+        --argjson mtime_epoch "$mtime_epoch" \
+        --slurpfile src "$target" \
+        '{
+          ts: $ts,
+          action: "reaped-session-file",
+          reaped_session_id: $reaped_session_id,
+          reaper_session_id: $reaper_session_id,
+          reaper_pid: $reaper_pid,
+          reaped_pid: ($src[0].pid // null),
+          reaped_repo: ($src[0].repo // null),
+          reaped_started_at: ($src[0].started_at // null),
+          reaped_updated_at: ($src[0].updated_at // null),
+          reaped_mtime_epoch: $mtime_epoch,
+          reaped_tokens_totals: ($src[0].tokens.totals // null),
+          reaped_degraded_attribution_count: ($src[0].tokens.degraded_attribution_count // 0),
+          reaped_degraded_recovery_at: ($src[0].degraded_recovery_at // null),
+          reaped_per_invocation_count: ($src[0].tokens.per_invocation // [] | length),
+          reason: (if $reason == "" then null else $reason end),
+          phase: (if $phase == "" then null else $phase end)
+        }' 2>/dev/null)
+
+      # Fire-and-forget: a permission error / disk-full / corrupt source
+      # JSON must NOT abort the reap. The reap itself is the load-bearing
+      # work; the audit line is observability.
+      if [[ -n "$audit_line" ]]; then
+        printf '%s\n' "$audit_line" >> "$audit_log" 2>/dev/null || true
+      fi
+    fi
     rm -f "$target"
   fi
   # Also drop any leftover .tmp.<pid> files from a crashed update — these
