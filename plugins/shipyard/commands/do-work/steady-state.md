@@ -10,7 +10,7 @@ When an agent completes, the harness notifies you. Each notification is one orch
 
 ### Turn contract (read this first, every turn)
 
-Every steady-state turn has the shape `reconcile → release → dispatch (or prove idle) → invariant line`. The **last** thing you do every turn is exactly one of:
+Every steady-state turn has the shape `reconcile → [mid-session unblock re-eval] → release → dispatch (or prove idle) → invariant line`. The **last** thing you do every turn is exactly one of:
 
 1. **Issue one or more `Agent` tool calls** to fill freed slots, then print the invariant line below the tool call(s).
 2. **Print the structured idle-proof line** (defined in step E) showing every queue is empty and every slot is in flight or legitimately parked.
@@ -177,6 +177,121 @@ For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
 - **blocked pr-batch-fix: <reason>** — log to summary, back off, surface in status line. No auto-retry.
 
 `session_prs` is the set of PR numbers this orchestrator session opened (issue-worker shipped, fix-main-ci shipped, fix-failing-prs-batch shipped) plus any pre-existing `@me` PRs that fix-checks touched. It is read by the end-of-session drain to decide what to watch and when to exit. A PR enters `session_prs` exactly once — re-touches don't re-add. Started empty at step 7's initial pool fill.
+
+#### A.5. Mid-session blocked-issue re-evaluation (fires on `shipped #<N> via PR #<M>` only)
+
+When a `shipped #<N> via PR #<M>` return is reconciled (issue-work mode only — NOT synthetic-divert `shipped main-ci-fix` / `shipped pr-batch-fix` returns, which don't close issues), run a targeted sweep: look for open issues that were blocked by the issue just closed, and unblock any whose *all* blockers are now resolved.
+
+**Why.** Step 3d.2 at session-start auto-clears `blocked:agent` labels by checking `Blocked by #N` references. But it only runs once, at startup. If a PR ships mid-session that closes a referenced blocker, issues waiting on that blocker stay out of `raw_backlog` for the rest of the session and only surface on the *next* `/do-work` invocation — requiring manual intervention in the interim. See [#245](https://github.com/mattsears18/shipyard/issues/245) for the reproducer.
+
+**Step-by-step.**
+
+1. **Identify the issues the shipped PR closed.** `closingIssuesReferences` is the canonical GitHub signal — it lists every issue the PR's body refers to with a [closing keyword](https://docs.github.com/en/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue):
+
+   ```bash
+   closing_issues=$(gh pr view <M> --repo <owner/repo> \
+     --json closingIssuesReferences \
+     --jq '[.closingIssuesReferences[].number] | join(" ")')
+   ```
+
+   `closing_issues` is a space-separated list of issue numbers (e.g., `"233 240"`). If empty (no closing keywords), skip the rest of this step — nothing to re-evaluate.
+
+2. **Update the `blocker_state` cache** for each closed issue — they are now CLOSED regardless of what the cache held before:
+
+   ```bash
+   for closed_issue in $closing_issues; do
+     blocker_state[$closed_issue]="CLOSED"
+   done
+   ```
+
+   The cache update ensures that subsequent blocker checks within this step (and later in the session) don't fire redundant `gh issue view` calls.
+
+3. **For each closed issue, search for open issues that reference it as a blocker:**
+
+   ```bash
+   for closed_issue in $closing_issues; do
+     # Only issues with the blocked:agent label carry Blocked-by references
+     # that the orchestrator manages — the label is the entry point.
+     # gh issue list's --search 'in:body' qualifier is a prefix match on the
+     # issue body, so the phrase match here is the fastest server-side filter.
+     candidates=$(gh issue list --repo <owner/repo> --state open \
+       --label blocked:agent \
+       --search "\"Blocked by #${closed_issue}\"" \
+       --json number,body \
+       --jq '[.[] | {number, body}]')
+
+     echo "$candidates" | jq -c '.[]' | while IFS= read -r candidate; do
+       n=$(echo "$candidate" | jq -r .number)
+       body=$(echo "$candidate" | jq -r .body)
+
+       # Extract every `Blocked by #X` reference from the body (same regex as step 3d.2).
+       blockers=$(printf '%s' "$body" \
+         | grep -oiE 'blocked by[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)' \
+         | grep -oE '#[0-9]+' \
+         | tr -d '#' \
+         | sort -u)
+
+       if [ -z "$blockers" ]; then continue; fi  # no refs — shouldn't happen given the search, but be safe
+
+       # Re-evaluate each referenced blocker against the (now-updated) blocker_state cache.
+       all_closed=true
+       closed_list=""
+       for b in $blockers; do
+         state="${blocker_state[$b]:-}"
+         if [ -z "$state" ]; then
+           # Cache miss — query GitHub and populate.
+           state=$(gh issue view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null \
+             || gh pr view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null \
+             || echo "unresolvable")
+           blocker_state[$b]="$state"
+         fi
+         case "$state" in
+           CLOSED|MERGED)
+             closed_list="${closed_list:+$closed_list, }#$b"
+             ;;
+           *)
+             all_closed=false
+             break
+             ;;
+         esac
+       done
+
+       if $all_closed; then
+         # All blockers are resolved — unblock this issue.
+         gh issue edit "$n" --repo <owner/repo> --remove-label blocked:agent 2>/dev/null || true
+         gh issue comment "$n" --repo <owner/repo> \
+           --body "Auto-unblocked mid-session — all referenced blockers ($closed_list) are now closed (triggered by PR #<M> closing #${closed_issue})." \
+           2>/dev/null || true
+
+         # Add to raw_backlog (deduped; step C's ranking pass will sort it into position).
+         # Only add if not already in raw_backlog / ready_issues / in_flight / closed-this-session.
+         already_queued=$(echo "${raw_backlog[@]:-} ${ready_issues[@]:-}" | tr ' ' '\n' \
+           | grep -xF "$n" | head -1)
+         in_flight_check=$(echo "${in_flight_targets[@]:-}" | tr ' ' '\n' \
+           | grep -xF "$n" | head -1)
+         if [ -z "$already_queued" ] && [ -z "$in_flight_check" ]; then
+           raw_backlog+=("$n")
+         fi
+
+         echo "[auto-unblock] #$n: all referenced blockers resolved ($closed_list) — added to raw_backlog"
+       fi
+     done
+   done
+   ```
+
+4. **Invalidate the `gh-cached.sh` backlog cache** if any issues were unblocked. The next step-C lightweight backlog re-check needs to see the label change:
+
+   ```bash
+   if [ "${unblocked_count:-0}" -gt 0 ]; then
+     "${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" invalidate --session-id "<session-id>"
+   fi
+   ```
+
+**Error policy.** Every `gh` call in this step uses `2>/dev/null || true` — a transient API error on the search or the label-edit must not block dispatch. This is opportunistic — the session's step-D refresh and the next session's step 3d.2 are the safety nets. Log any `gh issue edit` failure as `[auto-unblock] label-remove failed for #<n>: <reason>; continuing` and proceed.
+
+**Scope.** This step only touches issues that carry the `blocked:agent` label AND reference the just-closed issue in the body. It does NOT re-sweep the full backlog. The search query is precise (`--label blocked:agent` + `--search "Blocked by #N"`) and adds at most one `gh issue list` call per closed issue number — typically one call total per shipped PR.
+
+**Integration with step D.** Step D's scope-refill sub-step runs after this step (same turn). If any issues were added to `raw_backlog` by A.5, the scope-refill will pick them up immediately on this turn's step C (rule 5: `raw_backlog non-empty`), making the newly-unblocked issue eligible for dispatch in the *same turn* the blocker shipped. No `--fast` carve-out — this step is cheap enough to always run on `shipped` returns.
 
 ### B. Release the slot
 
