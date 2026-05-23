@@ -152,6 +152,10 @@ DEFAULTS_JQ='{
     "default": 2,
     "soft_collision": 3,
     "soft_collision_paths": []
+  },
+  "main_ci": {
+    "aggregation_mode": "branch-protection",
+    "required_workflows": []
   }
 }'
 

@@ -121,6 +121,24 @@
         },
         "_comment": { "type": "string" }
       }
+    },
+    "main_ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls which workflows on the default branch make main 'red' for purposes of enqueueing a fix-main-ci divert (step 4.5a). See issue #262 — by default, only branch-protection-required workflows gate; non-required infra/release helpers still surface in the status line as informational but never trigger a divert.",
+      "properties": {
+        "aggregation_mode": {
+          "type": "string",
+          "enum": ["branch-protection", "all-workflows"],
+          "description": "How to scope the gating set. 'branch-protection' (default) reads required_status_checks from the default branch's protection rule and gates on those workflows only. 'all-workflows' restores pre-#262 behavior — every workflow gates, no branch-protection probe. Setting `required_workflows` to a non-empty array overrides this and acts as an explicit list."
+        },
+        "required_workflows": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Explicit list of workflow names that gate main_ci.status red. Highest priority — when non-empty, overrides `aggregation_mode` and the branch-protection probe. Match is case-sensitive against `workflowName` from `gh run list`. Empty array (the default) defers to `aggregation_mode`."
+        },
+        "_comment": { "type": "string" }
+      }
     }
   },
   "required": ["version"],
