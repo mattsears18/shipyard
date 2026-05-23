@@ -11,6 +11,7 @@ Creates `shipyard.config.json` at the repo root (committed) and seeds `.gitignor
    - Auto-merge policy (`always` / `trusted-only` / `never` — default `trusted-only`)
    - Trusted authors (defaults to repo owner)
    - Cost-tracking on/off (default on)
+   - Default `/do-work` concurrency (default `1`). The interactive prompt MUST explain the tradeoff so the human can make an informed choice: most repos that follow shipyard's "always cut a release when a PR merges" convention (or any release-please-style flow) bump a manifest like `plugin.json` or append to `CHANGELOG.md`'s top row on every PR — both treated as HARD paths by the [steady-state dispatch rules](./do-work/steady-state.md#dispatch-rules-used-by-step-7-and-step-c), so a second in-flight worker hard-collides on that manifest and the second slot parks for the rest of the session. The default is therefore `1`; only set `2+` if you've confirmed your repo's PRs don't claim a shared manifest path (e.g. a feature backlog against a service with no per-PR version bump). See issue [#268](https://github.com/mattsears18/shipyard/issues/268) for the dogfooding rationale.
 4. **Write `shipyard.config.json`** at the repo root using the atomic-write helper in `plugins/shipyard/scripts/shipyard-config.sh`. Validates against the JSON schema before writing.
 5. **Append `.shipyard/` to `.gitignore`** if not already present. Creates `.gitignore` if it doesn't exist. **Never** modifies any other line — the addition is appended, with a leading newline if the file doesn't end in one.
 6. **Create `.shipyard/`** as an empty directory (for session state, gh-cache, etc. — the helper scripts create subdirectories on demand).
@@ -31,6 +32,7 @@ Flags:
 - `--auto-merge <always|trusted-only|never>` — sets `auto_merge.policy`. Omit to use the default (`trusted-only`).
 - `--trust <comma-separated>` — sets `trust.authors`. Defaults to `[<repo-owner>]`.
 - `--cost-tracking <on|off>` — sets `cost_tracking.enabled` and `cost_tracking.comment_on_pr`. Default `on`.
+- `--concurrency <N>` — sets `concurrency.default`. Default `1`. See the prompt note above for when raising this is safe.
 - `--force` — overwrite an existing `shipyard.config.json`. Without this, the command refuses to clobber.
 - `--dry-run` — print the resolved config to stdout and exit; don't touch the filesystem.
 - `--non-interactive` — never prompt. Use defaults for any field a flag didn't supply.
@@ -74,6 +76,12 @@ The command is intentionally a thin wrapper around `shipyard-config.sh`. The ass
    plugins/shipyard/scripts/shipyard-config.sh set auto_merge.policy "$AUTO_MERGE" --repo
    plugins/shipyard/scripts/shipyard-config.sh set trust.authors "$TRUST_JSON" --repo
    plugins/shipyard/scripts/shipyard-config.sh set cost_tracking.enabled "$COST_BOOL" --repo
+   # Only emit a concurrency.default write when the user picked a non-default value;
+   # the built-in default (1) covers the common case without bloating the committed
+   # config with a redundant entry.
+   if [[ "$CONCURRENCY" -ne 1 ]]; then
+     plugins/shipyard/scripts/shipyard-config.sh set concurrency.default "$CONCURRENCY" --repo
+   fi
    ```
 
 6. **Update `.gitignore`.**

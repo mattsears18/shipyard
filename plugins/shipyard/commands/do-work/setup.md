@@ -912,7 +912,7 @@ After this step, `needs-refinement` is off every survivor in the first two branc
 Pass-through args:
 
 - **`--repo`** — same value `/do-work` is using.
-- **`--concurrency`** — same value `/do-work` is using (default `2` unless overridden).
+- **`--concurrency`** — same value `/do-work` is using (default `1` unless overridden — see [`/do-work`'s `--concurrency` arg](../do-work.md#args) for the rationale).
 - **`--issue`** is NEVER passed from `/do-work` — refinement always operates on the full eligible set during a `/do-work` startup.
 - **`--dry-run`** is NEVER passed from `/do-work` — startup refinement always commits.
 
