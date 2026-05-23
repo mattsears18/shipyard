@@ -376,13 +376,13 @@ After A → B → C → D, the **last thing emitted in the turn** is a single-li
 **Steady-state format** (after a normal dispatch turn):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=<k> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never">
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<dq> · raw_backlog=<b> · dispatched_this_turn=<k> · defers_this_turn=<dt> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never">
 ```
 
 **Idle-proof format** (used ONLY when step C produced no dispatch AND `in_flight < concurrency`):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<d> · raw_backlog=<b> · dispatched_this_turn=0 · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never"> · idle_reason="<reason>"
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<dq> · raw_backlog=<b> · dispatched_this_turn=0 · defers_this_turn=<dt> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never"> · idle_reason="<reason>"
 ```
 
 `scope_bg=<s>` is the count of background scoping agents currently in flight (fired by step 6 or step D's scope-refill). When `<s> > 0`, results are arriving asynchronously into `ready_issues` — a `parked (scope refill in flight)` idle_reason is valid and expected. When `<s> == 0` and `ready_issues == 0` and `raw_backlog > 0`, that is a gap: no scoping is in progress and no scoped candidates are ready — fire a background scope-refill burst this turn before ending it.
@@ -410,7 +410,16 @@ A missing `state=` token is the same contract violation as a missing invariant l
 
 The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight drains)`, `draining=true`, `all ready_issues collide with in_flight paths`, `all ready_issues blocked by soft-cap on <path> (×<N> active)`, `all ready_issues collide with in_flight lockfile sections (<section>×<N>, ...)`, or a concrete diagnostic string. Vague reasons ("waiting for completions", "merge train draining", "nothing to do right now") are NOT acceptable.
 
-**Self-check before ending the turn:** if `in_flight < concurrency` AND `ready_issues + failed_prs + divert_queue + raw_backlog > 0` AND `dispatched_this_turn == 0`, that is a programming error in your own turn — re-run step C, find what was skipped, dispatch, and re-emit the invariant line. See [RATIONALE → Invariant line](../do-work-RATIONALE.md#step-e--why-the-invariant-line-is-load-bearing) for common causes.
+`defers_this_turn=<d>` is the count of issues added to `deferred_issues` during this turn. It is incremented each time a scope-agent returns a deferred shape (or an orchestrator-side mid-session defer is logged). Initial value per turn: `0`. A turn where `defers_this_turn > 0` is always visible in the invariant line regardless of whether `dispatched_this_turn > 0`.
+
+**Self-check before ending the turn:** Run BOTH self-checks:
+
+1. **Under-dispatch check.** If `in_flight < concurrency` AND `ready_issues + failed_prs + divert_queue + raw_backlog > 0` AND `dispatched_this_turn == 0`, that is a programming error in your own turn — re-run step C, find what was skipped, dispatch, and re-emit the invariant line. See [RATIONALE → Invariant line](../do-work-RATIONALE.md#step-e--why-the-invariant-line-is-load-bearing) for common causes.
+
+2. **Over-defer check (the premature-drain-prevention check).** If `defers_this_turn > 0` AND `dispatched_this_turn == 0` AND `in_flight < concurrency`, that is the **over-deferring while idle** pattern — the exact condition that produces premature drain by constructing an empty-queue state via self-defers. **Do not end the turn.** Instead:
+   - Re-examine each `deferred_issues` entry added this turn: does the defer reason name a specific blocker issue or PR? If yes, look up its current state (`gh issue view <blocker> --json state` or `gh pr view <blocker> --json state`). If the blocker is already CLOSED or MERGED, the defer reason is stale — remove the entry from `deferred_issues`, move the issue back to `raw_backlog`, and re-run step C.
+   - If no stale defers were found, verify the turn had a legitimate reason for zero dispatches. A scope-agent batch in flight (`scope_bg > 0`) is a valid reason. All `ready_issues` colliding with `in_flight` paths is a valid reason. Empty `in_flight` + empty queues + all issues deferred is **not** a valid reason — that means the orchestrator is about to declare termination driven entirely by self-defers, which is the failure mode issue [#246](https://github.com/mattsears18/shipyard/issues/246) documented. In this case, add `idle_reason="defers_this_turn=<d> with no dispatches and open slots — verify defer reasons before proceeding to drain"` to the invariant line and do NOT proceed to drain; instead fire a fresh termination-assertion step 4 fetch to surface any issues the defers may have hidden.
+   See [RATIONALE → Over-defer self-check](../do-work-RATIONALE.md#step-e--over-defer-self-check-rationale) for the failure mode this prevents.
 
 ## Dispatch rules (used by step 7 and step C)
 
