@@ -55,11 +55,13 @@ See [RATIONALE → Termination](../do-work-RATIONALE.md#termination--why-the-mer
 
 **Drain-mode termination**: when `draining = true` (see [Soft drain](#soft-drain)), the exit condition collapses to step 1 only (`in_flight` empty) — steps 2–4 are skipped, `failed_prs` / `ready_issues` / `raw_backlog` are left as-is and rebuilt next session. The fresh-fetch in step 4 is deliberately bypassed: drain mode is the user's explicit "stop dispatching" signal, and surfacing new candidates would contradict that. The drain → cleanup → summary flow below still runs.
 
-### Pre-drain re-validation of `orchestrator-judgment` defers
+### Pre-drain re-validation of deferred entries
 
-Once the four-step assertion passes (all queues empty, live backlog returns no net-new), the orchestrator MUST run a fifth step **before transitioning `drain.active = true`** — but ONLY when `deferred_issues` contains any entry with `provenance == "orchestrator-judgment"`:
+Once the four-step assertion passes (all queues empty, live backlog returns no net-new), the orchestrator MUST run a fifth step **before transitioning `drain.active = true`** — whenever `deferred_issues` contains any entries at all (regardless of provenance):
 
-**Step 5 (fires ONLY when `deferred_issues` has `orchestrator-judgment` entries):** Re-validate each `orchestrator-judgment` entry against current state.
+**Step 5 (fires whenever `deferred_issues` is non-empty):** Re-validate every entry against current state. The two provenance classes get different mechanisms but both run; a session that reaches drain through a mix of `orchestrator-judgment` and `scope-agent` defers gets both branches exercised.
+
+#### 5.a — Re-validate `orchestrator-judgment` entries
 
 For each entry in `deferred_issues` where `provenance == "orchestrator-judgment"`:
 
@@ -76,27 +78,46 @@ For each entry in `deferred_issues` where `provenance == "orchestrator-judgment"
      ```
      [Dispatch scope agent for issue #<N> — pre-drain re-validation of orchestrator-judgment defer]
      ```
-     - If the scope agent returns a **deferred shape**: update the entry's provenance to `"scope-agent"` (now it's authoritative). Leave in `deferred_issues`.
+     - If the scope agent returns a **deferred shape**: update the entry's provenance to `"scope-agent"` (now it's authoritative). Leave in `deferred_issues`. **Important:** the entry now belongs to the 5.b cohort going forward; it does NOT get re-run by 5.b in the same pre-drain pass (one re-validation per entry per pass), but a subsequent pre-drain entry (e.g. a future session) would treat it as a scope-agent defer.
      - If the scope agent returns a **ready shape**: remove from `deferred_issues`, push into `raw_backlog`. Log: `[pre-drain-revalidate] #<N> was orchestrator-judgment deferred but scope agent found it ready; returned to raw_backlog`.
 
-2. After processing all `orchestrator-judgment` entries, if `raw_backlog` gained any issues: run scope-refill via step D and retry dispatch from steady-state step C. **Do NOT proceed to drain.** The termination assertion (steps 1–4 above) must pass again.
+#### 5.b — Re-validate `scope-agent` entries
 
-3. If no issues were re-admitted (all `orchestrator-judgment` defers were confirmed still-valid): emit the **pre-drain audit banner** and proceed to drain:
+For each entry in `deferred_issues` where `provenance == "scope-agent"` (excluding any entry that just got promoted to `scope-agent` provenance by 5.a — those have a fresh scope agent return and don't need another one in this pass):
+
+**Dispatch a fresh scope agent** for this issue now. The original scope-agent return reflected the issue's state at scope time; main may have advanced since (a sibling PR landed, a blocker resolved, a dep updated), the audit data may have aged, or the original scope agent may have been permissively-conservative on a body that's tractable on second look. A fresh scope pre-flight is the same mechanism 5.a uses for free-form orchestrator-judgment defers, and the same authoritative answer applies:
+
+```
+[Dispatch scope agent for issue #<N> — pre-drain re-validation of scope-agent defer]
+```
+
+- If the scope agent returns a **deferred shape**: leave the entry in `deferred_issues`. Update the entry's `reason` to the fresh return's reason (the old reason may be stale; the new one is the current authoritative diagnosis) and bump `deferred_at` to the current timestamp. Log: `[pre-drain-revalidate] #<N> scope-agent re-confirmed deferred — <fresh reason>`.
+- If the scope agent returns a **ready shape**: remove from `deferred_issues`, push into `raw_backlog`. Log: `[pre-drain-revalidate] #<N> was scope-agent deferred but fresh scope agent found it ready; returned to raw_backlog`.
+
+The cost of 5.b is one scope-agent invocation per scope-agent defer that actually reaches the pre-drain check — bounded by `|deferred_issues with scope-agent provenance|`. The bound is acceptable because the alternative (treating scope-agent defers as authoritative ground truth and letting drain fire on a single misjudgment) was the failure mode [#299](https://github.com/mattsears18/shipyard/issues/299) documented — a `mattsears18/lightwork` session that drained on 15+ workable issues because the JIT scope pre-flight at C=1 had returned `deferred` on each of them in sequence.
+
+#### 5.c — After processing all entries
+
+After both 5.a and 5.b have run:
+
+1. If `raw_backlog` gained any issues from either branch: run scope-refill via step D and retry dispatch from steady-state step C. **Do NOT proceed to drain.** The termination assertion (steps 1–4 above) must pass again.
+
+2. If no issues were re-admitted (all defers were confirmed still-valid by their respective re-validation): emit the **pre-drain audit banner** and proceed to drain:
 
    ```
    PRE-DRAIN AUDIT
        deferred_issues total: <N> (<M> added this session)
-       of those, scope-agent-backed: <K>  orchestrator-judgment: <J>
-       orchestrator-judgment entries all re-validated — blockers still active (or scope agent confirmed)
+       of those, scope-agent-backed: <K> (re-validated)  orchestrator-judgment: <J> (re-validated)
+       all defers re-validated — blockers still active, scope agents re-confirmed
        last live backlog fetch: <HH:MM:SS UTC>
        proceeding to drain
    ```
 
-   The banner is always emitted when step 5 ran — it is the audit trail for the user. When `deferred_issues` has zero `orchestrator-judgment` entries, step 5 is a no-op and the banner is skipped (no audit needed — all defers were scope-agent-backed).
+   The banner is always emitted when step 5 ran — it is the audit trail for the user. When `deferred_issues` is empty (step 5 was a no-op), the banner is skipped (no audit needed — there was nothing to re-validate).
 
-**Why this gate exists.** The termination assertion's step 4 subtracts `deferred_issues` numbers from the live backlog before checking net-new issues. This means the orchestrator can construct an "empty net-new set" entirely through self-defers — deferring every remaining workable issue using working-memory judgment, then declaring termination because the live backlog minus the deferred set is empty. The re-validation pass prevents this: before `drain.active` can flip, every `orchestrator-judgment` defer must be confirmed against current state. See [RATIONALE → Pre-drain re-validation](../do-work-RATIONALE.md#pre-drain-re-validation-of-orchestrator-judgment-defers) for the session that motivated this rule ([#246](https://github.com/mattsears18/shipyard/issues/246)).
+**Why this gate exists.** The termination assertion's step 4 subtracts `deferred_issues` numbers from the live backlog before checking net-new issues. This means the orchestrator can construct an "empty net-new set" entirely through self-defers — deferring every remaining workable issue (either through working-memory judgment or through a chain of conservative scope-agent returns), then declaring termination because the live backlog minus the deferred set is empty. The re-validation pass prevents this: before `drain.active` can flip, every defer must be confirmed against current state. See [RATIONALE → Pre-drain re-validation](../do-work-RATIONALE.md#pre-drain-re-validation-of-deferred-entries) for the sessions that motivated this rule ([#246](https://github.com/mattsears18/shipyard/issues/246) added the orchestrator-judgment branch; [#299](https://github.com/mattsears18/shipyard/issues/299) extended it to scope-agent entries).
 
-**Drain-mode termination:** when `draining = true`, step 5 is also skipped — drain mode is the user's "stop dispatching" signal, and re-evaluating deferred issues would contradict that intent.
+**Drain-mode termination:** when `draining = true`, step 5 (both 5.a and 5.b) is skipped — drain mode is the user's "stop dispatching" signal, and re-evaluating deferred issues would contradict that intent.
 
 Once the four-step assertion passes AND step 5 re-validation clears (or was a no-op), run end-of-session drain → cleanup → summary.
 
