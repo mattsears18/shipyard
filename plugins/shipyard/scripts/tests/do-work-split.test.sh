@@ -339,6 +339,42 @@ assert_contains "$steady_state_path" \
   'branches on the ratio' \
   "steady-state.md A.0 cross-references the banner ratio branch (#295)"
 
+# (Issue #317) Reconcile-once gate against phantom task-notification re-fires.
+#
+# The Claude Code harness wraps each agent chat-completion message in a
+# <task-notification> envelope; wind-down messages after the agent's real
+# return text get wrapped in additional notifications with the same
+# task-id. Without a gate, every phantom triggers a full A → E orchestrator
+# turn against an already-reconciled agent (double-bumps cost ledger,
+# re-handles return, re-releases slot, etc.). See #317 for the repro and
+# the harness-side-vs-orchestrator-side fix tradeoff.
+#
+# Five assertions pin the post-#317 contract:
+#   - The struct list grew a 12th entry `reconciled_agent_ids` (named in
+#     do-work.md alongside the #317 cross-ref).
+#   - The opening sentence reflects the new struct count ("twelve").
+#   - steady-state.md gained the new A.−1 step (the gate body lives there).
+#   - The advisory log line shape is documented exactly (so a future
+#     regression that drops the gate without renaming everything else
+#     breaks the test).
+#   - dont.md carries the dispatch-loop bullet that forbids running
+#     A.0/A.1/B/C/D on a phantom.
+assert_contains "$do_work_path" \
+  'reconciled_agent_ids' \
+  "do-work.md struct list names reconciled_agent_ids (#317)"
+assert_contains "$do_work_path" \
+  'twelve mental data structures' \
+  "do-work.md opening sentence reflects post-#317 struct count (twelve)"
+assert_contains "$steady_state_path" \
+  'A.−1. Reconcile-once gate' \
+  "steady-state.md carries the A.−1 reconcile-once gate (#317)"
+assert_contains "$steady_state_path" \
+  'already reconciled; skipping A.0/A.1/B/C/D this turn' \
+  "steady-state.md documents the phantom-notification advisory log line (#317)"
+assert_contains "$dont_path" \
+  'phantom re-fire' \
+  "dont.md carries the dispatch-loop bullet forbidding A.0/A.1/B/C/D on phantoms (#317)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

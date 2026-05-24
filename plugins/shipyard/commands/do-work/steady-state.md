@@ -21,6 +21,53 @@ Never end the turn with prose. No "Next: …" narration, no status recap, no "I'
 
 The agent's last line tells you what happened.
 
+#### A.−1. Reconcile-once gate — skip phantom re-fires (MANDATORY — first thing in the turn)
+
+**This gate is the first thing the orchestrator does on a wake — before A.0's token attribution, before A.1's return-string parsing, before anything else.** Closes [#317](https://github.com/mattsears18/shipyard/issues/317).
+
+The Claude Code harness wakes the orchestrator by wrapping each agent chat-completion message in a `<task-notification>` envelope. After an agent emits its real return text (the line step A.1 parses), it can emit one or more wind-down acknowledgments (`"Done."`, `"Acknowledged."`, `"Monitor task completed."`, etc.) that the harness wraps in **additional** `task-notification` events with the same `task-id` — observed for long-running (>5 min) fix-checks-only and fix-rebase workers on `dowork-20260524T190234-73953`. Each phantom carries `tool_uses: 0`, a tiny `duration_ms` (~1–3 s), a small token delta, and `status: completed`. Without a gate, every phantom triggers a full A → E turn against an already-reconciled agent:
+
+- A.0 double-bumps the per-PR cost ledger.
+- A.1 attempts to re-handle a `shipped` / `green` / `blocked` return that was already labeled / commented / branch-reaped on the first turn (idempotent for some sites, not all).
+- B re-releases an already-released slot.
+- C dispatches a "replacement" worker against a slot that wasn't actually empty.
+- D fires another refresh.
+
+**The gate.** Extract the incoming `task-notification`'s `task-id` (the same value that lands in `.in_flight.<slot>.agent_id` on dispatch — the harness uses one id end-to-end). Check `reconciled_agent_ids`:
+
+```bash
+incoming_task_id="<task-id from the harness notification>"
+if [[ -n "${reconciled_agent_ids[$incoming_task_id]:-}" ]]; then
+  echo "[phantom-notification] task-id=$incoming_task_id already reconciled; skipping A.0/A.1/B/C/D this turn (#317)"
+  # End the turn HERE — no invariant line, no tool call, nothing else.
+  # The phantom notification is harness noise; the orchestrator's working
+  # memory and the session-state file are both already correct.
+  return
+fi
+```
+
+The skip is **silent at the user-facing layer beyond the one advisory line** — no invariant line, no dispatch tool call, no session-state write-through. Step E's invariant-line requirement does NOT apply to a phantom-skipped turn (the turn is, by definition, a no-op against state). This is the **one documented exception** to the "every turn ends with either a tool call or the invariant line" rule from the turn contract above.
+
+**Write into `reconciled_agent_ids` at the end of A.1.** Once a return has been parsed and A.1's per-mode handling has run (the `shipped` / `green` / `blocked` / `errored` / `reaped` / `noop` branches all converge here), append the just-reconciled agent's id to the set BEFORE proceeding to step B:
+
+```bash
+reconciled_agent_ids[<agent-id>]="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+The timestamp value is informational (it lets a debug pass tell when the agent was first reconciled); only the key's presence is load-bearing for the gate above.
+
+**Why a set instead of a dispatch-time bookkeeping check.** The orchestrator can already infer "this task-id isn't in `.in_flight`" — but that check is ambiguous on phantoms: step B removed the slot at the original reconcile, so `.in_flight` is correctly empty whether the incoming notification is a phantom re-fire OR a real fresh completion the orchestrator forgot about. The set distinguishes the two cases unambiguously: presence ⇒ definitely already handled.
+
+**Why monotone growth is fine.** Sessions complete at most a few hundred dispatches, each with a fixed-size string id. The set's footprint is bounded by the session's total dispatch count, capped by the session ceiling — a few KB at the outer limit. Eviction logic would be more complex than the win.
+
+**Set keying — `agent_id` (the harness `task-id`), not the slot id.** The slot id (e.g. `slot1`) is reused as workers come and go; the agent id is unique per dispatch. Use the agent id so the set survives slot reuse across the session.
+
+**Logging discipline — one line per phantom.** The advisory above (`[phantom-notification] task-id=$incoming_task_id ...`) is the only output the gate produces. Don't add to the line per-phantom; if the same task-id phantoms three times, three identical advisory lines is the correct behavior (the operator can grep + count by id to size the harness noise across a session).
+
+**Cost-tracking interaction.** Phantom notifications carry their own small `<usage>` block. By skipping A.0, the gate intentionally drops those phantom-only tokens from the session ledger. The alternative — bumping with `--issue` / `--pr` scope and the small delta — would double-attribute against PRs that are already finished. The phantom tokens are harness-overhead, not work-attributable; dropping them from per-PR / per-issue buckets is correct. The orchestrator-side overhead bump (the `bump-tokens` call without `--issue` / `--pr`) is similarly skipped — adopting the "harness noise is not the session's cost" stance.
+
+**Failure mode — incoming notification has no parseable `task-id`.** If the wake event genuinely lacks an extractable id (the harness changed shape, the payload is malformed), the safe fallback is to **proceed with A.0** as a real reconcile — phantom-mis-recognition (treating a real return as a phantom) is much more damaging than phantom-as-real (one extra bump-tokens + one extra reconcile attempt against a no-op return). Log `[phantom-notification] could not extract task-id from wake event; treating as real reconcile` and continue.
+
 #### A.0. Attribute the dispatch's token usage (MANDATORY — before any return-string parsing)
 
 **This step is not optional.** Before parsing the agent's return string, before any of the per-mode handling below, **attribute the dispatch's token usage to the session ledger**. Without this call, the per-session `.tokens` block, the per-issue / per-PR attribution buckets, the durable PR cost-comment, and the cross-session ledger at `~/.shipyard/cost-history.jsonl` all stay empty — and the perf umbrella ([#152](https://github.com/mattsears18/shipyard/issues/152)) becomes unmeasurable. See [issue #197](https://github.com/mattsears18/shipyard/issues/197) for the regression that prompted this becoming step A.0 instead of a buried mention in the write-through table.
@@ -559,7 +606,7 @@ The refresh runs in the same turn as the completion handler and does **not** del
 
 #### Refresh trigger rules
 
-The orchestrator maintains a small refresh tracker — three fields, all session-scoped — alongside the nine [orchestrator state](../do-work.md#orchestrator-state) structs:
+The orchestrator maintains a small refresh tracker — three fields, all session-scoped — alongside the twelve [orchestrator state](../do-work.md#orchestrator-state) structs:
 
 - **`refresh_last_at`**: timestamp of the most recent refresh that actually ran. Initialized to the moment step 4.5 completes at setup.
 - **`refresh_last_snapshot`**: cached `{ main_ci_status, failing_pr_count_all, failed_prs_size }` from the most recent refresh — used to compute deltas.
