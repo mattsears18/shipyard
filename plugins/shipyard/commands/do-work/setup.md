@@ -1156,12 +1156,25 @@ Client-side filter:
 - **Drop issues whose `author.login` (lowercased) is NOT in `trusted_authors`.** This is the dispatch-time security gate — see [step 1.7](#17-resolve-trusted-author-allowlist) for how the set is populated. An issue filed by a stranger on a public repo lands in step 2's `Untrusted author` bucket and never enters the workable queue, even if all the other filters pass. Belt-and-suspenders with the step-2 bucket pass: step 2 surfaces the count to the user; step 4 enforces the actual drop at dispatch time. Both read the same `trusted_authors` cache so they can never disagree.
 - Drop issues assigned to a user **other than** the gh-authenticated user (they own it).
 - Drop issues whose body contains `Blocked by #N` where #N is still open.
-- Drop the issue if any of the following returns a result — belt-and-suspenders against the `-linked:pr` qualifier. All three commands must include `--state open` so that a closed-without-merging PR doesn't incorrectly suppress the issue:
+- Drop the issue if it appears in the `closed-by-open-pr` set — belt-and-suspenders against the `-linked:pr` qualifier, which has [known gaps](https://docs.github.com/en/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword) (e.g. when the closing keyword is in a comment instead of the PR body — `linked:pr` only matches GitHub's official closing-issue link). Build the set **once per setup pass** from open PRs' `closingIssuesReferences` field — the structural projection GitHub itself uses to decide which issues auto-close on merge:
+
   ```bash
-  gh pr list --repo <owner/repo> --state open --search 'in:body "Closes #<N>"' --json number,title,url
-  gh pr list --repo <owner/repo> --state open --search 'in:body "Fixes #<N>"' --json number,title,url
-  gh pr list --repo <owner/repo> --state open --search 'in:body "Resolves #<N>"' --json number,title,url
+  # Build the closed-by-open-pr set once. List all open PR numbers, then
+  # batch-fetch closingIssueNumbers via gh-batch.sh pr-status. The
+  # resulting set is the union of issue numbers across every open PR's
+  # closingIssuesReferences — exactly the issues GitHub will auto-close
+  # when those PRs merge.
+  open_pr_numbers=$(gh pr list --repo <owner/repo> --state open --limit 200 \
+    --json number --jq '[.[].number] | join(" ")')
+  closed_by_open_pr=$("${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
+    --repo <owner/repo> --numbers "$open_pr_numbers" \
+    | jq '[.[].closingIssueNumbers[]] | unique')
+  # Then, for each candidate issue #N, drop if jq -e ".[] | select(. == <N>)" matches.
   ```
+
+  Why the substring-search form was removed (issue [#301](https://github.com/mattsears18/shipyard/issues/301)): the previous implementation fired three `gh pr list --search 'in:body "Closes #<N>"'` queries per candidate and dropped the issue on any hit. That's a substring match against PR bodies, not a semantic check — release PRs commonly list closed-by-this-release issues in their CHANGELOG bodies, and each `Closes #<N>` line in such a manifest silently suppressed the referenced issue from the workable queue even though the PR isn't actually closing it on merge. `closingIssuesReferences` is GitHub's authoritative signal for "does this PR auto-close this issue?" — it matches exactly the issues that will auto-close, with no false positives on CHANGELOG manifests, meta-issue PRs that quote closed children, or comment-quoted PRs. Cost: one `gh pr list` + one batched GraphQL call (vs N×3 search calls); accuracy: exact match against GitHub's own closing-link definition.
+
+  The same `closed-by-open-pr` set is used by the `closed-by-open-pr` membership check that follows. Cache for the duration of step 4 — open PRs don't change between filter passes within a single setup invocation.
 
 Sort the survivors:
 

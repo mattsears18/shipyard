@@ -32,10 +32,20 @@
 #                   --numbers <space- or comma-separated list>
 #                 Emits a single JSON object mapping PR number (as a
 #                 string) → {number, mergeable, mergeStateStatus,
-#                 statusCheckRollupState, headRefName, headRefOid, state}.
+#                 statusCheckRollupState, headRefName, headRefOid, state,
+#                 closingIssueNumbers}.
+#                 `closingIssueNumbers` is the flat list of issue numbers
+#                 the PR's body closes via a [closing keyword] (Closes /
+#                 Fixes / Resolves #N) — the canonical signal GitHub
+#                 uses to auto-close issues on merge. Empty array when
+#                 the PR carries no closing keywords. This is the
+#                 authoritative replacement for substring-searching PR
+#                 bodies, which false-positives on release-PR CHANGELOG
+#                 manifests (see issue #301).
 #                 PRs that don't exist (or are inaccessible) are
 #                 silently dropped from the output — the caller decides
 #                 how to handle missing entries.
+#                 [closing keyword]: https://docs.github.com/en/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue
 #
 #   issue-state — Batch-fetch state + labels for a list of issue numbers.
 #                 Required flags are the same as pr-status. Emits a
@@ -188,7 +198,16 @@ build_query() {
   case "$kind" in
     pr)
       resolver="pullRequest"
-      projection='number mergeable mergeStateStatus state headRefName headRefOid statusCheckRollup { state }'
+      # `closingIssuesReferences` is the canonical GitHub signal for
+      # "what issues does this PR auto-close on merge" (issue #301) —
+      # a structural projection of the body's `Closes #N` / `Fixes #N`
+      # / `Resolves #N` keywords, scoped to the open-PR set. `first:
+      # 100` is the upper bound a PR can plausibly reference; if a real
+      # PR ever exceeds it we'll surface a paginated-fetch issue rather
+      # than silently truncate (the `pageInfo` projection would also let
+      # us detect this — left out today because no real PR is close to
+      # 100 closing keywords).
+      projection='number mergeable mergeStateStatus state headRefName headRefOid statusCheckRollup { state } closingIssuesReferences(first: 100) { nodes { number } }'
       ;;
     issue)
       resolver="issue"
@@ -227,7 +246,8 @@ reduce_pr_chunk() {
               mergeStateStatus: .value.pullRequest.mergeStateStatus,
               headRefName: .value.pullRequest.headRefName,
               headRefOid: .value.pullRequest.headRefOid,
-              statusCheckRollupState: (.value.pullRequest.statusCheckRollup.state // null)
+              statusCheckRollupState: (.value.pullRequest.statusCheckRollup.state // null),
+              closingIssueNumbers: (.value.pullRequest.closingIssuesReferences.nodes // [] | map(.number))
             }
           }
       )

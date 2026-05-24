@@ -21,10 +21,14 @@ gh issue view <N> --repo <owner/repo> \
   --json state,assignees,labels,body,title,comments,author \
   --jq '{state, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, comments: [.comments[] | {author: {login: .author.login}, body, url, createdAt}]}'
 
-# Open PRs that already close this issue (cross-check, the search qualifier sometimes misses)
-gh pr list --repo <owner/repo> --state open --search 'in:body "Closes #<N>"' --json number,title,url
-gh pr list --repo <owner/repo> --state open --search 'in:body "Fixes #<N>"' --json number,title,url
-gh pr list --repo <owner/repo> --state open --search 'in:body "Resolves #<N>"' --json number,title,url
+# Open PRs that already close this issue (cross-check, the search qualifier sometimes misses).
+# Use closingIssuesReferences — GitHub's canonical "this PR auto-closes that issue"
+# signal — rather than substring-searching PR bodies. The substring form false-positives
+# on release PR CHANGELOG manifests that list `Closes #<N>` as a per-line itemization
+# rather than a closing directive (issue #301).
+gh pr list --repo <owner/repo> --state open --limit 200 \
+  --json number,closingIssuesReferences \
+  --jq "[.[] | select(.closingIssuesReferences[]?.number == <N>) | {number}]"
 ```
 
 The `--jq` projection on the issue view keeps every field this step consumes — `state` (workable check), `title`/`body` (untrusted-input read in step 2), `labels[].name` (block-label check), `assignees[].login` (concurrent-claim check), `author.login` (trust-walk anchor in step 2), `comments[].{author.login, body, url, createdAt}` (trusted-author comment-thread walk + permalink citation in step 2) — and drops every field the worker doesn't read (label `id` / `description` / `color`, assignee `id` / `name`, comment `id` / `updatedAt`, author `id` / `name`). Same call count, smaller objects. Worker-preamble §"`gh` JSON discipline" covers the convention.
