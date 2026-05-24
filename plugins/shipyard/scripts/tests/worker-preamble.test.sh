@@ -143,6 +143,24 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md names the --json <fields> pattern"
   assert_contains "$skill_path" "--jq" \
     "SKILL.md names the --jq projection flag"
+
+  # Issue #297 — "Stop background processes before returning" section.
+  # The section exists so workers don't leak Monitor sub-tasks /
+  # run_in_background bash calls past their terminal return, which would
+  # otherwise re-invoke the orchestrator for a no-op turn every time the
+  # leaked process emits a status notification (lightwork repro: 50+ stale
+  # wake events across two fix-checks-worker dispatches). Removing the
+  # section regresses the notification-leak contract.
+  assert_contains "$skill_path" "## Stop background processes before returning" \
+    "SKILL.md covers the background-process cleanup rule (issue #297)"
+  assert_contains "$skill_path" "TaskStop" \
+    "SKILL.md names TaskStop as the Monitor / sub-Agent stop mechanism"
+  assert_contains "$skill_path" "KillShell" \
+    "SKILL.md names KillShell as the background-Bash stop mechanism"
+  assert_contains "$skill_path" "run_in_background" \
+    "SKILL.md names run_in_background: true as a leak source"
+  assert_contains "$skill_path" "Monitor" \
+    "SKILL.md names Monitor as a leak source"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
