@@ -309,6 +309,36 @@ assert_contains "$fix_rebase_path" \
   'locked in another worktree' \
   "fix-rebase.md carries the defensive bail clause for the head-branch-locked residual case (#282)"
 
+# (Issue #295) Cost-attribution banner branches on the all-vs-partial
+# degraded ratio.
+#
+# Pre-#295 cleanup-summary.md had a single banner that read
+# "<degraded_attribution_count> of <total_invocations> dispatch(es)
+# used --degraded-total-only" — fine in the mixed case, but on
+# always-degraded harness paths (Opus 4.7 2026-05-23 repro from #279)
+# every dispatch is degraded, so "4 of 4 degraded" reads as
+# session-wide failure instead of a structural harness shape.
+#
+# Three assertions pin the post-#295 contract:
+#   - The all-degraded banner variant exists (and is distinct from the
+#     partial-degraded one — different leading phrase).
+#   - The per-line rule documents the branch on the ratio.
+#   - steady-state.md A.0 cross-references the banner split so a reader
+#     of the spec at attribution time understands the rendering split
+#     that fires at cleanup time.
+assert_contains "$cleanup_path" \
+  'all <total_invocations> dispatch(es) this session ran on the total-tokens-only path' \
+  "cleanup-summary.md carries the all-degraded banner variant (#295)"
+assert_contains "$cleanup_path" \
+  'branch on the ratio' \
+  "cleanup-summary.md per-line rule documents the ratio branch (#295)"
+assert_contains "$cleanup_path" \
+  'degraded_attribution_count == total_invocations' \
+  "cleanup-summary.md per-line rule names the all-degraded condition exactly (#295)"
+assert_contains "$steady_state_path" \
+  'branches on the ratio' \
+  "steady-state.md A.0 cross-references the banner ratio branch (#295)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
