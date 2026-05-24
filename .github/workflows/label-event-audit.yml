@@ -162,18 +162,42 @@ jobs:
           allowlist_file=".shipyard/trusted-authors.txt"
           allowlist=""
 
+          # The expand_aliases shell function mirrors the alias-cross-add
+          # in plugins/shipyard/scripts/trusted-authors-normalize.sh (issue
+          # #296): every `<name>[bot]` entry gets `app/<name>` added, and
+          # every `app/<name>` entry gets `<name>[bot]` added. This lets a
+          # single allowlist entry match the actor regardless of whether
+          # GitHub returns the REST shape (`sentry[bot]`) or the GraphQL
+          # shape (`app/sentry`) at comparison time. Keep this logic in
+          # sync with the orchestrator-side helper.
+          expand_aliases() {
+            awk '
+              {
+                print $0
+                if (match($0, /^app\//)) {
+                  name = substr($0, 5)
+                  print name "[bot]"
+                } else if (match($0, /\[bot\]$/)) {
+                  name = substr($0, 1, length($0) - 5)
+                  print "app/" name
+                }
+              }
+            ' | sort -u
+          }
+
           if [ -f "$allowlist_file" ]; then
             # Strip comments / blanks, lowercase, dedupe. The repo owner is
             # implicitly trusted even if the file omits them — append and
-            # sort -u.
+            # sort -u. Then expand `<name>[bot]` and `app/<name>` aliases
+            # so an entry matches either GitHub-API shape.
             allowlist=$(
               {
                 sed -e 's/#.*$//' -e 's/[[:space:]]//g' "$allowlist_file" \
                   | grep -v '^$' || true
                 printf '%s\n' "$owner_lc"
-              } | tr 'A-Z' 'a-z' | sort -u
+              } | tr 'A-Z' 'a-z' | sort -u | expand_aliases
             )
-            echo "Trusted set: from .shipyard/trusted-authors.txt (+ owner)"
+            echo "Trusted set: from .shipyard/trusted-authors.txt (+ owner, + bot/app aliases)"
           else
             # Override file absent — query collaborators-with-push API.
             # If the API errors (private repo / token without admin scope /
@@ -184,7 +208,7 @@ jobs:
                 {
                   printf '%s\n' "$api_out"
                   printf '%s\n' "$owner_lc"
-                } | tr 'A-Z' 'a-z' | sort -u
+                } | tr 'A-Z' 'a-z' | sort -u | expand_aliases
               )
               echo "Trusted set: from collaborators API (+ owner)"
             else

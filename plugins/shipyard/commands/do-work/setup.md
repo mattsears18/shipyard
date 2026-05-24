@@ -604,7 +604,7 @@ The fallback to raw `rm -rf` is load-bearing for the production case in #280: `g
 
 **Resolution order — first non-empty wins:**
 
-1. **Per-repo override file** — if `.shipyard/trusted-authors.txt` exists in the orchestrator worktree, read it. One GitHub login per line; lines starting with `#` are comments; blank lines are ignored; logins are case-insensitive (lowercased on read). The repo owner (`<owner>` portion of `<owner/repo>`) is implicitly included even when the file omits them. Use the file's set as `trusted_authors` and stop — do not fall through to the collaborators API.
+1. **Per-repo override file** — if `.shipyard/trusted-authors.txt` exists in the orchestrator worktree, read it. One GitHub login per line; lines starting with `#` are comments; blank lines are ignored; logins are case-insensitive (lowercased on read). The repo owner (`<owner>` portion of `<owner/repo>`) is implicitly included even when the file omits them. Run the file through `trusted-authors-normalize.sh` (see [GH App alias normalization](#gh-app-alias-normalization-issue-296) below) so both `<bot>[bot]` and `app/<bot>` resolve correctly regardless of which form the file uses. Use the normalized set as `trusted_authors` and stop — do not fall through to the collaborators API.
 
 2. **Collaborators API fallback** — when the override file doesn't exist, query the live collaborators-with-push API:
 
@@ -613,11 +613,44 @@ The fallback to raw `rm -rf` is load-bearing for the production case in #280: `g
      --jq '.[] | select(.permissions.push==true) | .login' | tr 'A-Z' 'a-z' | sort -u
    ```
 
-   Add `<owner>` (lowercased) to the result set so a personal-repo owner with no other collaborators still works. Cache the result as `trusted_authors`.
+   Add `<owner>` (lowercased) to the result set so a personal-repo owner with no other collaborators still works. Pass the result through `trusted-authors-normalize.sh` for consistency with branch 1 (the collaborators API doesn't return bots, so the alias expansion is usually a no-op, but the call is safe). Cache the result as `trusted_authors`.
 
 3. **API failure / permission denied** — when the API call errors (the auth'd token can't list collaborators, e.g. the repo is owned by an org and the token doesn't have admin scope), fall back to a single-member set containing just `<owner>` (lowercased). Log an advisory: `[trusted-authors] could not query collaborators API (<reason>); falling back to repo owner only`. The session continues — restrictive default is the safe failure mode.
 
-`.shipyard/trusted-authors.txt` format — one GitHub login per line; comments (`#`) and blank lines OK; case-insensitive; repo owner is implicitly trusted. Bot accounts (`dependabot[bot]`, `github-actions[bot]`, etc.) are NOT auto-trusted — the collaborators-API fallback excludes them, and maintainers must add them to the override file explicitly. Cache lifetime is session-scoped — resolve once at startup, never re-resolve mid-session. See [RATIONALE → Step 1.7](../do-work-RATIONALE.md#step-17--why-a-per-repo-override-file-exists) for the policy discussion.
+`.shipyard/trusted-authors.txt` format — one GitHub login per line; comments (`#`) and blank lines OK; case-insensitive; repo owner is implicitly trusted. Bot / GitHub-App accounts are NOT auto-trusted — the collaborators-API fallback excludes them, and maintainers must add them to the override file explicitly. Either login shape works: `sentry[bot]` (REST) OR `app/sentry` (GraphQL) — `trusted-authors-normalize.sh` cross-adds the alias, and the orchestrator's downstream `author.login` comparison matches either one (see [GH App alias normalization](#gh-app-alias-normalization-issue-296) below). Cache lifetime is session-scoped — resolve once at startup, never re-resolve mid-session. See [RATIONALE → Step 1.7](../do-work-RATIONALE.md#step-17--why-a-per-repo-override-file-exists) for the policy discussion.
+
+#### GH App alias normalization (issue #296)
+
+GitHub returns **two different login shapes** for the same GH App account depending on which API the caller hits:
+
+- **REST** (e.g. `/repos/.../issues/N/events`) returns the legacy-style login: `sentry[bot]`.
+- **GraphQL Bot/App actor objects** (what `gh issue list --json author` and `gh issue view --json author` return) expose: `app/sentry`.
+
+The two strings have nothing in common after lowercasing. Before [#296](https://github.com/mattsears18/shipyard/issues/296), a maintainer who put `sentry[bot]` in `.shipyard/trusted-authors.txt` would see every Sentry-filed issue silently bucketed as untrusted by step 2's bucket-0.5 filter and dropped by step 4's client-side filter, because the comparison value (the GraphQL `app/sentry` shape) never matched the file's REST-shaped entry. The setup-time advisory `[trusted-authors] loaded 2 author(s)` was misleading — the bot was "in the file" but not effectively trusted.
+
+The fix is alias normalization at allowlist-load time. The helper `${CLAUDE_PLUGIN_ROOT}/scripts/trusted-authors-normalize.sh` reads the cleaned set and, for every `<name>[bot]` or `app/<name>` entry, **adds the other shape** to the set. So a file with `sentry[bot]` produces `{sentry[bot], app/sentry}`; a file with `app/sentry` produces `{app/sentry, sentry[bot]}`. Either form matches the GraphQL `author.login` value the orchestrator compares against. Human logins (no `[bot]` suffix, no `app/` prefix) pass through unchanged.
+
+```bash
+# Branch 1 (override file present) — read + normalize in one pipeline:
+allowlist_file=".shipyard/trusted-authors.txt"
+trusted_authors=$(
+  {
+    cat "$allowlist_file"
+    printf '%s\n' "<owner>"   # repo owner is implicitly trusted
+  } | "${CLAUDE_PLUGIN_ROOT}/scripts/trusted-authors-normalize.sh"
+)
+
+# The advisory log SHOULD report which aliases were applied so the
+# maintainer knows the normalization fired (issue #296 acceptance criterion):
+"${CLAUDE_PLUGIN_ROOT}/scripts/trusted-authors-normalize.sh" \
+  --report-aliases "$allowlist_file" | while IFS= read -r line; do
+  [ -z "$line" ] || echo "$line"
+done
+```
+
+The helper is idempotent — running it on a set that already contains both forms produces the same set. The cross-alias is one-directional in the sense that the *content* is preserved (no shape is rewritten) — both shapes coexist after normalization.
+
+The same normalization runs inside the two GitHub Actions workflows that resolve the allowlist (`.github/workflows/intake-refinement-gate.yml` and `.github/workflows/label-event-audit.yml`) — they inline the alias-cross-add as a `sed` pipeline (workflows can't reach into the shipyard plugin's scripts dir from a consumer repo). The orchestrator-side helper and the workflow-side inlining are kept in sync by the `trusted-authors-normalize.test.sh` test suite plus a workflow-side smoke pattern (any change to the alias logic in one place must change it in all three).
 
 **Protect the override file with CODEOWNERS.** Because the file IS the security boundary, repos that adopt `/shipyard:do-work` should add a `.github/CODEOWNERS` rule naming the maintainer(s) for `.shipyard/trusted-authors.txt` and enable "Require review from Code Owners" in branch protection on the default branch — otherwise anyone with `write` access can extend the allowlist via a single PR with no maintainer in the loop. This repo's own [`.github/CODEOWNERS`](../../../../.github/CODEOWNERS) is the reference example.
 
@@ -627,7 +660,9 @@ The fallback to raw `rm -rf` is load-bearing for the production case in #280: `g
 - `[trusted-authors] loaded <K> collaborator(s) from repos/<owner/repo>/collaborators API`, or
 - `[trusted-authors] fallback to repo owner only — <reason for API failure>`.
 
-The count `<K>` includes the repo owner (which is always in the set). The advisory is one line — not a block, not a list of logins — so the startup output stays scannable.
+The count `<K>` is the **post-normalization** size — it includes both the alias expansions from [GH App alias normalization](#gh-app-alias-normalization-issue-296) and the implicitly-trusted repo owner. The advisory is one line — not a block, not a list of logins — so the startup output stays scannable.
+
+When any GH-App aliases were added (one or more `<bot>[bot]` ↔ `app/<bot>` cross-adds fired), emit one additional `[trusted-authors] alias: <input> -> <added>` line per alias on the line immediately following the main advisory. Sourced from `trusted-authors-normalize.sh --report-aliases` so the maintainer can verify which form was matched. Skip when no aliases were needed (the typical human-only repo case) — silence is the right default.
 
 ### 2. Backlog overview
 
