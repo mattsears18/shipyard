@@ -124,6 +124,18 @@ if [[ -f "$workflow_path" ]]; then
   assert_contains "$workflow_path" "collaborators" \
     "Falls back to collaborators API when override file missing"
 
+  # (5b) GH App alias expansion (issue #296). The allowlist resolution
+  # must cross-add `<name>[bot]` ↔ `app/<name>` so an entry matches
+  # regardless of which GitHub-API shape the comparison value carries.
+  # Mirrors the orchestrator-side
+  # plugins/shipyard/scripts/trusted-authors-normalize.sh helper.
+  assert_contains "$workflow_path" "expand_aliases" \
+    "Defines expand_aliases helper for #296 alias cross-add"
+  assert_contains "$workflow_path" '[bot]' \
+    "expand_aliases helper handles the [bot] suffix shape"
+  assert_contains "$workflow_path" 'app/' \
+    "expand_aliases helper handles the app/ prefix shape"
+
   # (6) Tier A labels (security-sensitive) — must include all three.
   # We grep for the labels as standalone tokens in the case branches.
   assert_contains "$workflow_path" "shipyard" \

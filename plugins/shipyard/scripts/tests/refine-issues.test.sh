@@ -173,6 +173,17 @@ if [[ -f "$workflow_path" ]]; then
   assert_contains "$workflow_path" "tr 'A-Z' 'a-z'" \
     "intake gate lowercase-normalizes author login"
 
+  # GH App alias expansion (issue #296). Both `<name>[bot]` and `app/<name>`
+  # entries in the allowlist must cross-add the other shape, so a single
+  # file line matches the bot's issue regardless of which GitHub-API shape
+  # appears at comparison time.
+  assert_contains "$workflow_path" "expand_aliases" \
+    "intake gate defines the expand_aliases helper (issue #296)"
+  assert_contains "$workflow_path" 'app/' \
+    "intake gate's alias helper handles the app/ prefix shape"
+  assert_contains "$workflow_path" '[bot]' \
+    "intake gate's alias helper handles the [bot] suffix shape"
+
   # All four trigger conditions must be encoded.
   assert_contains "$workflow_path" "Open [qQ]uestions" \
     "intake gate detects '## Open questions' heading (condition 2)"
