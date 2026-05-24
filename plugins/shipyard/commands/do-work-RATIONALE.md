@@ -213,11 +213,20 @@ The per-turn `defers_this_turn` token makes this pattern visible: a turn with `d
 
 **Why `defers_this_turn` resets per turn rather than per session.** A session-level `defers_total` would obscure whether the deferring is concentrated in a few turns (likely legitimate: a scope-refill burst that returns a cluster of genuinely unworkable issues) versus spread uniformly across many turns (likely the "one at a time" over-deferring pattern). A per-turn counter exposes the pattern clearly at the turn level.
 
-## Pre-drain re-validation of `orchestrator-judgment` defers
+## Pre-drain re-validation of deferred entries
 
-The pre-drain re-validation pass ([`drain.md` step 5](./do-work/drain.md#pre-drain-re-validation-of-orchestrator-judgment-defers)) exists because the termination assertion's step 4 contains a structural exploit: it subtracts `deferred_issues` issue numbers from the live backlog before computing the net-new set. An orchestrator that self-defers every remaining workable issue (via `provenance: "orchestrator-judgment"` entries) can make the net-new set appear empty and proceed to drain — even though 13 issues are still on the live tracker and would have been dispatchable.
+The pre-drain re-validation pass ([`drain.md` step 5](./do-work/drain.md#pre-drain-re-validation-of-deferred-entries)) exists because the termination assertion's step 4 contains a structural exploit: it subtracts `deferred_issues` issue numbers from the live backlog before computing the net-new set. An orchestrator that self-defers every remaining workable issue can make the net-new set appear empty and proceed to drain — even though 13+ issues are still on the live tracker and would have been dispatchable. Two sessions exposed the same exploit on different sides of the `provenance` discriminator:
 
-**The worked example (session `e4f91771`, 2026-05-23).** Three of the deferred issues were incorrectly self-deferred:
+| Session | Provenance class | Issue | Failure mode |
+|---|---|---|---|
+| `e4f91771` (2026-05-23, `mattsears18/lightwork`) | `orchestrator-judgment` | [#246](https://github.com/mattsears18/shipyard/issues/246) | Orchestrator self-deferred 13 workable issues using its own working-memory judgment (no scope-agent dispatch); termination assertion subtracted them and declared drain. |
+| `shipyard-do-work-20260524T165717Z-7245` (2026-05-24, `mattsears18/lightwork`) | `scope-agent` | [#299](https://github.com/mattsears18/shipyard/issues/299) | JIT scope pre-flight at C=1 returned `deferred` on each of 15+ workable issues in sequence; termination assertion subtracted them all and declared drain — but the spec's #246 fix only covered the orchestrator-judgment branch, so step 5 was a no-op and the audit banner was skipped. |
+
+The same exploit, the same response: re-validate before drain fires.
+
+### The orchestrator-judgment worked example (session `e4f91771`)
+
+Three of the deferred issues were incorrectly self-deferred:
 
 | Issue | Orchestrator's defer reason | Why it was wrong |
 |---|---|---|
@@ -229,9 +238,31 @@ After user intervention, the orchestrator re-evaluated without consulting any ne
 
 **Why re-validation against named-blocker state is the right mechanism for #1075-style defers.** If the defer reason names a specific blocker (`Gated on #1077`), the right check is: is #1077 still OPEN? If CLOSED or MERGED, the blocker has resolved and the defer is stale. A single `gh issue view` call per named blocker is cheap and definitive. No scope-agent invocation required for named-blocker defers — the state check is the answer.
 
-**Why scope-agent re-dispatch is the right mechanism for free-form defers.** If the defer reason is a free-form judgment without a specific named blocker ("too complex for a single worker", "needs external decision"), there's no mechanical state to check. The only authoritative answer comes from re-running scope pre-flight. The cost is one scope-agent invocation per free-form defer that actually reaches the pre-drain check — and if those invocations return "ready," the work gets done instead of being silently skipped.
+**Why scope-agent re-dispatch is the right mechanism for free-form orchestrator-judgment defers.** If the defer reason is a free-form judgment without a specific named blocker ("too complex for a single worker", "needs external decision"), there's no mechanical state to check. The only authoritative answer comes from re-running scope pre-flight. The cost is one scope-agent invocation per free-form defer that actually reaches the pre-drain check — and if those invocations return "ready," the work gets done instead of being silently skipped.
 
-**Why the session-e4f91771 failure couldn't be caught by step 4's fresh fetch alone.** Step 4's fresh fetch compares the live backlog against the union of `in_flight`, `ready_issues`, `raw_backlog`, `deferred_issues`, and closed-this-session issues. An issue that's in `deferred_issues` is excluded from the net-new set regardless of whether the defer was authoritative. The step 4 check was correctly implemented (it did do a live fetch); the issue was that `deferred_issues` itself was artificially inflated by working-memory defers. The pre-drain step 5 is the fix: it shrinks `deferred_issues` by re-validating the orchestrator-judgment entries before the termination assertion can use the inflated set to declare "empty net-new."
+### The scope-agent extension (session `shipyard-do-work-20260524T165717Z-7245`)
+
+The #246 fix was originally written under the assumption that `scope-agent` provenance was evidence-backed ground truth — the spec said the drain transition "accepts these without re-validation." [#299](https://github.com/mattsears18/shipyard/issues/299) showed the assumption doesn't hold in practice. The structural failure shape was identical to the #246 session, just on the other side of the provenance discriminator:
+
+1. Scope pre-flight fires for top candidate (rule 5 / JIT at C=1).
+2. Scope agent reads `enhancement, web, ios, android` issue body and returns `deferred` ("cross-platform — looks like a multi-PR migration").
+3. Orchestrator records `{ provenance: "scope-agent", reason: <free-form>, deferred_at: ... }`.
+4. Next dispatch: another candidate, another scope-agent defer, same pattern.
+5. `ready_issues == 0`, `raw_backlog` drains into `deferred_issues`, `in_flight == 0` → termination assertion runs.
+6. Step 4 fresh fetch: 24 live issues. Union of `deferred_issues` covers most of them → net-new = 0 → drain fires → session exits.
+7. Step 5 was a no-op because the gating condition required `orchestrator-judgment` entries — none existed; all defers were `scope-agent`. No re-validation happened, no audit banner emitted, no signal to the user that 15+ issues were silently dropped.
+
+The over-defer self-check in `steady-state.md` step E (added by #246's same PR) fired but only added an `idle_reason` and ran the same fresh fetch — the `deferred_issues` subtraction still won.
+
+**Why scope-agent defers are also speculative in practice.** The scope-agent prompt is permissive — it's designed to err on the side of deferring when the body suggests breadth (cross-platform, multi-PR, ambiguous acceptance criteria) so the orchestrator doesn't ship a half-fix on an issue that genuinely needs a human's scoping pass first. But the prompt's permissiveness means a single conservative read of a body that *looks* multi-PR (but is actually a tractable single-file fix) produces a `deferred` return that the orchestrator then treats as authoritative for the rest of the session. The rationale's original distinction — orchestrator-judgment is "speculative working-memory state worth re-checking" vs. scope-agent is "evidence-backed" — turned out to be a false dichotomy. Both are speculative; both need the re-validation.
+
+**Why re-dispatching a fresh scope agent is the right mechanism for scope-agent re-validation.** Same reason it's the right mechanism for free-form orchestrator-judgment defers: there's no mechanical state to check (the defer reason is a free-form prose judgment from the scope-agent prompt; no named blocker to look up). The only authoritative answer comes from re-running scope pre-flight. Cost is bounded by `|deferred_issues with scope-agent provenance|` — typically 3–15 per session at C=1, where the JIT pre-flight pattern produces the most defers; at higher concurrency the cost is lower because scope-refill batches amortize.
+
+**Why not cheaper alternatives (variant B from the issue body).** The #299 issue suggested a variant B: gate re-validation on age + count (e.g., re-validate only when `|scope-agent defers| > 3` OR oldest is older than M minutes). It's cheaper but leaves a smaller failure window — a session that defers exactly 3 issues never re-validates. The cost asymmetry favors variant A: a Haiku-pinned scope-agent dispatch is cheap (≈1k tokens), and the alternative (silently dropping a workable issue) is expensive (the issue sits open another N hours until the next session picks it up). The bounded worst case (15 scope-agent invocations on a 15-defer session) is acceptable; the unbounded worst case in variant B (any defer count below the threshold never gets re-validated, indefinitely) is not.
+
+### Why the failure couldn't be caught by step 4's fresh fetch alone
+
+Step 4's fresh fetch compares the live backlog against the union of `in_flight`, `ready_issues`, `raw_backlog`, `deferred_issues`, and closed-this-session issues. An issue that's in `deferred_issues` is excluded from the net-new set regardless of whether the defer was authoritative. The step 4 check was correctly implemented in both `e4f91771` and the `7245` session (both did fire a live fetch); the issue was that `deferred_issues` itself was artificially inflated — by working-memory defers in `e4f91771`, by conservative scope-agent returns in `7245`. The pre-drain step 5 is the fix in both cases: it shrinks `deferred_issues` by re-validating its entries before the termination assertion can use the inflated set to declare "empty net-new."
 
 ## Soft drain — why it's safe to let agents finish
 
