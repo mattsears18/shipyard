@@ -1041,6 +1041,41 @@ out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --cache-creation is rejected (exit 64)"
 
+# Usage error: --degraded-total-only with --input 0 (or --input omitted, which
+# defaults to 0) is the orchestrator copy-paste trap from issue #320. A real
+# agent completion always has non-zero total_tokens — zero is a programming
+# error on the caller side (orchestrator pasted the breakdown-fields default
+# into the degraded path). Fail loud at usage time rather than silently
+# recording $0 across every dispatch in the session.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-degraded" \
+  --input 0 --output 0 --cache-read 0 --cache-creation 0 \
+  --mode issue-work --model claude-opus-4-7 \
+  --degraded-total-only 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "--degraded-total-only with --input 0 is rejected (exit 64) — orchestrator copy-paste trap"
+# Strip the trailing rc=N marker for the diagnostic-message assertion. Avoid
+# `head -n -1` (BSD head — macOS — rejects negative line counts).
+msg=$(printf '%s' "$out" | grep -v '^rc=')
+assert_contains "$msg" "--degraded-total-only requires --input <total_tokens>" "--input 0 rejection emits diagnostic naming the actual total_tokens requirement"
+
+# --input omitted entirely (default 0) — same failure shape, same exit.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-degraded" \
+  --mode issue-work --model claude-opus-4-7 \
+  --degraded-total-only 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "--degraded-total-only with --input omitted (defaults to 0) is rejected (exit 64)"
+
+# The rejection must run BEFORE any state mutation. After rejecting an
+# --input 0 call, the session file's tokens.totals + degraded_attribution_count
+# must be unchanged from the last successful bump (87413, 2 — set by the two
+# prior --degraded-total-only success cases earlier in this block).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.totals.input")
+assert_equals "$out" "99758" "rejected --input 0 bump did not mutate totals.input (still 87413 + 12345 = 99758 from prior successes)"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.degraded_attribution_count")
+assert_equals "$out" "2" "rejected --input 0 bump did not increment degraded_attribution_count (still 2)"
+
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
