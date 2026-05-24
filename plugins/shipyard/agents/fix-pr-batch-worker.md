@@ -29,6 +29,10 @@ The dispatch prompt will name `mode: fix-failing-prs-batch` explicitly. If it na
 
 and exit.
 
+## Worktree isolation contract
+
+Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call — agent-definition frontmatter doesn't support an `isolation:` default, so the caller is responsible. The [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) PreToolUse hook hard-fails any dispatch of this shim that omits it (closes #293).
+
 ## Why a separate shim file
 
 See `shipyard:fix-checks-worker`'s "Why a separate shim file" section for the rationale and the full mode-to-model mapping. Same pattern — different per-mode file under `agents/issue-worker/`. Sonnet (not Haiku) for this mode because cross-PR pattern-spotting across up to 5 representative failing PRs needs more capacity than single-PR error-log triage.

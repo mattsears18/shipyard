@@ -567,6 +567,8 @@ The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight
 
 Every shim agent forwards to the same per-mode spec under [`agents/issue-worker/<mode>.md`](../../agents/issue-worker/) — the model pin is the only behavioral difference between dispatching via the shim vs the original `shipyard:issue-worker` entry router (which still handles every mode for forward-compat, just on Opus). When in doubt about a mode's behavioral contract, read the per-mode file, not the shim.
 
+**Every dispatch in the table above MUST set `isolation: "worktree"` on the `Agent` tool call**, regardless of which shim is being invoked. The Claude Code agent-definition frontmatter format doesn't support an `isolation:` default, so the requirement falls on the caller. The [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) `PreToolUse` hook hard-fails dispatches of any guarded shim that omit the parameter (#293 — the original hook only matched `shipyard:issue-worker` exactly, silently passing through the four model-pinned shims). When adding a new worker shim to this table, update the hook's guarded-set in lockstep.
+
 When filling a slot, walk this decision tree:
 
 1. **`divert_queue` non-empty?** → pop the front entry. Path-collision rules don't apply (these are synthetic, not file-claimed). Dispatch a worker in the matching mode (use the matching `subagent_type` from the table above). Only one diverted worker per kind can be in flight at a time (step 4.5 / step D enforce this on enqueue).

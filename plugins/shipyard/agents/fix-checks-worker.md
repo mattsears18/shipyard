@@ -29,6 +29,10 @@ The dispatch prompt will name `mode: fix-checks-only` explicitly. If it names an
 
 and exit.
 
+## Worktree isolation contract
+
+Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call — agent-definition frontmatter doesn't support an `isolation:` default, so the caller is responsible. The [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) PreToolUse hook hard-fails any dispatch of this shim that omits it (closes #293).
+
 ## Why a separate shim file
 
 Claude Code subagents take their model from frontmatter — the `model:` field is read once per agent definition and applies to every invocation of that subagent. The orchestrator's existing single-entry router (`shipyard:issue-worker`) handles five modes; pinning a model on its frontmatter would force all five modes onto the same model. The per-mode shim pattern (`shipyard:fix-checks-worker` for fix-checks-only, `shipyard:fix-rebase-worker` for fix-rebase, etc.) lets each mode run on the model best fit for its workload while keeping the per-mode behavioral spec in one place (`agents/issue-worker/<mode>.md`).
