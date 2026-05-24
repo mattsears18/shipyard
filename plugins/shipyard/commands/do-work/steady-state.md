@@ -220,7 +220,61 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   3. Remove the `@me` assignee so the fresh dispatch's self-assign soft-lock works: `gh issue edit <N> --repo <owner/repo> --remove-assignee @me 2>/dev/null || true`
   4. Look for a `<!-- shipyard-worker-progress -->` comment on the issue (the worker may have posted incremental findings before the reap). If found, include its URL in the `[reap-recovery]` log entry so the next dispatch worker can read it at step 2 in issue-work.md.
 
-- **blocked #<N>** — comment on the issue summarizing the blocker, add the `blocked:agent` label, continue.
+- **blocked #<N>** — comment on the issue summarizing the blocker, then classify the bail per the table below and apply the corresponding label. Closes [#300](https://github.com/mattsears18/shipyard/issues/300) — the pre-#300 behavior was to stamp a single `blocked:agent` label regardless of bail reason, which conflated security/scope refuses (genuinely needs human review) with subjective bails (cannot-reproduce, ambiguous, scope-judgment — which can resolve on retry with new evidence) and locked the issue out of dispatch for the rest of the session AND until manual intervention. The soft/hard split fixes both.
+
+  **Reason → class table.** Parse the worker's reason string against this map (order doesn't matter — categories are disjoint):
+
+  | Bail reason fragment (substring match, case-insensitive) | Class | Label | Rationale |
+  |---|---|---|---|
+  | `issue body contains directives that bypass normal review` | hard | `blocked:agent-hard` | Prompt-injection refuse — definitely needs a human eye. |
+  | `body requested out-of-scope action` | hard | `blocked:agent-hard` | Same — likely prompt-injection signal. |
+  | `comment-thread requested out-of-scope action` | hard | `blocked:agent-hard` | Same — out-of-scope action regardless of source. |
+  | `pr` + (`already open` OR `for this issue`) | soft | `blocked:agent-soft` | False-positive against the duplicate-PR-body search; next session can re-evaluate. |
+  | `suggested fix exceeds expected scope` | soft | `blocked:agent-soft` | Judgment call — a different worker reading the same body might fit it into scope. |
+  | `cannot reproduce` | soft | `blocked:agent-soft` | Reproduction attempt may have used the wrong env / test command; retry is reasonable. |
+  | `ambiguous` | soft | `blocked:agent-soft` | Vague-on-its-own bodies may clarify across sessions (comments land, sibling PRs merge). |
+  | (anything else) | hard | `blocked:agent-hard` | Conservative default. Unknown reason → human review path. |
+
+  Implementation:
+
+  ```bash
+  reason="<the worker's reason string, lowercased>"
+  block_class="hard"  # conservative default
+  case "$reason" in
+    *"issue body contains directives that bypass normal review"*|\
+    *"body requested out-of-scope action"*|\
+    *"comment-thread requested out-of-scope action"*)
+      block_class="hard"
+      ;;
+    *"pr #"*"already open"*|*"pr #"*"for this issue"*|\
+    *"suggested fix exceeds expected scope"*|\
+    *"cannot reproduce"*|\
+    *"ambiguous"*)
+      block_class="soft"
+      ;;
+  esac
+
+  if [ "$block_class" = "soft" ]; then
+    label="blocked:agent-soft"
+    # In-memory soft-block bookkeeping — gates in-session re-dispatch.
+    # session_blocked_soft is a {issue_number → ISO-8601 timestamp} map
+    # that step C's lightweight backlog re-check reads to skip issues
+    # within blocked_agent.soft_retry_minutes of their last bail (default
+    # 30 — see ~/.claude/plugins/cache/shipyard/.../scripts/shipyard-config.sh).
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    session_blocked_soft[<N>]="$now"
+  else
+    label="blocked:agent-hard"
+  fi
+
+  gh issue edit <N> --repo <owner/repo> --add-label "$label" 2>/dev/null || true
+  gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Classified as \`$label\`."
+  ```
+
+  **Why soft labels don't bail next session's dispatch.** [setup.md step 4](./setup.md#4-fetch--rank-the-backlog)'s workable filter excludes `-label:blocked:agent-hard` but NOT `-label:blocked:agent-soft`, AND [setup.md step 3d.2 sub-sweep c](./setup.md#3-ensure-label-exists--recover-from-prior-session) removes the soft label entirely at every session start. So a soft-blocked issue is workable from the next session's perspective without any other intervention — the label exists purely as in-session documentation that "a worker bailed for a subjective reason; the user may want to clarify the body if they want a different outcome."
+
+  **Why soft labels gate in-session re-dispatch.** Once a worker has bailed soft for an issue, immediately re-dispatching another worker against the same issue in the same session would just re-encounter the same ambiguity. The `session_blocked_soft[<N>] = <timestamp>` write blocks step C's lightweight backlog re-check from re-adding `<N>` to `raw_backlog` for `blocked_agent.soft_retry_minutes` minutes (default 30). After the window, step C re-considers the issue — by then the rest of the session may have moved forward (sibling PRs merged, files touched, scope-agent re-dispatched), so the ambiguity may have a different shape.
+
 - **errored** — record in the session log, continue.
 
 For **fix-checks work** (`green` / `noop` / `blocked`):
@@ -309,7 +363,7 @@ For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
 
 When a `shipped #<N> via PR #<M>` return is reconciled (issue-work mode only — NOT synthetic-divert `shipped main-ci-fix` / `shipped pr-batch-fix` returns, which don't close issues), run a targeted sweep: look for open issues that were blocked by the issue just closed, and unblock any whose *all* blockers are now resolved.
 
-**Why.** Step 3d.2 at session-start auto-clears `blocked:agent` labels by checking `Blocked by #N` references. But it only runs once, at startup. If a PR ships mid-session that closes a referenced blocker, issues waiting on that blocker stay out of `raw_backlog` for the rest of the session and only surface on the *next* `/do-work` invocation — requiring manual intervention in the interim. See [#245](https://github.com/mattsears18/shipyard/issues/245) for the reproducer.
+**Why.** Step 3d.2 sub-sweep a at session-start auto-clears `blocked:agent-hard` labels by checking `Blocked by #N` references. But it only runs once, at startup. If a PR ships mid-session that closes a referenced blocker, issues waiting on that blocker stay out of `raw_backlog` for the rest of the session and only surface on the *next* `/do-work` invocation — requiring manual intervention in the interim. See [#245](https://github.com/mattsears18/shipyard/issues/245) for the reproducer. Per [#300](https://github.com/mattsears18/shipyard/issues/300) this sweep operates on `blocked:agent-hard` only — `blocked:agent-soft` issues are not in `deferred_issues`'s purview here (they auto-clear at next session via step 3d.2 sub-sweep c, and their in-session retry is gated by `session_blocked_soft` + `blocked_agent.soft_retry_minutes`).
 
 **Step-by-step.**
 
@@ -337,12 +391,13 @@ When a `shipped #<N> via PR #<M>` return is reconciled (issue-work mode only —
 
    ```bash
    for closed_issue in $closing_issues; do
-     # Only issues with the blocked:agent label carry Blocked-by references
-     # that the orchestrator manages — the label is the entry point.
+     # Only issues with the blocked:agent-hard label carry Blocked-by references
+     # that the orchestrator manages — the label is the entry point. (Per #300
+     # the sweep targets -hard only; -soft is auto-cleared elsewhere.)
      # gh issue list's --search 'in:body' qualifier is a prefix match on the
      # issue body, so the phrase match here is the fastest server-side filter.
      candidates=$(gh issue list --repo <owner/repo> --state open \
-       --label blocked:agent \
+       --label blocked:agent-hard \
        --search "\"Blocked by #${closed_issue}\"" \
        --json number,body \
        --jq '[.[] | {number, body}]')
@@ -385,7 +440,7 @@ When a `shipped #<N> via PR #<M>` return is reconciled (issue-work mode only —
 
        if $all_closed; then
          # All blockers are resolved — unblock this issue.
-         gh issue edit "$n" --repo <owner/repo> --remove-label blocked:agent 2>/dev/null || true
+         gh issue edit "$n" --repo <owner/repo> --remove-label blocked:agent-hard 2>/dev/null || true
          gh issue comment "$n" --repo <owner/repo> \
            --body "Auto-unblocked mid-session — all referenced blockers ($closed_list) are now closed (triggered by PR #<M> closing #${closed_issue})." \
            2>/dev/null || true
@@ -416,7 +471,7 @@ When a `shipped #<N> via PR #<M>` return is reconciled (issue-work mode only —
 
 **Error policy.** Every `gh` call in this step uses `2>/dev/null || true` — a transient API error on the search or the label-edit must not block dispatch. This is opportunistic — the session's step-D refresh and the next session's step 3d.2 are the safety nets. Log any `gh issue edit` failure as `[auto-unblock] label-remove failed for #<n>: <reason>; continuing` and proceed.
 
-**Scope.** This step only touches issues that carry the `blocked:agent` label AND reference the just-closed issue in the body. It does NOT re-sweep the full backlog. The search query is precise (`--label blocked:agent` + `--search "Blocked by #N"`) and adds at most one `gh issue list` call per closed issue number — typically one call total per shipped PR.
+**Scope.** This step only touches issues that carry the `blocked:agent-hard` label AND reference the just-closed issue in the body. It does NOT re-sweep the full backlog. The search query is precise (`--label blocked:agent-hard` + `--search "Blocked by #N"`) and adds at most one `gh issue list` call per closed issue number — typically one call total per shipped PR.
 
 **Integration with step D.** Step D's scope-refill sub-step runs after this step (same turn). If any issues were added to `raw_backlog` by A.5, the scope-refill will pick them up immediately on this turn's step C (rule 5: `raw_backlog non-empty`), making the newly-unblocked issue eligible for dispatch in the *same turn* the blocker shipped. No `--fast` carve-out — this step is cheap enough to always run on `shipped` returns.
 
@@ -431,6 +486,32 @@ Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 **Drain guard:** if `draining = true`, skip dispatch entirely. The slot stays empty until in-flight empties and the loop terminates. Step E still prints with `draining=true` noted.
 
 **Lightweight backlog re-check (every dispatch).** Before consulting `ready_issues` or `raw_backlog`, run the step-4 backlog fetch — a single `gh issue list` with the same filter (`--state open`, `-linked:pr`, the standard label exclusions, plus any `--label` qualifiers passed at invocation). Diff the result against the union of `in_flight` + `ready_issues` + `raw_backlog` + issues previously closed this session. Append net-new issue numbers to `raw_backlog` in priority order (same ranking rules as step 4). Apply the same client-side filters step 4 applies — including the [trusted-author check](./setup.md#17-resolve-trusted-author-allowlist); `raw_backlog` is the dispatch-feeder queue and a stranger's mid-session issue must never reach it. Skip auto-triage label-stamping and full scope pre-flight here — those run on step D's periodic refresh; the cheap pass just appends raw issue numbers (lazy scope at rule 5 of the dispatch rules). On transient `gh` errors, proceed with the queues as-is — never block dispatch on a refill failure.
+
+**Soft-blocked in-window filter (per [#300](https://github.com/mattsears18/shipyard/issues/300)).** Step 4's workable filter does NOT exclude `blocked:agent-soft` — by design, so the label doesn't leak across sessions — but within a session, immediately re-dispatching a worker against an issue another worker just bailed soft on would just re-encounter the same ambiguity. The in-memory `session_blocked_soft` map (populated by step A.1's `blocked` handler — `{issue_number → ISO-8601 timestamp of the bail}`) gates this. Before appending any net-new issue to `raw_backlog`, check:
+
+```bash
+# blocked_agent.soft_retry_minutes — default 30 — from shipyard-config.sh.
+soft_retry_minutes=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" \
+  get blocked_agent.soft_retry_minutes 2>/dev/null || echo "30")
+now_epoch=$(date -u +%s)
+for n in "${net_new_issues[@]}"; do
+  bail_iso="${session_blocked_soft[$n]:-}"
+  if [ -n "$bail_iso" ]; then
+    bail_epoch=$(date -u -d "$bail_iso" +%s 2>/dev/null || \
+                 date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$bail_iso" +%s 2>/dev/null || echo 0)
+    elapsed_min=$(( (now_epoch - bail_epoch) / 60 ))
+    if [ "$elapsed_min" -lt "$soft_retry_minutes" ]; then
+      # In-window — skip re-add; will retry on the next dispatch after window expiry.
+      continue
+    fi
+    # Window expired — clear the bookkeeping entry so the issue is treated as fresh.
+    unset 'session_blocked_soft[$n]'
+  fi
+  raw_backlog+=("$n")
+done
+```
+
+Filter applies to net-new issues from the lightweight re-check ONLY — issues already in `raw_backlog` / `ready_issues` from earlier in the session are NOT re-checked here (they were validated at their own dispatch attempt, and a worker that bailed soft on them already added them to `session_blocked_soft`). When `blocked_agent.soft_retry_minutes` is `0`, the filter is a no-op — every soft-bailed issue is re-considered on every dispatch (useful for debugging; not recommended in normal operation).
 
 **Cache the backlog re-check via `gh-cached.sh`.** This is a hot path — it fires on every dispatch turn — and the backlog doesn't change meaningfully over a 60-second window. Wrap the `gh issue list` call through [`gh-cached.sh`](./setup.md#09-gh-cachedsh-wrapper-opt-in-per-call-site) with `--ttl 60`. Invalidate the cache (`gh-cached.sh invalidate --session-id "<session-id>"`) right after any state-changing call shipyard itself makes (issue close, label edit, etc.) so the next dispatch turn picks up the post-write view. Caller picks the trade-off: skip the wrapper to always re-fetch live, or accept up to 60s of staleness in exchange for not re-hitting the API every dispatch.
 

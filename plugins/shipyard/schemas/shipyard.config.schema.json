@@ -65,11 +65,21 @@
       "properties": {
         "session_stamp": { "type": "string" },
         "blocked": { "type": "string" },
+        "blocked_hard": { "type": "string" },
+        "blocked_soft": { "type": "string" },
         "ci_blocked": { "type": "string" },
         "needs_refinement": { "type": "string" },
         "needs_human_review": { "type": "string" },
         "needs_triage": { "type": "string" },
         "user_feedback": { "type": "string" },
+        "_comment": { "type": "string" }
+      }
+    },
+    "blocked_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "soft_retry_minutes": { "type": "integer", "minimum": 0 },
         "_comment": { "type": "string" }
       }
     },

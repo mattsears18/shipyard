@@ -134,13 +134,19 @@ if [[ -f "$workflow_path" ]]; then
     "Tier A includes 'needs-human-review' label"
 
   # (7) Tier B labels (routing-only, alert-only) — at least the ones called
-  # out in the acceptance criteria.
+  # out in the acceptance criteria. Per #300, blocked:agent split into
+  # -hard / -soft / (legacy) — all three are Tier B (the soft/hard split
+  # is a routing signal, not a security boundary).
   assert_contains "$workflow_path" "needs-refinement" \
     "Tier B includes 'needs-refinement' label"
   assert_contains "$workflow_path" "wontfix" \
     "Tier B includes 'wontfix' label"
   assert_contains "$workflow_path" "blocked:agent" \
-    "Tier B includes 'blocked:agent' label"
+    "Tier B includes legacy 'blocked:agent' label (pre-#300 migration)"
+  assert_contains "$workflow_path" "blocked:agent-hard" \
+    "Tier B includes 'blocked:agent-hard' label (#300)"
+  assert_contains "$workflow_path" "blocked:agent-soft" \
+    "Tier B includes 'blocked:agent-soft' label (#300)"
 
   # (8) Reverts tier A — must use both `--add-label` (on unlabeled events)
   # and `--remove-label` (on labeled events) to undo the actor's change.

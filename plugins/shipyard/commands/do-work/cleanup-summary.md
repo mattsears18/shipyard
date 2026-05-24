@@ -174,7 +174,8 @@ Bucket                                       Count   Issues
 ───────────────────────────────────────────  ─────   ──────────────────────────────────────────────
 Workable (remaining after session)               2   #<a>, #<b>   — OR reason text if 0
 ⛔ Untrusted author                              1   #U → @stranger
-blocked:agent label                              3   #A, #B, #C
+blocked:agent-hard label                         3   #A, #B, #C
+blocked:agent-soft label                         1   #S — will auto-clear at next-session backlog fetch
 Blocked (body reference)                         1   #D
 needs-triage / needs-design                      2   #E, #F
 Awaiting refinement                              1   #R
@@ -224,7 +225,9 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
   - Backlog overview UI (step 2)
   - /refine-issues (step 3.5): <fast_skip_needs_refinement> issue(s) still carry needs-refinement
   - blocked:ci sweep (step 3d.1): <fast_skip_blocked_ci> PR(s) may have recoverable CI
-  - blocked:agent sweep (step 3d.2): <fast_skip_blocked_agent> issue(s) may have all blockers closed
+  - blocked:agent-hard sweep (step 3d.2 sub-sweep a): <fast_skip_blocked_agent_hard> issue(s) may have all blockers closed
+  - blocked:agent-soft sweep (step 3d.2 sub-sweep c): <fast_skip_blocked_agent_soft> issue(s) would auto-clear under normal session
+  - legacy blocked:agent migration (step 3d.2 sub-sweep b): <fast_skip_blocked_agent_legacy> issue(s) would migrate to blocked:agent-hard under normal session
   - Divert checks (steps 4.5a + 4.5b): main CI status not verified; failing-PR pileup not counted
 
   Run a normal /shipyard:do-work session soon to pick up the deferred work.
@@ -245,7 +248,7 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 - `Drain-phase rebases`: omit the line entirely when both counts are zero.
 - `Diversions:` block: omit entirely when `D == 0`. `Final repo health` always prints.
 - `Deferred:` line: omit when `deferred_issues` is empty. When non-empty, render one `#N [<defer_reason_class>] — <first sentence of reason>` per entry (truncate at first sentence or 80 chars). The bracketed `defer_reason_class` is one of `external-dependency` / `human-decision-required` / `untrusted-author` / `confirmed-blocker-still-open` / `confirmed-non-shippable-as-single-PR` ([#298](https://github.com/mattsears18/shipyard/issues/298)). An entry missing this field is a spec violation — when reading from session state for the summary, default to `confirmed-non-shippable-as-single-PR` with a `[shipyard] deferred_issues entry #<N> missing defer_reason_class — defaulted at summary-render time` advisory line above the block. Full reason is posted as a comment on each issue.
-- `--fast was used` block: omit when `--fast` was NOT passed. When `--fast` was passed, always print this block at the end of the summary — even when all four counts are zero (the user needs to know the checks didn't run). The four counts (`fast_skip_needs_refinement`, `fast_skip_blocked_ci`, `fast_skip_blocked_agent`) come from the cheap reads in step 2's `--fast` note.
+- `--fast was used` block: omit when `--fast` was NOT passed. When `--fast` was passed, always print this block at the end of the summary — even when all five counts are zero (the user needs to know the checks didn't run). The five counts (`fast_skip_needs_refinement`, `fast_skip_blocked_ci`, `fast_skip_blocked_agent_hard`, `fast_skip_blocked_agent_soft`, `fast_skip_blocked_agent_legacy`) come from the cheap reads in step 2's `--fast` note.
 - `Cost attribution degraded` block: omit when `.tokens.degraded_attribution_count` is `0` or missing — silence is the right default for sessions that ran entirely on the strict A.0 path. When non-zero, always print the line so the operator knows the printed cost numbers are a lower bound. `<degraded_attribution_count>` reads directly from `.tokens.degraded_attribution_count`; `<total_invocations>` is `(.tokens.per_invocation | length)`. The 1.5× lower-bound multiplier matches steady-state.md A.0's tradeoff prose (output-token 5× pricing + cache-token 10% pricing on a typical 60/30/10 split → real spend ≈ 1.5× the input-only attribution). See [issue #279](https://github.com/mattsears18/shipyard/issues/279) for the harness-side gap this banner surfaces.
 
 The lifetime line is sourced from two queries run just before printing the summary:

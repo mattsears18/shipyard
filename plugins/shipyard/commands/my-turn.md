@@ -67,8 +67,8 @@ From this projection, derive per-issue signals:
 
 - **Issue with `needs-human-review` label** — `/shipyard:do-work` is skipping it until a human signs off (canonical case: refined user-feedback issues awaiting maintainer approval). The reviewer **is the user** (or, more precisely: a maintainer; the survey assumes `$ME` is one).
 - **Issue with `needs-refinement` label** and no `<!-- do-work-refinement-agent -->` sentinel in any comment — `/shipyard:refine-issues` hasn't run yet OR ran and got blocked; the user may need to nudge it. (`needs-refinement` is the generic pipeline gate; the refiner branches by source signal — user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through.)
-- **Issue with `blocked:agent` label** where every body-referenced blocker (`Blocked by #<M>`) is `CLOSED` / `MERGED` — likely clearable; user should remove the label.
-- **Issue authored by `$ME` with no linked PR and no `blocked:agent` / `needs-design` label** — the user filed something and nothing's happened; `/shipyard:do-work` should be picking it up, but if it's not (wrong priority label, missing labels), the user should triage.
+- **Issue with `blocked:agent-hard` label** (or legacy `blocked:agent` — same semantics, awaiting migration per [#300](https://github.com/mattsears18/shipyard/issues/300)) where every body-referenced blocker (`Blocked by #<M>`) is `CLOSED` / `MERGED` — likely clearable; user should remove the label.
+- **Issue authored by `$ME` with no linked PR and no `blocked:agent-hard` / legacy `blocked:agent` / `needs-design` label** — the user filed something and nothing's happened; `/shipyard:do-work` should be picking it up, but if it's not (wrong priority label, missing labels), the user should triage. (`blocked:agent-soft` issues ARE workable and auto-clear at next-session backlog fetch — they don't need user triage.)
 - **Issue where the last comment was authored by someone other than `$ME` AND the comment text contains `?` or `@<$ME>`** — someone asked a question or pinged the user; awaiting response. Implementation: walk `comments` newest-first, find the last non-`$ME` comment, check for `?` substring or `@<login>` mention of `$ME`.
 
 ### Pass C — Unanswered review comments on `$ME`'s PRs
@@ -112,7 +112,7 @@ Merge the candidates from passes A–D into a single ranked list. Each item carr
 - **P2 — housekeeping**
   - PRs with `mergeStateStatus: DIRTY` >24h (rebase didn't auto-fire)
   - Draft PRs stale >7 days (finish or close)
-  - Issues with `blocked:agent` label where every referenced blocker is closed (likely clearable)
+  - Issues with `blocked:agent-hard` label (or legacy `blocked:agent`) where every referenced blocker is closed (likely clearable)
   - `CHANGES_REQUESTED` on `$ME`'s open PRs (the user owes the reviewer a response)
 
 ### Secondary sort

@@ -43,7 +43,7 @@ Before declaring termination (which triggers the drain phase → cleanup → sum
 
    ```bash
    gh issue list --repo <owner/repo> --state open --limit 100 \
-     --json number --search 'is:issue is:open -linked:pr -label:blocked:agent -label:wontfix -label:needs-design -label:needs-triage -label:discussion -label:needs-refinement -label:needs-human-review' \
+     --json number --search 'is:issue is:open -linked:pr -label:blocked:agent -label:blocked:agent-hard -label:wontfix -label:needs-design -label:needs-triage -label:discussion -label:needs-refinement -label:needs-human-review' \
      --jq '[.[].number] | sort'
    ```
 

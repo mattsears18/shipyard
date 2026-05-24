@@ -161,10 +161,16 @@ assert_jq "$repo_config" '.repo.owner'    "mattsears18"          "repo config: o
 assert_jq "$repo_config" '.repo.name'     "claude-plugins"       "repo config: name is claude-plugins"
 assert_jq "$repo_config" '.auto_merge.policy' "trusted-only"     "repo config: auto_merge.policy is trusted-only"
 assert_jq "$repo_config" '.trust.authors | contains(["mattsears18"])' "true" "repo config: trust.authors includes mattsears18"
-# The labels block must match the canonical blocked:* namespace
-assert_jq "$repo_config" '.labels.session_stamp' "shipyard"          "repo config: labels.session_stamp"
-assert_jq "$repo_config" '.labels.blocked'       "blocked:agent"     "repo config: labels.blocked is blocked:agent"
-assert_jq "$repo_config" '.labels.ci_blocked'    "blocked:ci"        "repo config: labels.ci_blocked is blocked:ci"
+# The labels block must match the canonical blocked:* namespace.
+# Per #300 the single blocked:agent label split into blocked:agent-hard /
+# blocked:agent-soft (with the bare blocked:agent kept as a legacy alias
+# for migration); the labels block carries all three.
+assert_jq "$repo_config" '.labels.session_stamp' "shipyard"            "repo config: labels.session_stamp"
+assert_jq "$repo_config" '.labels.blocked'       "blocked:agent"       "repo config: labels.blocked is blocked:agent (legacy alias kept for migration)"
+assert_jq "$repo_config" '.labels.blocked_hard'  "blocked:agent-hard"  "repo config: labels.blocked_hard is blocked:agent-hard (#300)"
+assert_jq "$repo_config" '.labels.blocked_soft'  "blocked:agent-soft"  "repo config: labels.blocked_soft is blocked:agent-soft (#300)"
+assert_jq "$repo_config" '.labels.ci_blocked'    "blocked:ci"          "repo config: labels.ci_blocked is blocked:ci"
+assert_jq "$repo_config" '.blocked_agent.soft_retry_minutes' "30"      "repo config: blocked_agent.soft_retry_minutes default 30 (#300)"
 
 # --------------------------------------------------------------------------
 echo "== do-work setup phase opt-in gate (step 0.4)"

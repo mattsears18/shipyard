@@ -7,8 +7,9 @@ name: Label-event audit
 #
 # Rationale (issue #140): `/shipyard:do-work` uses GitHub labels (`shipyard`,
 # `blocked:ci`, `needs-human-review`, `needs-refinement`, `P0`-`P2`,
-# `wontfix`, `blocked:agent`, etc.) as routing hints, but does NOT verify
-# who applied or removed each label. The trusted-author check at dispatch
+# `wontfix`, `blocked:agent-hard`, `blocked:agent-soft`, etc.) as routing
+# hints, but does NOT verify who applied or removed each label. The
+# trusted-author check at dispatch
 # time (do-work.md step 1.7, step 2 bucket 0.5, step 4 client-side filter)
 # gates on `issue.author.login`, so the primary attack — a rogue triager
 # applying `shipyard` to a stranger's issue — can't escalate to worker
@@ -32,7 +33,8 @@ name: Label-event audit
 #   - Tier A (security-sensitive): `shipyard`, `blocked:ci`,
 #     `needs-human-review` — REVERT the actor's change AND comment.
 #   - Tier B (routing-only): `needs-refinement`, `P0`, `P1`, `P2`,
-#     `wontfix`, `blocked:agent`, `needs-design`, `needs-triage`,
+#     `wontfix`, `blocked:agent-hard`, `blocked:agent-soft`, legacy
+#     `blocked:agent` (pre-#300), `needs-design`, `needs-triage`,
 #     `discussion` — alert-only (comment), no automatic revert.
 #   - Out of scope: free-form labels (`bug`, `enhancement`, `documentation`,
 #     `feature-request`, `good first issue`, `help wanted`, `invalid`,
@@ -211,7 +213,10 @@ jobs:
               tier=A
               ;;
             # Tier B (routing-only) — alert-only, no revert.
-            needs-refinement|P0|P1|P2|wontfix|blocked:agent|needs-design|needs-triage|discussion)
+            # blocked:agent-hard / blocked:agent-soft / legacy blocked:agent
+            # all alert; per #300 the soft/hard split is purely a routing
+            # signal so neither warrants a Tier A revert.
+            needs-refinement|P0|P1|P2|wontfix|blocked:agent|blocked:agent-hard|blocked:agent-soft|needs-design|needs-triage|discussion)
               tier=B
               ;;
             *)
