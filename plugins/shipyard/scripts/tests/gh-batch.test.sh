@@ -157,8 +157,23 @@ aliases=$(printf '%s\n' "$query" | grep -oE "${kind}_[0-9]+" | sort -u)
       printf '"%s":null' "$a"
     else
       if [[ "$kind" == "pr" ]]; then
-        printf '"%s":{"pullRequest":{"number":%s,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","headRefName":"feat/%s","headRefOid":"abc%s","statusCheckRollup":{"state":"SUCCESS"}}}' \
-          "$a" "$n" "$n" "$n"
+        # Synthetic closingIssuesReferences convention (issue #301):
+        # PR N closes issue (N + 1000) by default — gives tests a
+        # deterministic, distinct mapping to assert against.
+        # Magic number 888 → empty closingIssuesReferences (a PR that
+        # closes nothing — release PR, drive-by docs PR, etc.).
+        # Magic number 777 → closes TWO issues (777+1000=1777 AND
+        # 777+2000=2777) — exercises the multi-close projection.
+        if [[ "$n" == "888" ]]; then
+          cir_nodes='[]'
+        elif [[ "$n" == "777" ]]; then
+          cir_nodes='[{"number":1777},{"number":2777}]'
+        else
+          closes_n=$((n + 1000))
+          cir_nodes="[{\"number\":${closes_n}}]"
+        fi
+        printf '"%s":{"pullRequest":{"number":%s,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","headRefName":"feat/%s","headRefOid":"abc%s","statusCheckRollup":{"state":"SUCCESS"},"closingIssuesReferences":{"nodes":%s}}}' \
+          "$a" "$n" "$n" "$n" "$cir_nodes"
       else
         printf '"%s":{"issue":{"number":%s,"state":"OPEN","labels":{"nodes":[{"name":"P2"},{"name":"shipyard"}]}}}' \
           "$a" "$n"
@@ -276,6 +291,39 @@ assert_equals "$oid_142" "abc142" "PR 142 carries headRefOid"
 # Object has exactly 3 keys (no extras, no drops).
 key_count=$(printf '%s' "$out" | jq 'length')
 assert_equals "$key_count" "3" "output has exactly 3 PR entries"
+
+rm -rf "$env"
+
+# --------------------------------------------------------------------------
+echo "== pr-status: closingIssueNumbers projection (issue #301)"
+# --------------------------------------------------------------------------
+
+env=$(mktmpenv)
+counter="$env/calls.log"
+
+# Default convention: PR N closes issue (N + 1000). 888 closes nothing.
+# 777 closes two issues (1777, 2777).
+out=$(GH_BATCH_TEST_COUNTER="$counter" PATH="$env/bin:$PATH" \
+  bash "$helper" pr-status --repo owner/name --numbers "142 888 777")
+
+# 142 → [1142]
+closes_142=$(printf '%s' "$out" | jq -c '."142".closingIssueNumbers')
+assert_equals "$closes_142" "[1142]" "PR 142 closingIssueNumbers projects to [1142]"
+
+# 888 → []  (release-PR / no-closing-keyword case — the exact shape that
+# fixes the issue #301 false-positive, since substring search would have
+# matched a CHANGELOG manifest's `Closes #N` line but the structural
+# projection correctly reports the PR closes nothing).
+closes_888=$(printf '%s' "$out" | jq -c '."888".closingIssueNumbers')
+assert_equals "$closes_888" "[]" "PR 888 (empty CIR) projects to [] — no false positive"
+
+# 777 → [1777, 2777]  (multi-close projection)
+closes_777=$(printf '%s' "$out" | jq -c '."777".closingIssueNumbers')
+assert_equals "$closes_777" "[1777,2777]" "PR 777 (multi-close) projects to [1777, 2777]"
+
+# The new field doesn't displace any existing field.
+state_142=$(printf '%s' "$out" | jq -r '."142".statusCheckRollupState')
+assert_equals "$state_142" "SUCCESS" "existing statusCheckRollupState still projected alongside closingIssueNumbers"
 
 rm -rf "$env"
 
@@ -477,6 +525,7 @@ assert_contains "$argv" 'pr_42: repository' "query carries alias for PR 42"
 assert_contains "$argv" 'pr_7: repository' "query carries alias for PR 7"
 assert_contains "$argv" 'pullRequest(number: 42)' "query uses pullRequest resolver"
 assert_contains "$argv" 'statusCheckRollup' "PR projection requests statusCheckRollup"
+assert_contains "$argv" 'closingIssuesReferences' "PR projection requests closingIssuesReferences (issue #301)"
 
 rm -rf "$env"
 
