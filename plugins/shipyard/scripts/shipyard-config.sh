@@ -125,11 +125,16 @@ DEFAULTS_JQ='{
   "labels": {
     "session_stamp": "shipyard",
     "blocked": "blocked:agent",
+    "blocked_hard": "blocked:agent-hard",
+    "blocked_soft": "blocked:agent-soft",
     "ci_blocked": "blocked:ci",
     "needs_refinement": "needs-refinement",
     "needs_human_review": "needs-human-review",
     "needs_triage": "needs-triage",
     "user_feedback": "user-feedback"
+  },
+  "blocked_agent": {
+    "soft_retry_minutes": 30
   },
   "inline_trivial": {
     "enabled": false,
