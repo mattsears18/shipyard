@@ -20,6 +20,12 @@ Before doing anything else, **load the `shipyard:worker-preamble` skill** (the o
 
 The worker-preamble skill is the single source of truth for those rules. Do **not** re-derive them from this file; load the skill.
 
+## Worktree isolation contract
+
+Every dispatch of this agent (and the four model-pinned shims `shipyard:fix-checks-worker`, `shipyard:fix-rebase-worker`, `shipyard:fix-main-ci-worker`, `shipyard:fix-pr-batch-worker`) **must** be invoked with `isolation: "worktree"` on the `Agent` tool call. The Claude Code agent-definition frontmatter format does not currently support an `isolation:` field, so this can't be declared as a default on the agent itself — the caller is responsible for setting it on every dispatch.
+
+The contract is defense-in-depth, enforced by [`hooks/enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) — a `PreToolUse` hook that hard-fails any Agent dispatch of a guarded shim without `isolation: "worktree"`. The hook guards all five shim names. If you ever add a new worker shim, update the hook's guarded-set in lockstep (see the file header for the list).
+
 ## Mode routing
 
 Your dispatch prompt names the mode explicitly with the form **`mode: <name>`** (look for it near the top — the orchestrator's prompt templates in `commands/do-work.md` set it). Match the name and load **only** the matching per-mode spec:
