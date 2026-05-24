@@ -69,10 +69,15 @@ The command is intentionally a thin wrapper around `shipyard-config.sh`. The ass
    - In interactive mode, prompt for any value not supplied via flag.
    - In non-interactive / scripted mode, take values from flags and fall back to defaults.
 
-5. **Build the config and write it via `shipyard-config.sh set --repo`.** One `set` call per field so each write goes through schema validation:
+5. **Build the config and write it via `shipyard-config.sh set --repo`.** One `set` call per field so each write goes through schema validation — with one exception: nested objects whose schema declares a `required: [...]` pair (currently just `.repo`, which requires both `owner` and `name`) MUST be written in a single `set` call with a JSON-object value, because each per-field `set` commits the intermediate state to disk and the validator refuses to leave the parent half-populated. See issue [#305](https://github.com/mattsears18/shipyard/issues/305) for the dogfooding rationale.
+
    ```bash
-   plugins/shipyard/scripts/shipyard-config.sh set repo.owner "$OWNER" --repo
-   plugins/shipyard/scripts/shipyard-config.sh set repo.name "$REPO" --repo
+   # repo.owner + repo.name are a schema-required pair → write as one JSON object.
+   plugins/shipyard/scripts/shipyard-config.sh set repo \
+     "$(jq -nc --arg owner "$OWNER" --arg name "$REPO" '{owner: $owner, name: $name}')" \
+     --repo
+
+   # All other fields are independent — one set call per field.
    plugins/shipyard/scripts/shipyard-config.sh set auto_merge.policy "$AUTO_MERGE" --repo
    plugins/shipyard/scripts/shipyard-config.sh set trust.authors "$TRUST_JSON" --repo
    plugins/shipyard/scripts/shipyard-config.sh set cost_tracking.enabled "$COST_BOOL" --repo
