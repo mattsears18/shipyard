@@ -307,6 +307,46 @@ When the original scope agent does conclude an issue is genuinely unsliceable to
 
 The field is *encouraged but optional* because not every defer has a clean unblock condition (an issue gated on a legal review may genuinely be unblock-able only by "legal signs off") and forcing the agent to fill it would push toward fabricated content. When absent, the re-validation pass falls through to a full re-scope without the priming hint — the same path as a fresh scope agent invocation on any other defer.
 
+## Evidence-backed defers (issue #302)
+
+#298 introduced the five-value `defer_reason_class` enum to prevent plausible-sounding-prose defers from sneaking through as orchestrator-judgment. The enum stopped one failure mode (free-form `reason` text alone) but left the deeper one unaddressed: **the prompt instruction was still permissive enough that a scope agent could pick any class and produce a `reason` that sounded mechanical without actually being grounded in evidence**. Session experience on `mattsears18/lightwork` (most enhancement issues carry `labels: enhancement, web, ios, android, P2` and one-paragraph bodies) confirmed the gap: a scope agent reading those bodies would routinely return `deferred` with reasons like `"cross-platform — looks like a multi-PR migration"` and pick `confirmed-non-shippable-as-single-PR` as the class. The class was a valid enum value; the reason was speculative judgment.
+
+The four offending shapes from issue #302's body:
+
+- *"Looks like a multi-PR migration"* — almost any non-trivial cross-platform issue can read this way at a glance.
+- *"Touches three platforms — likely complex"* — cross-platform doesn't entail multi-PR; many such issues are tractable single-file fixes.
+- *"UX change — probably needs design review"* — the scope agent isn't qualified to gate on design intent.
+- *"Body is vague"* — a worker-side bail (`agents/issue-worker/issue-work.md` step 2's `blocked: ambiguous` path), not a scope-side defer.
+
+The downstream cost is asymmetric: a single permissive defer locks the issue out of dispatch for the rest of the session (and #299's drain-time re-validation re-confirms the same defer if the agent's read of the body hasn't changed — which it usually hasn't, because the body itself hasn't changed). Each false-positive scope-agent defer is structurally identical to a `blocked:agent-hard` label except worse: there's no human review surface, and the only way the issue gets re-considered is on the *next* `/do-work` invocation.
+
+### The fix: mechanical evidence per class, validated by the orchestrator
+
+The fix has two parts — a prompt change and an orchestrator-side validator. The prompt alone wouldn't suffice (a sufficiently confident agent can still produce speculative `evidence_pointer` text); the validator alone wouldn't suffice (without the prompt change agents would still try to defer first, then have their defers rejected at high cost). Together they form the defense-in-depth pattern the rationale uses elsewhere — prompt as first line, mechanical check as load-bearing second line. The same posture as `issue-worker.md` step 2's body-vs-codebase rule: the worker re-derives the implementation from the codebase even when the body suggests one.
+
+**Prompt change.** The scope-agent prompt (setup.md step 6) now reads: *Default to slicing, not deferring. ... Return the deferred shape ONLY when you can cite SPECIFIC MECHANICAL EVIDENCE for the defer — a named open blocker issue (`Blocked by #N`), a missing dependency the worker can't reasonably install/lock/test/ship in the same PR, multi-service coordination that requires synchronized deploys, an external vendor change the worker can't move, or a referenced design artifact (Figma, RFC) that hasn't been imported into the codebase. Speculative reads of the body — "looks like a multi-PR migration", "touches three platforms — likely complex", "UX change — probably needs design review", "body is vague" — are NOT evidence and will be rejected by the orchestrator's per-class validator.*
+
+The four rejected phrases are listed verbatim in the prompt because they're the exact shapes the prior sessions produced. Naming them is more effective than abstract guidance ("avoid speculative judgment") — an agent that sees the canonical bad-pattern catalog can pattern-match its own draft against it before returning.
+
+**Orchestrator-side validation.** Every deferred return now carries an `evidence_pointer` field that the orchestrator validates against a per-class shape table before the entry is recorded. The shapes are intentionally lightweight string matches the orchestrator can run inline:
+
+- `confirmed-blocker-still-open` → must contain at least one `#<digits>` reference; the orchestrator does a single `gh issue view <N> --json state` per cited blocker to confirm it's still OPEN.
+- `external-dependency` / `human-decision-required` → must not contain speculative-judgment words (`looks like`, `probably`, `likely`, `seems`, `feels`); `human-decision-required` also rejects generic phrases without a specific decision named.
+- `untrusted-author` → must contain `author: <login>` matching GitHub's login regex.
+- `confirmed-non-shippable-as-single-PR` → must start with one of: `Missing dependency:`, `Multi-service coordination:`, `Multi-PR sequence:`, `Body cites <artifact>:`. The structured prefixes prevent the same speculative-text shape that motivated this issue.
+
+A deferred return whose `evidence_pointer` fails validation is **rejected** — the orchestrator does not record it in `deferred_issues`. Instead, the issue is pushed back onto `raw_backlog` (preserving rank), an explanatory comment is posted on the issue (so the human can see the rejection), and the next dispatch re-scopes the issue with a fresh scope agent. The rejection is logged with the specific failure reason (`cited blocker #1077 is CLOSED`, `contains speculative phrase "looks like"`, `missing required prefix`) so end-of-session debugging has a concrete trail.
+
+### Why this is the right place to fix it (upstream vs downstream)
+
+#299 added drain-time re-validation as the downstream safety net (every scope-agent defer gets re-dispatched before drain can fire). That's load-bearing — the drain gate prevents the session-termination failure mode. But re-validation runs once per session, at the very end, and burns one scope-agent invocation per defer to do so. If 15 scope-agent defers reach the drain gate, that's 15 fresh scope-agent invocations just to confirm what was already true at scope time. The upstream fix (this issue) prevents the speculative defers from being recorded in the first place — the rejection happens inline at scope time with no extra agent dispatch (the per-class shape checks are pure string/regex matches; only `confirmed-blocker-still-open` does a single cheap `gh issue view` per cited blocker).
+
+The two fixes compose. #299 is the structural gate that prevents premature termination. #302 reduces the input to that gate — fewer speculative defers reach it, so fewer wasteful re-validations happen at drain time. A session with no speculative defers (the steady state we're targeting) sees no re-validations at all because all the defers carry valid evidence and the gate is a no-op. A session with speculative defers gets them rejected inline; a session that somehow still produces a bad defer that passes the inline validator (e.g., a `Blocked by #1077` defer where #1077 is OPEN but the agent is mistaken about it being load-bearing) still gets caught by the drain-time re-validation. Both gates are needed because they catch different shapes of failure: inline catches obviously-speculative text, drain-time catches "evidence looked valid but turned out to be wrong on second look."
+
+### Why re-validation flips an old defer to rejected, not just re-confirmed
+
+The drain-time re-validation in `drain.md` step 5.b was also tightened: when a fresh scope agent re-confirms a defer, the new `evidence_pointer` is also validated against the per-class shape table. If the new pointer fails validation, the entry is promoted to `raw_backlog` and the issue is re-scoped — same path as the inline rejection at scope time. This closes the loophole where a re-validation could re-confirm a defer with stale speculative evidence indefinitely (a "looks like multi-PR" defer at scope time would still be "looks like multi-PR" at drain time, and pre-#302 the re-validation would just re-confirm and skip drain — the issue would stay dropped). Post-#302, the re-validation forces the agent to produce mechanical evidence; if the agent can't, the issue gets re-queued.
+
 ## Soft drain — why it's safe to let agents finish
 
 Agents commit at logical milestones (TDD test → commit, implementation → commit) and PRs are opened with `--auto`. Letting an in-flight agent finish naturally never loses work. Killing it mid-edit could.
