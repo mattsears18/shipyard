@@ -85,16 +85,20 @@ For each entry in `deferred_issues` where `provenance == "orchestrator-judgment"
 
 For each entry in `deferred_issues` where `provenance == "scope-agent"` (excluding any entry that just got promoted to `scope-agent` provenance by 5.a — those have a fresh scope agent return and don't need another one in this pass):
 
-**Dispatch a fresh scope agent** for this issue now. The original scope-agent return reflected the issue's state at scope time; main may have advanced since (a sibling PR landed, a blocker resolved, a dep updated), the audit data may have aged, or the original scope agent may have been permissively-conservative on a body that's tractable on second look. A fresh scope pre-flight is the same mechanism 5.a uses for free-form orchestrator-judgment defers, and the same authoritative answer applies:
+**Dispatch a fresh scope agent** for this issue now. The original scope-agent return reflected the issue's state at scope time; main may have advanced since (a sibling PR landed, a blocker resolved, a dep updated), the audit data may have aged, or the original scope agent may have been permissively-conservative on a body that's tractable on second look. The phase-slicing bias documented in [setup.md step 6](./setup.md#6-initial-scope-pre-flight)'s prompt instruction means a fresh scope agent will actively look for a phase-1 slice that the original agent — even if running against the same body — might have missed; this is the load-bearing reason re-validation produces different answers than the first scope pass even when the issue's body hasn't changed. A fresh scope pre-flight is the same mechanism 5.a uses for free-form orchestrator-judgment defers, and the same authoritative answer applies:
 
 ```
 [Dispatch scope agent for issue #<N> — pre-drain re-validation of scope-agent defer]
+  Original defer reason: <entry.reason>
+  Original defer_reason_class: <entry.defer_reason_class>
+  Would_be_dispatchable_as_phase_1_if (from original defer): <entry.would_be_dispatchable_as_phase_1_if or "not provided">
+  Pass through to the scope agent so it can check whether the unblocking condition has resolved.
 ```
 
-- If the scope agent returns a **deferred shape**: leave the entry in `deferred_issues`. Update the entry's `reason` to the fresh return's reason (the old reason may be stale; the new one is the current authoritative diagnosis) and bump `deferred_at` to the current timestamp. Log: `[pre-drain-revalidate] #<N> scope-agent re-confirmed deferred — <fresh reason>`.
-- If the scope agent returns a **ready shape**: remove from `deferred_issues`, push into `raw_backlog`. Log: `[pre-drain-revalidate] #<N> was scope-agent deferred but fresh scope agent found it ready; returned to raw_backlog`.
+- If the scope agent returns a **ready shape** (with or without `phase_1_scope`): remove from `deferred_issues`, push into `raw_backlog`. The candidate is re-scoped by the next dispatch via step C's normal flow; the `phase_1_scope` field — if present — flows through to the worker prompt as documented in [setup.md step 6](./setup.md#6-initial-scope-pre-flight)'s ready-entry handling. Log: `[pre-drain-revalidate] #<N> was scope-agent deferred but fresh scope agent found it ready<scope-suffix>; returned to raw_backlog`. The `<scope-suffix>` is ` (as phase-1 slice: <phase_1_scope>)` when the fresh return supplied one, empty otherwise.
+- If the scope agent returns a **deferred shape**: leave the entry in `deferred_issues`. Update the entry's `reason`, `defer_reason_class`, and `would_be_dispatchable_as_phase_1_if` to the fresh return's values (the old fields may be stale; the new ones are the current authoritative diagnosis) and bump `deferred_at` to the current timestamp. Log: `[pre-drain-revalidate] #<N> scope-agent re-confirmed deferred (class=<defer_reason_class>) — <fresh reason>`.
 
-The cost of 5.b is one scope-agent invocation per scope-agent defer that actually reaches the pre-drain check — bounded by `|deferred_issues with scope-agent provenance|`. The bound is acceptable because the alternative (treating scope-agent defers as authoritative ground truth and letting drain fire on a single misjudgment) was the failure mode [#299](https://github.com/mattsears18/shipyard/issues/299) documented — a `mattsears18/lightwork` session that drained on 15+ workable issues because the JIT scope pre-flight at C=1 had returned `deferred` on each of them in sequence.
+The cost of 5.b is one scope-agent invocation per scope-agent defer that actually reaches the pre-drain check — bounded by `|deferred_issues with scope-agent provenance|`. The bound is acceptable because the alternative (treating scope-agent defers as authoritative ground truth and letting drain fire on a single misjudgment) was the failure mode [#299](https://github.com/mattsears18/shipyard/issues/299) documented — a `mattsears18/lightwork` session that drained on 15+ workable issues because the JIT scope pre-flight at C=1 had returned `deferred` on each of them in sequence. The phase-slicing bias added by [#298](https://github.com/mattsears18/shipyard/issues/298) makes the re-validation more likely to flip an entry to ready — not because the issue's state has changed, but because the slicing-biased prompt actively searches for a phase-1 slice the original conservative pass passed over.
 
 #### 5.c — After processing all entries
 
@@ -108,10 +112,18 @@ After both 5.a and 5.b have run:
    PRE-DRAIN AUDIT
        deferred_issues total: <N> (<M> added this session)
        of those, scope-agent-backed: <K> (re-validated)  orchestrator-judgment: <J> (re-validated)
+       defer_reason_class breakdown:
+           external-dependency: <c_ext>
+           human-decision-required: <c_human>
+           untrusted-author: <c_untrusted>
+           confirmed-blocker-still-open: <c_blocker>
+           confirmed-non-shippable-as-single-PR: <c_unsliceable>
        all defers re-validated — blockers still active, scope agents re-confirmed
        last live backlog fetch: <HH:MM:SS UTC>
        proceeding to drain
    ```
+
+   `defer_reason_class` is the load-bearing field added by [#298](https://github.com/mattsears18/shipyard/issues/298) — every `deferred_issues` entry MUST carry one of the five values above. An entry that reaches this banner without a class is a spec violation; the orchestrator MUST treat such entries as needing a fresh scope agent re-dispatch (same path as 5.b) before letting drain fire. Omit any breakdown line whose count is zero to keep the banner terse on sessions with few defers.
 
    The banner is always emitted when step 5 ran — it is the audit trail for the user. When `deferred_issues` is empty (step 5 was a no-op), the banner is skipped (no audit needed — there was nothing to re-validate).
 

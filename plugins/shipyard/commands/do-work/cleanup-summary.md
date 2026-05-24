@@ -207,7 +207,7 @@ Issues processed: N
 Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pending], ...)
 In flight at exit: F (#C → PR #Z still pending CI after drain)
 Blocked: K (#P — <reason>, #Q — <reason>)
-Deferred: <Df> (#P — <first sentence of reason>, #Q — <first sentence of reason>, ...)
+Deferred: <Df> (#P [<defer_reason_class>] — <first sentence of reason>, #Q [<defer_reason_class>] — <first sentence of reason>, ...)
 Errored: J (#R — <agent error>)
 Diversions: <D> dispatched
   fix-main-ci: <d1> (<shipped/noop/blocked breakdown, with PR #s and block reasons>)
@@ -244,7 +244,7 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 - `Drain phase`: `<reason>` is one of `all PRs settled`, `no forward progress for 5 polls`, `120-min ceiling`, or `second stop signal — drain skipped`. The merged / blocked:ci / rebase-blocked / still-pending counts partition `session_prs`.
 - `Drain-phase rebases`: omit the line entirely when both counts are zero.
 - `Diversions:` block: omit entirely when `D == 0`. `Final repo health` always prints.
-- `Deferred:` line: omit when `deferred_issues` is empty. When non-empty, render one `#N — <first sentence of reason>` per entry (truncate at first sentence or 80 chars). Full reason is posted as a comment on each issue.
+- `Deferred:` line: omit when `deferred_issues` is empty. When non-empty, render one `#N [<defer_reason_class>] — <first sentence of reason>` per entry (truncate at first sentence or 80 chars). The bracketed `defer_reason_class` is one of `external-dependency` / `human-decision-required` / `untrusted-author` / `confirmed-blocker-still-open` / `confirmed-non-shippable-as-single-PR` ([#298](https://github.com/mattsears18/shipyard/issues/298)). An entry missing this field is a spec violation — when reading from session state for the summary, default to `confirmed-non-shippable-as-single-PR` with a `[shipyard] deferred_issues entry #<N> missing defer_reason_class — defaulted at summary-render time` advisory line above the block. Full reason is posted as a comment on each issue.
 - `--fast was used` block: omit when `--fast` was NOT passed. When `--fast` was passed, always print this block at the end of the summary — even when all four counts are zero (the user needs to know the checks didn't run). The four counts (`fast_skip_needs_refinement`, `fast_skip_blocked_ci`, `fast_skip_blocked_agent`) come from the cheap reads in step 2's `--fast` note.
 - `Cost attribution degraded` block: omit when `.tokens.degraded_attribution_count` is `0` or missing — silence is the right default for sessions that ran entirely on the strict A.0 path. When non-zero, always print the line so the operator knows the printed cost numbers are a lower bound. `<degraded_attribution_count>` reads directly from `.tokens.degraded_attribution_count`; `<total_invocations>` is `(.tokens.per_invocation | length)`. The 1.5× lower-bound multiplier matches steady-state.md A.0's tradeoff prose (output-token 5× pricing + cache-token 10% pricing on a typical 60/30/10 split → real spend ≈ 1.5× the input-only attribution). See [issue #279](https://github.com/mattsears18/shipyard/issues/279) for the harness-side gap this banner surfaces.
 
