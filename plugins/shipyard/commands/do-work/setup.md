@@ -276,6 +276,8 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
   # 3c — Orphan worktree triage (discovery + handling). The discovery is cheap;
   # the expensive push/PR-create branch only fires when orphans exist. Neither
   # gates dispatch decisions.
+  stale_assigns_count=0
+  declare -a stale_assigns_numbers
   git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||' | while read -r branch; do
     path=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
     [ -z "$path" ] && continue
@@ -297,6 +299,34 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
         [ -n "$pr_num" ] && gh pr merge "$pr_num" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true
       fi
     fi
+  done
+
+  # 3c (row 5) — Stale @me self-assigns with no worktree, no PR, no branch
+  # (issue #303). Catches the state the worktree loop above CAN'T see:
+  # a prior session that left the @me assignment on an issue after its
+  # on-disk worktree was already cleaned up. Without this sweep the
+  # assignment survives indefinitely across sessions; the issue silently
+  # passes the worker-side step-0 pre-flight (it's still assigned to
+  # @me, not someone else) and gets re-dispatched against stale prior-
+  # session artifacts. Action is conservative: clear the assignment only,
+  # leave the `shipyard` label as provenance, and let the normal step-4
+  # backlog fetch pick the issue up on the next dispatch.
+  for n in $(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null); do
+    # If a worktree for this issue exists, the loop above already handled it; skip.
+    if git worktree list --porcelain | grep -q "refs/heads/do-work/issue-$n$"; then
+      continue
+    fi
+    # If a do-work branch for this issue still exists on origin, leave it
+    # alone — it may belong to an open PR the `-linked:pr` filter missed
+    # (e.g., draft PR linked via a different reference shape). Conservative
+    # gate: only clear assignment when NOTHING in the dispatch artifacts
+    # exists for this issue anymore.
+    if [ -n "$(git ls-remote --heads origin "do-work/issue-$n" 2>/dev/null)" ]; then
+      continue
+    fi
+    gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
+    stale_assigns_count=$((stale_assigns_count + 1))
+    stale_assigns_numbers+=("$n")
   done
 ) &
 SETUP_BACKGROUND_PID=$!
@@ -900,13 +930,13 @@ Record `reaped_stale` and `deferred_stale` — both surface in the end-of-sessio
 
 **3c. Orphan worktree triage** — scan for `do-work/*` branches whose worktrees survived step 3b (legitimate orphans from THIS session, not dead-process leftovers).
 
-> **Background step.** Both the discovery query and the handling (push / PR-create for orphans with commits) run inside the background bash group fired from [step 0.7](#07-setup-parallelization-contract-fire-once-batch). Neither gates dispatch decisions. The discovery query is cheap; the expensive push/PR-create branch only fires when orphans exist. The canonical implementation lives in the background group above; this section documents the decision table and `salvaged_count`/`abandoned_count` tracking semantics.
+> **Background step.** Both the discovery query and the handling (push / PR-create for orphans with commits) run inside the background bash group fired from [step 0.7](#07-setup-parallelization-contract-fire-once-batch). Neither gates dispatch decisions. The discovery query is cheap; the expensive push/PR-create branch only fires when orphans exist. The canonical implementation lives in the background group above; this section documents the decision table and `salvaged_count` / `abandoned_count` / `stale_assigns_count` tracking semantics.
 
 ```bash
 git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||'
 ```
 
-For each `do-work/issue-<N>` branch found, resolve its worktree path with `git worktree list | grep "\[do-work/issue-<N>\]" | awk '{print $1}'` (`<path>` below), then inspect its state and act according to the table. Track `salvaged_count` (worktrees that produced or kept an open PR) and `abandoned_count` (worktrees removed) — both default to 0 and feed into the end-of-session summary.
+For each `do-work/issue-<N>` branch found, resolve its worktree path with `git worktree list | grep "\[do-work/issue-<N>\]" | awk '{print $1}'` (`<path>` below), then inspect its state and act according to the table. Track `salvaged_count` (worktrees that produced or kept an open PR), `abandoned_count` (worktrees removed), and `stale_assigns_count` (issues whose `@me` self-assign was cleared by the fifth row's no-worktree-no-PR-no-branch sweep) — all three default to 0 and feed into the end-of-session summary.
 
 All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh pr create`) so they operate on the orphan worktree, not the orchestrator's main checkout.
 
@@ -918,14 +948,11 @@ All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh 
 | Commits ahead, pushed, no PR open | Same `rev-list` > 0 AND `ls-remote` shows the branch AND `gh pr list --head` is empty | `(cd <path> && gh pr create --repo <owner/repo> --fill --label shipyard)` then enable auto-merge. `salvaged_count++`. |
 | Commits ahead, pushed, PR open | `gh pr list --head` returns a PR number | `gh pr view <M> --repo <owner/repo> --json statusCheckRollup`. If any check is `FAILURE` / `ERROR` / `TIMED_OUT` → push `{number: <M>, ...}` onto `failed_prs`. Otherwise leave alone — auto-merge will handle it. `salvaged_count++`. |
 | Branch is `[gone]` upstream | `git branch -v` shows `[gone]` next to the branch name | `(no-op — handled by end-of-session cleanup)` |
+| **Self-assigned with no worktree, no PR, no branch on origin** (issue [#303](https://github.com/mattsears18/shipyard/issues/303)) | After the worktree loop above, run `gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number` and for each result confirm `[ ! -d <repo-root>/.claude/worktrees/agent-* ]` doesn't claim it (no worktree-on-disk this loop already touched) AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `gh issue edit <N> --repo <owner/repo> --remove-assignee @me` (leave the `shipyard` label as provenance — it's not load-bearing for re-dispatch). `stale_assigns_count++`. Next dispatch retries from scratch. |
 
-**Inconsistency log (advisory)** — also run a one-line label cross-check:
+The fifth row closes a gap [#303](https://github.com/mattsears18/shipyard/issues/303) opened: prior sessions sometimes leave the `@me` self-assign on an issue after their on-disk worktree has been cleaned up (returned `blocked`, errored before first commit, etc.). The first four rows only see issues whose worktree is still present — so this state survives unbounded across sessions, with the issue silently failing the worker-side step-0 pre-flight ("assignee is `@me`, not someone else, so don't bail") and getting re-dispatched against stale prior-session artifacts.
 
-```bash
-gh issue list --repo <owner/repo> --label shipyard --assignee @me --state open --search '-linked:pr' --json number
-```
-
-Any results here that DON'T correspond to a `do-work/*` worktree on disk are "dispatched but agent died before its first commit" cases. Log them in the session summary as an advisory — don't auto-act.
+The row's action is intentionally conservative: clear the assignment only, leave the `shipyard` label (provenance — it tells the next session this issue went through `/do-work` before), let the normal step-4 backlog fetch pick the issue back up, and let the orchestrator's normal dispatch path arrange a fresh worktree. Don't touch the issue body, don't post a comment, don't close — the issue may genuinely still be workable and the prior session's `blocked` may have been transient.
 
 **3d.1. Auto-clear stale `blocked:ci` labels.** The label is sticky on purpose, but a new commit on the PR's head branch means the premise ("no movement since shipyard gave up") is no longer true. Auto-clear those PRs so they flow back into step 5's failing-PR snapshot for another 3 attempts. This sweep is the *only* place `blocked:ci` is removed by the orchestrator (step A applies; 3d.1 removes; no other step touches it).
 

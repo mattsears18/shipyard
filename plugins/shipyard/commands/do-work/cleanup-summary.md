@@ -203,7 +203,7 @@ Remaining open: 0 — clean board.
 ```
 
 Recovered from prior session: <salvaged_count> salvaged (PRs created/kept), <abandoned_count> abandoned
-Advisory: <A> labeled+assigned issues with no worktree and no PR (#<N>, ...)  # omit line if A == 0
+Cleared stale @me self-assigns (no worktree, no PR, no branch): <stale_assigns_count> (#<N>, ...)  # omit line if stale_assigns_count == 0 (issue #303)
 Issues processed: N
 Shipped: M (#A → PR #X [merged|green|pending], #B → PR #Y [merged|green|pending], ...)
 In flight at exit: F (#C → PR #Z still pending CI after drain)
