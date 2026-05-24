@@ -95,6 +95,13 @@
 #              a banner. Cost will under-count (no output 5x multiplier,
 #              no cache 10% multiplier) but the data lands somewhere
 #              durable instead of being silently dropped at $0.
+#              `--degraded-total-only` requires `--input <total_tokens>`
+#              to be non-zero — `--input 0` is rejected with exit 64
+#              (#320). A real agent completion always has non-zero
+#              `total_tokens`; passing 0 is an orchestrator copy-paste
+#              of the breakdown-fields default, and silently recording
+#              $0 across an entire session was a worse failure mode
+#              than the dispatch erroring loud.
 #
 #   read-tokens — emit token data on stdout. `--format json` (default)
 #              prints the relevant slice; `--format comment` emits a
@@ -617,9 +624,22 @@ cmd_bump_tokens() {
   # --input." Passing --output / --cache-read / --cache-creation
   # alongside is a programming error (mixed-mode attribution would
   # silently corrupt the data) — reject usage-error rather than guess.
+  #
+  # The flag also requires a non-zero --input. A real agent completion
+  # always has non-zero total_tokens; --input 0 (or --input omitted,
+  # which defaults to 0) is the orchestrator copy-paste trap from
+  # issue #320: the canonical call shape paired --degraded-total-only
+  # with `--input 0 --output 0 --cache-read 0 --cache-creation 0`
+  # (defaults from the strict path), and every degraded bump in the
+  # session silently recorded $0. Fail loud rather than swallow the
+  # whole session's spend.
   if [[ "$degraded_total_only" -eq 1 ]]; then
     if [[ "$output" != "0" ]] || [[ "$cache_read" != "0" ]] || [[ "$cache_creation" != "0" ]]; then
       echo "bump-tokens: --degraded-total-only is exclusive with --output / --cache-read / --cache-creation (pass --input <total_tokens> only)" >&2
+      exit 64
+    fi
+    if [[ "$input" == "0" ]] || [[ -z "$input" ]]; then
+      echo "bump-tokens: --degraded-total-only requires --input <total_tokens> (got --input 0 — pass the actual total from the <usage> block, not the breakdown-fields default)" >&2
       exit 64
     fi
   fi
