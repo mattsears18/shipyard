@@ -161,6 +161,28 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md names run_in_background: true as a leak source"
   assert_contains "$skill_path" "Monitor" \
     "SKILL.md names Monitor as a leak source"
+
+  # Issue #316 — "Dependency-bootstrap check for Node-based target repos"
+  # section. The section exists because the harness creates agent worktrees
+  # via `git worktree add` without installing npm deps, so any Node-based
+  # target repo whose pre-push hook shells out to node_modules/.bin/<tool>
+  # silently passes when node_modules is missing — turning the local-test
+  # discipline into a no-op. Removing the section regresses the silent-pass
+  # contract; removing the symlink remediation path regresses the
+  # cheapest-recovery contract (worker would jump straight to the 30-90s
+  # `npm ci` path or, worse, skip the check entirely).
+  assert_contains "$skill_path" "## Dependency-bootstrap check for Node-based target repos" \
+    "SKILL.md covers the Node-deps bootstrap check (issue #316)"
+  assert_contains "$skill_path" "package.json" \
+    "SKILL.md names package.json as the Node-repo detector for the bootstrap check"
+  assert_contains "$skill_path" "node_modules" \
+    "SKILL.md names node_modules as the missing-dir signal for the bootstrap check"
+  assert_contains "$skill_path" "ln -s ../../../node_modules node_modules" \
+    "SKILL.md provides the symlink-from-primary-checkout remediation recipe"
+  assert_contains "$skill_path" "npm ci" \
+    "SKILL.md provides the npm ci fallback remediation"
+  assert_contains "$skill_path" "cannot bootstrap node_modules" \
+    "SKILL.md names the blocked: bail string for the fail-both-paths case"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after

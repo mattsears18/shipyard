@@ -98,6 +98,7 @@ Branch name comes from the orchestrator's dispatch prompt and must be exactly `d
 - If the change touches behavior, **write the test first** — the test should encode the acceptance criteria. The superpowers `test-driven-development` skill applies if available.
 - Make the smallest change that satisfies the criteria. No drive-by refactors, no unrelated cleanups.
 - If you spot other bugs while in the code, **file new issues** (one line each), don't fix them here. Scope creep makes PRs unreviewable and stalls auto-merge.
+- **For Node-based target repos, bootstrap dependencies before running tests or pushing.** See `shipyard:worker-preamble` § "Dependency-bootstrap check for Node-based target repos". A missing `node_modules/` against a repo whose pre-push hook shells out to `node_modules/.bin/<tool>` can produce a silent-pass (the hook script treats the `ENOENT` as "no tests" instead of failing loudly), and your "local tests passed" claim becomes a no-op. Run the symlink-or-`npm ci` check before the first test invocation.
 - Run the test suite locally before pushing. Detect the test command from `package.json` `scripts.test`, `Makefile`, `pyproject.toml`, or repo conventions. If nothing exists, skip — CI will tell you.
 
 ### 5. Commit + push + PR
