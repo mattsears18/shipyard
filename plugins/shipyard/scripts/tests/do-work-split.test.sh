@@ -528,6 +528,109 @@ assert_contains "$issue_work_path333" \
   'group_by(.name)' \
   "issue-work.md step 7 snapshot uses group_by(.name) projection (#333)"
 
+# (19) Wide-fetch + client-side filter for the backlog (issue #332).
+#
+# The previous backlog-fetch shape used a server-side
+# `--search 'is:issue is:open -linked:pr -label:blocked:agent ...'`
+# qualifier to do the eligibility filter on GitHub's side. That shape
+# silently dropped resumable-work issues — a `lightwork` session at
+# 2026-05-25 exposed 14 issues from a backlog of 29 open ones (~50% miss
+# rate) and confidently entered drain while 15 workable issues sat
+# invisible to the dispatch queue. Root cause: `-linked:pr` excludes
+# issues that ever had a linked PR opened, even when that PR has since
+# been closed/abandoned/superseded; the resumable-work case (prior
+# session opened a PR that got closed before merge, issue still self-
+# assigned to @me) is exactly the bucket the filter was supposed to NOT
+# exclude.
+#
+# The fix lands in three call-sites that MUST stay in lockstep:
+#   - setup.md step 4 (the canonical backlog fetch + client-side filter)
+#   - drain.md termination-assertion step 4 (the fresh-fetch verification)
+#   - steady-state.md step C lightweight backlog re-check (every-dispatch refill)
+#
+# Server-side: only `--state open` plus any `--label <L>` qualifiers passed
+# at invocation. All other eligibility checks — author trust, dispatch-gate
+# labels, assignee≠@me, `Blocked by #N` still-open, closed-by-@me-authored-
+# healthy-PR — move to client-side. Defense in depth: a new
+# `unfiltered_open_count=<u>` token on the step-E invariant line surfaces
+# the wide-fetch universe size BEFORE the client-side filter ran, so a
+# regression in the filter pass produces a visible `raw_backlog=0 against
+# unfiltered_open_count=29` smell instead of a silent false-empty.
+#
+# These assertions pin the post-#332 contract:
+assert_contains "$setup_path" \
+  'issues/332' \
+  "setup.md cites issue #332 as the source of the wide-fetch rework"
+assert_contains "$setup_path" \
+  'Wide fetch — server-side filter is ONLY' \
+  "setup.md step 4 documents the wide-fetch shape (server-side only --state open)"
+assert_contains "$setup_path" \
+  'Why the server-side filter is intentionally wide' \
+  "setup.md step 4 explains why the server-side filter was widened (#332)"
+# shellcheck disable=SC2016
+# Backticks here are literal characters in the markdown needle, not a command substitution.
+assert_contains "$setup_path" \
+  'have an open linked PR authored by `@me` AND that PR is healthy' \
+  "setup.md step 4 documents the @me + healthy gate for closed-by-open-pr (#332)"
+assert_contains "$setup_path" \
+  'closed_by_open_healthy_pr' \
+  "setup.md step 4 ships the healthy-PR jq shape variable name"
+
+# The narrower server-side qualifier must be GONE from setup.md's canonical
+# step-4 fetch block — its presence in prose is OK as a historical reference,
+# but the code-block fetch must not invoke it anymore. Use a stricter form
+# to verify: the previous fetch's exact `--search` string can't be present
+# in a fenced code block. (We assert via the absence of the full literal
+# previous-form string from the file, accepting that the historical-context
+# paragraph may quote a *backticked inline* form. The previous full literal
+# was the line with all 8 label exclusions; that exact contiguous string is
+# only ever emitted by an invocation, not by descriptive prose.)
+assert_not_contains "$setup_path" \
+  "is:issue is:open -linked:pr -label:blocked:agent -label:blocked:agent-hard -label:wontfix -label:needs-design -label:needs-triage -label:discussion -label:needs-refinement -label:needs-human-review" \
+  "setup.md step 4 no longer invokes the pre-#332 narrow server-side search qualifier"
+
+assert_contains "$drain_path" \
+  'issues/332' \
+  "drain.md cites issue #332 as the source of the wide-fetch rework"
+assert_contains "$drain_path" \
+  'Wide fetch — server-side filter is purely --state open' \
+  "drain.md termination-assertion step 4 documents the wide-fetch shape"
+assert_contains "$drain_path" \
+  'unfiltered_open_count' \
+  "drain.md termination-assertion step 4 stamps unfiltered_open_count (#332)"
+
+# The narrower previous search qualifier must be gone from drain.md too —
+# this was the second of the three call-sites the issue listed as needing
+# the fix.
+assert_not_contains "$drain_path" \
+  "is:issue is:open -linked:pr -label:blocked:agent -label:blocked:agent-hard -label:wontfix -label:needs-design -label:needs-triage -label:discussion -label:needs-refinement -label:needs-human-review" \
+  "drain.md termination-assertion step 4 no longer invokes the pre-#332 narrow server-side search qualifier"
+
+assert_contains "$steady_state_path" \
+  'issues/332' \
+  "steady-state.md cites issue #332 as the source of the wide-fetch rework"
+assert_contains "$steady_state_path" \
+  'wide-fetch shape' \
+  "steady-state.md step C lightweight backlog re-check references the wide-fetch shape (#332)"
+assert_contains "$steady_state_path" \
+  'unfiltered_open_count=<u>' \
+  "steady-state.md step E invariant line includes the unfiltered_open_count token (#332)"
+assert_contains "$steady_state_path" \
+  'unfiltered_open_count=<u>` is the per-turn evidence flag' \
+  "steady-state.md documents what unfiltered_open_count means (#332)"
+assert_contains "$steady_state_path" \
+  'Divergence smell' \
+  "steady-state.md documents the raw_backlog=0 against unfiltered_open_count>0 divergence-smell rule (#332)"
+
+# The lightweight backlog re-check in steady-state.md previously documented
+# the filter shape as `-linked:pr, the standard label exclusions` — the
+# post-#332 rewrite removes that phrasing in favor of pointing at setup.md's
+# wide-fetch + client-side filter as the canonical shape. Pin the removal
+# so a future rewrite doesn't accidentally re-introduce the broken framing.
+assert_not_contains "$steady_state_path" \
+  "the same filter (\`--state open\`, \`-linked:pr\`, the standard label exclusions" \
+  "steady-state.md step C lightweight re-check no longer describes the pre-#332 filter shape inline"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
