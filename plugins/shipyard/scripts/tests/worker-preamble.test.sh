@@ -183,6 +183,24 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md provides the npm ci fallback remediation"
   assert_contains "$skill_path" "cannot bootstrap node_modules" \
     "SKILL.md names the blocked: bail string for the fail-both-paths case"
+
+  # Issue #322 — Bash-tool isolation gotcha in the worktree-reaped escape hatch.
+  # The pre-#322 snippet documented a "save once, reuse" pattern that tripped
+  # the very guard it was meant to enforce when run through the Bash tool:
+  # each tool call spawns a fresh shell, so $WORKTREE_PATH set in one call
+  # was empty in the next, the `! -d ""` check was true, and the worker
+  # emitted a false-positive `reaped:` exit on its first commit. The fix
+  # makes the re-derive-at-top-of-every-call pattern explicit. Removing the
+  # Bash-tool-isolation callout or the re-derive recipe regresses the
+  # first-commit-false-positive contract.
+  assert_contains "$skill_path" "Bash-tool isolation" \
+    "SKILL.md calls out Bash-tool isolation as the gotcha (issue #322)"
+  assert_contains "$skill_path" "Re-derive \`WORKTREE_PATH\`" \
+    "SKILL.md prescribes re-deriving WORKTREE_PATH at the top of every write-class call (issue #322)"
+  assert_contains "$skill_path" "do not survive" \
+    "SKILL.md explains that variables do not survive across Bash tool calls (issue #322)"
+  assert_contains "$skill_path" "false-positive \`reaped:\` exit" \
+    "SKILL.md names the false-positive reaped: exit failure mode (issue #322)"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
