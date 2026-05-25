@@ -239,7 +239,13 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
   # ancestor walk inside classify-lock can fail to find it whenever an
   # intermediate harness layer returns empty PPID.
   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
-  for wt_dir in .git/worktrees/agent-*; do
+  # Use `find` instead of a bare `agent-*` glob so the loop survives zsh's
+  # default `nomatch` option when no agent worktrees exist
+  # ([#335](https://github.com/mattsears18/shipyard/issues/335)). Bare globs
+  # raise a fatal error under zsh and abort the entire bg subshell —
+  # including the remaining cleanup sub-steps (3c orphan-branch triage).
+  # `find` exits 0 on no matches; the loop body simply doesn't iterate.
+  for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
     [ -d "$wt_dir" ] || continue
     name=$(basename "$wt_dir")
     worktree_path=$(git worktree list --porcelain | awk -v n="$name" '/^worktree /{p=$2} /^branch /{b=$2} /^$/{if (p ~ n) print p}' | head -1)
@@ -898,7 +904,12 @@ deferred_stale=0
 # without an explicit declaration, classify-lock's ancestor walk can fail
 # to find it whenever an intermediate harness layer returns empty PPID.
 export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
-for wt_dir in .git/worktrees/agent-*; do
+# Use `find` instead of a bare `agent-*` glob so the loop survives zsh's
+# default `nomatch` option when no agent worktrees exist
+# ([#335](https://github.com/mattsears18/shipyard/issues/335)). Bare globs
+# raise a fatal error under zsh; `find` exits 0 on no matches and the
+# loop body simply doesn't iterate.
+for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
   [ -d "$wt_dir" ] || continue
   name=$(basename "$wt_dir")
   worktree_path=$(git worktree list --porcelain | awk -v n="$name" '/^worktree /{p=$2} /^branch /{b=$2} /^$/{if (p ~ n) print p}' | head -1)
