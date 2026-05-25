@@ -170,6 +170,7 @@ This intentionally **does NOT filter `-label:blocked:ci`** — `blocked:ci` PRs 
 **Batching the per-PR refresh.** When the drain loop has already snapshotted the open-PR list (above) but needs to re-resolve per-PR fields *for a known subset* — e.g. the "did this `D_dirty` PR's `mergeStateStatus` flip to `CLEAN` since the previous poll, or did its `headRefOid` move?" check that powers the forward-progress rule below — use `plugins/shipyard/scripts/gh-batch.sh pr-status` instead of N sequential `gh pr view <M>`:
 
 ```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
 # One round-trip + one tool-result block instead of N. Same projection
 # fields the per-PR `gh pr view` would return.
 "${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
@@ -217,6 +218,7 @@ A PR is **settled** when any of: it's merged/closed, it's labeled `blocked:ci`, 
    **CI-minute pre-dispatch gates (gated on `ci.*` config keys).** Before the per-PR re-dispatch policy below, check the config keys in this order — both default to off (preserves pre-#323 behavior); flip them in `shipyard.config.json`'s `ci.*` block to engage:
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
    # Read both keys once per poll (cheap — the helper short-circuits on cached defaults).
    skip_rebase=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
      ci.skip_drain_rebase 2>/dev/null || echo "false")

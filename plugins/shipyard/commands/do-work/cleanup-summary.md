@@ -30,6 +30,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
 3. **Reap all agent worktrees from THIS session — classify the lock-holding PID first.** Cleanup can fire while a dispatched agent is still in flight; reaping its worktree would destroy unpushed work. Run the helper [`scripts/worktree-reap.sh classify-lock <lock-file>`](../../scripts/worktree-reap.sh) against each worktree's lock file. It returns one of `no-lock` / `dead` / `self-ancestor` / `peer-alive`. Reap on the first three; defer only on `peer-alive`. The `self-ancestor` case is load-bearing: the Claude Code harness writes the **orchestrator's** PID into every dispatched agent's lock file (lock content is literally `claude agent <agent-id> (pid <orchestrator-pid>)`), so at end-of-session cleanup the lock PID is alive by definition — it's the process running cleanup. A strict liveness check would defer every worktree the orchestrator itself owns (see [issue #138](https://github.com/mattsears18/shipyard/issues/138)). `self-ancestor` means the lock PID is the declared orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`, set below from `detect-orchestrator-pid`'s ancestor walk) OR is in our own process ancestor chain — not a peer agent, just the orchestrator about to retire its own worktree. Safe to reap. The env-var declaration was added in [issue #263](https://github.com/mattsears18/shipyard/issues/263) because the ancestor-walk path from #138 mis-classifies whenever an intermediate harness layer returns empty PPID. See [RATIONALE → Liveness check at shutdown](../do-work-RATIONALE.md#end-of-session-cleanup--why-the-orchestrator-worktree-is-reaped-last):
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
    cd "$(git rev-parse --show-toplevel)"
    reaped_worktrees=0
    deferred_live=0
@@ -113,6 +114,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    The helper [`scripts/worktree-reap.sh reap-orphan-branches`](../../scripts/worktree-reap.sh) enumerates all local `worktree-agent-*` branches, checks each against `git worktree list --porcelain`, and `git branch -D`s any that have no live worktree referencing them. Each deletion emits one JSONL line to `~/.shipyard/reap-audit.jsonl` with `"action":"reaped-orphan-branch"`, `"branch"`, `"session"`, and `"reason":"no-live-worktree"`. The sweep is idempotent — a second pass is a no-op. It is safe — branches with a live worktree are skipped unconditionally.
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
    reaped_orphan_branches=0
    while IFS= read -r branch_line; do
      [ -z "$branch_line" ] && continue
@@ -155,6 +157,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, an
    **Wait on the setup background group first.** Step 0.7's background group (`$SETUP_BACKGROUND_PID`) includes the step 1.6 orphan-session-file sweep, which also writes to `cost-history.jsonl`. Both the sweep and this flush are idempotent, but they can race on the same session file if the background group is still running when end-of-session cleanup reaches step 7. The `wait` costs nothing when the group has already finished (the typical case — ~2s of background work vs. the full session duration):
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
    # Wait for the setup background group to finish before flushing, to avoid
    # a race between step 1.6's orphan sweep and this flush writing to the same
    # cost-history.jsonl. Both are idempotent, but the wait eliminates the race.
@@ -168,6 +171,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, an
 7.5. **Reap the `gh-cached.sh` cache directory** — drop the session-scoped `gh` response cache from [step 0.9](./setup.md#09-gh-cachedsh-wrapper-opt-in-per-call-site):
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
    "${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" cleanup --session-id "<session-id>"
    ```
 
@@ -176,6 +180,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, an
 8. **Remove the session state file** — close out the durable mirror from [step 1.5](./setup.md#15-initialise-the-session-state-file):
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
    "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "<session-id>"
    ```
 
