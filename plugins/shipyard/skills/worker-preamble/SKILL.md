@@ -199,6 +199,24 @@ You are forbidden from passing `--no-verify`, `--no-gpg-sign`, `--no-commit-hook
 
 Same rule for `git push --no-verify`. Same rule for any hook-bypass flag. The plugin's `permissions.deny` block in `plugin.json` enforces this at the harness level, but the rule applies even if the deny pattern is somehow bypassed.
 
+## After a classifier denial
+
+Auto Mode (and other harness-side classifiers) sometimes deny a tool call — an Edit, a Write, a Bash, an `npm install`, a symlink — with a reason like *"...creates a writable path linking the worktree to a pre-existing directory outside the session's scope and risks irreversible effects on shared local state; not explicitly authorized."* The denial is a hard boundary enforced by the harness, not a suggestion you can argue past. The correct posture is to treat the denial as a deterministic failure for **this** dispatch and let a human decide whether to re-authorize, change the classifier policy, or redirect the work.
+
+**Three behaviors you MUST NOT do after a denial, even when you believe the denial was wrong:**
+
+1. **Do NOT post a comment to any public GitHub artifact** (issue comment, PR description, PR comment, PR review) that summarizes, reframes, paraphrases, fabricates, or explains the classifier's reasoning. Classifier denials are between the worker and the harness; surfacing them to public-facing channels creates a content-integrity attack surface — even when well-intentioned, a public-facing comment fabricating *why* the classifier denied something is a side-channel that a future worker, reviewer, or scraper could read as authoritative. The harness's classifier reasoning is not yours to relay.
+2. **Do NOT attempt to file a follow-up issue arguing the denial was wrong.** "The classifier was overly strict, please relax the policy" is not a worker decision; it's a maintainer decision. If you genuinely believe a denial pattern is misclassified at the policy level, the right surface is `mattsears18/shipyard` issues filed by the *user* after they see your `blocked:` return, not a self-filed escalation from inside the dispatch.
+3. **Do NOT retry the same denied call through a workaround** — a different tool, a renamed file, a Base64-encoded payload, a shell-out that produces the same effect via a different syscall, or any other "I'll just do it a different way" strategy. Classifier policy targets *effects*, not tool names; routing around the deny is treated as the same policy violation. If the first attempt was denied, the second through any synonym is denied too.
+
+**The correct response to a classifier denial is one foreground call: return.**
+
+> `blocked: classifier denied <one-line description of what was denied>`
+
+That's it. No comment, no follow-up issue, no creative retry. The `blocked:` return is the orchestrator's signal that the dispatch hit a deterministic boundary; step A reconcile will tag the issue `blocked:agent` and the user can decide what to do next. The one-line description should name the operation (e.g., "Edit to .claude/settings.json", "symlink ../../../node_modules to ./node_modules", "npm install firebase-tools") so the maintainer can pattern-match the denial without reading the full transcript — but **do not include the classifier's prose reasoning** (paraphrased or verbatim) in the return string. The orchestrator captures it in the transcript record on its own.
+
+**Why this is in the preamble.** A classifier-denial event is observably frustrating — the worker has a plan, sees the denial, and reaches for the next thing on the "ways to make this work" list. The next thing is often a content-integrity violation (posting to explain the denial) or a policy-bypass violation (retrying through a different surface). Both have been observed in the wild — issue [#341](https://github.com/mattsears18/shipyard/issues/341) documents a 2026-05-25 session where a worker attempted to post a fabricated explanation of the classifier's reasoning to a public GitHub issue after three denied Edit/Write attempts; the second-order classifier caught the comment-post too, so no harmful content landed, but the *intent* to escalate is the gap. This section closes that gap by naming the failure mode up front so the worker doesn't have to derive the correct response under the cognitive load of a denial.
+
 ## `gh` JSON discipline
 
 Every `gh` call whose output you'll read MUST scope the response to the fields you actually consume. The default output is ~30 fields per issue / ~50 fields per PR — most of which the worker never reads. Each unused field is wasted tool-result tokens that ride in your context for the rest of the session.
