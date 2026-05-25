@@ -528,6 +528,75 @@ When a `shipped #<N> via PR #<M>` return is reconciled (issue-work mode only —
 
 Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
+**Then reap the agent's worktree — every completion path, every mode.** Closes [#334](https://github.com/mattsears18/shipyard/issues/334). The A.1 `shipped #<N>` handler already runs an immediate-reap for issue-work `do-work/issue-<N>` worktrees (per [#282](https://github.com/mattsears18/shipyard/issues/282)), but that path does NOT cover the other return shapes:
+
+- **`green #<M>` / `noop: already green #<M>` from fix-checks-only** — head branch is the PR's existing head (typically `do-work/issue-<N>` for shipyard-anchored PRs). When fix-checks completes and the drain phase later dispatches a fix-rebase against the same PR, the fix-rebase worker bails with `blocked rebase #<M>: head branch <head> locked in another worktree` because the fix-checks worktree's lock outlived the worker.
+- **`rebased #<M>` from fix-rebase** — head branch is the PR's existing head. Sequential fix-rebase retries (the per-PR 3-attempt cap can hit this) collide on the same branch.
+- **`shipped main-ci-fix via PR #<M>` / `shipped pr-batch-fix via PR #<M>` from synthetic-divert workers** — head branches are `do-work/fix-main-ci-<sha>` / `do-work/fix-pr-pileup-<ts>` (not `do-work/issue-<N>`) so the A.1 `shipped #<N>` branch-walk doesn't match and the worktree lingers.
+- **`blocked <mode>` from any mode** — the worker bailed without producing a usable artifact; its worktree is no-longer-live and should be reaped same-session so a re-dispatch (after the soft-window or after a human clears `blocked:agent-hard`) doesn't collide on the head branch.
+
+The single-point reap below covers every one of these. The A.1 `shipped #<N>` path is **not** removed — it remains the load-bearing same-turn reap for the issue-work merge-train coordination case (per #282's rationale), and the duplicate-reap is harmless: the helper's `git worktree remove --force` against a path the A.1 pass already removed is a silent no-op.
+
+```bash
+# Capture the agent id BEFORE the in-memory slot removal — the path
+# derivation needs it. The agent_id is the same task-id the harness uses
+# end-to-end (see step A.−1 for the keying convention) and matches the
+# `.claude/worktrees/agent-<id>` directory name the harness creates for
+# `isolation: "worktree"` dispatches.
+completed_agent_id="${.in_flight[<slot-id>].agent_id}"
+wt_dir=".git/worktrees/agent-${completed_agent_id}"
+worktree_path="$(git rev-parse --show-toplevel)/.claude/worktrees/agent-${completed_agent_id}"
+
+if [ -d "$wt_dir" ]; then
+  # Bootstrap the orchestrator PID so classify-lock can short-circuit on
+  # our own session's locks (issue #263 — same pattern as A.1's reap).
+  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+
+  classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
+    classify-lock "$wt_dir/locked")
+
+  # Extract the lock PID for the audit log (best effort; null literal
+  # when the lock file is missing or unparseable).
+  lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+  [ -z "$lock_pid" ] && lock_pid="null"
+
+  if [ "$classification" = "peer-alive" ]; then
+    # Defensive: peer-alive on our own just-returned agent shouldn't
+    # happen — the worker has returned, so its harness PID is dead or a
+    # self-ancestor. If we see it anyway, defer; end-of-session cleanup
+    # is the safety net and we don't risk yanking a worktree out from
+    # under a still-live process.
+    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      --action deferred \
+      --worktree-path "$worktree_path" \
+      --worktree-name "agent-${completed_agent_id}" \
+      --session-id "<session-id>" \
+      --reason "peer-alive" \
+      --lock-pid "$lock_pid" \
+      --phase "steady-state-B-completion" 2>/dev/null || true
+  else
+    # no-lock / dead / self-ancestor — safe to reap. The `reap` helper
+    # performs the `git worktree unlock` + `git worktree remove --force`
+    # AND writes the audit-log line in one transaction (issue #284).
+    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      --action reaped \
+      --worktree-path "$worktree_path" \
+      --worktree-name "agent-${completed_agent_id}" \
+      --session-id "<session-id>" \
+      --classification "$classification" \
+      --lock-pid "$lock_pid" \
+      --phase "steady-state-B-completion" 2>/dev/null || true
+  fi
+  git worktree prune 2>/dev/null || true
+fi
+```
+
+**Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and/or `|| true` so a filesystem race (the worktree was already reaped by the A.1 path, the helper script is missing, the lock file is gone, etc.) cannot abort the steady-state loop. If the reap silently fails for any reason, end-of-session cleanup is still the safety net (intentionally NOT removed — it remains the ultimate sweep).
+
+**Audit-log shape.** The JSONL entries this step writes carry `"phase":"steady-state-B-completion"` so an operator inspecting `~/.shipyard/reap-audit.jsonl` can distinguish per-completion reaps from the A.1 same-turn reap (`"phase":"steady-state-A1-shipped"`), the setup-3b stale-worktree pass (no `phase`), and the cleanup-summary end-of-session sweep (no `phase`). The `phase` suffix is appended by the `reap` helper natively (issue #284).
+
+**Why identify the worktree by `agent_id` instead of walking branches.** The A.1 `shipped #<N>` path walks `.git/worktrees/agent-*` and matches on the HEAD ref because the orchestrator's working memory at that point already knows `<N>` but not which agent ran it. Step B runs against a slot that still has `agent_id` in working memory at the moment of release — so we can derive `.claude/worktrees/agent-<agent-id>` directly without scanning. This is faster (no `for` loop, no `git worktree list` parse) and more precise (no risk of matching the wrong worktree on a branch-name collision).
+
 ### C. Dispatch a replacement (if work remains) — MANDATORY ACTION
 
 **This step is non-optional and non-deferrable.** Whenever step B frees a slot, step C MUST resolve in the same turn — either an `Agent` tool call or an explicit, structured idle-proof (step E). No third option.
