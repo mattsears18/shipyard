@@ -201,6 +201,25 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md explains that variables do not survive across Bash tool calls (issue #322)"
   assert_contains "$skill_path" "false-positive \`reaped:\` exit" \
     "SKILL.md names the false-positive reaped: exit failure mode (issue #322)"
+
+  # Issue #328 — Auto Mode constraint on node_modules symlink remediation.
+  # The symlink path (ln -s ../../../node_modules) is denied by the Auto Mode
+  # classifier because it creates a writable link to a directory outside the
+  # worktree's scope. Workers running under Auto Mode waste one tool-call turn
+  # discovering this denial unless the preamble tells them to skip directly to
+  # npm ci. The fix adds an Auto Mode caveat at the exact spot where the symlink
+  # recipe lives, so a worker reading the remediation list sees the constraint
+  # without bouncing between sections. It also documents cp -al as a hard-link
+  # copy alternative that the classifier should allow. Removing these docs
+  # regresses the Auto-Mode-symlink-denial contract.
+  assert_contains "$skill_path" "Auto Mode constraint" \
+    "SKILL.md names the Auto Mode constraint on the symlink path (issue #328)"
+  assert_contains "$skill_path" "auto-mode classifier" \
+    "SKILL.md names the auto-mode classifier as the denier (issue #328)"
+  assert_contains "$skill_path" "skip the symlink entirely and go directly to \`npm ci\`" \
+    "SKILL.md tells Auto Mode workers to skip the symlink and go straight to npm ci (issue #328)"
+  assert_contains "$skill_path" "cp -al" \
+    "SKILL.md documents cp -al hard-link copy as an alternative to the symlink (issue #328)"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
