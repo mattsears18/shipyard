@@ -30,9 +30,27 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
    Bail before touching anything if:
    - `state != "OPEN"` → return `noop: PR #<M> already closed/merged`.
    - `mergeStateStatus in {"CLEAN", "HAS_HOOKS", "UNSTABLE", "BLOCKED"}` and not `DIRTY` → return `noop: not dirty (mergeStateStatus=<X>)`. Auto-merge will figure it out — don't churn the branch unnecessarily.
-   - Any `statusCheckRollup` entry has `conclusion in {FAILURE, ERROR, TIMED_OUT}` → return `blocked rebase #<M>: PR has failing checks — needs fix-checks, not rebase`. The drain will route this through the normal fix-checks dispatcher.
+   - **The PR has a hard check failure on the latest run of any check name** → return `blocked rebase #<M>: PR has failing checks — needs fix-checks, not rebase`. The drain will route this through the normal fix-checks dispatcher.
 
-   Only proceed when `mergeStateStatus == "DIRTY"` and there are no hard check failures.
+     **CRITICAL — use the latest-per-name projection, not the raw rollup walk** (issue [#333](https://github.com/mattsears18/shipyard/issues/333)). `gh pr view --json statusCheckRollup` returns the **union** of every check run for the PR's head SHA, including stale superseded runs. A naïve `.statusCheckRollup[] | select(.conclusion == "FAILURE")` walk false-positives whenever a check ran, failed, was re-triggered, and passed — the first FAILURE entry trips the bail even though the latest run is SUCCESS. De-duplicate by `name` and take the most recent entry per check (by `completedAt`, fallback `startedAt`) BEFORE checking for hard failures:
+
+     ```bash
+     fails=$(gh pr view <M> --repo <owner/repo> --json statusCheckRollup --jq '
+       [.statusCheckRollup
+        | group_by(.name)
+        | map(sort_by(.completedAt // .startedAt // "") | last)
+        | .[]
+        | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
+       | length')
+     if [ "${fails:-0}" -gt 0 ]; then
+       echo "blocked rebase #<M>: PR has failing checks — needs fix-checks, not rebase"
+       exit 0
+     fi
+     ```
+
+     The `group_by(.name) | map(... | last)` reduction is the load-bearing piece — it collapses N entries per check name to 1 (the most recent), so a stale FAILURE entry that's been superseded by a later SUCCESS is correctly filtered out. The `// .startedAt // ""` fallback handles in-progress checks where `completedAt` is null; the empty-string default keeps the sort stable when both timestamps are absent. Test `(.conclusion // .status)` so the predicate works for both completed runs (carry `conclusion`) and in-progress check-runs (carry only `status`).
+
+   Only proceed when `mergeStateStatus == "DIRTY"` and there are no hard check failures **on the latest run per check name**.
 
 3. **Fetch + rebase onto current default branch:**
    ```bash

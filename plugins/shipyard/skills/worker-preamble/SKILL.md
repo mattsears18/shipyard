@@ -39,10 +39,23 @@ After `gh pr create` returns:
    ```
    If the call errors because auto-merge isn't enabled at the repo level, **don't try to enable it** — that's a repo-config decision. Note it in your return summary as `auto-merge: unavailable — needs manual merge`.
 
-2. Snapshot the current check-rollup state with a single `gh pr view <M> --json statusCheckRollup,mergeStateStatus`. Don't `--watch` CI in any mode except **fix-checks-only**. The orchestrator's per-iteration PR triage owns failure recovery on a periodic refresh; blocking on `--watch` would tie up your agent and its concurrency slot for the full CI duration (often 5–20 min) for no gain. Categorize the snapshot:
-   - All `CONCLUSION: SUCCESS` (or empty rollup, no checks configured) → `checks: green`.
-   - Any `CONCLUSION: FAILURE` / `ERROR` / `TIMED_OUT` already present → `checks: failing`.
+2. Snapshot the current check-rollup state with a single `gh pr view <M> --json statusCheckRollup,mergeStateStatus`. Don't `--watch` CI in any mode except **fix-checks-only**. The orchestrator's per-iteration PR triage owns failure recovery on a periodic refresh; blocking on `--watch` would tie up your agent and its concurrency slot for the full CI duration (often 5–20 min) for no gain. **Categorize the latest run per check name** (issue [#333](https://github.com/mattsears18/shipyard/issues/333) — `statusCheckRollup` returns every check run for the head SHA, including superseded runs; a stale FAILURE entry from an earlier run that's since been re-triggered and now passes would otherwise mis-categorize a `green` rollup as `failing`):
+
+   ```bash
+   gh pr view <M> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus --jq '
+     {mergeStateStatus: .mergeStateStatus,
+      checks: [.statusCheckRollup
+               | group_by(.name)
+               | map(sort_by(.completedAt // .startedAt // "") | last)
+               | .[] | {name, conclusion: (.conclusion // null), status: (.status // null)}]}'
+   ```
+
+   Then categorize the `checks` array:
+   - All entries `conclusion in {SUCCESS, SKIPPED, NEUTRAL}` (or empty rollup, no checks configured) → `checks: green`.
+   - Any entry `conclusion in {FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED}` → `checks: failing`.
    - Otherwise (`QUEUED` / `IN_PROGRESS` / `PENDING`) → `checks: pending` (the normal case right after push).
+
+   The `group_by(.name) | map(sort_by(.completedAt // .startedAt // "") | last)` reduction is load-bearing — it collapses N entries per check name to 1 (the most recent), so a stale FAILURE entry that's been superseded by a later SUCCESS doesn't trip the `failing` categorization. The `(.conclusion // .status)` test pattern is what the orchestrator's reconcile path uses too; using it here keeps the worker's snapshot categorization and the orchestrator's trust-but-verify spot-check in sync.
 
 3. Return one line in the mode-specific format the dispatching prompt specifies.
 

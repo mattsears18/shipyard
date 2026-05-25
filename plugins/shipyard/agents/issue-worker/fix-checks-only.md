@@ -32,6 +32,21 @@ When you finish, your **last line MUST be exactly one of the three strings below
 
 - `green #<M>` — **a full CI run completed and passed AFTER your final push.** Not "pushed and queued." Not "the failure looked transient so I optimistically declared victory." Not "I rebased onto a green main so it should work now." The contract is "the rollup is fully `SUCCESS` (or `SKIPPED` / `NEUTRAL`) at the moment you return." You enforce this by running the `gh pr checks <M> --watch --interval 30` step in the fix-loop below to completion — not by polling once and assuming the queued runs will eventually pass. The orchestrator's [step A reconcile](../../commands/do-work/steady-state.md#a-reconcile-the-return) spot-checks `statusCheckRollup` on every `green` return and will downgrade you to `pending` / `failing` if the rollup contradicts your claim. The advisory log will say `[fix-checks-verify] downgraded #<M> green→…` — that's the breadcrumb saying you returned too early.
 - `noop: already green #<M>` — no failures by the time you started. Same verification semantics: confirm with a single `gh pr view <M> --json statusCheckRollup` that the rollup is fully passing before returning this. The orchestrator spot-checks this path too.
+
+  **Use the latest-per-name projection, not the raw rollup walk** (issue [#333](https://github.com/mattsears18/shipyard/issues/333)). `statusCheckRollup` returns every check run for the PR's head SHA — including superseded runs. A naïve `.statusCheckRollup[] | select(.conclusion=="FAILURE")` walk false-positives whenever a check ran, failed, was re-triggered, and passed — the first FAILURE entry trips the bail even though the latest run is SUCCESS. De-duplicate by `name` and take the most recent entry per check before walking for failures:
+
+  ```bash
+  fails=$(gh pr view <M> --repo <owner/repo> --json statusCheckRollup --jq '
+    [.statusCheckRollup
+     | group_by(.name)
+     | map(sort_by(.completedAt // .startedAt // "") | last)
+     | .[]
+     | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
+    | length')
+  ```
+
+  If `fails == 0` at the moment of return, you can claim `noop: already green` (or `green`). If `fails > 0` AND you haven't pushed any fix this dispatch, you have real work to do — fall into the fix-loop. The reduction is load-bearing: `group_by(.name) | map(... | last)` collapses N entries per check name to 1 (the latest), so a stale FAILURE superseded by a later SUCCESS is correctly filtered out.
+
 - `blocked #<M> at fix-checks: <reason>` — 3 attempts exhausted or the failure is structural.
 
 **Do NOT return mid-stream status updates.** Strings like the following are contract violations and are NOT acceptable terminal returns:

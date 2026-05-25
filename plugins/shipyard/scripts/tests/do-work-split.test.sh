@@ -453,6 +453,81 @@ assert_contains "$steady_state_path" \
   'steady-state-A1-shipped' \
   "steady-state.md retains the A.1 shipped-reap path (regression guard — #282 must coexist with #334)"
 
+# (18) Latest-per-name `statusCheckRollup` projection (issue #333).
+#
+# `gh pr view --json statusCheckRollup` returns the union of every check run
+# for the PR's head SHA — including superseded runs from earlier triggers.
+# A check that ran, failed, was re-triggered, and passed appears twice
+# (one FAILURE entry + one SUCCESS entry). A naïve walk like
+# `.statusCheckRollup[] | select(.conclusion == "FAILURE")` false-positives
+# on every such PR, causing two distinct failure modes:
+#
+#   - fix-rebase bails ("PR has failing checks — needs fix-checks") on a
+#     PR that's actually green, leaving DIRTY PRs unrebased indefinitely.
+#   - fix-checks workers and the orchestrator's trust-but-verify spot-check
+#     keep re-queueing the PR into `failed_prs`, where each dispatch
+#     returns `noop: already green`. Wastes a dispatch slot + ~50k tokens
+#     per affected PR.
+#
+# Both observed in lightwork session c6afe19d-a6a6-40e4-9eb8-de409d046a49
+# against PRs #1193 and #1211 — ~270k tokens lost across 3 dispatch slots.
+#
+# The fix is a `group_by(.name) | map(sort_by(.completedAt // .startedAt //
+# "") | last)` jq reduction applied at every rollup walk: in fix-rebase
+# step 2, fix-checks-only return contract, fix-failing-prs-batch
+# pre-flight, setup.md steps 3c/4.5b/5, steady-state.md trust-but-verify
+# + unrecognized-return-string + 2a stale-failure paths, and drain.md's
+# R_new/D_dirty bookkeeping. The worker-preamble snapshot+return pattern
+# carries the same projection so every worker mode's check categorization
+# is consistent with the orchestrator's reconcile path.
+#
+# Twelve assertions pin the post-#333 contract:
+fix_rebase_path333="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
+fix_checks_path333="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
+fix_batch_path333="$repo_root/plugins/shipyard/agents/issue-worker/fix-failing-prs-batch.md"
+issue_work_path333="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+worker_preamble_path333="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+
+assert_contains "$fix_rebase_path333" \
+  'group_by(.name)' \
+  "fix-rebase.md step 2 uses group_by(.name) latest-per-name projection (#333)"
+assert_contains "$fix_rebase_path333" \
+  'issues/333' \
+  "fix-rebase.md cites issue #333 as the source of the latest-per-name rule"
+assert_contains "$fix_checks_path333" \
+  'group_by(.name)' \
+  "fix-checks-only.md return-contract uses group_by(.name) latest-per-name projection (#333)"
+assert_contains "$fix_checks_path333" \
+  'issues/333' \
+  "fix-checks-only.md cites issue #333 as the source of the latest-per-name rule"
+assert_contains "$fix_batch_path333" \
+  'group_by(.name)' \
+  "fix-failing-prs-batch.md pre-flight uses group_by(.name) latest-per-name projection (#333)"
+assert_contains "$fix_batch_path333" \
+  'issues/333' \
+  "fix-failing-prs-batch.md cites issue #333 as the source of the latest-per-name rule"
+assert_contains "$setup_path" \
+  'group_by(.name)' \
+  "setup.md steps 3c/4.5b/5 use group_by(.name) latest-per-name projection (#333)"
+assert_contains "$setup_path" \
+  'issues/333' \
+  "setup.md cites issue #333 as the source of the latest-per-name rule"
+assert_contains "$drain_path" \
+  'group_by(.name)' \
+  "drain.md R_new/D_dirty bookkeeping uses group_by(.name) latest-per-name projection (#333)"
+assert_contains "$drain_path" \
+  'stale-rollup-detected' \
+  "drain.md emits [stale-rollup-detected] advisory when stale FAILURE entries are filtered (#333)"
+assert_contains "$steady_state_path" \
+  'group_by(.name)' \
+  "steady-state.md trust-but-verify / unrecognized-return / 2a stale-failure paths use group_by(.name) projection (#333)"
+assert_contains "$worker_preamble_path333" \
+  'group_by(.name)' \
+  "worker-preamble's snapshot+return pattern uses group_by(.name) projection (#333)"
+assert_contains "$issue_work_path333" \
+  'group_by(.name)' \
+  "issue-work.md step 7 snapshot uses group_by(.name) projection (#333)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
