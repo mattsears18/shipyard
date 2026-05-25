@@ -1185,17 +1185,25 @@ The refined-and-now-`needs-human-review`-only issues will be picked up by the *n
 ```
 
 ```bash
-gh issue list --repo <owner/repo> --state open --limit 100 \
+# Wide fetch — server-side filter is ONLY `--state open` (plus any
+# `--label <L>` qualifiers passed at invocation). All eligibility checks
+# move to the client-side filter pass below. See issue #332 for the
+# regression this shape exists to prevent.
+gh issue list --repo <owner/repo> --state open --limit 200 \
   --json number,title,labels,assignees,body,author,createdAt,updatedAt \
-  --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, createdAt, updatedAt}]' \
-  --search 'is:issue is:open -linked:pr -label:blocked:agent -label:blocked:agent-hard -label:wontfix -label:needs-design -label:needs-triage -label:discussion -label:needs-refinement -label:needs-human-review'
+  --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, createdAt, updatedAt}]'
 ```
 
 The `--jq` projection mirrors step 2's: flatten `labels` / `assignees` to the consumed shapes (names, logins) and preserve `author.login` as the canonical shape downstream filters and step 7's `originating_author_trust` computation reference. Body stays full because the client-side filter walks it for `Blocked by #N` references. Worker-preamble §"`gh` JSON discipline" covers the convention.
 
-Add `label:<L>` qualifiers for each `--label` arg.
+Pass `--label <L>` qualifiers through as `--label <L>` (NOT `--search 'label:<L>'`) for any `--label` args supplied at invocation — the `--label` flag composes cleanly with the wide fetch above and is the canonical way to scope the universe down to a project subset.
 
-**Why each `blocked:*` label is enumerated explicitly.** GitHub's search syntax (which `gh issue list --search` passes through) does NOT support label-name glob patterns — `-label:blocked:*` does not match `blocked:agent-hard` or `blocked:ci`; it's treated as a literal label name `blocked:*` which doesn't exist. Every block-tier label that should hide an issue from the workable queue must appear as its own `-label:<exact-name>` qualifier. The workable filter excludes `blocked:agent-hard` and the legacy `blocked:agent` (treated as `-hard` per [#300](https://github.com/mattsears18/shipyard/issues/300)'s migration). `blocked:agent-soft` is intentionally NOT excluded — soft-blocked issues auto-clear at next-session backlog fetch (the whole point of the soft/hard split is that subjective bails don't permanently hide work). `blocked:ci` is a PR-side label so it has no effect on issue search (issues never carry it). If future block tiers are added (`blocked:external`, `blocked:design`, etc.), enumerate each one here.
+**Why the server-side filter is intentionally wide (issue [#332](https://github.com/mattsears18/shipyard/issues/332)).** Earlier versions of this spec used a `--search` qualifier of the form `is:issue is:open -linked:pr` followed by `-label:` exclusions for each block-tier and gate label (`blocked:agent`, `blocked:agent-hard`, `wontfix`, `needs-design`, `needs-triage`, `discussion`, `needs-refinement`, `needs-human-review`) to do the eligibility filter on GitHub's side. That shape silently dropped two classes of workable issues:
+
+1. **`-linked:pr` excludes issues that ever had a linked PR opened against them**, even when that PR has since been closed, abandoned, or superseded. The resumable-work case — a prior session opened a PR that got closed before merge, the issue is still open and still self-assigned to `@me` — is exactly the bucket `-linked:pr` was supposed to NOT exclude but does. Concretely: a `lightwork` session at 2026-05-25 surfaced 14 issues from a backlog of 29 open ones; the orchestrator confidently emitted `ready=0 raw=0` and drained while 15 workable issues sat invisible to the dispatch queue. The user manually pointed out the discrepancy ("dude. there are 29 open issues!").
+2. **Server-side label-exclusion qualifiers cannot encode "@me-assigned is OK, anyone-else-assigned is not"** — the search syntax has no `assignee:@me OR no:assignee` form, so the previous spec had to choose between `no:assignee` (which excludes prior-session self-assigns — the very case resumption needs) or unbounded (which over-fetches and relies on client-side dedup). The fix is to pick the second option and do all assignee gating client-side.
+
+The fix in this revision: server-side fetch is purely `--state open` + optional `--label <L>` qualifiers (when the caller scopes to a label-bounded project subset). Every other eligibility check — author trust, assignee≠@me, blocking labels, `Blocked by #N` references, `closed-by-open-pr` membership — moves to the client-side filter pass below. The cost is one ~30-issue-larger JSON payload per setup pass; the win is no silent ~50% miss rate on the resumable-work case. The same fix lands in [drain.md's termination-assertion step 4](./drain.md#termination-assertion) (the fresh-fetch verification) and [steady-state.md step C's lightweight backlog re-check](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) so all three call-sites read the same universe and never disagree on what's workable.
 
 The `author` field has two uses: (1) step 4's client-side trusted-author filter (the search-qualifier syntax has no `-author:` exclusion form, so this is necessarily client-side); (2) step 7's `originating_author_trust` dispatch-time gate (the third defense-in-depth layer). See [RATIONALE → Step 4 author field](../do-work-RATIONALE.md#step-4--why-the-author-field-is-fetched).
 
@@ -1213,30 +1221,49 @@ gh issue edit <N> --repo <owner/repo> --add-label <Px>
 
 Skip any issue that already carries one or more `P0`/`P1`/`P2` labels — preserve the human judgment that set them. Don't remove existing priority labels, and don't add a second one. Legacy `P3` labels are treated as unlabeled. See [RATIONALE → Auto-triage priority](../do-work-RATIONALE.md#step-4--auto-triage-priority-rationale).
 
-Client-side filter:
+Client-side filter (in this exact order — each gate's drop reason should be logged so the [unfiltered_open_count](./steady-state.md#e-invariant-line-end-of-every-steady-state-turn) invariant token is auditable):
 
 - **Drop issues whose `author.login` (lowercased) is NOT in `trusted_authors`.** This is the dispatch-time security gate — see [step 1.7](#17-resolve-trusted-author-allowlist) for how the set is populated. An issue filed by a stranger on a public repo lands in step 2's `Untrusted author` bucket and never enters the workable queue, even if all the other filters pass. Belt-and-suspenders with the step-2 bucket pass: step 2 surfaces the count to the user; step 4 enforces the actual drop at dispatch time. Both read the same `trusted_authors` cache so they can never disagree.
-- Drop issues assigned to a user **other than** the gh-authenticated user (they own it).
+- **Drop issues carrying any of the dispatch-gate labels** — `blocked:agent` (legacy, treated as `-hard` per [#300](https://github.com/mattsears18/shipyard/issues/300)), `blocked:agent-hard`, `blocked:ci`, `wontfix`, `needs-design`, `needs-triage`, `discussion`, `needs-refinement`, `needs-human-review`. This is the client-side equivalent of the previous server-side `-label:...` qualifiers (removed in [#332](https://github.com/mattsears18/shipyard/issues/332) — see the wide-fetch rationale above). The set is deliberately enumerated, not pattern-matched — see "Why each `blocked:*` label is enumerated explicitly" below. **`blocked:agent-soft` is intentionally NOT in this set** (soft-blocked issues auto-clear at next-session backlog fetch — that's the entire point of the soft/hard split per #300; the in-session [soft-bail filter](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) handles the same-session retry-window case).
+- Drop issues assigned to a user **other than** the gh-authenticated user (they own it). `@me`-assigned issues PASS — that's the resumable-work case (a prior session self-assigned the issue but didn't ship it), and the entire point of [#332](https://github.com/mattsears18/shipyard/issues/332)'s rework is to keep that case visible to the dispatch queue.
 - Drop issues whose body contains `Blocked by #N` where #N is still open.
-- Drop the issue if it appears in the `closed-by-open-pr` set — belt-and-suspenders against the `-linked:pr` qualifier, which has [known gaps](https://docs.github.com/en/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword) (e.g. when the closing keyword is in a comment instead of the PR body — `linked:pr` only matches GitHub's official closing-issue link). Build the set **once per setup pass** from open PRs' `closingIssuesReferences` field — the structural projection GitHub itself uses to decide which issues auto-close on merge:
+- **Drop issues that have an open linked PR authored by `@me` AND that PR is healthy.** The "healthy" qualifier is load-bearing: a closed/abandoned PR (the resumable case) does NOT lock the issue against re-dispatch, and an open-but-failing PR is in the orchestrator's [`failed_prs` / fix-checks bucket](./steady-state.md#dispatch-rules-used-by-step-7-and-step-c) rather than the issue's. Build the set **once per setup pass** from open PRs' `closingIssuesReferences` field — the structural projection GitHub itself uses to decide which issues auto-close on merge — joined against `author.login == @me` and `mergeStateStatus ∈ {CLEAN, HAS_HOOKS, UNSTABLE}` (i.e. no failing checks):
 
   ```bash
-  # Build the closed-by-open-pr set once. List all open PR numbers, then
-  # batch-fetch closingIssueNumbers via gh-batch.sh pr-status. The
-  # resulting set is the union of issue numbers across every open PR's
-  # closingIssuesReferences — exactly the issues GitHub will auto-close
-  # when those PRs merge.
-  open_pr_numbers=$(gh pr list --repo <owner/repo> --state open --limit 200 \
+  # Build the "open, @me-authored, healthy" closing set once per setup pass.
+  # Drop the candidate issue if any healthy @me-authored open PR has it in
+  # closingIssuesReferences. The healthy gate uses the same latest-per-name
+  # rollup projection issue #333 added so a re-triggered green check doesn't
+  # false-positive as still-failing.
+  open_pr_numbers=$(gh pr list --repo <owner/repo> --state open --author @me --limit 200 \
     --json number --jq '[.[].number] | join(" ")')
-  closed_by_open_pr=$("${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
+  closed_by_open_healthy_pr=$("${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
     --repo <owner/repo> --numbers "$open_pr_numbers" \
-    | jq '[.[].closingIssueNumbers[]] | unique')
+    | jq '[.[] | select(
+        .mergeStateStatus == "CLEAN"
+        or .mergeStateStatus == "HAS_HOOKS"
+        or .mergeStateStatus == "UNSTABLE"
+      )
+      | select(
+        ([(.statusCheckRollup // [])
+         | group_by(.name)
+         | map(sort_by(.completedAt // .startedAt // "") | last)
+         | .[]
+         | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or .conclusion == "TIMED_OUT")
+        ] | length) == 0
+      )
+      | .closingIssueNumbers[]
+    ] | unique')
   # Then, for each candidate issue #N, drop if jq -e ".[] | select(. == <N>)" matches.
   ```
 
   Why the substring-search form was removed (issue [#301](https://github.com/mattsears18/shipyard/issues/301)): the previous implementation fired three `gh pr list --search 'in:body "Closes #<N>"'` queries per candidate and dropped the issue on any hit. That's a substring match against PR bodies, not a semantic check — release PRs commonly list closed-by-this-release issues in their CHANGELOG bodies, and each `Closes #<N>` line in such a manifest silently suppressed the referenced issue from the workable queue even though the PR isn't actually closing it on merge. `closingIssuesReferences` is GitHub's authoritative signal for "does this PR auto-close this issue?" — it matches exactly the issues that will auto-close, with no false positives on CHANGELOG manifests, meta-issue PRs that quote closed children, or comment-quoted PRs. Cost: one `gh pr list` + one batched GraphQL call (vs N×3 search calls); accuracy: exact match against GitHub's own closing-link definition.
 
-  The same `closed-by-open-pr` set is used by the `closed-by-open-pr` membership check that follows. Cache for the duration of step 4 — open PRs don't change between filter passes within a single setup invocation.
+  Why the `@me` + healthy join was added (issue [#332](https://github.com/mattsears18/shipyard/issues/332)): the previous `closed-by-open-pr` check joined against every open PR regardless of author or health, so an open PR by another author claiming to close issue #N — or an open `@me`-authored PR that was sitting red with no fix-checks worker assigned — both excluded #N from the dispatch queue. The first case is overreach (other authors can't lock our queue); the second case re-introduces exactly the [#332](https://github.com/mattsears18/shipyard/issues/332) failure mode the wide-fetch rework was designed to prevent (an abandoned/red PR shouldn't hide its issue from the workable queue indefinitely).
+
+  Cache for the duration of step 4 — open PRs don't change between filter passes within a single setup invocation.
+
+**Why each `blocked:*` label is enumerated explicitly.** GitHub's search syntax (which `gh issue list --search` passes through) does NOT support label-name glob patterns — `-label:blocked:*` does not match `blocked:agent-hard` or `blocked:ci`; it's treated as a literal label name `blocked:*` which doesn't exist. The same constraint applies to the client-side jq filter — every block-tier label that should hide an issue from the workable queue must appear as its own literal name. The workable filter excludes `blocked:agent-hard` and the legacy `blocked:agent` (treated as `-hard` per [#300](https://github.com/mattsears18/shipyard/issues/300)'s migration). `blocked:agent-soft` is intentionally NOT excluded — soft-blocked issues auto-clear at next-session backlog fetch (the whole point of the soft/hard split is that subjective bails don't permanently hide work). `blocked:ci` is a PR-side label so it has no effect on issue search (issues never carry it) — included in the enumeration for defense in depth in case a future revision applies it to issues too. If future block tiers are added (`blocked:external`, `blocked:design`, etc.), enumerate each one here.
 
 Sort the survivors:
 
