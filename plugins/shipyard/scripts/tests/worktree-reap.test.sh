@@ -874,6 +874,215 @@ run_reap --action deferred \
 assert_exit_code "$?" "0" \
   "(45) deferred action with bogus path doesn't error (no remove invoked)"
 
+# ============================================================================
+# Issue #326 — `reap-orphan-branches` subcommand: reap stale worktree-agent-*
+# branch refs that have no live worktree referencing them.
+#
+# Coverage goals:
+#   - Orphan branches (no live worktree) are deleted and audit-logged.
+#   - Live-worktree branches are skipped (safety gate).
+#   - Idempotent — second pass with no orphan branches produces empty output.
+#   - Dry-run mode emits reaped-branch: lines without deleting or auditing.
+#   - Audit log entry has the expected shape.
+#   - Bad-usage cases exit 2.
+#   - --repo-root=value and --session-id=value forms accepted.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh reap-orphan-branches tests (issue #326)"
+echo
+
+# Isolated git repo + SHIPYARD_HOME for each test.
+rob_repo="$tmpdir/rob-repo"
+rob_home="$tmpdir/rob-home"
+
+reset_rob_layout() {
+  rm -rf "$rob_repo" "$rob_home"
+  mkdir -p "$rob_home"
+  # Initialize a real git repo with an initial commit so `git branch` and
+  # `git for-each-ref` work correctly.
+  mkdir -p "$rob_repo"
+  (
+    cd "$rob_repo" || exit 1
+    git init -q
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+  ) >/dev/null 2>&1
+}
+
+# Helper to run reap-orphan-branches inside the test repo.
+run_rob() {
+  SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
+    --repo-root "$rob_repo" \
+    --session-id "rob-test-session" \
+    "$@" 2>/dev/null
+}
+
+rob_audit_log="$rob_home/reap-audit.jsonl"
+
+# --- (46) no worktree-agent-* branches → empty output, exit 0 ---
+reset_rob_layout
+result=$(run_rob)
+exit_code=$?
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(46) no worktree-agent-* branches → empty output"
+assert_exit_code "$exit_code" "0" \
+  "(46a) no worktree-agent-* branches → exit 0"
+
+# --- (47) orphan branch → deleted + reaped-branch: line emitted ---
+reset_rob_layout
+git -C "$rob_repo" branch worktree-agent-orphan-test HEAD
+result=$(run_rob)
+exit_code=$?
+assert_equals "$result" "reaped-branch: worktree-agent-orphan-test" \
+  "(47) orphan branch → 'reaped-branch: worktree-agent-orphan-test' emitted"
+assert_exit_code "$exit_code" "0" \
+  "(47a) orphan branch → exit 0"
+# Branch should be gone.
+if git -C "$rob_repo" rev-parse --verify worktree-agent-orphan-test >/dev/null 2>&1; then
+  printf '  %sFAIL%s  (47b) orphan branch still exists after sweep\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (47b) orphan branch deleted by sweep\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+
+# --- (48) audit log entry has expected shape ---
+reset_rob_layout
+git -C "$rob_repo" branch worktree-agent-audit-shape HEAD
+run_rob >/dev/null
+if [ ! -f "$rob_audit_log" ]; then
+  printf '  %sFAIL%s  (48) audit log not created at %s\n' "$RED" "$RESET" "$rob_audit_log"
+  fail=$((fail+1))
+else
+  line=$(cat "$rob_audit_log")
+  shape_ok=1
+  case "$line" in *'"action":"reaped-orphan-branch"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"branch":"worktree-agent-audit-shape"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"reason":"no-live-worktree"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"session":"rob-test-session"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"ts":"'*) ;; *) shape_ok=0 ;; esac
+  case "$line" in *'"actor_pid":'*) ;; *) shape_ok=0 ;; esac
+  if [ "$shape_ok" = "1" ]; then
+    printf '  %sPASS%s  (48) audit log has expected reaped-orphan-branch fields\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (48) audit log shape mismatch — line was: %s\n' "$RED" "$RESET" "$line"
+    fail=$((fail+1))
+  fi
+fi
+
+# --- (49) idempotent — second sweep with no orphans → empty output ---
+reset_rob_layout
+git -C "$rob_repo" branch worktree-agent-idempotent-test HEAD
+run_rob >/dev/null  # first pass: delete
+result=$(run_rob)   # second pass: nothing to do
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(49) idempotent — second sweep after deletion → empty output"
+
+# --- (50) dry-run mode — branch survives, no audit log written ---
+reset_rob_layout
+git -C "$rob_repo" branch worktree-agent-dry-run-test HEAD
+result=$(run_rob --dry-run)
+assert_equals "$result" "reaped-branch: worktree-agent-dry-run-test" \
+  "(50) dry-run emits reaped-branch: line"
+# Branch should still exist.
+if git -C "$rob_repo" rev-parse --verify worktree-agent-dry-run-test >/dev/null 2>&1; then
+  printf '  %sPASS%s  (50a) dry-run did not delete the branch\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (50a) dry-run unexpectedly deleted branch\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+# Audit log must NOT exist.
+if [ -f "$rob_audit_log" ]; then
+  printf '  %sFAIL%s  (50b) dry-run wrote audit log (should not)\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (50b) dry-run did not write audit log\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+
+# --- (51) live-worktree branch is NOT deleted (safety gate) ---
+# We can't easily register a real worktree in a temp git repo during tests
+# (it requires `git worktree add` which needs a real branch). Instead we
+# verify the safety logic by checking that the `git worktree list --porcelain`
+# parsing is correct: a branch whose name appears in the porcelain output is
+# skipped. We achieve this by creating a REAL secondary worktree pointing at
+# a worktree-agent-* branch, then running the sweep and asserting the branch
+# survives.
+reset_rob_layout
+git -C "$rob_repo" branch worktree-agent-live-branch HEAD
+git -C "$rob_repo" branch worktree-agent-orphan-to-delete HEAD
+# Add a real secondary worktree referencing the live-branch.
+live_wt="$tmpdir/rob-live-wt"
+git -C "$rob_repo" worktree add "$live_wt" worktree-agent-live-branch >/dev/null 2>&1
+if [ -d "$live_wt" ]; then
+  result=$(run_rob | sort)
+  # Only the orphan branch should be deleted, not the live one.
+  assert_equals "$result" "reaped-branch: worktree-agent-orphan-to-delete" \
+    "(51) live-worktree branch skipped; orphan branch reaped"
+  # Live branch must still exist.
+  if git -C "$rob_repo" rev-parse --verify worktree-agent-live-branch >/dev/null 2>&1; then
+    printf '  %sPASS%s  (51a) live-worktree branch NOT deleted (safety gate works)\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (51a) live-worktree branch was incorrectly deleted\n' "$RED" "$RESET"
+    fail=$((fail+1))
+  fi
+  # Clean up the secondary worktree.
+  git -C "$rob_repo" worktree remove --force "$live_wt" 2>/dev/null || true
+else
+  printf '  %sSKIP%s  (51) could not create live secondary worktree — skipping safety-gate test\n' \
+    "$GREEN" "$RESET"
+fi
+
+# --- (52) bad usage — missing --repo-root → exit 2 ---
+SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
+  --session-id foo >/dev/null 2>&1
+assert_exit_code "$?" "2" \
+  "(52) missing --repo-root → exit 2"
+
+# --- (53) bad usage — missing --session-id → exit 2 ---
+SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
+  --repo-root "$rob_repo" >/dev/null 2>&1
+assert_exit_code "$?" "2" \
+  "(53) missing --session-id → exit 2"
+
+# --- (54) bad usage — unknown flag → exit 2 ---
+SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
+  --repo-root "$rob_repo" --session-id foo --unknown-flag 2>/dev/null
+assert_exit_code "$?" "2" \
+  "(54) unknown flag → exit 2"
+
+# --- (55) bad usage — unexpected positional → exit 2 ---
+SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
+  --repo-root "$rob_repo" --session-id foo trailing 2>/dev/null
+assert_exit_code "$?" "2" \
+  "(55) unexpected positional arg → exit 2"
+
+# --- (56) --flag=value form accepted ---
+reset_rob_layout
+git -C "$rob_repo" branch worktree-agent-eq-form-test HEAD
+result=$(SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
+  --repo-root="$rob_repo" --session-id=eq-session 2>/dev/null)
+assert_equals "$result" "reaped-branch: worktree-agent-eq-form-test" \
+  "(56) --flag=value form accepted for --repo-root and --session-id"
+
+# --- (57) multiple orphan branches → all reaped, multiple audit lines ---
+reset_rob_layout
+git -C "$rob_repo" branch worktree-agent-multi-a HEAD
+git -C "$rob_repo" branch worktree-agent-multi-b HEAD
+result=$(run_rob | sort)
+expected=$(printf 'reaped-branch: worktree-agent-multi-a\nreaped-branch: worktree-agent-multi-b')
+assert_equals "$result" "$expected" \
+  "(57) multiple orphan branches → all reaped"
+# Audit log should have two lines.
+line_count=$(wc -l < "$rob_audit_log" 2>/dev/null | tr -d ' ')
+assert_equals "$line_count" "2" \
+  "(57a) two orphan branches → two audit-log lines"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

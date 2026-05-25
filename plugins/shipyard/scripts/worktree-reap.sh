@@ -102,6 +102,38 @@
 #       0  enumeration succeeded (output may be empty)
 #       2  bad usage (missing required flag)
 #
+#   reap-orphan-branches --repo-root <path> --session-id <id>
+#        [--dry-run]
+#     Issue #326 — reap stale `worktree-agent-*` local branch refs that
+#     have no live worktree referencing them. The Claude Code harness creates
+#     a `worktree-agent-<id>` branch ref for every agent dispatched with
+#     `isolation: "worktree"`. When the harness reaps the worktree directory
+#     it does NOT run `git branch -D worktree-agent-<id>` — the branch ref
+#     leaks and accumulates indefinitely.
+#
+#     For each local branch matching `worktree-agent-*`:
+#       1. Parse `git worktree list --porcelain` to check for a live
+#          worktree referencing `refs/heads/<branch-name>`.
+#       2. If no live worktree → delete via `git branch -D` and write
+#          one JSONL audit line to $SHIPYARD_HOME/reap-audit.jsonl.
+#       3. If live worktree exists → skip (safe-by-default).
+#
+#     The subcommand is idempotent: running it twice produces no second-pass
+#     deletions (branches already deleted are no longer enumerated).
+#
+#     --dry-run mode emits the `reaped-branch:` lines WITHOUT deleting or
+#     writing audit-log entries.
+#
+#     Env vars:
+#       SHIPYARD_HOME — override the audit-log root (defaults to
+#                       `$HOME/.shipyard`). Mirrors session-state.sh.
+#     Stdout:
+#       One `reaped-branch: <branch-name>` line per deleted branch (both
+#       live and dry-run). Empty stdout when nothing was reaped.
+#     Exit codes:
+#       0  sweep succeeded (output may be empty)
+#       2  bad usage (missing required flag, unknown flag)
+#
 #   reap --action <reaped|deferred|reaped-orphan-orchestrator>
 #        --worktree-path <path> --worktree-name <name>
 #        --session-id <id> [--actor-pid <pid>]
@@ -198,6 +230,8 @@ Usage:
   worktree-reap.sh detect-orchestrator-pid [<comm-name>]
   worktree-reap.sh find-orphan-orchestrators --repo-root <path> \
                                              --current-session-id <id>
+  worktree-reap.sh reap-orphan-branches --repo-root <path> \
+                                        --session-id <id> [--dry-run]
   worktree-reap.sh reap --action <reaped|deferred|reaped-orphan-orchestrator> \
                         --worktree-path <path> --worktree-name <name> \
                         --session-id <id> [--actor-pid <pid>] \
@@ -222,6 +256,15 @@ find-orphan-orchestrators — Emits one path per line for each orphan
                           <current-session-id> AND whose owning session
                           is inactive (session file missing OR PID dead).
                           Empty stdout when there are no orphans.
+
+reap-orphan-branches    — Issue #326. Deletes every local worktree-agent-*
+                          branch whose branch ref has no live worktree
+                          pointing to it (per `git worktree list
+                          --porcelain`). Writes one JSONL audit line to
+                          $SHIPYARD_HOME/reap-audit.jsonl per deletion.
+                          --dry-run emits reaped-branch: lines without
+                          deleting or writing the audit log. Idempotent —
+                          second pass is a no-op.
 
 reap                    — Performs the worktree-remove (when applicable)
                           and writes one append-only JSONL line to
@@ -858,6 +901,150 @@ reap_action() {
   return 0
 }
 
+# Issue #326 — reap stale worktree-agent-* local branch refs.
+#
+# The Claude Code harness creates one `worktree-agent-<id>` branch per agent
+# dispatched with `isolation: "worktree"`. It reaps the worktree DIRECTORY
+# but never deletes the branch REF, which accumulates indefinitely (119 stale
+# refs observed on a machine that ran /shipyard:do-work a few times).
+#
+# Algorithm:
+#   1. Enumerate local branches matching `worktree-agent-*` via
+#      `git for-each-ref --format='%(refname:short)' refs/heads/worktree-agent-*`.
+#   2. Build the set of branch names currently referenced by a live worktree
+#      by parsing `git worktree list --porcelain` (look for `branch refs/heads/<b>`).
+#   3. For each branch in (1) that is NOT in (2): delete it with
+#      `git branch -D` and write one JSONL audit line.
+#   4. Skip deletion (and audit) in --dry-run mode.
+#
+# The function runs in whatever cwd was set by the caller (which is expected
+# to be the repo root). It does not `cd` itself — the caller is responsible for
+# being in the correct git repo before invoking this helper.
+reap_orphan_branches() {
+  local repo_root=""
+  local session_id=""
+  local dry_run=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --session-id)
+        session_id="${2:-}"
+        shift 2
+        ;;
+      --session-id=*)
+        session_id="${1#--session-id=}"
+        shift
+        ;;
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "reap-orphan-branches: unknown flag: $1" >&2
+        return 2
+        ;;
+      *)
+        echo "reap-orphan-branches: unexpected positional arg: $1" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "reap-orphan-branches: --repo-root is required" >&2
+    return 2
+  fi
+  if [ -z "$session_id" ]; then
+    echo "reap-orphan-branches: --session-id is required" >&2
+    return 2
+  fi
+
+  # Step 1 — enumerate local worktree-agent-* branches.
+  # `git for-each-ref` is the correct tool here (no glob vs ls-files ambiguity).
+  # Redirect stderr in case the repo has no refs matching the pattern — that is
+  # normal (first-session machine) and produces no output, which is correct.
+  local branch_list
+  branch_list=$(git -C "$repo_root" for-each-ref \
+    --format='%(refname:short)' \
+    'refs/heads/worktree-agent-*' 2>/dev/null)
+
+  # No matching branches → nothing to do.
+  [ -z "$branch_list" ] && return 0
+
+  # Step 2 — build the set of branches referenced by live worktrees.
+  # `git worktree list --porcelain` emits blocks like:
+  #   worktree /path/to/wt
+  #   HEAD <sha>
+  #   branch refs/heads/<name>
+  # We extract only the `branch refs/heads/<name>` lines and strip the prefix.
+  local live_branches
+  live_branches=$(git -C "$repo_root" worktree list --porcelain 2>/dev/null \
+    | grep '^branch refs/heads/' \
+    | sed 's|^branch refs/heads/||')
+
+  # Prepare audit log infrastructure (skip in dry-run).
+  local shipyard_home="${SHIPYARD_HOME:-$HOME/.shipyard}"
+  local audit_log="$shipyard_home/reap-audit.jsonl"
+  local ts actor_pid
+  actor_pid=$$
+
+  if [ "$dry_run" -eq 0 ]; then
+    mkdir -p "$shipyard_home" 2>/dev/null || true
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  fi
+
+  # Step 3 — delete orphan branches.
+  local branch
+  while IFS= read -r branch; do
+    [ -z "$branch" ] && continue
+
+    # Check if this branch is referenced by a live worktree.
+    local is_live=0
+    local lb
+    while IFS= read -r lb; do
+      if [ "$lb" = "$branch" ]; then
+        is_live=1
+        break
+      fi
+    done <<< "$live_branches"
+
+    if [ "$is_live" -eq 1 ]; then
+      # Live worktree references this branch — skip.
+      continue
+    fi
+
+    # Orphan branch — emit the reaped-branch line.
+    printf 'reaped-branch: %s\n' "$branch"
+
+    if [ "$dry_run" -eq 0 ]; then
+      # Delete the branch ref. `git branch -D` works even when not on the
+      # branch being deleted. Redirect stdout so the "Deleted branch ..."
+      # confirmation line from git doesn't pollute our reaped-branch: output.
+      # Errors are non-fatal (e.g., the branch was deleted in a concurrent
+      # run) — fire-and-forget.
+      git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1 || true
+
+      # Audit log entry.
+      printf '%s\n' \
+        "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"branch\":\"$branch\",\"action\":\"reaped-orphan-branch\",\"reason\":\"no-live-worktree\"}" \
+        >> "$audit_log" 2>/dev/null || true
+    fi
+  done <<< "$branch_list"
+
+  return 0
+}
+
 main() {
   local sub="${1:-}"
   case "$sub" in
@@ -879,6 +1066,13 @@ main() {
       # function's docstring for the orphan definition.
       shift
       find_orphan_orchestrators "$@"
+      ;;
+    reap-orphan-branches)
+      # Issue #326 — delete stale worktree-agent-* branch refs that have
+      # no live worktree referencing them. See reap_orphan_branches for the
+      # full algorithm.
+      shift
+      reap_orphan_branches "$@"
       ;;
     reap)
       # Issue #284 — single source of truth for reap-audit log writes.

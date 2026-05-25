@@ -108,12 +108,32 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    done
    ```
 
+4.5. **Reap orphan `worktree-agent-*` branch refs ([issue #326](https://github.com/mattsears18/shipyard/issues/326)).** The Claude Code harness creates a `worktree-agent-<id>` local branch ref for every agent dispatched with `isolation: "worktree"`. When the harness reaps the worktree directory it does NOT delete the branch ref — the ref leaks and accumulates indefinitely (`git branch | grep -c worktree-agent-` can reach 100+ on an active machine). Run this sweep **before step 6** (orchestrator worktree reap) so any still-live agent branches are detected as live by `git worktree list --porcelain` at scan time.
+
+   The helper [`scripts/worktree-reap.sh reap-orphan-branches`](../../scripts/worktree-reap.sh) enumerates all local `worktree-agent-*` branches, checks each against `git worktree list --porcelain`, and `git branch -D`s any that have no live worktree referencing them. Each deletion emits one JSONL line to `~/.shipyard/reap-audit.jsonl` with `"action":"reaped-orphan-branch"`, `"branch"`, `"session"`, and `"reason":"no-live-worktree"`. The sweep is idempotent — a second pass is a no-op. It is safe — branches with a live worktree are skipped unconditionally.
+
+   ```bash
+   reaped_orphan_branches=0
+   while IFS= read -r branch_line; do
+     [ -z "$branch_line" ] && continue
+     # strip "reaped-branch: " prefix
+     branch_name="${branch_line#reaped-branch: }"
+     reaped_orphan_branches=$((reaped_orphan_branches + 1))
+   done < <(
+     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap-orphan-branches \
+       --repo-root "$(git rev-parse --show-toplevel)" \
+       --session-id "<session-id>"
+   )
+   ```
+
+   Record `<reaped_orphan_branches>` for the end-of-session summary's cleanup line. When `reaped_orphan_branches == 0` (normal on a fresh checkout or after a clean prior session), omit the count from the summary to reduce noise.
+
 5. Final consistency pass — drop any worktrees whose checkout directory was deleted out from under git:
    ```bash
    git worktree prune
    ```
 
-Record `<reaped_worktrees>`, `<reaped_branches>`, and `<deferred_live>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b. A non-zero `<deferred_live>` is a signal worth surfacing — it means an agent was still running when end-of-session cleanup fired (termination declared too early). The worktree survives so the next session's step 3b sweep can finish reaping once the PID is actually dead.
+Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, and `<deferred_live>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b. A non-zero `<deferred_live>` is a signal worth surfacing — it means an agent was still running when end-of-session cleanup fired (termination declared too early). The worktree survives so the next session's step 3b sweep can finish reaping once the PID is actually dead.
 
 6. **Reap the orchestrator's own worktree — last, after the summary prints.** The orchestrator worktree (`.claude/worktrees/orchestrator-<session-id>`) is still around because the orchestrator was running inside it. After the [End-of-session summary](#end-of-session-summary) prints — and only then; you can't remove the worktree you're still cwd'd into — jump back to the user's primary checkout (read-only at this point), then unlock + force-remove:
 
@@ -224,7 +244,7 @@ CI cost (#323):
   Estimated CI suites avoided this session: <dispatches_skipped_stale_failure + dispatches_deferred_in_progress + drain_rebases_skipped>
 Final repo health: main:<emoji> · failing PRs (all authors): <m>
 Reaped from prior sessions: <reaped_stale> stale agent worktrees (dead-PID locks); <deferred_stale> live-PID worktrees left for the owning Claude Code instance
-Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches; <deferred_live> still-running agent worktrees deferred (next session will sweep)
+Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches, <reaped_orphan_branches> orphan worktree-agent-* branch refs; <deferred_live> still-running agent worktrees deferred (next session will sweep)
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 
@@ -405,7 +425,7 @@ After emitting the chat summary, persist the same content to `./.shipyard/do-wor
        <section>
          <h2>End-of-session cleanup</h2>
          <ul>
-           <li>Reaped this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches</li>
+           <li>Reaped this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches, <reaped_orphan_branches> orphan worktree-agent-* branch refs</li>
            <li>Deferred (still-running PIDs): <deferred_live></li>
            <li>Reaped from prior sessions: <reaped_stale> stale worktrees; <deferred_stale> live-PID worktrees left for the owning Claude Code instance</li>
            <li>Final <code>git worktree list</code> shape: <n> worktrees (primary + orchestrator + <m> agent worktrees deferred)</li>
