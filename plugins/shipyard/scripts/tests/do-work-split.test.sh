@@ -401,6 +401,58 @@ assert_contains "$rationale_path" \
   'CI-minute discipline (issue #323)' \
   "RATIONALE.md carries the worked-example section (#323)"
 
+# (17) Per-completion worktree reap at step B (issue #334).
+#
+# The A.1 `shipped #<N>` reap (#282) only fires on issue-work-mode `shipped`
+# returns where the worker's head branch is `do-work/issue-<N>`. The other
+# return shapes (fix-checks-only `green`/`noop`, fix-rebase `rebased`,
+# synthetic-divert `shipped main-ci-fix`/`shipped pr-batch-fix`, `blocked`
+# from any mode) leave the worktree stranded until end-of-session cleanup
+# — locking subsequent same-session fix-rebase dispatches against the same
+# head branch out of `git switch` (git enforces one-worktree-per-branch).
+# Repro: session c6afe19d-a6a6-40e4-9eb8-de409d046a49 — three fix-checks
+# workers returned cleanly but their worktrees persisted; drain-phase
+# fix-rebase workers for the same branches bailed within 25s on the lock
+# collision. The fix adds a per-completion reap at step B (Release the
+# slot) that runs against the just-released slot's agent-id-derived
+# worktree path, covering every return-handler path.
+#
+# Five assertions pin the post-#334 contract:
+#   - Step B carries the new phase tag `steady-state-B-completion` in its
+#     audit-log call so an operator can distinguish per-completion reaps
+#     from the A.1 same-turn reap (`steady-state-A1-shipped`) and the
+#     end-of-session sweep (no phase).
+#   - Step B derives the worktree path from `completed_agent_id`
+#     (different shape than A.1's branch-walk) so a future reader knows
+#     the two reap sites intentionally use different identification
+#     strategies.
+#   - Step B routes through `worktree-reap.sh reap` (issue #284's
+#     single-source-of-truth for audit-log writes).
+#   - Step B explicitly enumerates the return shapes the A.1 path misses
+#     (`green #<M>` from fix-checks-only, `rebased #<M>` from fix-rebase,
+#     synthetic-divert returns) so the rationale survives the next
+#     re-organization.
+#   - The A.1 `shipped` reap is NOT removed — both paths must coexist
+#     (A.1 stays for the merge-train coordination case from #282; step
+#     B is the universal sweep). The duplicate-reap is harmless because
+#     `git worktree remove --force` against a missing path is a silent
+#     no-op.
+assert_contains "$steady_state_path" \
+  '--phase "steady-state-B-completion"' \
+  "steady-state.md per-completion reap uses the steady-state-B-completion phase tag (#334)"
+assert_contains "$steady_state_path" \
+  'completed_agent_id' \
+  "steady-state.md step B derives the worktree path from completed_agent_id (#334)"
+assert_contains "$steady_state_path" \
+  'green #<M>' \
+  "steady-state.md step B enumerates fix-checks green return as a missed-by-A.1 case (#334)"
+assert_contains "$steady_state_path" \
+  'rebased #<M>' \
+  "steady-state.md step B enumerates fix-rebase rebased return as a missed-by-A.1 case (#334)"
+assert_contains "$steady_state_path" \
+  'steady-state-A1-shipped' \
+  "steady-state.md retains the A.1 shipped-reap path (regression guard — #282 must coexist with #334)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
