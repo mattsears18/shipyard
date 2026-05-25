@@ -455,6 +455,62 @@ assert_equals "$("$helper" get main_ci.aggregation_mode)" "branch-protection" "l
 assert_equals "$("$helper" get main_ci.aggregation_mode --with-source | cut -f2)" "local" "source reflects local layer after override"
 
 # --------------------------------------------------------------------------
+echo "== ci CI-minute discipline config (issue #323)"
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
+
+# Defaults: every key at the pre-#323-preserving value
+assert_equals "$("$helper" get ci.skip_drain_rebase)"                            "false" "ci.skip_drain_rebase default is false"
+assert_equals "$("$helper" get ci.verify_check_failing_on_head_before_dispatch)" "false" "ci.verify_check_failing_on_head_before_dispatch default is false"
+assert_equals "$("$helper" get ci.require_in_progress_check_to_settle)"          "false" "ci.require_in_progress_check_to_settle default is false"
+assert_equals "$("$helper" get ci.skip_speculative_rerun)"                       "true"  "ci.skip_speculative_rerun default is true"
+# max_drain_rebases defaults to null, which the `get` helper exit-3s on by spec —
+# verify the exit code and message rather than the value (no value to compare).
+"$helper" get ci.max_drain_rebases 2>/dev/null
+assert_exit_code "$?" 3 "ci.max_drain_rebases default is null (get exit-3s on null)"
+assert_equals "$("$helper" get ci.skip_drain_rebase --with-source | cut -f2)" "defaults" "ci.skip_drain_rebase source is defaults"
+
+# Setting ci.skip_drain_rebase = true (the headline cost-discipline flip)
+"$helper" set ci.skip_drain_rebase true --repo
+assert_equals "$("$helper" get ci.skip_drain_rebase)" "true" "set ci.skip_drain_rebase=true round-trips"
+assert_equals "$("$helper" get ci.skip_drain_rebase --with-source | cut -f2)" "repo" "source is repo after set"
+
+# Setting ci.max_drain_rebases as an integer
+"$helper" set ci.max_drain_rebases 3 --repo
+assert_equals "$("$helper" get ci.max_drain_rebases)" "3" "set ci.max_drain_rebases=3 round-trips as integer"
+
+# Setting the verify-stale-failure flag
+"$helper" set ci.verify_check_failing_on_head_before_dispatch true --repo
+assert_equals "$("$helper" get ci.verify_check_failing_on_head_before_dispatch)" "true" "set ci.verify_check_failing_on_head_before_dispatch round-trips"
+
+# Schema validation rejects non-boolean for skip_drain_rebase
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "ci": { "skip_drain_rebase": "yes" } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "ci.skip_drain_rebase rejects non-boolean value"
+
+# Schema validation rejects negative max_drain_rebases (minimum: 0)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "ci": { "max_drain_rebases": -1 } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "ci.max_drain_rebases rejects negative integer"
+
+# Schema validation rejects unknown ci fields (additionalProperties: false)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "ci": { "skip_everything": true } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "ci rejects unknown fields"
+
+# Layered override: local can flip skip_drain_rebase without touching the repo file
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard"
+"$helper" set ci.skip_drain_rebase true --repo
+"$helper" set ci.skip_drain_rebase false --local
+assert_equals "$("$helper" get ci.skip_drain_rebase)" "false" "local layer overrides repo for ci.skip_drain_rebase"
+assert_equals "$("$helper" get ci.skip_drain_rebase --with-source | cut -f2)" "local" "source reflects local layer after override"
+
+# --------------------------------------------------------------------------
 echo
 total=$((pass + fail))
 if [[ $fail -eq 0 ]]; then

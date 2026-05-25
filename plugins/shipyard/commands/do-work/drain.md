@@ -190,7 +190,65 @@ A PR is **settled** when any of: it's merged/closed, it's labeled `blocked:ci`, 
 **Per-poll actions.**
 
 1. If `R_new > 0`: push the newly-red PRs onto `failed_prs` (deduped) and dispatch fix-checks-only workers against them — same `--concurrency` cap, same 3-attempt rule, same `blocked:ci` stamp on exhaustion that step A enforces. Drain runs the same dispatcher logic step C uses, just with `failed_prs` as the only queue that's still drainable (no new issue work, no diverts; `divert_queue` is intentionally NOT re-evaluated during drain — a red main mid-drain becomes next session's problem because dispatching a fix-main-ci agent here would extend the session indefinitely).
-2. If `D_dirty > 0`: dispatch a fix-rebase worker for each, **subject to the `--concurrency` cap** (combined fix-checks + fix-rebase in-flight count must not exceed `--concurrency`). Fix-checks dispatches in action 1 above take priority — a red PR is more urgent than a stale base. After filling the pool with fix-checks workers, any remaining slots dispatch fix-rebase workers from the `D_dirty` set (lowest PR number first, so dispatch order is deterministic across re-dispatches). The per-PR re-dispatch policy splits by return outcome:
+2. If `D_dirty > 0`: dispatch a fix-rebase worker for each, **subject to the `--concurrency` cap** (combined fix-checks + fix-rebase in-flight count must not exceed `--concurrency`) **AND the CI-minute config gates from issue [#323](https://github.com/mattsears18/shipyard/issues/323)**.
+
+   **CI-minute pre-dispatch gates (gated on `ci.*` config keys).** Before the per-PR re-dispatch policy below, check the config keys in this order — both default to off (preserves pre-#323 behavior); flip them in `shipyard.config.json`'s `ci.*` block to engage:
+
+   ```bash
+   # Read both keys once per poll (cheap — the helper short-circuits on cached defaults).
+   skip_rebase=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+     ci.skip_drain_rebase 2>/dev/null || echo "false")
+   max_rebases=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+     ci.max_drain_rebases 2>/dev/null || echo "null")
+
+   # 2a. Skip-all gate. `skip_drain_rebase: true` wins over `max_drain_rebases`
+   # — when both are set the cap is moot.
+   if [ "$skip_rebase" = "true" ]; then
+     # Every D_dirty PR gets surfaced in the end-of-session summary as "needs
+     # manual rebase" instead of consuming one full CI suite per force-push.
+     # Increment counter once per PR per poll where it WOULD have dispatched.
+     for pr in $D_dirty; do
+       ci_session_counters.drain_rebases_skipped=$((ci_session_counters.drain_rebases_skipped + 1))
+       echo "[drain] PR #$pr DIRTY but ci.skip_drain_rebase=true; surfacing in summary instead of dispatching rebase. (#323)"
+     done
+     # Do NOT dispatch any fix-rebase worker this poll. fix-checks dispatches
+     # from action 1 above still proceed (red PRs remain urgent).
+     # Move on to action 3 (bookkeeping).
+   else
+     # 2b. Soft-cap gate. When max_drain_rebases is non-null, dispatch only the
+     # top-N PRs (lowest PR number first — matches drain.md's deterministic
+     # ordering) and surface the rest. The cap is per-session (across all polls)
+     # — track total fix-rebase dispatches in ci_session_counters.drain_rebases_dispatched.
+     if [ "$max_rebases" != "null" ]; then
+       remaining_cap=$((max_rebases - ci_session_counters.drain_rebases_dispatched))
+       if [ "$remaining_cap" -le 0 ]; then
+         for pr in $D_dirty; do
+           ci_session_counters.drain_rebases_skipped=$((ci_session_counters.drain_rebases_skipped + 1))
+           echo "[drain] PR #$pr DIRTY but ci.max_drain_rebases cap ($max_rebases) reached; surfacing in summary. (#323)"
+         done
+         # Skip the per-PR re-dispatch loop entirely this poll.
+       else
+         # Dispatch the first $remaining_cap PRs from D_dirty (already sorted
+         # lowest-first per the drain spec). Increment drain_rebases_dispatched
+         # once per dispatch — NOT once per `rebased` return — so the cap
+         # bounds CI cost regardless of outcome.
+         D_dirty_to_dispatch=$(echo "$D_dirty" | head -n "$remaining_cap")
+         D_dirty_to_skip=$(echo "$D_dirty" | tail -n "+$((remaining_cap + 1))")
+         for pr in $D_dirty_to_skip; do
+           ci_session_counters.drain_rebases_skipped=$((ci_session_counters.drain_rebases_skipped + 1))
+         done
+         # Replace D_dirty with the dispatchable subset for the rest of this action.
+         D_dirty="$D_dirty_to_dispatch"
+       fi
+     fi
+     # Continue to the normal per-PR re-dispatch policy below with the
+     # (possibly truncated) D_dirty set.
+   fi
+   ```
+
+   The two gates are intentionally distinct: `skip_drain_rebase: true` is the "I'd rather see DIRTY PRs in the summary than burn CI" stance; `max_drain_rebases: <N>` is the "rebase the top-N and surface the rest" compromise. Most cost-conscious operators on repos with expensive E2E will pick one or the other; a few will set both (in which case `skip_drain_rebase` wins).
+
+   Fix-checks dispatches in action 1 above take priority — a red PR is more urgent than a stale base. After filling the pool with fix-checks workers, any remaining slots dispatch fix-rebase workers from the (possibly cap-truncated) `D_dirty` set (lowest PR number first, so dispatch order is deterministic across re-dispatches). The per-PR re-dispatch policy splits by return outcome:
 
    - **`blocked rebase #<M>: <reason>`** — add `<M>` to `rebase_blocked_prs`. Do NOT re-dispatch this session even if the PR is still DIRTY at subsequent polls; the same conflict will produce the same outcome. The drain's settled definition counts `rebase_blocked_prs` membership as settled so the PR doesn't keep the drain alive forever.
    - **`rebased #<M>`** — increment `rebase_success_counts[<M>]` by 1 (initialize to 0 if absent). Do NOT add to `rebase_blocked_prs`. If the PR transitions DIRTY again later in the session (sibling merge re-introduced the conflict), it re-enters `D_dirty` and gets re-dispatched **as long as** `rebase_success_counts[<M>] < 3`. At the cap (3 successful rebases on one PR in one session), the PR is treated as settled: log `[drain] PR #<M> hit rebase-cap (3 successful rebases); deferring to next session — merge train advancing faster than rebase can keep up` and skip future re-dispatches.

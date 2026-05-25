@@ -162,15 +162,16 @@ assert_file_exists "$drain_path" "commands/do-work/drain.md exists"
 assert_file_exists "$cleanup_path" "commands/do-work/cleanup-summary.md exists"
 assert_file_exists "$dont_path" "commands/do-work/dont.md exists"
 
-# (2) The thin entry stays under 220 lines. Acceptance criterion from
+# (2) The thin entry stays under 222 lines. Acceptance criterion from
 #     #154 — the entry is allowed to grow if a new orchestrator-state
 #     struct lands, but if it grows past the cap the split is over-engineered
 #     and we'd rather know. Re-baselined from 200 → 220 after #195
 #     (`last_fresh_fetch`), #233 (`scope_bg_count`), and #246 (refresh
-#     tracker + `deferred_issues` provenance) added legitimate struct
-#     documentation to the entry.
-assert_line_count_at_most "$do_work_path" 220 \
-  "thin entry stays <= 220 lines (#154 acceptance criterion)"
+#     tracker + `deferred_issues` provenance), then 220 → 222 after #323
+#     (`ci_session_counters`) added the 13th orchestrator-state struct
+#     for CI-minute discipline.
+assert_line_count_at_most "$do_work_path" 222 \
+  "thin entry stays <= 222 lines (#154 acceptance criterion)"
 
 # (3) RATIONALE has substantive content (≥200 lines) so the prose-rationale
 #     genuinely landed there during the #100 split.
@@ -352,7 +353,7 @@ assert_contains "$steady_state_path" \
 # Five assertions pin the post-#317 contract:
 #   - The struct list grew a 12th entry `reconciled_agent_ids` (named in
 #     do-work.md alongside the #317 cross-ref).
-#   - The opening sentence reflects the new struct count ("twelve").
+#   - The opening sentence reflects the new struct count ("thirteen" post-#323, was "twelve" post-#317).
 #   - steady-state.md gained the new A.−1 step (the gate body lives there).
 #   - The advisory log line shape is documented exactly (so a future
 #     regression that drops the gate without renaming everything else
@@ -363,8 +364,8 @@ assert_contains "$do_work_path" \
   'reconciled_agent_ids' \
   "do-work.md struct list names reconciled_agent_ids (#317)"
 assert_contains "$do_work_path" \
-  'twelve mental data structures' \
-  "do-work.md opening sentence reflects post-#317 struct count (twelve)"
+  'thirteen mental data structures' \
+  "do-work.md opening sentence reflects post-#323 struct count (thirteen)"
 assert_contains "$steady_state_path" \
   'A.−1. Reconcile-once gate' \
   "steady-state.md carries the A.−1 reconcile-once gate (#317)"
@@ -374,6 +375,31 @@ assert_contains "$steady_state_path" \
 assert_contains "$dont_path" \
   'phantom re-fire' \
   "dont.md carries the dispatch-loop bullet forbidding A.0/A.1/B/C/D on phantoms (#317)"
+
+# ----------------------------------------------------------------------
+# (16) CI-minute discipline contract (issue #323).
+#
+# Five assertions pin the post-#323 contract:
+#   - do-work.md struct list grew a 13th entry `ci_session_counters`.
+#   - steady-state.md dispatch rule 2 carries the verify_check_failing_on_head_before_dispatch gate.
+#   - drain.md per-poll action 2 carries the skip_drain_rebase / max_drain_rebases gate.
+#   - cleanup-summary.md surfaces the "CI cost (#323)" block.
+#   - RATIONALE.md has the "CI-minute discipline (issue #323)" worked-example section.
+assert_contains "$do_work_path" \
+  'ci_session_counters' \
+  "do-work.md struct list names ci_session_counters (#323)"
+assert_contains "$steady_state_path" \
+  'verify_check_failing_on_head_before_dispatch' \
+  "steady-state.md carries the stale-failure pre-dispatch gate (#323)"
+assert_contains "$drain_path" \
+  'skip_drain_rebase' \
+  "drain.md per-poll action 2 honors ci.skip_drain_rebase (#323)"
+assert_contains "$cleanup_path" \
+  'CI cost (#323)' \
+  "cleanup-summary.md surfaces the CI cost block (#323)"
+assert_contains "$rationale_path" \
+  'CI-minute discipline (issue #323)' \
+  "RATIONALE.md carries the worked-example section (#323)"
 
 echo
 if (( fail > 0 )); then
