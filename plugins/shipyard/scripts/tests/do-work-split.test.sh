@@ -758,6 +758,64 @@ assert_count_at_least_across \
   "setup.md's hardened find-based loop appears in both the bg group and the standalone block (#335)" \
   "$setup_path"
 
+# (22) Auto-merge outcome categorization handles silent direct-merge case
+#      (issue #340).
+#
+# `gh pr merge --auto --merge --delete-branch` does NOT always error when
+# `allow_auto_merge: false` is set at the repo level. When the dispatching
+# user has admin permissions, gh silently falls through to a direct merge:
+# the PR lands immediately (if CI is green) or queues for merge (if
+# pending). The call returns exit 0, `autoMergeRequest` is null, and a
+# worker that decides the outcome from the call's exit status alone returns
+# `auto-merge: unavailable — needs manual merge` even when the PR is
+# already `state: MERGED`. Repro: 5 PRs in a 26-PR session against
+# `mattsears18/mattsears18.com` (`allow_auto_merge: false`) all returned
+# `unavailable` despite landing as MERGED.
+#
+# The fix requires three surfaces to read the post-call PR state (not just
+# the merge call's exit status) to decide which of three auto-merge
+# outcomes applies — `enabled`, `merged-direct`, or genuinely-`unavailable`:
+#   - worker-preamble's "Auto-merge + snapshot-and-return pattern" gains a
+#     step 1.5 categorization block keyed on `(state, autoMergeRequest)`.
+#   - issue-work.md step 7 walks the same post-call snapshot before
+#     emitting the return string.
+#   - issue-work.md step 8 adds the new `auto-merge: merged-direct` return
+#     suffix alongside the existing `enabled` / `unavailable` / `gated`
+#     options.
+# inline-trivial.md (step E) references the worker-preamble categorization
+# by link to keep the inline path consistent with the worker path.
+worker_preamble_path340="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+issue_work_path340="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+inline_trivial_path340="$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
+
+assert_contains "$worker_preamble_path340" \
+  'issues/340' \
+  "worker-preamble cites issue #340 as the source of the post-call categorization rule"
+assert_contains "$worker_preamble_path340" \
+  'merged-direct' \
+  "worker-preamble names the merged-direct outcome explicitly (#340)"
+assert_contains "$worker_preamble_path340" \
+  'autoMergeRequest' \
+  "worker-preamble's step 1.5 reads autoMergeRequest from the post-call snapshot (#340)"
+assert_contains "$worker_preamble_path340" \
+  'allow_auto_merge: false' \
+  "worker-preamble explains the silent-direct-merge condition (allow_auto_merge:false + admin perms, #340)"
+assert_contains "$issue_work_path340" \
+  'issues/340' \
+  "issue-work.md cites issue #340 as the source of the post-call categorization rule"
+assert_contains "$issue_work_path340" \
+  'merged-direct' \
+  "issue-work.md step 8 includes the auto-merge: merged-direct return suffix (#340)"
+assert_contains "$issue_work_path340" \
+  'autoMergeRequest' \
+  "issue-work.md step 7 reads autoMergeRequest from the post-call snapshot (#340)"
+assert_contains "$inline_trivial_path340" \
+  'issues/340' \
+  "inline-trivial.md cites issue #340 for the post-call categorization rule"
+assert_contains "$inline_trivial_path340" \
+  'merged-direct' \
+  "inline-trivial.md names merged-direct as one of the three outcomes (#340)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

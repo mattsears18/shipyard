@@ -106,7 +106,7 @@ Same as the worker-dispatched path's [issue-work step 6](../../agents/issue-work
 gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
 ```
 
-If auto-merge isn't available at the repo level, log it for the end-of-session summary and continue — same as the worker path.
+Then re-snapshot `state` and `autoMergeRequest` per the [worker-preamble auto-merge categorization](../../skills/worker-preamble/SKILL.md#auto-merge--snapshot-and-return-pattern) (issue [#340](https://github.com/mattsears18/shipyard/issues/340)) — `gh` silently direct-merges on repos with `allow_auto_merge: false` when the dispatching user has admin permissions, so categorize the actual outcome from the post-call state, not from the merge call's exit status alone. The three outcomes — `enabled`, `merged-direct`, and `unavailable` — surface in the inline-path summary the same way they surface in the worker-path return string. If `merged-direct` or `unavailable`, log it for the end-of-session summary and continue.
 
 ### F. Reconcile in-line (no `Agent` notification to wait on)
 

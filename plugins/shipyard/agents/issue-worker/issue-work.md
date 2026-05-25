@@ -178,7 +178,7 @@ Branch on the `originating_author_trust` field the orchestrator put in your disp
 gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
 ```
 
-If this errors because auto-merge isn't enabled at the repo level, **don't try to enable it** (that's a repo setting). Note in the return summary: `PR ready, auto-merge not available — needs manual merge`.
+If this errors because auto-merge isn't enabled at the repo level, **don't try to enable it** (that's a repo setting). But also **don't trust the exit status alone** — gh silently direct-merges (without arming auto-merge) when the repo has `allow_auto_merge: false` and the dispatching user has admin permissions, returning exit 0 with `autoMergeRequest: null` and the PR already at `state: MERGED`. The post-call state snapshot in [step 7](#7-snapshot-check-state-then-return--dont-block-on-ci) (and the categorization rules in `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.5) distinguish the three outcomes — `enabled`, `merged-direct`, and genuinely-`unavailable` — and pick the matching return-string suffix in [step 8](#8-return). Don't try to short-circuit the categorization from the merge call alone; let the post-call snapshot decide.
 
 **When `originating_author_trust == "external"`** — do NOT arm auto-merge. Instead, mark the PR for human review and post a comment so the maintainer's merge-queue view surfaces it as gated:
 
@@ -197,11 +197,26 @@ Do NOT call `gh pr merge --auto` in this branch — that's the exact gate this s
 
 **If the dispatch prompt doesn't contain an `originating_author_trust` field** — that's an orchestrator-side bug (the field is supposed to be in every issue-work dispatch). The fail-safe is to treat the trust as `external` and take the external branch above. Do NOT default to `trusted`; the cost of one extra human-merge step on a legitimate trusted PR is trivial compared to the cost of auto-merging an external-origin PR by mistake.
 
-### 7. Snapshot check state, then return — don't block on CI
+### 7. Snapshot check state + auto-merge state, then return — don't block on CI
 
 **Do not `--watch`.** Watching ties up your agent (and its concurrency slot) for the full CI duration, often 5–20 min. The orchestrator's PR-triage step runs at the top of every `/do-work` iteration and will sweep up any PR that goes red — dispatching a fresh fix-checks-only agent against it. Your job is to ship and move on.
 
-Take one snapshot of the rollup so the return summary is accurate. Use the **latest run per check name** when categorizing (issue [#333](https://github.com/mattsears18/shipyard/issues/333)) so a re-triggered check that's currently passing isn't mis-categorized as `failing` because of a stale FAILURE entry the rollup still carries:
+**Snapshot the auto-merge outcome first** (issue [#340](https://github.com/mattsears18/shipyard/issues/340)) — `gh pr merge --auto` from [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) silently direct-merges when the repo has `allow_auto_merge: false` and the dispatching user has admin permissions, so the call's exit status alone is NOT a reliable signal of the actual outcome:
+
+```bash
+gh pr view <pr-num> --repo <owner/repo> --json state,autoMergeRequest \
+  --jq '{state, autoMerge: (.autoMergeRequest != null)}'
+```
+
+Categorize into one of three `auto-merge:` values for the return-string suffix:
+
+- `.autoMerge == true` → **`auto-merge: enabled`** (queued; auto-merge armed and waiting on checks).
+- `.state == "MERGED"` → **`auto-merge: merged-direct`** (gh silently direct-merged because `allow_auto_merge: false` at the repo level but the dispatching user has admin permissions; PR is already landed).
+- Otherwise (`.state == "OPEN"` AND `.autoMerge == false`) → **`auto-merge: unavailable — needs manual merge`** (the merge call genuinely failed and no merge happened).
+
+When `originating_author_trust == "external"` and step 6 took the external branch (no `gh pr merge --auto` was called), skip this snapshot — the return-string suffix is fixed at `auto-merge: gated — external-author origin, needs-human-review label applied` per [step 8](#8-return).
+
+**Then snapshot the check rollup.** Use the **latest run per check name** when categorizing (issue [#333](https://github.com/mattsears18/shipyard/issues/333)) so a re-triggered check that's currently passing isn't mis-categorized as `failing` because of a stale FAILURE entry the rollup still carries:
 
 ```bash
 gh pr view <pr-num> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus --jq '
@@ -218,6 +233,8 @@ Categorize the latest-per-name `checks`:
 - Any `conclusion in {FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED}` on the latest run for a check → `checks: failing` (rare — usually CI hasn't run yet). Orchestrator triage will catch this on the next iteration.
 - Otherwise (`QUEUED` / `IN_PROGRESS` / `PENDING`) → `checks: pending`. Normal case right after push.
 
+For `merged-direct` PRs the rollup snapshot reflects the post-merge head SHA's checks (typically all green by definition — the merge wouldn't have landed otherwise). Expect `checks: green` in the normal case.
+
 Then return.
 
 ### 8. Return
@@ -226,7 +243,11 @@ When auto-merge is engaged and you've snapshotted check state → done. Return o
 
 > `shipped #<N> via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
 
-When the auto-merge call failed but the PR is open and ready → return:
+When the post-call snapshot showed the PR is already MERGED (gh silently direct-merged because the repo has `allow_auto_merge: false` but the dispatching user has admin permissions — issue [#340](https://github.com/mattsears18/shipyard/issues/340)) → return:
+
+> `shipped #<N> via PR #<M> (auto-merge: merged-direct, checks: <green|pending|failing>)`
+
+When the post-call snapshot showed the PR is still OPEN and `autoMergeRequest` is null (the merge call genuinely failed) → return:
 
 > `shipped #<N> via PR #<M> (auto-merge: unavailable — needs manual merge, checks: <green|pending|failing>)`
 
