@@ -18,6 +18,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/enforce-edit-scope.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/refuse-escape-symlink-commit.sh\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
