@@ -816,6 +816,69 @@ assert_contains "$inline_trivial_path340" \
   'merged-direct' \
   "inline-trivial.md names merged-direct as one of the three outcomes (#340)"
 
+# (23) Pre-scope Detector 2 — Claude-Code self-modification target proposals
+#      (issue #348).
+#
+# Parallel to Detector 1 (#346)'s `.github/workflows/` defer, Detector 2
+# catches issue bodies that propose changes to `.claude/settings.json`,
+# `.claude/settings.local.json`, or `.mcp.json` at the repo root — Claude
+# Code's auto-mode classifier treats edits to these paths as
+# Self-Modification and applies a HARD BLOCK not cleared by user intent,
+# so worker dispatch always fails at the Edit step. The detector synthesizes
+# a `human-decision-required` defer before the scope-agent dispatch.
+#
+# Surfaces:
+#   - setup.md step 6 grows a `Detector 2 — Claude-Code self-modification
+#     target proposal` block under "Pre-scope orchestrator-side detectors".
+#   - The `evidence_pointer` validator's `human-decision-required` rule
+#     accepts the new structured prefixes `Proposes .claude/settings.json`,
+#     `Proposes .claude/settings.local.json`, `Proposes .mcp.json`.
+#   - The per-class shape table example gains the Claude-Code self-mod
+#     example to make the new accepted shape discoverable.
+#   - drain.md 5.a/5.b's re-validation cross-references mention the Claude-
+#     Code path family so a re-validation that re-detects one of those
+#     paths synthesizes the defer again rather than promoting to backlog.
+#   - RATIONALE gains a "Step 6 — Detector 2" section documenting the
+#     failure mode, the narrow-path-set rationale (excluding CLAUDE.md),
+#     and the why-same-class rationale.
+setup_path348="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+drain_path348="$repo_root/plugins/shipyard/commands/do-work/drain.md"
+rationale_path348="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+
+assert_contains "$setup_path348" \
+  'Detector 2 — Claude-Code self-modification target proposal' \
+  "setup.md step 6 names Detector 2 explicitly (#348)"
+assert_contains "$setup_path348" \
+  '.claude/settings.json' \
+  "setup.md Detector 2 matches .claude/settings.json (#348)"
+assert_contains "$setup_path348" \
+  '.claude/settings.local.json' \
+  "setup.md Detector 2 matches .claude/settings.local.json (#348)"
+assert_contains "$setup_path348" \
+  '.mcp.json' \
+  "setup.md Detector 2 matches .mcp.json (#348)"
+assert_contains "$setup_path348" \
+  'Claude-Code self-modification HARD BLOCK requires human application' \
+  "setup.md Detector 2's evidence_pointer shape is the self-mod HARD BLOCK prefix (#348)"
+assert_contains "$setup_path348" \
+  'Proposes .claude/settings.json' \
+  "setup.md validator's human-decision-required rule accepts Proposes .claude/settings.json prefix (#348)"
+assert_contains "$setup_path348" \
+  'Proposes .mcp.json' \
+  "setup.md validator's human-decision-required rule accepts Proposes .mcp.json prefix (#348)"
+assert_contains "$setup_path348" \
+  'issues/348' \
+  "setup.md cites issue #348 as the source of Detector 2"
+assert_contains "$drain_path348" \
+  '.claude/settings.json' \
+  "drain.md 5.a/5.b re-validation cross-reference mentions the Claude-Code self-mod path family (#348)"
+assert_contains "$rationale_path348" \
+  'Detector 2: Claude-Code self-modification target proposals (issue #348)' \
+  "RATIONALE has a Step 6 — Detector 2 section (#348)"
+assert_contains "$rationale_path348" \
+  'issues/348' \
+  "RATIONALE cites issue #348 as the source of Detector 2"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
