@@ -183,6 +183,14 @@ The check is a one-liner; the remediation is the substantive part.
    ```bash
    if [ -d ../../../node_modules ] && [ ! -e node_modules ]; then
      ln -s ../../../node_modules node_modules
+     # Also add to the per-worktree exclude so the symlink can NEVER be
+     # implicitly staged into a commit (issue #351 — see the "Pre-commit
+     # hygiene" section below for the salvage cost when it leaks). The
+     # per-worktree `.git/info/exclude` is the canonical git mechanism for
+     # "ignore this in this checkout only" — it doesn't pollute the repo's
+     # `.gitignore` (which would be a public spec change).
+     grep -qxF node_modules .git/info/exclude 2>/dev/null \
+       || echo node_modules >> .git/info/exclude
    fi
    ```
    Native modules built against the host Node version need rebuild for native modules to load — acceptable trade-off since shipyard already requires the primary checkout to be on a compatible Node version. The symlink only persists for the worktree's lifetime; the orchestrator's reap doesn't touch the primary checkout's `node_modules/`.
@@ -193,6 +201,10 @@ The check is a one-liner; the remediation is the substantive part.
    ```bash
    if [ -d ../../../node_modules ] && [ ! -e node_modules ]; then
      cp -al ../../../node_modules node_modules
+     # Same gitignore-via-info/exclude hygiene as the symlink path — the
+     # hard-link tree shouldn't leak into a commit either.
+     grep -qxF node_modules .git/info/exclude 2>/dev/null \
+       || echo node_modules >> .git/info/exclude
    fi
    ```
 
@@ -206,6 +218,14 @@ The check is a one-liner; the remediation is the substantive part.
 **When NOT to run the check.** Don't run it for non-Node repos (no `package.json`), don't run it inside a sub-directory of a monorepo unless that sub-dir has its own `package.json` (the root's deps may satisfy the sub-dir's tooling), and don't run it for documentation-only changes to a Node repo (no tests to skip silently if your diff is `*.md` files).
 
 **Why this lives in the preamble and not per-mode.** Every dispatched worker (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch) eventually runs `git push` against the target repo. The silent-test-skip failure mode is identical across modes. One check in the shared preamble beats five copy-pasted recipes in the per-mode files.
+
+## Pre-commit hygiene — escape symlinks
+
+A companion failure mode to the dependency-bootstrap symlink ([#351](https://github.com/mattsears18/shipyard/issues/351)): the worker creates `node_modules → ../../../node_modules` per the bootstrap rules above, then accidentally stages it into a commit via a stray `git add -A`, a misclick on `git add node_modules`, or path globbing that happens to include the symlink. The committed `120000` symlink mode rides into the commit and stays dangerous forever — when a downstream consumer cherry-picks the commit onto a different checkout depth, `../../../node_modules` resolves to a different (or non-existent) path. The salvage cost is a follow-up `fix(repo): remove stray node_modules symlink from cherry-pick` commit on the receiving end; the prevention cost is zero if you follow the symlink-creation hygiene above.
+
+The `refuse-escape-symlink-commit.sh` hook (registered as PreToolUse → Bash in `hooks.json`) is the load-bearing enforcement. It refuses any Bash `git commit` invocation whose staged file set includes a symlink whose target either starts with `/` or contains a literal `..` path segment. The hook's stderr explains the failure mode and the fix; do NOT bypass it.
+
+If you genuinely need to commit a symlink with `../` in the target (rare — and a strong signal to re-think the design), return `blocked:` so a human can decide. The hook intentionally has no bypass flag, paralleling the no-`--no-verify` rule for commit hooks.
 
 ## Never `--no-verify`
 
