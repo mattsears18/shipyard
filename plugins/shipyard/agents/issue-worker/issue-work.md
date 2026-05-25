@@ -191,16 +191,21 @@ Do NOT call `gh pr merge --auto` in this branch — that's the exact gate this s
 
 **Do not `--watch`.** Watching ties up your agent (and its concurrency slot) for the full CI duration, often 5–20 min. The orchestrator's PR-triage step runs at the top of every `/do-work` iteration and will sweep up any PR that goes red — dispatching a fresh fix-checks-only agent against it. Your job is to ship and move on.
 
-Take one snapshot of the rollup so the return summary is accurate:
+Take one snapshot of the rollup so the return summary is accurate. Use the **latest run per check name** when categorizing (issue [#333](https://github.com/mattsears18/shipyard/issues/333)) so a re-triggered check that's currently passing isn't mis-categorized as `failing` because of a stale FAILURE entry the rollup still carries:
 
 ```bash
-gh pr view <pr-num> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus
+gh pr view <pr-num> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus --jq '
+  {mergeStateStatus: .mergeStateStatus,
+   checks: [.statusCheckRollup
+            | group_by(.name)
+            | map(sort_by(.completedAt // .startedAt // "") | last)
+            | .[]]}'
 ```
 
-Categorize:
+Categorize the latest-per-name `checks`:
 
-- All `CONCLUSION: SUCCESS` (or empty rollup, no checks configured) → `checks: green`.
-- Any `CONCLUSION: FAILURE` / `ERROR` / `TIMED_OUT` already present → `checks: failing` (rare — usually CI hasn't run yet). Orchestrator triage will catch this on the next iteration.
+- All `conclusion in {SUCCESS, SKIPPED, NEUTRAL}` (or empty rollup, no checks configured) → `checks: green`.
+- Any `conclusion in {FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED}` on the latest run for a check → `checks: failing` (rare — usually CI hasn't run yet). Orchestrator triage will catch this on the next iteration.
 - Otherwise (`QUEUED` / `IN_PROGRESS` / `PENDING`) → `checks: pending`. Normal case right after push.
 
 Then return.

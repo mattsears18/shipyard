@@ -357,28 +357,39 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 
   No-ops on a PR that never had a sentinel comment posted (no existing comment to update, no `shipped` event to anchor a fresh post — `EXISTING` is empty and the create path posts the first comment with just this fix-checks pass's tokens). Same comment-post-error policy as the `shipped` hook: log `[cost-comment] PR #<M> refresh failed: <reason>; continuing` and proceed.
 
-  **Trust-but-verify before accepting `green`.** The agent's `green` claim is load-bearing — downstream code treats green PRs as settled. Spot-check:
+  **Trust-but-verify before accepting `green`.** The agent's `green` claim is load-bearing — downstream code treats green PRs as settled. Spot-check the **latest run per check name** (issue [#333](https://github.com/mattsears18/shipyard/issues/333) — `statusCheckRollup` returns every check run for the head SHA including superseded runs; a stale FAILURE entry that's been re-triggered and now passes would incorrectly downgrade the worker's correct `green` claim to `failing` and re-queue the PR for a pointless second fix-checks dispatch):
 
   ```bash
-  gh pr view <M> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus
+  # Latest entry per check name BEFORE the walk.
+  latest=$(gh pr view <M> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus --jq '
+    {mergeStateStatus: .mergeStateStatus,
+     checks: [.statusCheckRollup
+              | group_by(.name)
+              | map(sort_by(.completedAt // .startedAt // "") | last)
+              | .[]]}')
   ```
 
-  Walk the `statusCheckRollup`:
+  Then classify each entry in `latest.checks`:
   - Every entry `conclusion in {SUCCESS, SKIPPED, NEUTRAL}` (or empty rollup) → accept `green`.
   - Any `state in {PENDING, IN_PROGRESS, QUEUED, EXPECTED}` or `conclusion == null` while `status != "completed"` → **downgrade to `pending`**. Do NOT label `blocked:ci`. Do NOT push onto `failed_prs`. Append `<M>` to `session_prs` (if not already there). Log: `[fix-checks-verify] downgraded #<M> green→pending: <n> checks still running (<sample-check-name>); drain will reconcile.`
   - Any `conclusion in {FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED}` → **downgrade to `failing`**. Push `<M>` onto `failed_prs` (deduped) for the next dispatch cycle to pick up. Log: `[fix-checks-verify] downgraded #<M> green→failing: <failing-check-name> conclusion=<conclusion>; re-queued for fix-checks.`
 
-  The spot-check fires on the `green #<M>` and `noop: already green #<M>` paths. It's one cheap `gh pr view` call. Never skip as an optimization.
+  The spot-check fires on the `green #<M>` and `noop: already green #<M>` paths. It's one cheap `gh pr view` call. Never skip as an optimization. The latest-per-name `--jq` projection adds zero round-trips; skipping it re-introduces the false-positive failure mode from #333.
 
 - **blocked #<M> at fix-checks** — comment on the PR summarizing the blocker, add the `blocked:ci` label, continue. The label is the drain phase's signal that this PR is "settled — human needs to look."
 
-- **Unrecognized return string (narrative status update)** — the agent returned something that doesn't start with `green`, `noop:`, or `blocked` (e.g., `"E2E shards typically take 8-15 min."`, `"Routine progress."`, `"Shard 3/3 passes."`). This is a [contract violation](../../agents/issue-worker/fix-checks-only.md#return-contract--read-carefully). Do NOT treat the narrative as authoritative. Probe and synthesize:
+- **Unrecognized return string (narrative status update)** — the agent returned something that doesn't start with `green`, `noop:`, or `blocked` (e.g., `"E2E shards typically take 8-15 min."`, `"Routine progress."`, `"Shard 3/3 passes."`). This is a [contract violation](../../agents/issue-worker/fix-checks-only.md#return-contract--read-carefully). Do NOT treat the narrative as authoritative. Probe and synthesize via the same **latest-per-name projection** the trust-but-verify spot-check uses (issue [#333](https://github.com/mattsears18/shipyard/issues/333)):
 
   ```bash
-  gh pr view <M> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus,state
+  latest=$(gh pr view <M> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus,state --jq '
+    {state: .state, mergeStateStatus: .mergeStateStatus,
+     checks: [.statusCheckRollup
+              | group_by(.name)
+              | map(sort_by(.completedAt // .startedAt // "") | last)
+              | .[]]}')
   ```
 
-  Walk the rollup just like the trust-but-verify spot-check above and synthesize:
+  Walk `latest.checks` and synthesize:
   - All `conclusion in {SUCCESS, SKIPPED, NEUTRAL}` (or empty rollup) → treat as `green #<M>`.
   - Any `state in {PENDING, IN_PROGRESS, QUEUED, EXPECTED}` or `conclusion == null` mid-run → treat as `pending`. Append `<M>` to `session_prs`. Do NOT push onto `failed_prs` — that races with the original worker's still-in-progress fix.
   - Any `conclusion in {FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED}` → treat as `failing`. Push `<M>` onto `failed_prs` (deduped).
@@ -797,9 +808,20 @@ When filling a slot, walk this decision tree:
      # Fetch headRefOid + the failing check's run-SHA from the rollup. The
      # statusCheckRollup nodes expose detailsUrl with the run-id embedded;
      # we extract it client-side rather than a second gh round-trip.
+     # Latest-per-name projection (issue #333) — without it the `failing`
+     # array enumerates stale superseded FAILURE entries too, each one
+     # forcing a wasted `gh api runs/<id>` round-trip in the loop below
+     # to confirm what the projection would have caught for free: the
+     # entry is on an older SHA than the PR's current head.
      rollup=$(gh pr view <M> --repo <owner/repo> \
        --json headRefOid,statusCheckRollup \
-       --jq '{head: .headRefOid, failing: [.statusCheckRollup[] | select(.conclusion=="FAILURE" or .conclusion=="ERROR" or .conclusion=="TIMED_OUT" or .conclusion=="CANCELLED" or .conclusion=="ACTION_REQUIRED") | {name, detailsUrl}]}')
+       --jq '{head: .headRefOid, failing: [
+         .statusCheckRollup
+         | group_by(.name)
+         | map(sort_by(.completedAt // .startedAt // "") | last)
+         | .[]
+         | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
+         | {name, detailsUrl}]}')
      head_sha=$(echo "$rollup" | jq -r .head)
      # Probe each failing check's run via detailsUrl → run id → run's head_sha.
      # If ANY failing check's run head_sha != PR head_sha, the failure has been

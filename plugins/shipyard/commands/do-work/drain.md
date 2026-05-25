@@ -180,10 +180,27 @@ The wrapper auto-chunks at 50 aliases per query (override via `SHIPYARD_GH_BATCH
 
 - `O` = open PRs in `session_prs` (not yet merged or closed)
 - `M_since_last` = PRs that merged or closed since the previous poll (delta vs. the previous `O`)
-- `R_new` = PRs whose rollup contains a hard failure (`FAILURE` / `ERROR` / `TIMED_OUT`) AND are NOT carrying `blocked:ci` AND are not already in `in_flight` or `failed_prs`
-- `D_dirty` = PRs whose `mergeStateStatus == "DIRTY"` AND have **no** hard-failure check (rollup is fully `SUCCESS` / `SKIPPED` / `NEUTRAL` / `PENDING` / `IN_PROGRESS` / `QUEUED`) AND are NOT in `in_flight` AND are NOT in `rebase_blocked_prs` (the prior dispatch returned `blocked rebase` — re-dispatching would produce the same conflict) AND have `rebase_success_counts[<pr>] < 3` (PRs that have been successfully rebased 3 times in this session are rate-limit-capped and treated as settled — the merge train is advancing faster than rebase can keep up, defer to next session). A PR that was successfully rebased earlier this session and has since gone DIRTY again from a sibling merge IS in `D_dirty` as long as its success-count is under cap — a successful rebase doesn't gate future re-dispatches the way a `blocked rebase` does.
+- `R_new` = PRs whose rollup contains a hard failure (`FAILURE` / `ERROR` / `TIMED_OUT` / `CANCELLED` / `ACTION_REQUIRED`) **on the latest run per check name** AND are NOT carrying `blocked:ci` AND are not already in `in_flight` or `failed_prs`
+- `D_dirty` = PRs whose `mergeStateStatus == "DIRTY"` AND have **no** hard-failure check **on the latest run per check name** (rollup is fully `SUCCESS` / `SKIPPED` / `NEUTRAL` / `PENDING` / `IN_PROGRESS` / `QUEUED`) AND are NOT in `in_flight` AND are NOT in `rebase_blocked_prs` (the prior dispatch returned `blocked rebase` — re-dispatching would produce the same conflict) AND have `rebase_success_counts[<pr>] < 3` (PRs that have been successfully rebased 3 times in this session are rate-limit-capped and treated as settled — the merge train is advancing faster than rebase can keep up, defer to next session). A PR that was successfully rebased earlier this session and has since gone DIRTY again from a sibling merge IS in `D_dirty` as long as its success-count is under cap — a successful rebase doesn't gate future re-dispatches the way a `blocked rebase` does.
 - `B` = PRs carrying `blocked:ci` (these are "settled — human needs to look")
 - `P_settled` = PRs whose rollup is fully `PENDING` / `IN_PROGRESS` / `QUEUED` AND whose `headRefOid` hasn't changed since the previous poll (auto-merge waiting on long-running checks)
+
+**Latest-per-name semantics for `R_new` and `D_dirty`** (issue [#333](https://github.com/mattsears18/shipyard/issues/333)). `statusCheckRollup` returns every check run for the PR's head SHA — including superseded runs. A check that ran, failed, was re-triggered, and passed appears twice (one FAILURE entry + one SUCCESS entry). A naïve `.statusCheckRollup[] | select(.conclusion=="FAILURE")` walk would (a) keep already-fixed PRs in `R_new` forever, dispatching pointless fix-checks workers that return `noop: already green`, and (b) keep already-fixed PRs OUT of `D_dirty`, sending the drain-phase fix-rebase worker the false signal "this PR has failing checks — bail" when in fact it's green. Both failure modes were observed in lightwork session `c6afe19d-a6a6-40e4-9eb8-de409d046a49` against PRs #1193 and #1211. De-duplicate by check name and take the most recent entry per check (by `completedAt`, fallback `startedAt`):
+
+```bash
+# Latest-per-name failure count. Used by both R_new (>0 means failing) and D_dirty (==0 means clean enough to rebase).
+fails=$(echo "$pr_rollup_json" | jq '
+  [.statusCheckRollup
+   | group_by(.name)
+   | map(sort_by(.completedAt // .startedAt // "") | last)
+   | .[]
+   | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
+  | length')
+```
+
+The `group_by(.name) | map(... | last)` reduction is load-bearing: it collapses N entries per check name to 1 (the latest), so a stale FAILURE entry superseded by a later SUCCESS is correctly filtered out. Apply this projection in every per-PR rollup walk in both the per-poll snapshot and any fan-out re-snapshot via `gh-batch.sh pr-status`.
+
+**Defense-in-depth advisory log.** When the orchestrator's snapshot for a PR says `fails > 0` based on the raw rollup but `fails == 0` based on the latest-per-name projection (i.e., the *only* failure entries are stale-superseded), emit `[stale-rollup-detected] PR #<M> has <N> stale FAILURE entries superseded by later SUCCESS; treating as green` to the orchestrator log before proceeding. Surfaces the failure mode for telemetry without blocking the dispatch.
 
 A PR is **settled** when any of: it's merged/closed, it's labeled `blocked:ci`, it has had a `blocked rebase` return this session (membership in `rebase_blocked_prs`), it has hit the rate-limit cap (`rebase_success_counts[<pr>] >= 3` — three successful rebases in one session, but the merge train keeps re-DIRTY-ing it; surrender for this session and let the next pick it up), or all its checks are pending AND the head commit hasn't moved AND `P_settled` has been true for it across the last 5 polls (i.e. no churn).
 
