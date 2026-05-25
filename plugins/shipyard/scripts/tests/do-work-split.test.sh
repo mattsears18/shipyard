@@ -722,6 +722,42 @@ assert_contains "$config_sh_path339" \
   '"manifest_version_jq": ".version"' \
   "shipyard-config.sh defaults set manifest_version_jq to .version (#339)"
 
+# (21) Step 0.7 bg cleanup group survives zsh's nomatch option when no
+#      agent-* worktrees exist (issue #335).
+#
+# The bg subshell runs five cleanup sub-steps in sequence: 1.6 orphan
+# session-file sweep → 1.6.5 orphan orchestrator-worktree sweep → 3a
+# label create → 3b agent-worktree reap → 3c orphan-branch triage. Step
+# 3b's loop was historically a bare `for wt_dir in .git/worktrees/agent-*`
+# glob — under zsh's default `nomatch` option, an unmatched glob raises
+# a fatal error and aborts the entire bg subshell, taking out the
+# remaining sub-steps (3c orphan-branch triage in particular). The fix
+# replaces the bare glob with a `find` substitution that exits 0 on no
+# matches, so the loop body simply doesn't iterate and execution
+# proceeds to 3c.
+#
+# The same hardening lands in two surfaces (the canonical bg group and
+# the standalone "3b. Reap stale agent worktrees" documentation block)
+# so a reader of either copy sees the same pattern.
+assert_contains "$setup_path" \
+  'issues/335' \
+  "setup.md cites issue #335 as the source of the bg-cleanup-group zsh-nomatch fix"
+# The bare-glob form must be gone from any `for wt_dir in ...` line.
+# We assert the literal `for wt_dir in .git/worktrees/agent-*; do` form
+# is absent — the regression guard against re-introducing the zsh hazard.
+assert_not_contains "$setup_path" \
+  'for wt_dir in .git/worktrees/agent-*' \
+  "setup.md no longer uses the bare agent-* glob in any for-loop (zsh nomatch hazard, #335)"
+# The hardened replacement must be present in at least one place — the
+# bg cleanup group's 3b loop AND the standalone canonical implementation
+# both got the same find-based rewrite, so the substring should appear
+# twice. Use `assert_count_at_least_across` (single file, min 2).
+assert_count_at_least_across \
+  "find .git/worktrees -maxdepth 1 -type d -name 'agent-*'" \
+  2 \
+  "setup.md's hardened find-based loop appears in both the bg group and the standalone block (#335)" \
+  "$setup_path"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
