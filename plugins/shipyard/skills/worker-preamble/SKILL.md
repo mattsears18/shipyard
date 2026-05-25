@@ -37,7 +37,23 @@ After `gh pr create` returns:
    ```bash
    gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
    ```
-   If the call errors because auto-merge isn't enabled at the repo level, **don't try to enable it** — that's a repo-config decision. Note it in your return summary as `auto-merge: unavailable — needs manual merge`.
+   If the call errors because auto-merge isn't enabled at the repo level, **don't try to enable it** — that's a repo-config decision. Capture the error to a local variable but proceed to step 1.5 below — the call's exit status alone is NOT a reliable signal of the actual merge outcome (see issue [#340](https://github.com/mattsears18/shipyard/issues/340)).
+
+1.5. **Re-snapshot the PR's actual state before categorizing the auto-merge outcome.** Closes [#340](https://github.com/mattsears18/shipyard/issues/340) — `gh pr merge --auto` does NOT always error when `allow_auto_merge: false` is set at the repo level. When the dispatching user has admin permissions on a repo with auto-merge disabled, `gh` **silently falls through to a direct merge**: the PR lands immediately (if CI is green) or queues for merge (if pending). The call returns exit 0, `autoMergeRequest` is `null` because no auto-merge was armed, and a worker that decides the auto-merge outcome from the call's exit status alone returns `auto-merge: unavailable — needs manual merge` even when the PR is already `state: MERGED`. Repro: 5 PRs in a 26-PR session against `mattsears18/mattsears18.com` (`allow_auto_merge: false`) all returned `unavailable` despite landing as MERGED.
+
+   The right check is to read both `state` and `autoMergeRequest` directly:
+
+   ```bash
+   gh pr view <pr-num> --repo <owner/repo> --json state,autoMergeRequest \
+     --jq '{state, autoMerge: (.autoMergeRequest != null)}'
+   ```
+
+   Categorize into one of three `auto-merge:` values for the return-string suffix:
+   - `.autoMerge == true` → **`auto-merge: enabled`** (queued; auto-merge armed and waiting on checks)
+   - `.state == "MERGED"` → **`auto-merge: merged-direct`** (gh silently direct-merged because the repo has `allow_auto_merge: false` but the dispatching user has admin permissions; PR is already landed)
+   - Otherwise (`.state == "OPEN"` AND `.autoMerge == false`) → **`auto-merge: unavailable — needs manual merge`** (the call genuinely failed and no merge happened)
+
+   The `merged-direct` distinction is informational, not behavioral: the orchestrator's step A reconcile parses `shipped #<N> via PR #<M>` and the `(auto-merge: ..., checks: ...)` suffix is purely for human-readable summaries and friction-surfacing — but the distinction matters for end-of-session summaries (a `merged-direct` PR shouldn't be surfaced to the user as "needs manual merge" friction when it's already landed).
 
 2. Snapshot the current check-rollup state with a single `gh pr view <M> --json statusCheckRollup,mergeStateStatus`. Don't `--watch` CI in any mode except **fix-checks-only**. The orchestrator's per-iteration PR triage owns failure recovery on a periodic refresh; blocking on `--watch` would tie up your agent and its concurrency slot for the full CI duration (often 5–20 min) for no gain. **Categorize the latest run per check name** (issue [#333](https://github.com/mattsears18/shipyard/issues/333) — `statusCheckRollup` returns every check run for the head SHA, including superseded runs; a stale FAILURE entry from an earlier run that's since been re-triggered and now passes would otherwise mis-categorize a `green` rollup as `failing`):
 
@@ -56,6 +72,8 @@ After `gh pr create` returns:
    - Otherwise (`QUEUED` / `IN_PROGRESS` / `PENDING`) → `checks: pending` (the normal case right after push).
 
    The `group_by(.name) | map(sort_by(.completedAt // .startedAt // "") | last)` reduction is load-bearing — it collapses N entries per check name to 1 (the most recent), so a stale FAILURE entry that's been superseded by a later SUCCESS doesn't trip the `failing` categorization. The `(.conclusion // .status)` test pattern is what the orchestrator's reconcile path uses too; using it here keeps the worker's snapshot categorization and the orchestrator's trust-but-verify spot-check in sync.
+
+   **Note:** if step 1.5 categorized as `merged-direct`, the PR is already on the default branch and the rollup snapshot reflects the post-merge head SHA's checks (typically all green by definition — the merge wouldn't have landed otherwise). The categorization above still applies; expect `checks: green` in the normal case.
 
 3. Return one line in the mode-specific format the dispatching prompt specifies.
 
