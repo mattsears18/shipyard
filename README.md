@@ -166,6 +166,20 @@ Shipyard treats several label families as load-bearing — origin labels (`user-
 
 Every `/do-work` session writes per-session token-usage data to `~/.shipyard/sessions/<session-id>.json` and posts cost-tracking comments on the issues and PRs it touches, so you can see at a glance how much a given backlog burndown cost. End-of-session, each run flushes a rolled-up record to the persistent ledger at `~/.shipyard/cost-history.jsonl`; query historical spend with `/shipyard:cost report` (filterable by repo, mode, model, or issue — see [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl)). Useful for tuning `--concurrency`, deciding which audits are worth running on a cron, and spotting agents that are spending too many tokens for the work they ship.
 
+### CI-minute discipline (`ci.*` config block — issue [#323](https://github.com/mattsears18/shipyard/issues/323))
+
+`/do-work` can rack up GitHub Actions minutes on repos with expensive CI suites (E2E shards, Lighthouse, accessibility audits) when it speculatively retriggers full CI suites — failing-PR re-dispatches against stale failures, drain-phase fix-rebase force-pushes on every DIRTY PR, etc. The `ci.*` block in `shipyard.config.json` provides five operator-tunable knobs that cap the spend; all default to pre-#323 behavior so adopting them is opt-in.
+
+| Key | Default | Effect when flipped |
+|---|---|---|
+| `ci.skip_drain_rebase` | `false` | Drain phase skips ALL fix-rebase dispatch. DIRTY PRs surface as "needs manual rebase" in the summary instead of consuming one full CI suite per force-push. |
+| `ci.max_drain_rebases` | `null` | Soft cap on drain-phase fix-rebase dispatches per session. Dispatches the top-N (lowest PR number first) and surfaces the rest. |
+| `ci.verify_check_failing_on_head_before_dispatch` | `false` | Before fix-checks dispatch, verify the failing check's run-SHA matches the PR's current `headRefOid`. Drop the dispatch if stale (failure already pushed past). |
+| `ci.require_in_progress_check_to_settle` | `false` | If a `failed_prs` candidate has any check still IN_PROGRESS on the current head, defer dispatch until the run settles. Prevents the double-push case. |
+| `ci.skip_speculative_rerun` | `true` | Codifies the absence of `gh run rerun` calls. Default-true (the orchestrator doesn't issue reruns anywhere in the current spec); flipping it allows a future change to enable speculative reruns. |
+
+End-of-session summary surfaces a `CI cost (#323):` block whenever any `ci.*` key is non-default OR any counter is non-zero, with a per-key breakdown and an `Estimated CI suites avoided this session: N` total. Detailed rationale and a worked example live in [`do-work-RATIONALE.md → CI-minute discipline`](./plugins/shipyard/commands/do-work-RATIONALE.md#ci-minute-discipline-issue-323).
+
 ## What's been hardened
 
 A non-exhaustive list of safety properties the orchestrator and workers carry today. Each bullet links to the PR or issue where the property landed:

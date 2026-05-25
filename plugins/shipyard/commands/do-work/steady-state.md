@@ -389,7 +389,7 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 
 For **fix-rebase work** (`rebased` / `noop` / `blocked`) — dispatched only by the [end-of-session drain](./drain.md#end-of-session-drain):
 
-- **rebased #<M>** — the agent force-pushed a rebased branch onto current main. PR is no longer DIRTY; CI will re-run on the new head and auto-merge will fire when green. Record. **Increment `rebase_success_counts[<M>]` by 1** (initialize to 0 if absent) — this is the per-PR rate-limit counter that gates merge-train-race recovery per [drain.md's per-poll actions](./drain.md#per-poll-actions). Do NOT add `<M>` to `rebase_blocked_prs` — a successful rebase is a winnable race, not a stuck state. The next drain poll snapshot will reflect the transition out of DIRTY naturally — if a sibling merge re-introduces DIRTY before the rebased branch's CI lands, the drain's `D_dirty` check will re-enter the PR for another fix-rebase dispatch (subject to the 3-cap). (PR is already in `session_prs` from whenever it was first opened — no re-add needed.)
+- **rebased #<M>** — the agent force-pushed a rebased branch onto current main. PR is no longer DIRTY; CI will re-run on the new head and auto-merge will fire when green. Record. **Increment `rebase_success_counts[<M>]` by 1** (initialize to 0 if absent) — this is the per-PR rate-limit counter that gates merge-train-race recovery per [drain.md's per-poll actions](./drain.md#per-poll-actions). Do NOT add `<M>` to `rebase_blocked_prs` — a successful rebase is a winnable race, not a stuck state. The next drain poll snapshot will reflect the transition out of DIRTY naturally — if a sibling merge re-introduces DIRTY before the rebased branch's CI lands, the drain's `D_dirty` check will re-enter the PR for another fix-rebase dispatch (subject to the 3-cap). (PR is already in `session_prs` from whenever it was first opened — no re-add needed.) **CI-minute bookkeeping ([#323](https://github.com/mattsears18/shipyard/issues/323)):** if `ci.max_drain_rebases` is non-null, increment `ci_session_counters.drain_rebases_dispatched` by 1 here — the cap is enforced against total dispatches, not just successful returns, but the increment lives on the dispatch path (drain.md per-poll action 2) AND mirrors here so the counter survives an out-of-order reconcile.
 - **noop: not dirty (<reason>)** — by the time the agent started, the PR was no longer in DIRTY state (auto-merge already landed it, mergeStateStatus settled to CLEAN, or new check failures appeared). Record and continue. If the reason hints at new failures (the agent saw `FAILURE` in the rollup and bailed because rebase is the wrong tool), the drain's normal per-poll red-PR scan will catch it on the next tick and route it through fix-checks instead — no extra action needed.
 - **blocked rebase #<M>: <reason>** — non-trivial conflict, head branch moved during the rebase, or some deterministic failure. **Add `<M>` to `rebase_blocked_prs`** (per [drain.md's per-poll actions](./drain.md#per-poll-actions) — the deterministic-failure gate that prevents re-dispatch within the session). Add a one-line PR comment: `Drain-phase auto-rebase blocked: <reason>. Needs manual rebase.` Do NOT add `blocked:ci` — the PR isn't stuck on checks, it's stuck on stale base; a human can resolve the rebase and the next session will pick it up if it's still DIRTY. Surface in the end-of-session summary as a still-DIRTY PR.
 - **errored** — record and continue.
@@ -715,7 +715,75 @@ When filling a slot, walk this decision tree:
    >
    > Return values: `shipped pr-batch-fix via PR #<M>`, `noop: pileup already cleared`, or `blocked pr-batch-fix: no common root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)`.
 
-2. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim). Dispatch a fix-checks-only worker (`subagent_type: "shipyard:fix-checks-worker"` — Haiku-pinned per the table above).
+2. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim).
+
+   **CI-minute pre-dispatch checks (issue [#323](https://github.com/mattsears18/shipyard/issues/323) — gated on `ci.*` config keys).** Before composing the fix-checks-only prompt, run the two cost-discipline checks below. Both default to off (`false`) so pre-#323 behavior is preserved; flip them in `shipyard.config.json`'s `ci.*` block to engage. On repos with expensive E2E shards / Lighthouse, the savings are typically 1 full CI suite per skipped dispatch.
+
+   **2a. Stale-failure check (`ci.verify_check_failing_on_head_before_dispatch`).** When the config key is `true`, fetch the failing check's run-SHA and compare against the PR's current `headRefOid`:
+
+   ```bash
+   verify_stale=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+     ci.verify_check_failing_on_head_before_dispatch 2>/dev/null || echo "false")
+   if [ "$verify_stale" = "true" ]; then
+     # Fetch headRefOid + the failing check's run-SHA from the rollup. The
+     # statusCheckRollup nodes expose detailsUrl with the run-id embedded;
+     # we extract it client-side rather than a second gh round-trip.
+     rollup=$(gh pr view <M> --repo <owner/repo> \
+       --json headRefOid,statusCheckRollup \
+       --jq '{head: .headRefOid, failing: [.statusCheckRollup[] | select(.conclusion=="FAILURE" or .conclusion=="ERROR" or .conclusion=="TIMED_OUT" or .conclusion=="CANCELLED" or .conclusion=="ACTION_REQUIRED") | {name, detailsUrl}]}')
+     head_sha=$(echo "$rollup" | jq -r .head)
+     # Probe each failing check's run via detailsUrl → run id → run's head_sha.
+     # If ANY failing check's run head_sha != PR head_sha, the failure has been
+     # superseded by a later push — drop the entry without dispatch.
+     stale=true
+     for url in $(echo "$rollup" | jq -r '.failing[].detailsUrl // empty'); do
+       run_id=$(echo "$url" | grep -oE '/runs/[0-9]+' | grep -oE '[0-9]+' | head -1)
+       [ -z "$run_id" ] && { stale=false; break; }
+       run_sha=$(gh api "repos/<owner/repo>/actions/runs/$run_id" \
+         --jq '.head_sha' 2>/dev/null)
+       if [ "$run_sha" = "$head_sha" ]; then
+         stale=false   # at least one failing run IS on the current head — real failure
+         break
+       fi
+     done
+     if [ "$stale" = "true" ]; then
+       echo "[failed-prs] PR #<M> skipped: stale failure on sha <run_sha>... (head=<head_sha>); will re-evaluate on next refresh. (#323)"
+       ci_session_counters.dispatches_skipped_stale_failure=$((ci_session_counters.dispatches_skipped_stale_failure + 1))
+       # Do NOT re-add to failed_prs — the next step-D refresh's failed-PR scan
+       # will re-evaluate from scratch. If the head moved and a NEW failure
+       # appears on the new SHA, the scan will pick it up; if the head moved
+       # and the failure resolved, nothing to dispatch.
+       continue   # to the next slot-fill decision (back to the top of the decision tree)
+     fi
+   fi
+   ```
+
+   **2b. In-progress-settle check (`ci.require_in_progress_check_to_settle`).** When the config key is `true`, defer the dispatch when any check is still running on the current SHA:
+
+   ```bash
+   require_settle=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+     ci.require_in_progress_check_to_settle 2>/dev/null || echo "false")
+   if [ "$require_settle" = "true" ]; then
+     in_progress=$(gh pr view <M> --repo <owner/repo> \
+       --json statusCheckRollup \
+       --jq '[.statusCheckRollup[] | select(.status=="IN_PROGRESS" or .status=="QUEUED" or .status=="PENDING")] | length')
+     if [ "${in_progress:-0}" -gt 0 ]; then
+       echo "[failed-prs] PR #<M> deferred: <in_progress> check(s) still IN_PROGRESS on current head; will re-evaluate on next refresh. (#323)"
+       ci_session_counters.dispatches_deferred_in_progress=$((ci_session_counters.dispatches_deferred_in_progress + 1))
+       # Push back onto failed_prs (front, not back) so the next D refresh
+       # cycle re-evaluates this entry first — if the in-progress checks
+       # settled to GREEN, the refresh's per-PR rollup walk drops it from
+       # failed_prs automatically; if they settled to FAILURE, the rollup
+       # walk re-keeps it and step C will retry with the post-settle state.
+       failed_prs="<M> ${failed_prs}"
+       continue   # to the next slot-fill decision
+     fi
+   fi
+   ```
+
+   **2c. Speculative-rerun discipline (`ci.skip_speculative_rerun`).** Defaults to `true`. The orchestrator never invokes `gh run rerun` from anywhere in this spec — flipping the key to `false` does NOT enable speculative reruns (there's no code path that issues them). The key exists to codify the absence: any future change that wants to add `gh run rerun` calls MUST gate them on `ci.skip_speculative_rerun == false` AND document the rerun semantics in this file. A reviewer reading the `ci.*` block immediately knows the orchestrator does not speculatively re-trigger checks.
+
+   After 2a and 2b clear (or the keys are at their defaults), dispatch a fix-checks-only worker (`subagent_type: "shipyard:fix-checks-worker"` — Haiku-pinned per the table above).
 
    Prompt template:
 

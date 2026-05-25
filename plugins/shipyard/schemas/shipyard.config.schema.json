@@ -154,6 +154,40 @@
         },
         "_comment": { "type": "string" }
       }
+    },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "CI-minute discipline knobs (issue #323). Every default preserves pre-#323 behavior — all five keys must be set non-default to engage the cost-saving paths. The end-of-session summary surfaces a `CI cost:` block whenever any key is non-default so the operator sees what got skipped.",
+      "properties": {
+        "skip_drain_rebase": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the end-of-session drain phase skips ALL fix-rebase dispatch. DIRTY PRs surface in the end-of-session summary as 'needs manual rebase' instead of consuming one full CI suite per force-push. Right default for cost-conscious operators on repos with expensive E2E / Lighthouse suites. Mutually compatible with `max_drain_rebases` — when both are set, `skip_drain_rebase: true` wins (no rebases at all)."
+        },
+        "max_drain_rebases": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "Soft cap on drain-phase fix-rebase dispatches per session. When null (default), no cap — every DIRTY PR gets a rebase. When set, dispatch fix-rebase on the top-N DIRTY PRs (lowest PR number first, matching drain.md's deterministic ordering) and surface the rest in the summary. Compromise between full-sweep and `skip_drain_rebase: true`."
+        },
+        "verify_check_failing_on_head_before_dispatch": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, before dispatching `fix-checks-only` against a PR in `failed_prs`, the orchestrator's step C pops the entry and verifies the failing check's run-SHA matches the PR's current `headRefOid`. If the failing run is stale (the head has advanced past it — a fresh push superseded the failure already), drop the entry without dispatch and log the skip. Closes the false-failure-re-dispatch path that triggers a redundant full CI suite. Defaults to false (preserves pre-#323 behavior) — flip to true on repos with expensive CI."
+        },
+        "skip_speculative_rerun": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, the orchestrator never invokes `gh run rerun` speculatively to clear stale-failure rollups. Defaults to true because the spec doesn't formally cover orchestrator-issued reruns today; this key codifies the absence so a future change that wants to add speculative reruns has to flip it explicitly. A typical push event re-triggers checks naturally via `pull_request` / `push`; explicit rerun adds runner-minutes without changing the outcome."
+        },
+        "require_in_progress_check_to_settle": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, if a `failed_prs` candidate has any check with status IN_PROGRESS / PENDING / QUEUED on the latest SHA, defer the dispatch until the run settles (the next step-D refresh re-evaluates). Prevents the double-push case where the orchestrator dispatches fix-checks against an in-progress run, the worker pushes a fix, and now TWO full CI suites are running on overlapping SHAs. Defaults to false (preserves pre-#323 behavior). Independent of `verify_check_failing_on_head_before_dispatch` — they target different races (this one: in-progress checks; that one: stale failed checks)."
+        },
+        "_comment": { "type": "string" }
+      }
     }
   },
   "required": ["version"],

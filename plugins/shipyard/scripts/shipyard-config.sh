@@ -161,6 +161,13 @@ DEFAULTS_JQ='{
   "main_ci": {
     "aggregation_mode": "branch-protection",
     "required_workflows": []
+  },
+  "ci": {
+    "skip_drain_rebase": false,
+    "max_drain_rebases": null,
+    "verify_check_failing_on_head_before_dispatch": false,
+    "skip_speculative_rerun": true,
+    "require_in_progress_check_to_settle": false
   }
 }'
 
@@ -322,10 +329,24 @@ def check_type($val; $expected; $path):
     elif ($val | type) == $expected then empty
     else ($path + ": expected " + $expected + ", got " + ($val | type)) end ;
 
+# Multi-type support (issue #323): JSON Schema allows `"type": ["integer", "null"]`
+# to declare a nullable value. The single-string check above doesn't handle
+# arrays — this wrapper accepts either form and returns empty when any of the
+# allowed types match.
+def check_type_multi($val; $expected; $path):
+    if ($expected | type) == "array"
+      then
+        # Try each allowed type; collect errors; if ANY succeeded (errors
+        # list is shorter than expected list), the value is valid.
+        ([ $expected[] | . as $t | [ check_type($val; $t; $path) ] ]) as $per_type
+        | if ($per_type | map(length == 0) | any) then empty
+          else ($path + ": expected one of " + ($expected | tostring) + ", got " + ($val | type)) end
+      else check_type($val; $expected; $path) end ;
+
 def walk($schema_node; $data_node; $path):
     (
       if $schema_node.type and $data_node != null
-        then check_type($data_node; $schema_node.type; $path)
+        then check_type_multi($data_node; $schema_node.type; $path)
         else empty end
     ),
     (

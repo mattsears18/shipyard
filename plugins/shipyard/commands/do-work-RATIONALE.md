@@ -378,6 +378,73 @@ The session that surfaced this bug — `dowork-20260523T173249Z-53595` on `matts
 
 **Hard ceiling: 120 min.** As a safety net against degenerate cases (a 90-minute test suite, a runaway CI loop), drain forcibly exits at the 120-min mark even if forward progress is still observable. The 120-min number is deliberately generous — for normal sessions (10–20 PRs draining over 30–60 min wall-clock) the no-progress rule fires first and the ceiling never triggers.
 
+## CI-minute discipline (issue #323)
+
+The pre-#323 dispatch loop had three places where it would speculatively retrigger full CI suites on the target repo. On hobby-grade repos with a 30-second Lint workflow, the cost is invisible. On production repos with 3× E2E shards + Lighthouse + accessibility audits at ~10 min/shard, those speculative re-triggers add up to tens of GitHub Actions minutes per session — invoiced to the operator at the end of the month with no in-session signal that the spend was avoidable.
+
+The repro that motivated the issue (`mattsears18/lightwork` session `dowork-20260524T221038Z-24650`, 2026-05-24): 13 failing PRs in the backlog (5 BLOCKED on real CI checks, 8 DIRTY merge-conflicts). First fix-checks dispatch returned a false-`green` after burning a full CI suite on a fix commit whose Unit Tests still failed — trust-but-verify caught the false claim, but the wasted runner-minutes were already gone. Subsequent drain phase would have dispatched 8 force-pushes × 1 full CI suite each (~240 runner-minutes) against the DIRTY PRs, most of which would land at next session anyway.
+
+### Why a config block instead of always-on
+
+The three speculative paths are real failure modes that the orchestrator is correctly trying to mitigate — a stale failing check on a PR whose head has advanced may not actually be failing anymore (so fix-checks would be a no-op), and a drain-phase fix-rebase on a DIRTY PR is the difference between "PR merges this session" and "PR sits for the operator to manually rebase next session." Making the mitigations always-on would convert "speculative retrigger" into "PRs surface as still-DIRTY at session end" — which is a regression for repos where CI is cheap and merge-throughput matters more.
+
+The `ci.*` block is the operator-tunable surface: defaults preserve pre-#323 behavior, opt-in flags engage the cost-saving paths. The keys are deliberately fine-grained (five separate keys, not one big `cost_mode: aggressive`) so an operator can mix-and-match — e.g., `skip_drain_rebase: true` (the most expensive single failure mode) without engaging the stale-failure check (which adds a `gh api` round-trip per failed_prs entry).
+
+### The five `ci.*` keys and what they each prevent
+
+| Key | Default | What it prevents (worst case) |
+|---|---|---|
+| `skip_drain_rebase` | `false` | All drain-phase fix-rebase dispatches. `N` DIRTY PRs → 0 force-pushes, 0 CI suite re-triggers. PRs surface as "needs manual rebase" in the summary. |
+| `max_drain_rebases` | `null` | Top-`N` drain-phase fix-rebase dispatches; rest surfaced. Compromise between `skip_drain_rebase` (zero) and unlimited (all). |
+| `verify_check_failing_on_head_before_dispatch` | `false` | Re-dispatch against PRs whose failing check's run-SHA doesn't match `headRefOid` — the failure has already been pushed past, the rollup just hasn't refreshed yet. |
+| `require_in_progress_check_to_settle` | `false` | Double-push race: dispatch fires while a check is still IN_PROGRESS on the current SHA, worker pushes a fix, now TWO overlapping CI suites are running on the same PR. |
+| `skip_speculative_rerun` | `true` | Codifies the absence of `gh run rerun` calls. Default-true (the orchestrator doesn't issue reruns anywhere in the current spec); the key exists so any future change that wants to add them must flip the default and document the rerun semantics. |
+
+The four state-changing keys (every key except `skip_speculative_rerun`) increment one of the four `ci_session_counters.*` counters when they fire; the end-of-session `CI cost:` block surfaces both the effective `ci.*` config and the counters so the operator can attribute saved CI suites to the gate that fired.
+
+### Worked example — the lightwork session that motivated #323
+
+Hypothetical session: 13 failing PRs (5 real failures, 8 DIRTY), `--concurrency 1`, all five `ci.*` keys at their defaults.
+
+**Pre-#323 behavior (current default):**
+
+- Step C dispatches fix-checks-only against 5 BLOCKED PRs. One returns false-`green` (trust-but-verify catches it, re-queues). Total: 6 fix-checks dispatches → 6 CI suite re-triggers.
+- Drain phase dispatches fix-rebase against 8 DIRTY PRs → 8 force-pushes → 8 full CI suite re-triggers.
+- Net: 14 full CI suite re-triggers.
+
+**Same session with `ci.skip_drain_rebase: true` + `ci.verify_check_failing_on_head_before_dispatch: true`:**
+
+- Step C pre-flight gate (2a): of the 5 BLOCKED PRs, suppose 2 had their failure superseded by a later push (the rollup just hadn't refreshed). The gate drops both — counter `dispatches_skipped_stale_failure = 2`. 3 fix-checks dispatches fire → 3 CI suite re-triggers. The false-`green` case still happens (1 re-queue, 1 extra dispatch) → 4 total.
+- Drain phase per-poll action 2 (2a): `ci.skip_drain_rebase: true` → all 8 DIRTY PRs surface in the summary as "needs manual rebase" — counter `drain_rebases_skipped = 8`. 0 force-pushes.
+- Net: 4 full CI suite re-triggers (saved 10).
+
+**End-of-session `CI cost:` block (the surface the operator reads):**
+
+```
+CI cost (#323):
+  ci.skip_drain_rebase: true · ci.max_drain_rebases: null · ci.verify_check_failing_on_head_before_dispatch: true · ci.require_in_progress_check_to_settle: false · ci.skip_speculative_rerun: true
+  Dispatches skipped (stale failure on superseded SHA): 2 — each saved roughly one full CI suite on PRs whose failure had already been pushed past
+  Dispatches deferred (in-progress check on current head): 0 — each prevented one double-push (two overlapping CI suites)
+  Drain-phase rebases skipped (ci.skip_drain_rebase / ci.max_drain_rebases cap): 8 — each saved one full CI suite on a force-push that would have re-triggered the suite
+  Drain-phase rebases dispatched: 0 (cap: "none")
+  Estimated CI suites avoided this session: 10
+```
+
+At a representative ~10 runner-minutes per suite (Lint + Unit + 3× E2E shards on a real repo), that's ~100 runner-minutes saved on a single session. Cost asymmetry is the point: a one-line config opt-in vs. the runner-minute cost of every DIRTY PR + every superseded-failure dispatch the operator would otherwise burn.
+
+### Why the `Estimated CI suites avoided` number is a lower bound
+
+Each "avoided suite" maps to **one CI workflow run that would have been triggered but wasn't**. A repo whose `pull_request` event triggers one workflow (Lint + Unit + E2E in one workflow definition) saves one workflow-run per counter increment; a repo whose `pull_request` event fans out to 5 separate workflow definitions saves five. The counter is workflow-agnostic — the orchestrator doesn't enumerate the repo's workflow definitions to compute a multiplier — so the summary number under-counts on multi-workflow fanout. The operator who wants a per-session minute estimate should multiply the counter by their typical per-push workflow count and per-workflow minute cost. This is intentional: the summary's job is to make the saved-suite count visible at all, not to be a billing-accurate ledger (that's `~/.shipyard/cost-history.jsonl` plus a future GitHub Actions billing integration).
+
+### Why both `skip_drain_rebase` and `max_drain_rebases` exist instead of just one
+
+The operator has two distinct cost-vs-throughput preferences:
+
+- "Never burn drain CI on rebases — DIRTY PRs are next session's problem." → `skip_drain_rebase: true`.
+- "Burn drain CI on the top-3 most important DIRTY PRs (ranked lowest PR number first per the drain spec), surface the rest." → `max_drain_rebases: 3`.
+
+Collapsing both into `max_drain_rebases: 0` would force the "never rebase" operator to remember an off-by-one (`0` means "no rebases" vs. `null` meaning "unlimited") that's easy to misread. The boolean `skip_drain_rebase` is the clearer surface for the all-or-nothing case; the integer `max_drain_rebases` is the surface for the threshold case. They compose naturally: when both are set, `skip_drain_rebase: true` wins (no rebases at all) — documented at the schema level.
+
 ## End-of-session cleanup — why the orchestrator worktree is reaped last
 
 The orchestrator worktree itself is still around because the orchestrator was running inside it. After the user-facing summary has printed — and only then; you can't remove the worktree you're still cwd'd into — the cwd jumps back to the user's primary checkout (read-only at this point — we're not writing, we're just being somewhere `git worktree remove` can succeed from), then removes the orchestrator worktree.
