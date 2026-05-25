@@ -41,5 +41,11 @@
   },
   "models": {
     "issue_work": "claude-sonnet-4-6"
+  },
+  "version_coordination": {
+    "enabled": true,
+    "manifest_path": "plugins/shipyard/.claude-plugin/plugin.json",
+    "manifest_version_jq": ".version",
+    "changelog_path": "CHANGELOG.md"
   }
 }

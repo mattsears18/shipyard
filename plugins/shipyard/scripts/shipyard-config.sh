@@ -162,6 +162,12 @@ DEFAULTS_JQ='{
     "aggregation_mode": "branch-protection",
     "required_workflows": []
   },
+  "version_coordination": {
+    "enabled": false,
+    "manifest_path": "",
+    "manifest_version_jq": ".version",
+    "changelog_path": ""
+  },
   "ci": {
     "skip_drain_rebase": false,
     "max_drain_rebases": null,

@@ -975,6 +975,66 @@ When filling a slot, walk this decision tree:
 
    This is the third defense-in-depth layer (after intake-side and dispatch-time filters). See [RATIONALE → Author-trust defense in depth](../do-work-RATIONALE.md#author-trust-computation--defense-in-depth).
 
+   **Next-available-version computation (per-dispatch, opt-in via `version_coordination.*`).** Closes [#339](https://github.com/mattsears18/shipyard/issues/339). On repos where every PR cuts a release by bumping a shared manifest row (e.g. `plugins/shipyard/.claude-plugin/plugin.json` `.version` for the shipyard plugin itself), sequential dispatch alone is not enough to prevent version-row collisions: at C=1 the second worker is dispatched against `origin/main` while the first PR is still in flight (auto-merge armed, checks pending — typical 2–5 min window), and both naïvely read the same pre-merge version. The drain-phase fix-rebase then pays the disambiguation tax on every collision. The orchestrator can pre-empt this by computing the next-available version BEFORE composing the prompt and injecting it as an authoritative slot the worker MUST honor.
+
+   Gated on three config keys from the merged effective config:
+
+   ```bash
+   vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
+   vc_manifest=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
+   vc_version_jq=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")
+   vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
+   ```
+
+   When `vc_enabled == "true"` AND `vc_manifest` is non-empty, walk `session_prs` to find the highest manifest version any in-flight PR has already claimed:
+
+   ```bash
+   # Read the current main version from origin's HEAD as the floor.
+   default_branch=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+   main_version=$(gh api "repos/<owner/repo>/contents/${vc_manifest}?ref=${default_branch}" \
+     --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | jq -r "$vc_version_jq" 2>/dev/null || echo "")
+
+   # Walk session_prs — for each open PR that touched manifest_path, read the
+   # version row from the PR's head tree and keep the max. The --jq filter
+   # selects only PRs whose files include the manifest_path so we don't pay
+   # a per-PR content-fetch on PRs that don't bump the manifest.
+   max_inflight_version="$main_version"
+   for pr in "${session_prs[@]}"; do
+     pr_state=$(gh pr view "$pr" --repo <owner/repo> --json state -q .state 2>/dev/null)
+     [ "$pr_state" != "OPEN" ] && continue
+     pr_touches_manifest=$(gh pr view "$pr" --repo <owner/repo> --json files \
+       --jq "[.files[] | select(.path == \"${vc_manifest}\")] | length")
+     [ "${pr_touches_manifest:-0}" -eq 0 ] && continue
+     pr_head=$(gh pr view "$pr" --repo <owner/repo> --json headRefName -q .headRefName)
+     pr_version=$(gh api "repos/<owner/repo>/contents/${vc_manifest}?ref=${pr_head}" \
+       --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | jq -r "$vc_version_jq" 2>/dev/null || echo "")
+     [ -z "$pr_version" ] && continue
+     # `sort -V` (version-sort) handles 1.5.9 vs 1.5.10 correctly; plain
+     # lexicographic max would wrongly pick 1.5.9 over 1.5.10.
+     max_inflight_version=$(printf '%s\n%s\n' "$max_inflight_version" "$pr_version" | sort -V | tail -1)
+   done
+
+   # next_available_version = max_inflight_version + patch bump.
+   if [ -n "$max_inflight_version" ]; then
+     # Parse semver X.Y.Z; increment Z by 1.
+     IFS='.' read -r MAJ MIN PAT <<< "$max_inflight_version"
+     next_available_version="${MAJ}.${MIN}.$((PAT + 1))"
+   else
+     # No floor available (manifest read failed, no in-flight bumps) — omit
+     # the field rather than guess. Worker falls back to its normal bump-
+     # from-main path.
+     next_available_version=""
+   fi
+   ```
+
+   When `next_available_version` is non-empty, append a Context paragraph to the dispatch prompt between the `mode:` line and the Return values line:
+
+   > **Next-available version (orchestrator-supplied):** `<vc_manifest>`'s `<vc_version_jq>` row is coordination-managed across this session's in-flight PRs. The next available version is **`<next_available_version>`**. Use this exact value when bumping `<vc_manifest>`. <When `vc_changelog` is non-empty:> Add a fresh `### <next_available_version> — <YYYY-MM-DD>` entry above the highest existing entry in `<vc_changelog>` (do NOT collide on the same row). Earlier in-flight PRs already claimed lower version slots; honoring this value prevents the drain-phase rebase tax on a manifest-row text conflict.
+
+   When `next_available_version` is empty (coordination disabled, manifest read failed, no in-flight bumps to compute against), the paragraph is omitted entirely and the worker uses its normal "bump-from-origin/main HEAD" path. Workers never need to special-case the field's absence — the issue-work spec's normal path is the no-coordination default; the injected paragraph is the override.
+
+   **Why this is a per-dispatch computation, not a one-shot session-startup pre-fetch.** The set of in-flight PRs evolves throughout the session — every successful `shipped` reconcile adds a new entry to `session_prs`, and a dispatch that fires 2 minutes after the previous return must read the updated set. Caching the result across dispatches would re-introduce the exact failure mode the computation exists to prevent (two consecutive dispatches both seeing the same pre-bump floor). The cost is bounded: each PR check is 2 small `gh api` calls (file content + PR view), and `session_prs` is typically small (≤10 in a long session). On large sessions the [`gh-cached.sh --ttl 60`](./setup.md#09-gh-cachedsh-wrapper-opt-in-per-call-site) wrapper around the file-content fetches keeps the cost flat.
+
    Use `subagent_type: "shipyard:issue-worker"` (default model — Opus). Prompt template:
 
    > **`mode: issue-work`** — Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating in step 6 of the per-mode spec. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/issue-work.md`.** Branch: `do-work/issue-<N>`. Open a PR that closes the issue.

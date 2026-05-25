@@ -155,6 +155,34 @@
         "_comment": { "type": "string" }
       }
     },
+    "version_coordination": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Coordinate the next-available manifest version across in-flight `session_prs` so multiple workers don't all bump to the same row (issue #339). When `enabled: true`, the orchestrator's step C issue-work dispatch scans `session_prs` for PRs that already bumped `manifest_path` and injects `next_available_version` into the worker's dispatch prompt — the worker MUST honor it rather than computing one from `origin/main` HEAD. Defaults preserve pre-#339 behavior (no coordination); flip `enabled: true` on repos where every PR bumps a shared manifest row (the shipyard plugin itself is the canonical case).",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, engage the orchestrator-side next-available-version computation. When false (default), the dispatch prompt omits the `next_available_version` field and workers bump from `origin/main` HEAD as before."
+        },
+        "manifest_path": {
+          "type": "string",
+          "default": "",
+          "description": "Path (relative to repo root) of the manifest file whose version row is coordination-managed. Example for the shipyard plugin: `plugins/shipyard/.claude-plugin/plugin.json`. Empty string disables coordination even when `enabled: true`."
+        },
+        "manifest_version_jq": {
+          "type": "string",
+          "default": ".version",
+          "description": "jq expression that extracts the version string from `manifest_path`. Defaults to `.version` (covers `package.json` / `plugin.json` / most JSON manifests)."
+        },
+        "changelog_path": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path (relative to repo root) of the CHANGELOG file whose `### <version>` heading row is coordination-managed alongside the manifest. Surfaced in the dispatch prompt so the worker knows to add a fresh entry above the highest in-flight version. Empty string means the worker only honors `next_available_version` for the manifest and is free to compose changelog prose without coordination."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "ci": {
       "type": "object",
       "additionalProperties": false,

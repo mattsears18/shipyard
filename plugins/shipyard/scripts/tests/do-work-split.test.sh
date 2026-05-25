@@ -631,6 +631,97 @@ assert_not_contains "$steady_state_path" \
   "the same filter (\`--state open\`, \`-linked:pr\`, the standard label exclusions" \
   "steady-state.md step C lightweight re-check no longer describes the pre-#332 filter shape inline"
 
+# (20) Orchestrator-side next-available-version computation for in-flight
+#      session_prs (issue #339).
+#
+# On repos where every PR cuts a release by bumping a shared manifest row
+# (e.g. plugins/shipyard/.claude-plugin/plugin.json .version), sequential
+# dispatch at C=1 is not enough to prevent version-row collisions: the
+# second worker is dispatched against origin/main while the first PR is
+# still in flight (auto-merge armed, checks pending — typical 2-5 min
+# window), both naïvely read the same pre-merge version, and the drain-
+# phase fix-rebase pays the disambiguation tax on every collision.
+#
+# The fix lands in three coordinated surfaces:
+#   - steady-state.md step C issue-work dispatch — computes
+#     next_available_version from session_prs before composing the prompt,
+#     gated on `version_coordination.enabled` config key
+#   - issue-work.md step 4 — worker MUST honor any next_available_version
+#     paragraph in its dispatch prompt rather than computing from
+#     origin/main HEAD (defense-in-depth doc change so the contract is
+#     load-bearing on the worker side too)
+#   - shipyard.config.schema.json + scripts/shipyard-config.sh defaults
+#     — new `version_coordination` config block with four keys (enabled,
+#     manifest_path, manifest_version_jq, changelog_path)
+#
+# These assertions pin the post-#339 contract:
+issue_work_path339="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+schema_path339="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
+config_sh_path339="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
+
+assert_contains "$steady_state_path" \
+  'issues/339' \
+  "steady-state.md cites issue #339 as the source of the next-available-version rework"
+assert_contains "$steady_state_path" \
+  'Next-available-version computation' \
+  "steady-state.md step C documents the next-available-version computation (#339)"
+assert_contains "$steady_state_path" \
+  'version_coordination.enabled' \
+  "steady-state.md step C reads the version_coordination.enabled config key (#339)"
+assert_contains "$steady_state_path" \
+  'version_coordination.manifest_path' \
+  "steady-state.md step C reads the version_coordination.manifest_path config key (#339)"
+assert_contains "$steady_state_path" \
+  'max_inflight_version' \
+  "steady-state.md step C walks session_prs to compute max in-flight version (#339)"
+assert_contains "$steady_state_path" \
+  'next_available_version' \
+  "steady-state.md step C produces next_available_version variable for the prompt (#339)"
+# The injected dispatch-prompt paragraph must be present so a reader can
+# see the exact shape the orchestrator emits — and so the worker spec's
+# "If you see this paragraph" rule has a referent.
+assert_contains "$steady_state_path" \
+  'Next-available version (orchestrator-supplied)' \
+  "steady-state.md step C ships the dispatch-prompt paragraph for next-available-version (#339)"
+
+assert_contains "$issue_work_path339" \
+  'issues/339' \
+  "issue-work.md cites issue #339 as the source of the coordination contract"
+assert_contains "$issue_work_path339" \
+  'Coordination-managed paths' \
+  "issue-work.md step 4 documents coordination-managed paths (#339)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle, not a command substitution.
+assert_contains "$issue_work_path339" \
+  'honor `next_available_version` when provided' \
+  "issue-work.md step 4 establishes the honor-the-orchestrator-value contract (#339)"
+assert_contains "$issue_work_path339" \
+  'Do NOT compute your own version by reading' \
+  "issue-work.md step 4 forbids the bump-from-origin/main path when the paragraph is present (#339)"
+
+# Schema must register the new config block — four keys.
+assert_contains "$schema_path339" \
+  '"version_coordination"' \
+  "shipyard.config.schema.json registers the version_coordination block (#339)"
+assert_contains "$schema_path339" \
+  '"manifest_path"' \
+  "schema's version_coordination block names manifest_path (#339)"
+assert_contains "$schema_path339" \
+  '"manifest_version_jq"' \
+  "schema's version_coordination block names manifest_version_jq (#339)"
+assert_contains "$schema_path339" \
+  '"changelog_path"' \
+  "schema's version_coordination block names changelog_path (#339)"
+
+# Defaults must include the new block so consumers reading via
+# shipyard-config.sh get... never trip a key-not-present error.
+assert_contains "$config_sh_path339" \
+  '"version_coordination"' \
+  "shipyard-config.sh defaults include the version_coordination block (#339)"
+assert_contains "$config_sh_path339" \
+  '"manifest_version_jq": ".version"' \
+  "shipyard-config.sh defaults set manifest_version_jq to .version (#339)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

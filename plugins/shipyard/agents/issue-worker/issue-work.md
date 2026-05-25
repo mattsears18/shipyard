@@ -101,6 +101,16 @@ Branch name comes from the orchestrator's dispatch prompt and must be exactly `d
 - **For Node-based target repos, bootstrap dependencies before running tests or pushing.** See `shipyard:worker-preamble` § "Dependency-bootstrap check for Node-based target repos". A missing `node_modules/` against a repo whose pre-push hook shells out to `node_modules/.bin/<tool>` can produce a silent-pass (the hook script treats the `ENOENT` as "no tests" instead of failing loudly), and your "local tests passed" claim becomes a no-op. Run the symlink-or-`npm ci` check before the first test invocation.
 - Run the test suite locally before pushing. Detect the test command from `package.json` `scripts.test`, `Makefile`, `pyproject.toml`, or repo conventions. If nothing exists, skip — CI will tell you.
 
+**Coordination-managed paths — honor `next_available_version` when provided ([#339](https://github.com/mattsears18/shipyard/issues/339)).** Some repos coordination-manage a manifest version row (`plugin.json` `.version`, `package.json` `.version`, etc.) and a CHANGELOG entry-row across every PR. When the orchestrator dispatches you against such a repo with one or more sibling PRs already in flight, it computes the next-available version up-front and injects it as a "Next-available version (orchestrator-supplied)" paragraph in your dispatch prompt (see [steady-state.md's Next-available-version computation](../../commands/do-work/steady-state.md#dispatch-rules-used-by-step-7-and-step-c)). The paragraph reads roughly:
+
+> **Next-available version (orchestrator-supplied):** `<manifest_path>`'s `<jq-expr>` row is coordination-managed across this session's in-flight PRs. The next available version is **`<X.Y.Z>`**. Use this exact value when bumping `<manifest_path>`. Add a fresh `### <X.Y.Z> — <YYYY-MM-DD>` entry above the highest existing entry in `<changelog_path>` (do NOT collide on the same row).
+
+**If you see this paragraph, treat the value as authoritative.** Do NOT compute your own version by reading `origin/main`'s manifest — `origin/main`'s value is the floor, not the next slot; the orchestrator has already accounted for in-flight PRs that have claimed every slot from `main + 1` through `next_available_version - 1`. Computing from `main` produces the exact collision the coordination paragraph exists to prevent: two workers both bumping to `main + 1`, the second producing a literal text conflict at merge time, and the drain-phase fix-rebase paying the disambiguation tax.
+
+When the paragraph is absent, you're on a repo without coordination (or no in-flight PR has touched the manifest yet) — compute the version normally by reading the manifest from `origin/<default-branch>` and applying a patch bump (semver: increment the rightmost component; minor for new features when the user has signaled feature scope; major only when explicitly requested).
+
+The same rule applies to the CHANGELOG entry row: when the paragraph names a `changelog_path`, add a fresh `### <next_available_version> — <YYYY-MM-DD>` heading **above** the highest existing entry — never collide on the version row of an in-flight sibling PR. When `changelog_path` is unnamed, format and placement follow repo convention.
+
 ### 5. Commit + push + PR
 
 ```bash
