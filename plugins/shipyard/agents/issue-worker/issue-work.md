@@ -111,6 +111,42 @@ When the paragraph is absent, you're on a repo without coordination (or no in-fl
 
 The same rule applies to the CHANGELOG entry row: when the paragraph names a `changelog_path`, add a fresh `### <next_available_version> — <YYYY-MM-DD>` heading **above** the highest existing entry — never collide on the version row of an in-flight sibling PR. When `changelog_path` is unnamed, format and placement follow repo convention.
 
+### 4.5 Pre-PR-create diff sanity check
+
+Closes [#356](https://github.com/mattsears18/shipyard/issues/356) — the **phantom-merge** failure mode. A worker can reach the end of step 4 with `git status` clean (no working-tree edits, no staged changes) yet still proceed to step 5 and open a PR whose body claims substantial scope (new files, modified files, acceptance criteria checked). The PR merges, the body's `Closes #N` keyword closes the linked issue, and the backlog claims work shipped — but nothing landed. Repro: [`mattsears18/lightwork#1169`](https://github.com/mattsears18/lightwork/pull/1169) merged on 2026-05-25 with a 0-file diff against its parent, auto-closing [`mattsears18/lightwork#1160`](https://github.com/mattsears18/lightwork/issues/1160) which then sat as CLOSED for the rest of the day until a follow-up session noticed the missing code.
+
+**Before any `git add` / `git commit` / `git push` / `gh pr create` call**, verify the worktree has at least one changed file vs the base branch. The cheapest signal is `git diff --name-only` against the upstream branch (already fetched in step 3); when the count is 0, bail loudly rather than open an empty PR:
+
+```bash
+# Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch"
+# (variables don't survive across Bash tool calls).
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
+  exit 0
+fi
+
+# Phantom-merge guard — count changed files vs the base branch.
+# Compare against origin/<default-branch> (already fetched in step 3).
+DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+CHANGED_FILES=$(git diff --name-only "origin/${DEFAULT_BRANCH}"...HEAD | wc -l | tr -d ' ')
+if [ "$CHANGED_FILES" = "0" ]; then
+  # Also check for uncommitted-but-unstaged work (rare — but the worker
+  # might have edited files without staging them). If both committed AND
+  # working-tree diffs are empty, the implementation truly produced nothing.
+  WORKING_TREE_DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
+  if [ "$WORKING_TREE_DIRTY" = "0" ]; then
+    echo "blocked #<N> at pre-pr-create: implementation produced no changes — manual triage required"
+    exit 0
+  fi
+fi
+```
+
+**Why bail rather than retry.** If you've completed step 4 with no diff, one of three things happened: (a) the issue was already fixed by a prior PR and you didn't catch it during the verification-first read in step 2; (b) your implementation strategy was wrong and you noticed and reverted, leaving the worktree clean; (c) the issue is misclassified (docs-only, spec-clarification, can-be-closed-no-change). In all three cases the right action is to surface the empty state to the orchestrator with a `blocked:` return — the orchestrator's reconcile step will tag the issue `blocked:agent` and a human can route it. Opening an empty PR and letting the merge fire the `Closes #N` keyword corrupts the backlog signal and forces a re-open + investigation.
+
+**Scope: this check applies to issue-work mode only.** Do not propagate the guard to `fix-checks-only` / `fix-rebase` / `fix-main-ci` / `fix-failing-prs-batch`. Those modes can legitimately produce 0-file diffs — a fix-checks-only retry where the original CI failure resolved itself between dispatch and the agent's first read, a fix-rebase that's already up-to-date with main, etc. The phantom-merge failure mode is specific to issue-work because only issue-work writes `Closes #N` into the PR body; the other modes never auto-close an issue.
+
 ### 5. Commit + push + PR
 
 ```bash
@@ -167,6 +203,38 @@ When in doubt: PR for implementation decisions, issue for triage/scope decisions
 **Format.** One PR comment, one bullet per decision, named alternative or constraint plus the tradeoff in one sentence. Use `gh pr comment <pr-num> --repo <owner/repo> --body "..."`. For an issue-side comment on divergence use `gh issue comment <N> --repo <owner/repo> --body "..."`.
 
 If the comment-post errors (rate limit, permission), log an advisory and continue — don't block auto-merge on a single comment failure.
+
+### 5.7 Post-PR-create diff sanity check (defense in depth)
+
+A belt-and-suspenders complement to [§4.5](#45-pre-pr-create-diff-sanity-check). The pre-create guard fires in the worktree against the local diff; this post-create guard fires against GitHub's view of the PR, catching the edge case where the local check passed but the push-to-create produced an empty PR anyway (e.g., the local commits were already on `main` because someone fast-forward-merged a sibling branch between the worker's `fetch` and `push`).
+
+**Before calling `gh pr merge --auto` in step 6**, query the PR's `changedFiles` count and refuse to arm auto-merge if the value is 0:
+
+```bash
+# Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch".
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
+  exit 0
+fi
+
+# Phantom-merge guard, GitHub-side. The pre-create check (§4.5) is the
+# primary defense; this is the safety net for the race-window case.
+CHANGED_FILES=$(gh pr view <pr-num> --repo <owner/repo> --json changedFiles --jq '.changedFiles')
+if [ "$CHANGED_FILES" = "0" ]; then
+  echo "blocked #<N> at pre-auto-merge: PR has 0-file diff but body claims scope — manual triage required (PR: <url>)"
+  # Mark the PR for human review so the empty PR doesn't auto-merge if
+  # someone else (a re-dispatch, a different worker) tries to arm it.
+  gh pr edit <pr-num> --repo <owner/repo> --add-label needs-human-review || true
+  gh pr comment <pr-num> --repo <owner/repo> --body "Phantom-merge guard tripped: PR has 0-file diff. Worker bailed at pre-auto-merge per issue #356." || true
+  exit 0
+fi
+```
+
+When this check trips, the auto-merge call is skipped entirely — the PR sits OPEN with `needs-human-review` so a maintainer can audit it (close as no-op, or land manually if the empty diff was actually intentional). Do NOT proceed to step 6.
+
+This check runs unconditionally regardless of `originating_author_trust`. A trusted-author 0-file PR is exactly the failure mode #356 documents (the lightwork repro was a trusted maintainer's session); the trust signal gates auto-merge for *valid* PRs, not for empty ones.
 
 ### 6. Enable auto-merge (gated on `originating_author_trust`)
 
@@ -278,3 +346,4 @@ When blocked → return:
 - Don't `git add -A`. Stage specific paths so you don't accidentally commit local junk, secrets, or the dependency-bootstrap `node_modules` symlink (see `shipyard:worker-preamble` § "Pre-commit hygiene — escape symlinks"; the `refuse-escape-symlink-commit.sh` hook will block the commit if you do, but the right discipline is to never stage it in the first place).
 - Don't edit `.github/workflows/` or branch protection to make a check pass.
 - **Don't switch modes mid-dispatch.** If your PR opens and CI immediately goes red, return per this mode's contract (`shipped #<N> via PR #<M> (... checks: failing)`) — the orchestrator's reconcile + dispatch loop will spawn a fresh fix-checks-only worker against the PR. Switching modes inside one dispatch breaks the per-mode-file load model the entry router relies on.
+- **Don't open an empty PR.** The phantom-merge guard in [§4.5](#45-pre-pr-create-diff-sanity-check) bails when the local diff is empty; [§5.7](#57-post-pr-create-diff-sanity-check-defense-in-depth) catches the race-window edge case. If either fires, return `blocked:` rather than letting an empty PR's `Closes #N` keyword close the linked issue (see issue [#356](https://github.com/mattsears18/shipyard/issues/356) for the failure mode).
