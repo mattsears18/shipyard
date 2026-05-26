@@ -11,7 +11,7 @@ If you're a first-time contributor (human or a fresh Claude Code session), start
 1. Clone the repo:
    ```sh
    git clone https://github.com/mattsears18/shipyard.git
-   cd claude-plugins
+   cd shipyard
    ```
 2. Make sure you have `bash`, `gh` (authenticated via `gh auth login`), and [`shellcheck`](https://github.com/koalaman/shellcheck) installed. There are no other build-time dependencies — the plugin is a directory of markdown + bash scripts, no compile step.
 3. Run the test suite to confirm everything's green:

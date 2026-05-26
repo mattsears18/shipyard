@@ -7,7 +7,7 @@
 #   bash plugins/shipyard/scripts/tests/report-plugin-error.test.sh
 #
 # Each test runs the helper with a crafted JSON payload on stdin and asserts on
-# the dry-run output (CLAUDE_PLUGINS_AUTOREPORT_DRY=1). Dry-run emits a single
+# the dry-run output (SHIPYARD_AUTOREPORT_DRY=1). Dry-run emits a single
 # JSON object describing the would-be filing — no `gh` calls are ever made.
 
 set -u
@@ -73,7 +73,7 @@ assert_equals() {
 run_helper() {
   # Args: payload (JSON string). Reads dry-run output back.
   local payload="$1"
-  CLAUDE_PLUGINS_AUTOREPORT=1 CLAUDE_PLUGINS_AUTOREPORT_DRY=1 \
+  SHIPYARD_AUTOREPORT=1 SHIPYARD_AUTOREPORT_DRY=1 \
     bash "$helper" <<<"$payload" 2>/dev/null || true
 }
 
@@ -83,7 +83,7 @@ echo "== Opt-out gate"
 
 out=$(echo '{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:issue-worker"},"tool_response":{"is_error":true,"error":"boom"}}' \
   | bash "$helper" 2>/dev/null)
-assert_equals "$out" "" "no CLAUDE_PLUGINS_AUTOREPORT → silent exit"
+assert_equals "$out" "" "no SHIPYARD_AUTOREPORT → silent exit"
 
 # --------------------------------------------------------------------------
 echo "== Failure detection"

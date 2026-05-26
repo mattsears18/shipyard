@@ -4,7 +4,7 @@
 #
 # Invoked by hooks/hooks.json on PostToolUse(Task|Agent) and SubagentStop. Reads
 # the hook payload from stdin as JSON. Opt-in only — exits 0 if
-# CLAUDE_PLUGINS_AUTOREPORT is not set to "1".
+# SHIPYARD_AUTOREPORT is not set to "1".
 #
 # This script is the entire reporting pipeline. The hook is a one-line shim;
 # putting the logic here keeps it shell-script-testable (see
@@ -26,10 +26,10 @@
 #
 # Environment variables:
 #
-#   CLAUDE_PLUGINS_AUTOREPORT      — must be "1" to enable. Default: off.
-#   CLAUDE_PLUGINS_AUTOREPORT_REPO — target repo (owner/repo). Default:
+#   SHIPYARD_AUTOREPORT      — must be "1" to enable. Default: off.
+#   SHIPYARD_AUTOREPORT_REPO — target repo (owner/repo). Default:
 #                                    mattsears18/shipyard.
-#   CLAUDE_PLUGINS_AUTOREPORT_DRY  — when "1", print the would-be issue to
+#   SHIPYARD_AUTOREPORT_DRY  — when "1", print the would-be issue to
 #                                    stdout instead of calling gh. Used by the
 #                                    test suite and for local development.
 #
@@ -52,12 +52,12 @@ payload=$(cat)
 # --------------------------------------------------------------------------
 # Opt-in gate
 # --------------------------------------------------------------------------
-if [[ "${CLAUDE_PLUGINS_AUTOREPORT:-}" != "1" ]]; then
+if [[ "${SHIPYARD_AUTOREPORT:-}" != "1" ]]; then
   exit 0
 fi
 
-target_repo="${CLAUDE_PLUGINS_AUTOREPORT_REPO:-mattsears18/shipyard}"
-dry_run="${CLAUDE_PLUGINS_AUTOREPORT_DRY:-0}"
+target_repo="${SHIPYARD_AUTOREPORT_REPO:-mattsears18/shipyard}"
+dry_run="${SHIPYARD_AUTOREPORT_DRY:-0}"
 
 # --------------------------------------------------------------------------
 # Python helpers are stored as bash variables so we can run them via
@@ -325,7 +325,7 @@ title="[auto] ${who} failed: ${error_summary}"
 body=$(cat <<EOF
 ## What happened
 
-A skill/agent from the \`shipyard\` plugin appears to have failed during a Claude Code session. This issue was filed automatically by \`scripts/report-plugin-error.sh\` (see \`CLAUDE_PLUGINS_AUTOREPORT\` in the plugin README).
+A skill/agent from the \`shipyard\` plugin appears to have failed during a Claude Code session. This issue was filed automatically by \`scripts/report-plugin-error.sh\` (see \`SHIPYARD_AUTOREPORT\` in the plugin README).
 
 ## Skill/Agent
 
