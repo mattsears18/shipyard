@@ -205,6 +205,24 @@ cmd_flush() {
     return 0
   fi
 
+  # 0-byte file guard (issue #357). A session file that exists but is empty
+  # is a known corruption mode: prior shipyard versions could silently
+  # truncate the session JSON when an `update`'s jq pipeline failed
+  # mid-write (root cause now fixed in session-state.sh's atomic_write,
+  # but existing corrupted files on disk and external truncation modes
+  # remain). Without this guard, jq's projection below would produce
+  # `null` for every field and the ledger would gain a zero-cost stub
+  # line: misleading for `/shipyard:cost report` (looks like a real
+  # zero-cost session) and indistinguishable from a session that ran
+  # without bumping any tokens. Detect explicitly, log a clear message
+  # so the operator can correlate with the truncation event, and exit 0
+  # without writing the stub. Cost data is unrecoverable for this
+  # session — better to surface the loss than fabricate $0.
+  if [[ ! -s "$source" ]]; then
+    echo "[cost-tracking] session file 0-byte at flush; cost data unrecoverable for session $session_id" >&2
+    return 0
+  fi
+
   # Self-healing setup-timing flush (issue #283). The orchestrator is
   # supposed to call `setup-timing.sh flush` at step 6.8 before dispatch,
   # but the spec embeds the flush in a long step body and readers commonly

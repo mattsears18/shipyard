@@ -216,6 +216,143 @@ assert_file_missing "$tmphome/sessions/missing.json" "update of missing session 
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== update — atomic_write empty-tempfile guard (issue #357)"
+# --------------------------------------------------------------------------
+# Regression for the 0-byte truncation bug. Prior to the fix, a jq
+# compile error inside `update`'s pipeline would produce no stdout, the
+# atomic_write helper would still create an empty tempfile via `cat > tmp`
+# and atomically rename it over the target. Result: the session JSON
+# was silently truncated to 0 bytes, the caller saw exit 0, and every
+# downstream consumer (cost-history flush, read-tokens, /shipyard:status)
+# silently saw nothing for the rest of the session. The fix: atomic_write
+# refuses to rename a 0-byte tempfile, returning non-zero so the caller's
+# existing `if ! jq ... | atomic_write` branch fires.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "atomic-guard" --repo "o/r" --concurrency 7 >/dev/null
+session_file="$tmphome/sessions/atomic-guard.json"
+
+# Capture the pre-bad-update content for a byte-for-byte preservation check.
+SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "atomic-guard" \
+  --set '.session_prs = [1, 2, 3]' >/dev/null
+pre_size=$(wc -c < "$session_file" | tr -d ' ')
+pre_concurrency=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "atomic-guard" --path '.concurrency')
+pre_prs=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "atomic-guard" --path '.session_prs')
+
+# Run an update with a deliberately invalid jq expression. jq will compile-
+# error and produce no stdout. The atomic_write empty-tempfile guard should
+# refuse the rename and the caller should report failure.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "atomic-guard" \
+  --set '.in_flight.slot1 = this_is_not_a_valid_jq_identifier' 2>&1; echo "rc=$?")
+rc=$(printf '%s\n' "$out" | tail -1)
+assert_equals "$rc" "rc=68" "update with bad jq expression exits 68"
+assert_contains "$out" "file left unchanged" "update with bad jq surfaces 'file left unchanged' to stderr"
+
+# The session file MUST still be present, non-empty, and carry its prior
+# content. Before the fix all three of these checks failed (file was 0
+# bytes and unparseable).
+assert_file_exists "$session_file" "session file still present after failed update"
+post_size=$(wc -c < "$session_file" | tr -d ' ')
+assert_equals "$post_size" "$pre_size" "session file size unchanged after failed update (no 0-byte truncation)"
+
+post_concurrency=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "atomic-guard" --path '.concurrency')
+assert_equals "$post_concurrency" "$pre_concurrency" "session file's .concurrency preserved through failed update"
+post_prs=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "atomic-guard" --path '.session_prs')
+assert_equals "$post_prs" "$pre_prs" "session file's .session_prs preserved through failed update"
+
+# A subsequent VALID update must still succeed (the guard doesn't poison
+# future writes — only the corrupting write is rejected).
+SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "atomic-guard" \
+  --set '.session_prs += [4]' >/dev/null
+post_recovery=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "atomic-guard" --path '.session_prs | length')
+assert_equals "$post_recovery" "4" "valid update after failed update still lands correctly"
+
+# No leaked tempfiles after the failed write — atomic_write's cleanup
+# trap must run in the error path too.
+leftover=""
+shopt -s nullglob
+for f in "$tmphome/sessions/"*; do
+  case "$(basename "$f")" in
+    atomic-guard.json) ;;
+    *) leftover="$leftover $(basename "$f")" ;;
+  esac
+done
+shopt -u nullglob
+assert_equals "${leftover# }" "" "failed update does not leak .tmp files"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== update — degraded-init recovery preserves on subsequent failure (issue #357)"
+# --------------------------------------------------------------------------
+# The original failure mode in #357 was specifically the
+# --allow-degraded-init path: when an `update` raced with a sweep and the
+# file disappeared, the recovery init created a minimal file and then the
+# subsequent jq pipeline could fail, truncating the just-recovered file
+# back to 0 bytes. The empty-tempfile guard in atomic_write must hold
+# through this path too — the recovered base init should survive a
+# failing follow-up update inside the same `update` invocation.
+
+tmphome=$(mktmphome)
+session_file="$tmphome/sessions/degraded-guard.json"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "degraded-guard" \
+  --allow-degraded-init --degraded-init-repo "owner/recovered" \
+  --set '.in_flight.x = invalid_jq_garbage' 2>&1; echo "rc=$?")
+rc=$(printf '%s\n' "$out" | tail -1)
+assert_equals "$rc" "rc=68" "update --allow-degraded-init with bad jq exits 68 (post-recovery failure surfaced)"
+assert_file_exists "$session_file" "degraded-init recovered file is NOT truncated when follow-up update fails"
+post_size=$(wc -c < "$session_file" | tr -d ' ')
+if [[ "$post_size" -gt 0 ]]; then
+  pass=$((pass+1))
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "recovered file is non-empty after failed follow-up update"
+else
+  fail=$((fail+1))
+  printf '  %sFAIL%s  recovered file is non-empty (size: %s)\n' "$RED" "$RESET" "$post_size"
+fi
+recovered_repo=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "degraded-guard" --path '.repo')
+assert_equals "$recovered_repo" "owner/recovered" "recovered .repo persisted from --degraded-init-repo"
+recovered_degraded_at=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "degraded-guard" --path '.degraded_recovery_at')
+if [[ "$recovered_degraded_at" != "null" ]]; then
+  pass=$((pass+1))
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" ".degraded_recovery_at stamped on recovered file"
+else
+  fail=$((fail+1))
+  printf '  %sFAIL%s  .degraded_recovery_at not stamped (got: %s)\n' "$RED" "$RESET" "$recovered_degraded_at"
+fi
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== read-tokens — 0-byte session file guard (issue #357)"
+# --------------------------------------------------------------------------
+# Defense-in-depth: if a legacy 0-byte session file persists on disk (from
+# a prior shipyard version's truncation bug, or from external truncation),
+# read-tokens MUST NOT silently emit a zero-cost comment. It should surface
+# the corruption clearly and exit non-zero so the orchestrator's posting
+# branch skips the comment.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "rt-zero" --repo "o/r" >/dev/null
+session_file="$tmphome/sessions/rt-zero.json"
+: > "$session_file"  # simulate prior truncation
+zero_size=$(wc -c < "$session_file" | tr -d ' ')
+assert_equals "$zero_size" "0" "test setup: session file is 0 bytes"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "rt-zero" --format comment --pr 42 2>&1; echo "rc=$?")
+rc=$(printf '%s\n' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "read-tokens against 0-byte file exits 3"
+assert_contains "$out" "session file 0-byte at read-tokens" "read-tokens against 0-byte file surfaces clear log message"
+assert_contains "$out" "cost data unrecoverable" "read-tokens against 0-byte file flags data as unrecoverable"
+
+# json format hits the same guard.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "rt-zero" --format json 2>&1; echo "rc=$?")
+rc=$(printf '%s\n' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "read-tokens --format json against 0-byte file also exits 3"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== cleanup"
 # --------------------------------------------------------------------------
 
