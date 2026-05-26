@@ -304,3 +304,25 @@ Drain terminates when **all** of the following are true for 5 consecutive polls 
 **Hard ceiling: 120 min.** As a safety net against degenerate cases (a 90-minute test suite, a runaway CI loop), drain forcibly exits at the 120-min mark even if forward progress is still observable. Surface this in the summary as `drain exited at 120-min ceiling — <n> PRs still pending`.
 
 **On exit, regardless of how drain terminated**: report the final state of every PR in `session_prs` in the [end-of-session summary](./cleanup-summary.md#end-of-session-summary), separated by status (merged ✓ / blocked:ci / still-pending). The user can re-run `/do-work` later to sweep what's left.
+
+### When drain catches a systemic CI failure
+
+**The drain phase classifies into `P_failing` PRs but does NOT dispatch a fix-checks-only worker against them.** That dispatch is steady-state-only — drain's [Per-poll actions](#drain-protocol) above explicitly fill `failed_prs` from `R_new` and dispatch fix-checks workers against newly-red PRs, but the dispatch loop's resolution window closes at drain entry; once drain is active no new fix-checks-only workers are spawned for PRs that were already failing at drain entry (only for PRs that go red *during* drain via `R_new`). The asymmetry is intentional: drain is the "wind-down, let the merge train settle" phase, and a fix-checks-only worker takes 5–20 min to resolve a checks failure — exactly the cost drain is trying to bound.
+
+The settled paths for a `P_failing` PR are:
+
+1. **Auto-resolve on rerun (lucky).** A transient infrastructure flake (network blip, runner cancellation, opportunistic timeout) resolves itself on the next CI scheduler tick. The drain's per-poll snapshot sees the rollup flip green and the PR proceeds through `auto-merge` normally.
+2. **Hit `blocked:ci`.** The steady-state 3-attempt fix-checks-only circuit breaker has already stamped this PR; drain treats `blocked:ci` PRs as **settled** in the [termination criterion](#drain-protocol) so they don't keep the drain alive forever.
+
+**The gap.** When the failure is **systemic** rather than per-PR — a 20-min GitHub Actions job timeout on a shard, a runner-pool exhaustion cancellation, a `concurrency: cancel-in-progress` flap, a flaky test that fails ≥50% of runs — neither path closes the loop. Path 1 is unreliable (the rerun hits the same systemic ceiling), and path 2 requires the steady-state fix-checks-only worker to have run first; if the PR ENTERED drain with checks failing for systemic reasons, no fix-checks worker ever stamps `blocked:ci` (the stamp is the worker's exhaustion signal, not the orchestrator's). The PR sits OPEN with no `blocked:ci` label and no path to resolution within the session.
+
+**Today's escape valve.** The user can intervene mid-drain by running `gh run rerun --failed --repo <owner/repo> <run-id>` against the failing run. If the systemic failure was actually transient (an infra blip), the rerun succeeds and the PR settles via path 1. If it wasn't, the rerun fails the same way and the PR rolls forward to next session — at which point steady-state's fix-checks-only worker can dispatch normally and either fix the systemic issue (bump `timeout-minutes`, split the shard, mark the test `.skip` with a follow-up issue) or exhaust to `blocked:ci`. The user-visible signal that a session hit this gap is a `P_failing` PR in the end-of-session summary's "still-pending" cohort with no `blocked:ci` label.
+
+**Filing follow-up issues.** When this gap traps a session, file an issue against the **target repo** (not against shipyard) describing the systemic failure (e.g., "Web E2E shard 2/3 hits 20-min job timeout — split the shard or bump `timeout-minutes`"). Reference the trapped PR. The follow-up issue is the durable record that this isn't a per-PR test bug but an infrastructure decision that needs a human or a future steady-state session.
+
+**Why this gap is documented but not closed.** Two larger options would close it but expand drain's behavioral surface materially:
+
+- **Option (2): Allow one fix-checks-only dispatch from drain when ALL other queues are empty.** Bounded — only fires if `divert_queue + failed_prs + ready_issues + raw_backlog == 0` and the drain has a `P_failing` PR. Mitigates the "human has to do this anyway" path but adds a new dispatch surface to drain that the wind-down framing doesn't currently allow.
+- **Option (3): Pattern-match failure logs for known systemic shapes** (job timeouts, runner cancellations, `cancel-in-progress` flaps) and surface them in the end-of-session summary as a distinct cohort so the user knows it's an infra issue, not a test bug. Larger scope; needs a log-parsing surface that doesn't exist today.
+
+Both options are tracked as follow-up work to [#359](https://github.com/mattsears18/shipyard/issues/359) — file a fresh issue when implementing either. The current documentation closes the spec gap (a reader, LLM or human, can now see plainly that drain doesn't dispatch fix-checks-only and what the escape valves are) without committing to a behavioral change that needs its own design pass.
