@@ -40,7 +40,7 @@ New refinement rules slot in as new rows — keep the fall-through landing on `n
 
 ## Intake contract (read this if you're wiring up the user-feedback backend)
 
-This section documents what the backend service (in the app's repo, not in claude-plugins) needs to send when it creates a user-feedback issue. The contract is the deliverable from this repo — the backend code is not. **The intake gate workflow handles the `needs-refinement` label automatically; the backend MUST NOT apply it itself.**
+This section documents what the backend service (in the app's repo, not in shipyard) needs to send when it creates a user-feedback issue. The contract is the deliverable from this repo — the backend code is not. **The intake gate workflow handles the `needs-refinement` label automatically; the backend MUST NOT apply it itself.**
 
 ### Required at creation
 

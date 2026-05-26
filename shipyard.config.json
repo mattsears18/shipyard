@@ -3,7 +3,7 @@
   "version": 1,
   "repo": {
     "owner": "mattsears18",
-    "name": "claude-plugins"
+    "name": "shipyard"
   },
   "auto_merge": {
     "policy": "trusted-only"

@@ -9,7 +9,7 @@
 #
 # Behavior:
 #   • Reads the hook JSON payload from stdin.
-#   • If CLAUDE_PLUGINS_AUTOREPORT != 1, the helper exits 0 with no action,
+#   • If SHIPYARD_AUTOREPORT != 1, the helper exits 0 with no action,
 #     so we don't even need to gate here — but we do, to avoid the spawn cost.
 #   • Otherwise the helper runs in the background so the hook returns
 #     immediately (auto-reports are best-effort, never blocking).
@@ -24,7 +24,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 helper="${here}/../scripts/report-plugin-error.sh"
 
 # Fast opt-out — skip the spawn entirely when not enabled.
-if [[ "${CLAUDE_PLUGINS_AUTOREPORT:-}" != "1" ]]; then
+if [[ "${SHIPYARD_AUTOREPORT:-}" != "1" ]]; then
   # Still consume stdin so upstream doesn't get SIGPIPE.
   cat >/dev/null 2>&1 || true
   exit 0

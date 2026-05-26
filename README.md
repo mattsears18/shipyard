@@ -303,7 +303,7 @@ The `shipyard` plugin can automatically file a GitHub issue against `mattsears18
 It is **opt-in** — nothing is filed unless you set:
 
 ```sh
-export CLAUDE_PLUGINS_AUTOREPORT=1
+export SHIPYARD_AUTOREPORT=1
 ```
 
 Once enabled, hooks (`PostToolUse` on `Task|Agent` and `SubagentStop`) invoke `plugins/shipyard/scripts/report-plugin-error.sh`. That script:
@@ -324,15 +324,15 @@ Scrubbing covers **secret-shaped patterns** (the list in step 2 above) — it do
 
 If the failing session was operating on a **private codebase or private issue tracker**, those excerpts may carry filenames, code snippets, or issue text from that codebase into a public GitHub issue on the target auto-report repo. The scrubber has no way to distinguish "private project context" from "debug noise" — only secret-shaped tokens are removed.
 
-**Preview before opting in.** Use the dry-run mode (`CLAUDE_PLUGINS_AUTOREPORT_DRY=1`, documented below) to see exactly what *would* be filed without actually filing it. If you work with sensitive codebases, either preview reports this way before enabling live mode, or set `CLAUDE_PLUGINS_AUTOREPORT_REPO` to a private repo you control so the reports never become public.
+**Preview before opting in.** Use the dry-run mode (`SHIPYARD_AUTOREPORT_DRY=1`, documented below) to see exactly what *would* be filed without actually filing it. If you work with sensitive codebases, either preview reports this way before enabling live mode, or set `SHIPYARD_AUTOREPORT_REPO` to a private repo you control so the reports never become public.
 
 ### Configuration
 
 | Env var | Default | Effect |
 |---|---|---|
-| `CLAUDE_PLUGINS_AUTOREPORT` | unset | Must be `1` to enable. |
-| `CLAUDE_PLUGINS_AUTOREPORT_REPO` | `mattsears18/shipyard` | Target repo for auto-reports. |
-| `CLAUDE_PLUGINS_AUTOREPORT_DRY` | unset | When `1`, the helper prints the would-be issue as JSON to stdout instead of calling `gh`. Used by the test suite and useful for local previews. |
+| `SHIPYARD_AUTOREPORT` | unset | Must be `1` to enable. |
+| `SHIPYARD_AUTOREPORT_REPO` | `mattsears18/shipyard` | Target repo for auto-reports. |
+| `SHIPYARD_AUTOREPORT_DRY` | unset | When `1`, the helper prints the would-be issue as JSON to stdout instead of calling `gh`. Used by the test suite and useful for local previews. |
 
 ### Issue shape
 
@@ -351,7 +351,7 @@ Every auto-report has these sections:
 
 ```sh
 echo '{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:issue-worker","prompt":"work issue 1"},"tool_response":{"is_error":true,"error":"Error: gh api 404"}}' \
-  | CLAUDE_PLUGINS_AUTOREPORT=1 CLAUDE_PLUGINS_AUTOREPORT_DRY=1 \
+  | SHIPYARD_AUTOREPORT=1 SHIPYARD_AUTOREPORT_DRY=1 \
     bash plugins/shipyard/scripts/report-plugin-error.sh
 ```
 

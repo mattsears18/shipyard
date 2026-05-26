@@ -158,7 +158,7 @@ repo_config="$repo_root/shipyard.config.json"
 assert_file_exists "$repo_config" "<repo-root>/shipyard.config.json exists (this repo is shipyard-initialized)"
 assert_jq "$repo_config" '.version'       "1"                   "repo config: version is 1"
 assert_jq "$repo_config" '.repo.owner'    "mattsears18"          "repo config: owner is mattsears18"
-assert_jq "$repo_config" '.repo.name'     "claude-plugins"       "repo config: name is claude-plugins"
+assert_jq "$repo_config" '.repo.name'     "shipyard"             "repo config: name is shipyard"
 assert_jq "$repo_config" '.auto_merge.policy' "trusted-only"     "repo config: auto_merge.policy is trusted-only"
 assert_jq "$repo_config" '.trust.authors | contains(["mattsears18"])' "true" "repo config: trust.authors includes mattsears18"
 # The labels block must match the canonical blocked:* namespace.
