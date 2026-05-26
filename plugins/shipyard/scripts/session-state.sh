@@ -152,6 +152,15 @@
 #         see and surface these.
 
 set -u
+# `pipefail` is load-bearing for the `jq ... | atomic_write` contract
+# (issue #357). Without it, the pipeline's exit status is `atomic_write`'s
+# alone — masking a jq compile error or runtime failure that produces no
+# stdout. With it, the pipeline reports any failing stage, so the caller's
+# `if ! jq ... | atomic_write` branch fires reliably on upstream failures.
+# Paired with the empty-tempfile guard in `atomic_write` itself: belt AND
+# suspenders, because the orchestrator depends on the session JSON never
+# being silently truncated.
+set -o pipefail
 
 # --------------------------------------------------------------------------
 # Dependency check — jq is required for both read (path selection) and
@@ -231,6 +240,29 @@ session_path() {
 # `mv -f` into place. POSIX rename(2) is atomic on the same filesystem,
 # which the tmp-in-same-dir pattern guarantees. A crash mid-write leaves
 # only the .tmp file, which the next successful write replaces.
+#
+# Empty-write guard (issue #357). When called as `jq ... | atomic_write
+# "$target"`, a jq compile error or runtime failure produces NO stdout but
+# exits non-zero. Without `set -o pipefail` on the caller, the pipeline's
+# exit status is `atomic_write`'s own (0 on success of `cat` reading EOF
+# from a closed pipe) — so jq's failure is invisible. `cat > "$tmp"` then
+# creates a 0-byte tempfile, and `mv -f "$tmp" "$target"` atomically
+# replaces the prior session content with the empty file. Atomicity gives
+# you "no half-written file" but does NOT give you "content is valid" —
+# the rename is happy to swap in garbage. This is the root cause of issue
+# #357 (session file 0 bytes after long session): every dispatch's
+# `update` invocation that hit even a transient jq error silently
+# truncated the session JSON, leaving the cross-session ledger flush + the
+# per-PR cost-tracking comment with nothing to read.
+#
+# Defense: refuse to rename a 0-byte tempfile into place. A 0-byte
+# atomic write is never a valid state transition for shipyard's session
+# JSON — the file always carries at minimum a {} object. If the tempfile
+# is empty after the `cat`, treat that as upstream failure: leave the
+# previous target file untouched, remove the tempfile, return non-zero so
+# the caller's `if ! jq ... | atomic_write` branch sees the failure. The
+# caller's existing "jq expression failed — file left unchanged" stderr
+# message is now actually true (it wasn't before this guard).
 atomic_write() {
   local target="$1"
   local dir
@@ -246,6 +278,18 @@ atomic_write() {
     rm -f "$tmp"
     trap - EXIT
     echo "session-state.sh: failed to write tmp file $tmp" >&2
+    return 66
+  fi
+  # Empty-tempfile guard (issue #357). A 0-byte tempfile means upstream
+  # (jq, etc.) failed to produce any content despite this end of the pipe
+  # closing cleanly. Renaming an empty file over the target would silently
+  # destroy the prior valid state. Refuse the rename, leave the target
+  # alone, and surface a clear non-zero exit so the caller's existing
+  # error branch (`if ! jq ... | atomic_write`) actually fires.
+  if [[ ! -s "$tmp" ]]; then
+    rm -f "$tmp"
+    trap - EXIT
+    echo "session-state.sh: refusing to rename empty tempfile over $target (upstream produced no content — likely jq error)" >&2
     return 66
   fi
   if ! mv -f "$tmp" "$target"; then
@@ -854,6 +898,22 @@ cmd_read_tokens() {
 
   if [[ ! -f "$target" ]]; then
     echo "read-tokens: $target does not exist" >&2
+    exit 3
+  fi
+
+  # 0-byte file guard (issue #357). A session file that exists but is empty
+  # is a known corruption mode from prior shipyard versions where an
+  # `update`'s failed jq pipeline could silently truncate the file (root
+  # cause fixed in atomic_write but legacy state may persist on disk).
+  # Without this guard, the jq scope projection below would produce an
+  # empty object and the `--format comment` branch would emit a
+  # zero-cost cost-tracking comment on the issue/PR — misleading to the
+  # reader (looks like the worker did nothing) and worse than no comment
+  # at all. Surface the corruption with a clear message and exit 3 so
+  # the orchestrator's posting branch skips the comment rather than
+  # publish a $0 stub.
+  if [[ ! -s "$target" ]]; then
+    echo "[cost-tracking] session file 0-byte at read-tokens; cost data unrecoverable for session $session_id" >&2
     exit 3
   fi
 

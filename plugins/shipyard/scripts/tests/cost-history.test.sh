@@ -635,6 +635,45 @@ assert_equals "$rc" "rc=64" "report --last with bad value exits 64"
 
 # --------------------------------------------------------------------------
 echo
+echo "== flush — 0-byte session file guard (issue #357)"
+# --------------------------------------------------------------------------
+# Defense-in-depth: legacy 0-byte session files (from prior shipyard
+# versions where atomic_write could silently truncate on jq failure, or
+# from external truncation) MUST NOT produce a zero-cost stub line in
+# the session ledger. flush should detect, log a clear message, and
+# exit 0 without writing — the cleanup chain stays unbroken, the
+# operator can see the data loss, and `/shipyard:cost report` doesn't
+# mistake the truncation for a real $0 session.
+
+tmphome=$(mktemp -d)
+export SHIPYARD_HOME="$tmphome"
+
+# Create an init'd session, then truncate it to 0 bytes (simulating the
+# prior bug).
+bash "$session_helper" init --session-id "zero-flush" --repo "owner/repo" >/dev/null
+sf="$tmphome/sessions/zero-flush.json"
+: > "$sf"
+zsize=$(wc -c < "$sf" | tr -d ' ')
+assert_equals "$zsize" "0" "test setup: session file is 0 bytes"
+
+out=$(bash "$helper" flush --session-id "zero-flush" 2>&1; echo "rc=$?")
+rc=$(printf '%s\n' "$out" | tail -1)
+assert_equals "$rc" "rc=0" "flush against 0-byte session file exits 0 (cleanup chain unbroken)"
+assert_contains "$out" "session file 0-byte at flush" "flush against 0-byte file surfaces clear log message"
+assert_contains "$out" "cost data unrecoverable" "flush against 0-byte file flags data as unrecoverable"
+assert_contains "$out" "zero-flush" "flush against 0-byte file names the session id in the log"
+
+# Ledger MUST NOT have been written.
+session_ledger="$tmphome/cost-history.jsonl"
+issue_ledger="$tmphome/cost-history-issues.jsonl"
+assert_file_missing "$session_ledger" "no session ledger line written for 0-byte source"
+assert_file_missing "$issue_ledger" "no issue ledger line written for 0-byte source"
+
+unset SHIPYARD_HOME
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo
 echo "== Summary"
 echo "  $pass passed, $fail failed"
 
