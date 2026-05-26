@@ -148,7 +148,100 @@ The `--model` value should be the harness-reported model id verbatim — `bump-t
 
 **If the dispatch had no `usage` payload at all** (the entire `<usage>` block is missing — distinct from the #279 case where the block exists but only carries `total_tokens`; a true full-payload-missing event is much rarer), still proceed to A.1; log `[bump-tokens] no usage payload in dispatch result; skipping attribution` and leave `tokens_attributed=false`. Same don't-block-on-observational-data posture as the helper-error path. The degraded-total-only path above handles the more common case where the block exists but lacks the four breakdown fields.
 
-Once A.0 has fired (or its skip has been logged), proceed to A.1 and parse the return string per the per-mode handling below.
+Once A.0 has fired (or its skip has been logged), proceed to A.0.5.
+
+#### A.0.5. Post-return worktree reap for crashed / narrative-non-terminal returns (fires BEFORE A.1's return-string parsing)
+
+Closes [#358](https://github.com/mattsears18/shipyard/issues/358). The reap path in [step B](#b-release-the-slot) (added in [#334](https://github.com/mattsears18/shipyard/issues/334)) covers every clean completion — but on a **crash return** (the worker's `claude` subprocess died with an API socket error, an internal harness error, or any other abnormal termination), two failure modes can let the worktree linger:
+
+1. The agent's `claude` subprocess **remained alive after the harness reported completion** — observed verbatim in `mattsears18/lightwork` dogfooding session `20260525-191841-15e73`'s `a23a91d566bd9304e` (PR #1277, "API Error: The socket connection was closed unexpectedly" after 17 tool uses; subprocess visible via `ps` for several minutes after the `task-notification`'s `status: completed`). When the lock PID is the still-alive agent subprocess (not the orchestrator), `classify-lock` returns `peer-alive` and step B's defensive defer fires — leaving the worktree locked until end-of-session.
+2. The orchestrator may skim past step B's reap block when the return string is unparseable narrative ("API Error: ...", "Routine progress.", "shard 3/3 passes") — treating the whole turn as "errored, record and continue" without exercising the reap. The spec calls step B's reap unconditional, but the in-context "this turn was a crash, the reconcile path is degenerate" signal can easily override the discipline.
+
+Both failure modes leave the worktree path unreusable for the remainder of the session; the next setup-3b pass at session start eventually reaps, but the cost in the interim is one stuck slot per crash. This step is the in-session safety net: a **crash-aware reap that fires before A.1** explicitly because the agent is non-recoverable and the lingering subprocess (if any) is dead weight — `peer-alive` does not justify deferring on a crash return the way it does on a clean completion.
+
+**Detection — what counts as a crash / narrative-non-terminal return.** The agent's last-line return text fails the terminal-prefix check when it does NOT start with any of:
+
+- `shipped` (issue-work, fix-main-ci, fix-failing-prs-batch happy path)
+- `green` (fix-checks-only happy path)
+- `noop:` (every mode's benign-no-op variant)
+- `blocked` (every mode's deterministic-failure variant)
+- `rebased` (fix-rebase happy path)
+- `reaped:` (the worker's own "my worktree was reaped" escape hatch from `shipyard:worker-preamble`)
+
+When the return text fails the prefix check, treat it as crash-like and proceed with the reap. Common crash-like shapes:
+
+- `API Error: ...` / `Error: ...` — Anthropic API errors, harness-side errors.
+- Empty string / single whitespace — the subprocess died before emitting any final message.
+- Narrative status updates (`"Routine progress.", "shard 3/3 passes."`, `"Waiting for monitor..."`) — contract violation per [`shipyard:worker-preamble` § Return-contract discipline](../../skills/worker-preamble/SKILL.md#return-contract-discipline), but observationally indistinguishable from a crash for reap purposes.
+
+**The reap.** Derive the worktree path from the slot's `agent_id` (still in `.in_flight.<slot-id>.agent_id` at this point — slot release is step B, which runs later). Classify the lock, then:
+
+- `no-lock` / `dead` / `self-ancestor` → reap normally. Same shape as step B but with `--phase reconcile-A.0.5` so the audit log distinguishes the crash-recovery reap from the per-completion sweep.
+- `peer-alive` → **still reap.** This is the load-bearing difference from step B's behavior: on a crash return the agent is non-recoverable by definition (the API call failed, the harness already declared completion, the return string is not a contract-compliant terminal). Letting a still-alive subprocess hold the lock until end-of-session is the failure mode #358 documented. The reap fires anyway and the audit-log entry records `classification: "peer-alive"` so the operator can see the override happened. The actual `git worktree unlock` + `git worktree remove --force` will succeed regardless of subprocess state (the lockfile is just metadata; the worktree directory removal proceeds even with a process holding open files inside it — those handles become orphans but don't block the dir removal).
+
+**Skip silently on clean terminal returns** — when the prefix check passes (`shipped` / `green` / `noop:` / `blocked` / `rebased` / `reaped:`), do NOT run this step. Step B's per-completion reap is the right path for clean returns; running A.0.5 too would double-call into `classify-lock` for the common case and waste tool calls. The skip is a no-op — proceed directly to A.1.
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+# The agent's last-line return text from the harness notification. The
+# orchestrator already has this in working memory for A.1's parse below.
+return_text="<the agent's last-line return text, trimmed>"
+
+# Terminal-prefix check — case-insensitive match against the six valid
+# prefixes from the per-mode return contracts.
+is_terminal=false
+case "$return_text" in
+  shipped*|green*|noop:*|blocked*|rebased*|reaped:*)
+    is_terminal=true
+    ;;
+esac
+
+if [ "$is_terminal" = "false" ]; then
+  # Crash / narrative-non-terminal — fire the reap.
+  log_prefix=$(printf '%s' "$return_text" | head -c 80)
+  echo "[reconcile-A.0.5] crash-like return for slot=<slot-id> agent=<agent-id>: \"$log_prefix\"; firing post-return reap (#358)"
+
+  completed_agent_id="${.in_flight[<slot-id>].agent_id}"
+  wt_dir=".git/worktrees/agent-${completed_agent_id}"
+  worktree_path="$(git rev-parse --show-toplevel)/.claude/worktrees/agent-${completed_agent_id}"
+
+  if [ -d "$wt_dir" ]; then
+    # Bootstrap the orchestrator PID so classify-lock can short-circuit on
+    # our own session's locks (issue #263 — same pattern as A.1/B's reaps).
+    export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+
+    classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
+      classify-lock "$wt_dir/locked")
+
+    lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+    [ -z "$lock_pid" ] && lock_pid="null"
+
+    # Crash-aware reap: unlike step B's `peer-alive → defer` branch, A.0.5
+    # reaps on every classification including peer-alive. The agent is
+    # non-recoverable by definition (it crashed or violated the return
+    # contract); a still-alive subprocess holding the lock is exactly the
+    # failure mode #358 documents, not a signal to wait. The audit-log
+    # entry records the actual classification so the override is traceable.
+    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      --action reaped \
+      --worktree-path "$worktree_path" \
+      --worktree-name "agent-${completed_agent_id}" \
+      --session-id "<session-id>" \
+      --classification "$classification" \
+      --lock-pid "$lock_pid" \
+      --phase "reconcile-A.0.5" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+  fi
+fi
+```
+
+**Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race (the worktree was already reaped by a concurrent path, the lock file is gone, etc.) cannot abort the reconcile turn. If the reap silently fails, step B's per-completion sweep is the next safety net and end-of-session cleanup is the ultimate one.
+
+**Interaction with step B.** Step B still fires on every completion path — A.0.5 does NOT replace it. The duplicate-reap is harmless: the `reap` helper's `git worktree remove --force` against a path A.0.5 already removed is a silent no-op. The point of A.0.5 is to take the reap action *earlier in the turn* on crash-like returns (closing the window where step B's `peer-alive` defer leaks the worktree), not to remove the per-completion sweep.
+
+**Audit-log shape.** Entries this step writes carry `"phase":"reconcile-A.0.5"` so an operator inspecting `~/.shipyard/reap-audit.jsonl` can distinguish crash-recovery reaps from step B's per-completion sweep (`"phase":"steady-state-B-completion"`), the A.1 shipped-immediate reap (`"phase":"steady-state-A1-shipped"`), the setup-3b stale-worktree pass (no `phase`), and the cleanup-summary end-of-session sweep (no `phase`).
+
+Once A.0.5 has fired (or its prefix-check skip has been logged), proceed to A.1 and parse the return string per the per-mode handling below.
 
 #### A.1. Parse the return string
 
