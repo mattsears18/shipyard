@@ -1427,6 +1427,167 @@ assert_equals "$final_lines" "$prev_lines" "cleanup --reap-audit on missing file
 
 rm -rf "$tmphome"
 
+# --------------------------------------------------------------------------
+echo "== cross-repo write guard (issue #365)"
+# --------------------------------------------------------------------------
+#
+# Regression test for the cross-session contamination race documented in
+# issue #365: when two /shipyard:do-work sessions run concurrently against
+# different repos, a session-id stash race can route one session's
+# `update` / `bump-tokens` calls to the other session's state file —
+# silently cross-wiring token attributions and session_prs. The guard:
+# when --expected-repo (or $SHIPYARD_EXPECTED_REPO) is set and the file's
+# .repo doesn't match, refuse with exit 66.
+
+# --- update: --expected-repo mismatch → exit 66, file unchanged. -----------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "xrepo-1" --repo "owner/repo-A" >/dev/null
+session_file="$tmphome/sessions/xrepo-1.json"
+
+# Capture baseline content to assert the refused write leaves the file untouched.
+before_sha=$(shasum "$session_file" | awk '{print $1}')
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "xrepo-1" \
+  --set '.session_prs += [999]' \
+  --expected-repo "owner/repo-B" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=66" "update with mismatched --expected-repo exits 66"
+assert_contains "$out" "cross-repo write refused" "update prints cross-repo refusal log"
+assert_contains "$out" "owner/repo-A" "update log names file's actual .repo"
+assert_contains "$out" "owner/repo-B" "update log names expected repo"
+
+after_sha=$(shasum "$session_file" | awk '{print $1}')
+assert_equals "$after_sha" "$before_sha" "update refuses to mutate file on mismatch (sha unchanged)"
+# Belt to the suspenders: .session_prs should be unchanged too.
+prs=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-1" --path ".session_prs | length")
+assert_equals "$prs" "0" "session_prs unchanged after refused update"
+rm -rf "$tmphome"
+
+# --- update: --expected-repo match → write succeeds. -----------------------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "xrepo-2" --repo "owner/repo-A" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "xrepo-2" \
+  --set '.session_prs += [42]' \
+  --expected-repo "owner/repo-A" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "update with matching --expected-repo exits 0"
+prs=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-2" --path ".session_prs[0]")
+assert_equals "$prs" "42" ".session_prs landed after matched update"
+rm -rf "$tmphome"
+
+# --- update: no --expected-repo → check is a no-op (back-compat). ----------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "xrepo-3" --repo "owner/repo-A" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "xrepo-3" \
+  --set '.session_prs += [7]' >/dev/null
+rc=$?
+assert_equals "$rc" "0" "update without --expected-repo exits 0 (back-compat)"
+prs=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-3" --path ".session_prs[0]")
+assert_equals "$prs" "7" ".session_prs landed without --expected-repo (back-compat)"
+rm -rf "$tmphome"
+
+# --- update: --skip-repo-check overrides a mismatch. -----------------------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "xrepo-4" --repo "owner/repo-A" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "xrepo-4" \
+  --set '.session_prs += [11]' \
+  --expected-repo "owner/repo-B" \
+  --skip-repo-check >/dev/null
+rc=$?
+assert_equals "$rc" "0" "update with --skip-repo-check ignores mismatch"
+prs=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-4" --path ".session_prs[0]")
+assert_equals "$prs" "11" ".session_prs landed when --skip-repo-check overrides"
+rm -rf "$tmphome"
+
+# --- update: SHIPYARD_EXPECTED_REPO env var works as fallback. -------------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "xrepo-5" --repo "owner/repo-A" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" SHIPYARD_EXPECTED_REPO="owner/repo-B" \
+  bash "$helper" update \
+  --session-id "xrepo-5" \
+  --set '.session_prs += [88]' 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=66" "SHIPYARD_EXPECTED_REPO mismatch exits 66"
+# Per-call --expected-repo overrides the env (matches → succeeds).
+SHIPYARD_HOME="$tmphome" SHIPYARD_EXPECTED_REPO="owner/repo-B" \
+  bash "$helper" update \
+  --session-id "xrepo-5" \
+  --set '.session_prs += [88]' \
+  --expected-repo "owner/repo-A" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "per-call --expected-repo overrides SHIPYARD_EXPECTED_REPO env"
+rm -rf "$tmphome"
+
+# --- bump-tokens: --expected-repo mismatch → exit 66, totals unchanged. ----
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "xrepo-6" --repo "owner/repo-A" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "xrepo-6" \
+  --issue 153 --pr 200 \
+  --input 1000 --output 500 \
+  --mode issue-work --model claude-opus-4-7 \
+  --expected-repo "owner/repo-B" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=66" "bump-tokens with mismatched --expected-repo exits 66"
+assert_contains "$out" "cross-repo write refused" "bump-tokens prints cross-repo refusal log"
+# Totals must NOT have been bumped — this is the cost-ledger contamination
+# the guard exists to prevent.
+totals_input=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-6" --path ".tokens.totals.input")
+assert_equals "$totals_input" "0" "bump-tokens refused: .tokens.totals.input unchanged"
+per_pr_input=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-6" --path ".tokens.per_pr | length")
+assert_equals "$per_pr_input" "0" "bump-tokens refused: .tokens.per_pr unchanged"
+rm -rf "$tmphome"
+
+# --- bump-tokens: --expected-repo match → bump succeeds. -------------------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "xrepo-7" --repo "owner/repo-A" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "xrepo-7" \
+  --issue 153 --pr 200 \
+  --input 1000 --output 500 \
+  --mode issue-work --model claude-opus-4-7 \
+  --expected-repo "owner/repo-A" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "bump-tokens with matching --expected-repo exits 0"
+totals_input=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-7" --path ".tokens.totals.input")
+assert_equals "$totals_input" "1000" "bump-tokens succeeded: .tokens.totals.input bumped"
+rm -rf "$tmphome"
+
+# --- empty .repo (legacy file, partial write) → check is a no-op. ----------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "xrepo-8" --repo "owner/repo-A" >/dev/null
+# Synthetic mutation: blank out .repo to simulate a legacy file shape.
+jq '.repo = ""' "$tmphome/sessions/xrepo-8.json" > "$tmphome/sessions/xrepo-8.json.tmp"
+mv "$tmphome/sessions/xrepo-8.json.tmp" "$tmphome/sessions/xrepo-8.json"
+SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "xrepo-8" \
+  --set '.session_prs += [55]' \
+  --expected-repo "owner/repo-B" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "empty .repo treated as no-op (no false positive)"
+rm -rf "$tmphome"
+
+# --- missing file + --allow-degraded-init: check is a no-op (recovery sets .repo). ---
+tmphome=$(mktmphome)
+# Don't init — file is missing.
+SHIPYARD_HOME="$tmphome" bash "$helper" update \
+  --session-id "xrepo-9" \
+  --set '.session_prs += [33]' \
+  --allow-degraded-init \
+  --degraded-init-repo "owner/repo-A" \
+  --expected-repo "owner/repo-A" >/dev/null 2>&1
+rc=$?
+assert_equals "$rc" "0" "degraded-init + matching --expected-repo: write succeeds"
+prs=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-9" --path ".session_prs[0]")
+assert_equals "$prs" "33" "degraded-recovery wrote .session_prs"
+repo=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-9" --path ".repo")
+assert_equals "$repo" "owner/repo-A" "degraded-recovery init set .repo from --degraded-init-repo"
+rm -rf "$tmphome"
+
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]
