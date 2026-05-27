@@ -150,6 +150,14 @@
 #   65+ — internal helper failure (jq missing, write permission denied,
 #         etc.) — never papered over with exit 0; the orchestrator should
 #         see and surface these.
+#   66  — cross-repo write refused on `update` / `bump-tokens` (issue
+#         #365). The session file's `.repo` doesn't match the caller's
+#         --expected-repo (or $SHIPYARD_EXPECTED_REPO). Defends against
+#         the cross-session contamination race where a concurrent
+#         /do-work session's session-id stash clobbers the caller's id
+#         and writes land against the wrong session file. Pass
+#         --skip-repo-check to override for legitimate cross-repo
+#         helpers (e.g. the orphan-sweep at setup.md step 1.6).
 
 set -u
 # `pipefail` is load-bearing for the `jq ... | atomic_write` contract
@@ -183,6 +191,7 @@ Usage:
   session-state.sh update      --session-id <id> --set '<jq-expr>' [--set ...]
                                [--skip-timing-autoflush]
                                [--allow-degraded-init] [--degraded-init-repo <r>]
+                               [--expected-repo <owner/repo>] [--skip-repo-check]
   session-state.sh cleanup     --session-id <id>
                                [--reap-audit --reaper-session-id <id>
                                 [--reaper-pid N] [--reason <str>] [--phase <str>]]
@@ -194,6 +203,7 @@ Usage:
                                [--mode <kind>] [--model <id>]
                                [--allow-degraded-init] [--degraded-init-repo <r>]
                                [--degraded-total-only]
+                               [--expected-repo <owner/repo>] [--skip-repo-check]
   session-state.sh read-tokens --session-id <id>
                                [--issue N] [--pr N]
                                [--format json|comment]
@@ -203,6 +213,12 @@ Usage:
 
 Environment:
   SHIPYARD_HOME                base dir for sessions/ (default: $HOME/.shipyard)
+  SHIPYARD_EXPECTED_REPO       fallback for --expected-repo on update /
+                               bump-tokens when the flag isn't passed.
+                               When set, every write-class call is guarded
+                               against cross-repo state contamination
+                               (issue #365). Override per-call via
+                               --expected-repo / --skip-repo-check.
 
 Exit codes:
   0   success (is-active: file exists and pid is alive)
@@ -212,6 +228,7 @@ Exit codes:
       --allow-degraded-init, read-tokens, set-progress)
   64  usage error
   65+ internal helper failure
+  66  cross-repo write refused (update / bump-tokens, issue #365)
 EOF
 }
 
@@ -299,6 +316,76 @@ atomic_write() {
     return 67
   fi
   trap - EXIT
+}
+
+# Cross-repo write guard (issue #365). When a write-class subcommand
+# (`update`, `bump-tokens`) resolves to a session file whose `.repo` does
+# NOT match the caller's expected repo, refuse the write and log loudly.
+# Defends against the failure mode where two `/shipyard:do-work` sessions
+# run concurrently against different repos and the orchestrator's
+# session-id stash race causes one session's write calls to land against
+# the other session's state file — silently cross-wiring token
+# attributions, `session_prs` appends, and `reconciled_agent_ids`.
+#
+# Inputs:
+#   $1  target file path (already resolved via session_path)
+#   $2  expected repo string (caller-supplied; either from --expected-repo
+#       or from $SHIPYARD_EXPECTED_REPO). Empty string → check is a no-op.
+#   $3  caller subcommand name (for stderr context, e.g. "update")
+#
+# Exit codes:
+#   0   match (or no-op when expected_repo is empty)
+#   66  mismatch — refuse the write. Distinct from the existing exits
+#       (0 success / 2 init-clobber / 3 file-missing / 64 usage / 65+
+#       internal) so callers can branch on it.
+check_repo_match() {
+  local target="$1"
+  local expected_repo="$2"
+  local subcommand="$3"
+
+  # Empty expected_repo → caller opted out (or wasn't told what to expect).
+  # The orchestrator SHOULD pass --expected-repo on every write but the
+  # check is opt-in to avoid breaking older callers / cleanup helpers that
+  # legitimately operate on cross-repo session files (e.g. the orphan
+  # session-file sweep at setup.md step 1.6).
+  if [[ -z "$expected_repo" ]]; then
+    return 0
+  fi
+
+  # File missing → not our problem here. Caller's own existence checks
+  # (and the --allow-degraded-init recovery path) handle that.
+  if [[ ! -f "$target" ]]; then
+    return 0
+  fi
+
+  local actual_repo
+  actual_repo=$(jq -r '.repo // ""' "$target" 2>/dev/null)
+
+  # Empty `.repo` field (legacy file, partial write) → don't block; the
+  # cross-repo race we're guarding against produces a populated `.repo`
+  # field that doesn't match, not an empty one.
+  if [[ -z "$actual_repo" ]]; then
+    return 0
+  fi
+
+  if [[ "$actual_repo" != "$expected_repo" ]]; then
+    cat >&2 <<EOF
+session-state.sh: ${subcommand}: cross-repo write refused (issue #365)
+  session file:   $target
+  file's .repo:   $actual_repo
+  expected repo:  $expected_repo
+  This is the cross-session contamination guard: the session file's
+  recorded repo does not match the caller's expected repo, which means
+  the caller's --session-id resolved to a session file owned by a
+  different /shipyard:do-work run. Refusing the write to avoid silently
+  corrupting another session's token attributions and session_prs.
+  If this refusal is wrong (e.g., the caller is a legitimate
+  cross-repo cleanup helper), pass --skip-repo-check to override.
+EOF
+    return 66
+  fi
+
+  return 0
 }
 
 cmd_init() {
@@ -491,6 +578,13 @@ cmd_update() {
   # avoid masking real bugs (forgotten init, wrong session-id, etc.).
   local allow_degraded_init=0
   local degraded_init_repo=""
+  # --expected-repo / --skip-repo-check are the issue #365 cross-repo
+  # write guard. When --expected-repo is set (or SHIPYARD_EXPECTED_REPO
+  # is in the env), refuse the write if the session file's .repo doesn't
+  # match. --skip-repo-check is the explicit override for legitimate
+  # cross-repo helpers (e.g., the orphan-sweep at setup.md step 1.6).
+  local expected_repo="${SHIPYARD_EXPECTED_REPO:-}"
+  local skip_repo_check=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -499,6 +593,8 @@ cmd_update() {
       --skip-timing-autoflush) skip_timing_autoflush=1; shift ;;
       --allow-degraded-init) allow_degraded_init=1; shift ;;
       --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
+      --expected-repo) expected_repo="${2:-}"; shift 2 ;;
+      --skip-repo-check) skip_repo_check=1; shift ;;
       *) echo "update: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
@@ -516,6 +612,18 @@ cmd_update() {
 
   local target
   target=$(session_path "$session_id")
+
+  # Cross-repo write guard (issue #365). Run BEFORE the file-existence /
+  # degraded-recovery branch — if the file exists and its .repo doesn't
+  # match, refuse before any other side effects. When the file is
+  # missing AND --allow-degraded-init is set, the check is a no-op (the
+  # degraded-recovery init below writes --degraded-init-repo into .repo,
+  # which is by construction what the caller expected).
+  if [[ "$skip_repo_check" -eq 0 ]]; then
+    if ! check_repo_match "$target" "$expected_repo" "update"; then
+      exit 66
+    fi
+  fi
 
   if [[ ! -f "$target" ]]; then
     if [[ "$allow_degraded_init" -eq 1 ]]; then
@@ -644,6 +752,13 @@ cmd_bump_tokens() {
   # counter increments on every degraded bump so the end-of-session
   # summary can surface a one-line banner.
   local degraded_total_only=0
+  # --expected-repo / --skip-repo-check — issue #365 cross-repo write
+  # guard, same shape as cmd_update. The cross-session contamination
+  # race specifically affects bump-tokens because that's where token
+  # attributions land; without the guard, a stash-file race silently
+  # cross-wires cost ledgers between sessions.
+  local expected_repo="${SHIPYARD_EXPECTED_REPO:-}"
+  local skip_repo_check=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -659,6 +774,8 @@ cmd_bump_tokens() {
       --allow-degraded-init) allow_degraded_init=1; shift ;;
       --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
       --degraded-total-only) degraded_total_only=1; shift ;;
+      --expected-repo) expected_repo="${2:-}"; shift 2 ;;
+      --skip-repo-check) skip_repo_check=1; shift ;;
       *) echo "bump-tokens: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
@@ -696,6 +813,14 @@ cmd_bump_tokens() {
 
   local target
   target=$(session_path "$session_id")
+
+  # Cross-repo write guard (issue #365). Same shape as cmd_update —
+  # check before the file-existence / degraded-recovery branch.
+  if [[ "$skip_repo_check" -eq 0 ]]; then
+    if ! check_repo_match "$target" "$expected_repo" "bump-tokens"; then
+      exit 66
+    fi
+  fi
 
   if [[ ! -f "$target" ]]; then
     if [[ "$allow_degraded_init" -eq 1 ]]; then
