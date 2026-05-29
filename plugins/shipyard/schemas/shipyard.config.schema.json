@@ -185,7 +185,7 @@
     "ci": {
       "type": "object",
       "additionalProperties": false,
-      "description": "CI-minute discipline knobs (issue #323). Every default preserves pre-#323 behavior — all five keys must be set non-default to engage the cost-saving paths. The end-of-session summary surfaces a `CI cost:` block whenever any key is non-default so the operator sees what got skipped.",
+      "description": "CI-minute discipline knobs (issue #323) plus drain-duration knobs (issue #374). The #323 keys default to pre-#323 behavior — they must be set non-default to engage the cost-saving paths. The #374 keys (`settled_minutes`, `max_drain_hours`) ship with active non-zero defaults (20 min / 8 h) because they replace the old hardcoded drain ceiling rather than gating an opt-in path. The end-of-session summary surfaces a `CI cost:` block whenever any #323 key is non-default so the operator sees what got skipped.",
       "properties": {
         "skip_drain_rebase": {
           "type": "boolean",
@@ -212,6 +212,18 @@
           "type": "boolean",
           "default": false,
           "description": "When true, if a `failed_prs` candidate has any check with status IN_PROGRESS / PENDING / QUEUED on the latest SHA, defer the dispatch until the run settles (the next step-D refresh re-evaluates). Prevents the double-push case where the orchestrator dispatches fix-checks against an in-progress run, the worker pushes a fix, and now TWO full CI suites are running on overlapping SHAs. Defaults to false (preserves pre-#323 behavior). Independent of `verify_check_failing_on_head_before_dispatch` — they target different races (this one: in-progress checks; that one: stale failed checks)."
+        },
+        "settled_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 20,
+          "description": "End-of-session drain: how many minutes a pending session_pr's `headRefOid` must stay unchanged before the PR counts as 'settled' (issue #374). Replaces the old global 5-poll (5-min) no-forward-progress window with a per-PR head-movement threshold. A PR whose head commit hasn't moved for `settled_minutes` is treated as settled even if its checks are still PENDING/IN_PROGRESS — auto-merge is waiting on long-running checks, not stuck. Drain exits when ALL session_prs are settled (merged/closed, `blocked:ci`, rebase-blocked, rate-limit-capped, or pending-with-head-unchanged-for-settled_minutes). Raise it for repos with very long CI (multi-shard E2E + Lighthouse) so a slow-but-healthy merge train isn't called settled prematurely; the default 20 accommodates a typical 3-shard E2E + Lighthouse cycle."
+        },
+        "max_drain_hours": {
+          "type": "number",
+          "minimum": 0.1,
+          "default": 8,
+          "description": "End-of-session drain: the ultimate wall-clock ceiling, in hours, after which drain forcibly exits even if forward progress is still observable (issue #374). Replaces the old hardcoded 120-min (2-hour) ceiling that fired on wall-clock time rather than progress signal — a healthy multi-PR merge train with full E2E sharding + release-please cascades can legitimately exceed 2 hours. The progress-based `settled_minutes` exit is the primary termination path; this is the belt-and-braces safety net so a degenerate session (runaway CI loop, infinite rebase) still can't run forever. Default 8h; lower it on cheap-CI repos where a >1h drain is itself a smell."
         },
         "_comment": { "type": "string" }
       }

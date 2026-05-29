@@ -32,7 +32,7 @@ These steps are **not** gated by concurrency — they fire identically at C=1 an
 - **Background cleanup group (the `(...) &` subshell in step 0.7).** The orphan session-file sweep (1.6), orphan orchestrator-worktree sweep (1.6.5), label create (3a), agent-worktree reap (3b), and orphan-branch triage (3c) all run in a single background subshell at every concurrency level. Skipping them at C=1 would mean orphan files / worktrees from earlier C=1 crashes accumulate forever (issue [#280](https://github.com/mattsears18/shipyard/issues/280)).
 - **Per-step setup-timing brackets** (`setup-timing.sh start` / `end` calls in steps 0.5, 1.7, 3.5, 4, 6). These are the data source for the [#258](https://github.com/mattsears18/shipyard/issues/258) measurement umbrella and the cross-session perf ledger — kept at every level. The only `setup-timing` call that's skipped at C=1 is the `step_0_7_parallel_batch` window itself (there's nothing to time when the batch doesn't run).
 - **Backlog fetch + rank + triage (step 4), divert checks (step 4.5).** The dispatch queues still need to exist and stay current at C=1; only the parallel coordination over the *fill* changes.
-- **Drain + cleanup + end-of-session summary.** Drain semantics are identical at C=1 — the per-poll merge-train watcher, the fix-rebase dispatch for `D_dirty`, the 120-min ceiling, the end-of-session HTML report — all apply unchanged.
+- **Drain + cleanup + end-of-session summary.** Drain semantics are identical at C=1 — the per-poll merge-train watcher, the fix-rebase dispatch for `D_dirty`, the progress-based exit + `max_drain_hours` ceiling, the end-of-session HTML report — all apply unchanged.
 
 ### When the inline-trivial fast path **also** fires (orthogonal to C=1)
 

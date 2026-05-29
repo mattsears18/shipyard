@@ -173,7 +173,9 @@ DEFAULTS_JQ='{
     "max_drain_rebases": null,
     "verify_check_failing_on_head_before_dispatch": false,
     "skip_speculative_rerun": true,
-    "require_in_progress_check_to_settle": false
+    "require_in_progress_check_to_settle": false,
+    "settled_minutes": 20,
+    "max_drain_hours": 8
   }
 }'
 
