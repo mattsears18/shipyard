@@ -227,6 +227,7 @@ The full shape, **zero-row mode** (everything closed this session — clean boar
 Remaining open: 0 — clean board.
 ```
 
+Config: schema validation failed at step 0.4 — rejected: <SHIPYARD_CONFIG_SCHEMA_FAILURE>; ran with built-in defaults (#367)
 Recovered from prior session: <salvaged_count> salvaged (PRs created/kept), <abandoned_count> abandoned
 Cleared stale @me self-assigns (no worktree, no PR, no branch): <stale_assigns_count> (#<N>, ...)  # omit line if stale_assigns_count == 0 (issue #303)
 Issues processed: N
@@ -278,6 +279,7 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 
 **Per-line rules** for the flat block:
 
+- `Config:` line ([#367](https://github.com/mattsears18/shipyard/issues/367)): omit entirely unless the session-local `SHIPYARD_CONFIG_SCHEMA_FAILURE` was set at [step 0.4](../do-work/setup.md#04-check-the-repo-level-opt-in-shipyardconfigjson) (i.e. the repo had a `shipyard.config.json` that failed schema validation, so the session ran on built-in defaults). When set, print the line with `<SHIPYARD_CONFIG_SCHEMA_FAILURE>` substituted by the captured rejected-field detail (the loader's per-field stderr lines, `; `-joined). Silence is the default — a clean config load (or a repo with no config at all, which gets the separate "not shipyard-initialized" warning at step 0.4) does NOT print this line. This is the end-of-session half of the non-silent-degrade fix: the warning fired once at step 0.4, and this line re-surfaces it at exit so a user who scrolled past the startup warning still sees that their per-repo policy was ignored.
 - `Drain phase`: `<reason>` is one of `all PRs settled`, `no forward progress for 5 polls`, `120-min ceiling`, or `second stop signal — drain skipped`. The merged / blocked:ci / rebase-blocked / still-pending counts partition `session_prs`.
 - `Drain-phase rebases`: omit the line entirely when both counts are zero.
 - `CI cost (#323)` block: **omit entirely** when ALL of the following hold: every `ci.*` config key is at its default AND every `ci_session_counters.*` counter is `0`. The quiet-session default is silence. When the block prints, the first line surfaces the effective `ci.*` config values (read via `shipyard-config.sh get ci.<key>`) so the operator can correlate the counters with the policy that produced them — a session with `ci.skip_drain_rebase: false` and `drain_rebases_skipped: 0` doesn't render the block, but a session with `ci.skip_drain_rebase: true` and `drain_rebases_skipped: 0` still renders it (config is non-default, even if no rebases were needed) so the operator sees the policy took effect. The `Estimated CI suites avoided` total is a rough lower bound — the actual saved CI-minute count depends on the repo's per-suite cost (a Lighthouse + E2E-shards repo at ~30 min/suite multiplies; a small Jest-only repo at ~2 min/suite multiplies less) and per-PR-vs-per-rebase semantics. The intent is to give the operator a single number they can multiply by their typical per-suite minute cost to estimate the per-session savings — not to be a billing-accurate ledger.

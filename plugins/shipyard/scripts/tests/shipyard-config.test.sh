@@ -238,6 +238,40 @@ echo '{"version":1}' > "$repo/shipyard.config.json"
 assert_exit_code "$?" 0 "valid minimal config passes validation"
 
 # --------------------------------------------------------------------------
+echo "== load (not just validate) surfaces schema failures non-silently (issue #367)"
+# The orchestrator's step 0.4 captures `load`'s exit code AND stderr to warn
+# loudly when a present-but-invalid shipyard.config.json would otherwise make
+# EFFECTIVE_CONFIG silently empty. This locks the contract step 0.4 relies on:
+#   (a) `load` against an invalid repo config exits 70 (NOT 0),
+#   (b) stdout is empty (so a naive `EFFECTIVE_CONFIG=$(... load)` would be ""),
+#   (c) stderr names each rejected field on its own indented `  .path:` line.
+echo '{"version":1,"auto_merge":{"policy":"bogus-enum"}}' > "$repo/shipyard.config.json"
+load_stdout=$("$helper" load 2>/dev/null)
+load_rc=$?
+assert_exit_code "$load_rc" 70 "load exits 70 on schema-invalid repo config"
+assert_equals "$load_stdout" "" "load emits EMPTY stdout on schema failure (the silent-degrade trap)"
+
+load_stderr=$("$helper" load 2>&1 1>/dev/null)
+assert_contains "$load_stderr" "schema validation failed" "load stderr announces schema validation failure"
+assert_contains "$load_stderr" ".auto_merge.policy"        "load stderr names the rejected field path"
+# The orchestrator extracts rejected-field lines via `grep -E '^\s+\.'` — verify
+# at least one indented dotted-path line exists for that extraction to match.
+rejected_lines=$(printf '%s\n' "$load_stderr" | grep -Ec '^[[:space:]]+\.')
+assert_equals "$([ "$rejected_lines" -ge 1 ] && echo yes || echo no)" "yes" "load stderr has >=1 indented '  .path:' line for step 0.4 extraction"
+
+# Multiple violations → multiple indented lines (the `; `-join in step 0.4
+# turns these into a single warning string).
+echo '{"version":1,"auto_merge":{"policy":"bogus"},"repo":{"owner":"Has Space"}}' > "$repo/shipyard.config.json"
+load_stderr_multi=$("$helper" load 2>&1 1>/dev/null)
+multi_lines=$(printf '%s\n' "$load_stderr_multi" | grep -Ec '^[[:space:]]+\.')
+assert_equals "$([ "$multi_lines" -ge 2 ] && echo yes || echo no)" "yes" "load stderr names multiple rejected fields when >1 violation"
+
+# Reset to valid
+echo '{"version":1}' > "$repo/shipyard.config.json"
+"$helper" load >/dev/null 2>&1
+assert_exit_code "$?" 0 "load exits 0 again after config repaired"
+
+# --------------------------------------------------------------------------
 echo "== trust.authors accepts every GitHub login shape (issue #371)"
 # The trust.authors[] items used to carry pattern ^[A-Za-z0-9][A-Za-z0-9-]*$,
 # which rejected the documented GH App alias shapes app/<name> (GraphQL) and
