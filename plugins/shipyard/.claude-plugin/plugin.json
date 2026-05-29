@@ -1,6 +1,6 @@
 {
   "name": "shipyard",
-  "version": "1.5.29",
+  "version": "1.7.0",
   "description": "Autonomous engineering loop: audits surface work, /do-work refines and dispatches, parallel workers in isolated worktrees ship the fixes.",
   "author": {
     "name": "Matt Sears",
@@ -9,7 +9,17 @@
   "homepage": "https://github.com/mattsears18/shipyard",
   "repository": "https://github.com/mattsears18/shipyard",
   "license": "MIT",
-  "keywords": ["orchestrator", "autonomous-agents", "backlog-burndown", "audit", "lighthouse", "ux", "security", "accessibility", "github-issues"],
+  "keywords": [
+    "orchestrator",
+    "autonomous-agents",
+    "backlog-burndown",
+    "audit",
+    "lighthouse",
+    "ux",
+    "security",
+    "accessibility",
+    "github-issues"
+  ],
   "permissions": {
     "deny": [
       "Bash(git commit *--no-verify*)",

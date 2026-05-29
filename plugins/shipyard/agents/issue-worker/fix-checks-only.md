@@ -85,6 +85,23 @@ On failure:
    ```bash
    gh pr checks <M> --repo <owner/repo> --json name,state,link
    ```
+1.5. **Pre-rerun flake-suspects check (the `stop-auto-rerunning` consumer side — issue #385).** Before you re-run / re-watch a failing check, ask whether it's a *known chronic flake* that a prior session escalated. Phase 2 of the flake registry writes crossed flakes to a per-repo `.shipyard/flake-suspects.txt`; the contract is that `fix-checks-only` **refuses to keep auto-rerunning** a listed flake until a human signs off (deletes the line). This is the enforcement that turns the registry from a passive ledger into the "fix the root cause instead of re-running forever" rule. **Gate the check on `flake_registry.enabled == true`** (same gate as the recording side below) — when disabled, skip this step entirely (pre-#378 behavior).
+
+   Build the suspect key from the failing check's `(workflow, job, test)` — the same pipe-joined shape `stop-auto-rerunning` wrote (`<workflow>|<job>|<test>`, test component empty when you can't pin it) — and probe the list:
+   ```bash
+   ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
+   if [[ "$ENABLED" == "true" ]]; then
+     KEY="<workflowName>|<failing job name>|<test-id-or-empty>"
+     if "${CLAUDE_PLUGIN_ROOT}/scripts/flake-enforce.sh" is-suspect --key "$KEY" --repo-root "$(git rev-parse --show-toplevel)"; then
+       # Known chronic flake — do NOT auto-rerun. The escalation (tracking issue,
+       # blocked:ci label) was already applied by the orchestrator's setup-time
+       # enforce pass; your job is to stop, not to burn fix attempts on it.
+       echo "blocked #<M> at fix-checks: chronic flake <KEY> is on .shipyard/flake-suspects.txt — auto-rerun suppressed pending human signoff (see the test-stability tracking issue)"
+       exit 0
+     fi
+   fi
+   ```
+   When the key matches, return the `blocked #<M> at fix-checks: chronic flake ...` string above verbatim and stop — do NOT fall through to re-running, and do NOT count this against the 3-attempt cap (you never attempted a fix; you deliberately declined to rerun a known flake). The orchestrator's reconcile labels the PR `blocked:ci` on a `blocked #<M> at fix-checks:` return, which is exactly the desired end state for a chronic-flake-blocked PR (the setup-time `apply-blocked-ci` action may already have applied it; the label is idempotent). When the key is NOT on the list, proceed normally to step 2.
 2. Pull failed logs. **Stream the output rather than redirecting it to a file** — a big `--log-failed` fetch piped to `> /tmp/log` produces zero stream output for its whole duration and can trip the harness's ~600s stall watchdog (worker-preamble § "Heartbeat emission around long-running commands"; issue [#372](https://github.com/mattsears18/shipyard/issues/372)). Pipe through `tee` if you also need the file:
    ```bash
    gh run view <run-id> --repo <owner/repo> --log-failed 2>&1 | tee /tmp/failed.log
@@ -119,7 +136,7 @@ ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.
 # advisory and continue — never block the `green` return on a registry write.
 ```
 
-The registry lives at `~/.shipyard/flake-registry.jsonl` (one line per event). The orchestrator reads it at setup/dispatch time via `flake-registry.sh report` / `flake-registry.sh crossed` to compute per-test flake rates and surface tests that have crossed the escalation threshold. **Phase 1 (this change) ships the write path + the read/aggregation/threshold tooling only** — the *enforcement* of the three escalation actions (`file-tracking-issue`, `stop-auto-rerunning`, `apply-blocked-ci`) is a deferred follow-up phase. So in phase 1 your job is just to honestly record the flake event when enabled; you do NOT yet stop re-running a chronic flake, file a tracking issue, or apply `blocked:ci` from this mode.
+The registry lives at `~/.shipyard/flake-registry.jsonl` (one line per event). The orchestrator reads it at setup time via `flake-registry.sh crossed` and enforces the three escalation actions through `flake-enforce.sh enforce` (issue #385, phase 2): `file-tracking-issue` opens a deduped chronic-flake tracking issue, `stop-auto-rerunning` writes the crossed key to `.shipyard/flake-suspects.txt`, and `apply-blocked-ci` labels affected PRs. **Your recording job here is unchanged** — honestly record one event per flake conclusion when enabled. The *consumption* of those events now has two sides you participate in: (1) you record events (this section), and (2) you honor the `stop-auto-rerunning` output via the pre-rerun suspects check in [fix-loop step 1.5](#fix-loop) — refusing to keep auto-rerunning a flake a prior session escalated. The `file-tracking-issue` and `apply-blocked-ci` actions are performed by the orchestrator's setup-time enforce pass, not from this mode.
 
 ## Don't
 
