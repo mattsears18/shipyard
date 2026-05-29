@@ -39,10 +39,9 @@
         "authors": {
           "type": "array",
           "items": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+            "type": "string"
           },
-          "description": "User-global trusted-author list. Repo-level trust.authors overrides this (does not merge)."
+          "description": "User-global trusted-author list. Accepts any GitHub login shape — plain logins (mattsears18), REST bot logins (sentry[bot]), and GraphQL app logins (app/sentry) — since the field is only a comparison key: an entry that matches nothing is a harmless no-op, so no pattern constraint is enforced (see issue #371). Repo-level trust.authors overrides this (does not merge)."
         },
         "_comment": { "type": "string" }
       }
