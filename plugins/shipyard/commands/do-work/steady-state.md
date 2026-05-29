@@ -983,7 +983,74 @@ When filling a slot, walk this decision tree:
 
    **2c. Speculative-rerun discipline (`ci.skip_speculative_rerun`).** Defaults to `true`. The orchestrator never invokes `gh run rerun` from anywhere in this spec — flipping the key to `false` does NOT enable speculative reruns (there's no code path that issues them). The key exists to codify the absence: any future change that wants to add `gh run rerun` calls MUST gate them on `ci.skip_speculative_rerun == false` AND document the rerun semantics in this file. A reviewer reading the `ci.*` block immediately knows the orchestrator does not speculatively re-trigger checks.
 
-   After 2a and 2b clear (or the keys are at their defaults), dispatch a fix-checks-only worker (`subagent_type: "shipyard:fix-checks-worker"` — Haiku-pinned per the table above).
+   **2d. Pre-dispatch head-branch reap (self-PID lock release).** Closes [#368](https://github.com/mattsears18/shipyard/issues/368). Before composing the fix-checks-only prompt for PR `#<M>`, the orchestrator MUST first release any agent worktree that's still holding a `git worktree --lock` on the PR's head branch with **our own session's PID**.
+
+   **The failure mode.** The fresh fix-checks-only worker lands in its own isolated worktree, then runs the safe two-step (`git fetch origin <head>` + `git switch <head>`) to land on the PR's head branch ([`fix-checks-only.md` step 1](../../agents/issue-worker/fix-checks-only.md)). When the originating issue-work worker's worktree is *still locked* against that head branch, `git switch` fails with *"is already checked out at \<path\>"* and the fresh worker bails — costing one wasted dispatch plus an orchestrator turn of manual deconflict before re-dispatch. This is the exact race [#368](https://github.com/mattsears18/shipyard/issues/368) documented: a fix-checks worker fired against a recently-shipped PR whose check went red, while the originating worker's worktree lingered (its [step A.1 immediate-reap (#282)](#a-reconcile-the-return) deferred on `peer-alive`, or its worker returned `blocked` / `errored` so the `shipped`-only A.1 reap never ran for it, or a transient `gh` failure aborted the A.1 reap). The [drain-phase pre-dispatch reap (#370)](./drain.md#pre-dispatch-head-branch-reap-self-pid-lock-release) covers the *drain* dispatch site; this 2d block extends the identical self-ancestor reap to the **steady-state** `failed_prs` dispatch site, which #282 (only fires on `shipped`, only matches branch `do-work/issue-<N>`) and #370 (drain-only) leave uncovered.
+
+   **Why it's safe to reap.** The lock holds *our orchestrator's* PID (the harness writes the orchestrator PID into every dispatched agent's worktree lock), so `classify-lock` short-circuits it to `self-ancestor` once `SHIPYARD_ORCHESTRATOR_PID` is declared — "this lock is held by an orchestrator that is itself / an ancestor of ours." The originating worker's return was already reconciled at [step A](#a-reconcile-the-return) by the time this dispatch runs; its worktree is logically done. This is the same self-ancestor reap logic [setup.md step 3b](./setup.md#3-ensure-label-exists--recover-from-prior-session) runs at session start, the A.1 `shipped`-immediate reap (#282) runs on issue-work completion, and the #370 drain pre-dispatch reap runs during drain — extended here to the mid-session steady-state fix-checks dispatch site.
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+   cd "$(git rev-parse --show-toplevel)"
+   # Declare the orchestrator PID once so classify-lock short-circuits self-locks
+   # to `self-ancestor` (issue #263) regardless of process-tree shape.
+   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+
+   # $head_ref is the PR's headRefName (already known from the failed-PR scan's
+   # snapshot — no extra `gh` round-trip needed).
+   for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
+     [ -d "$wt_dir" ] || continue
+     branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
+     [ "$branch_ref" = "$head_ref" ] || continue
+
+     name=$(basename "$wt_dir")
+     worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
+     [ -z "$worktree_path" ] && continue
+
+     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
+     lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+     [ -z "$lock_pid" ] && lock_pid="null"
+
+     if [ "$classification" = "peer-alive" ]; then
+       # A genuinely-live non-orchestrator PID holds the lock. Don't yank it.
+       # Defer; the fresh worker will bail with `blocked #<M> at fix-checks:
+       # head branch <HEAD_REF> locked in another worktree` and the PR is
+       # surfaced for the next session — same outcome as pre-#368, but only
+       # for the truly-unsafe case rather than the common self-PID case.
+       "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+         --action deferred \
+         --worktree-path "$worktree_path" \
+         --worktree-name "$name" \
+         --session-id "<session-id>" \
+         --reason "peer-alive" \
+         --lock-pid "$lock_pid" \
+         --phase "steady-state-pre-dispatch" 2>/dev/null || true
+       break
+     fi
+
+     # no-lock / dead / self-ancestor — safe to reap. The helper does the
+     # `git worktree unlock` + `git worktree remove --force` AND the audit-log
+     # write in one transaction (issue #284).
+     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+       --action reaped \
+       --worktree-path "$worktree_path" \
+       --worktree-name "$name" \
+       --session-id "<session-id>" \
+       --classification "$classification" \
+       --lock-pid "$lock_pid" \
+       --phase "steady-state-pre-dispatch" 2>/dev/null || true
+
+     # Drop the local branch ref so the fresh worker's `git switch <head>`
+     # recreates it cleanly without the "already checked out" collision.
+     git branch -D "$head_ref" 2>/dev/null || true
+     break   # at most one worktree per head branch
+   done
+   git worktree prune 2>/dev/null || true
+   ```
+
+   This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or `|| true`) so a filesystem race can't abort the steady-state loop. It runs **once per PR per dispatch**, immediately before the `Agent` dispatch for that PR. The `peer-alive` defer is intentionally conservative: it preserves the exact pre-#368 behavior for the genuinely-unsafe case (a live non-orchestrator process holding the lock), narrowing the worker bail to only the truly-unsafe locks rather than removing the safety entirely. Audit entries carry `"phase":"steady-state-pre-dispatch"` so an operator can distinguish steady-state fix-checks pre-dispatch reaps from setup-3b (session start), steady-state-A1-shipped (#282 immediate-reap), reconcile-A.0.5 (#358 crash-recovery), and drain-pre-dispatch (#370) in `~/.shipyard/reap-audit.jsonl`.
+
+   After 2a, 2b, and 2d clear (or the cost-discipline keys are at their defaults), dispatch a fix-checks-only worker (`subagent_type: "shipyard:fix-checks-worker"` — Haiku-pinned per the table above).
 
    Prompt template:
 
