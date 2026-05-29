@@ -6,7 +6,7 @@ Three phases sit at the wind-down side of the orchestrator:
 2. **Termination** — the mechanical "all queues empty" exit condition.
 3. **End-of-session drain** — the post-dispatch-loop merge-train watcher that keeps the orchestrator alive until session-opened PRs settle.
 
-All three share the same authority: they DON'T cancel in-flight work, they DON'T ask the user to confirm, they wait until the merge train is genuinely done (or until the 120-min ceiling fires). The thin entry [`commands/do-work.md`](../do-work.md) owns the [orchestrator-state struct list](../do-work.md#orchestrator-state); the steady-state loop ([`steady-state.md`](./steady-state.md)) hands off here once it can't dispatch any more work; this file hands off to [`cleanup-summary.md`](./cleanup-summary.md) once drain exits.
+All three share the same authority: they DON'T cancel in-flight work, they DON'T ask the user to confirm, they wait until the merge train is genuinely done — per the progress-based exit (every session_pr settled), with `max_drain_hours` (default 8h) as the ultimate ceiling (issue [#374](https://github.com/mattsears18/shipyard/issues/374)). The thin entry [`commands/do-work.md`](../do-work.md) owns the [orchestrator-state struct list](../do-work.md#orchestrator-state); the steady-state loop ([`steady-state.md`](./steady-state.md)) hands off here once it can't dispatch any more work; this file hands off to [`cleanup-summary.md`](./cleanup-summary.md) once drain exits.
 
 ## Soft drain
 
@@ -24,7 +24,7 @@ Substring matching is deliberately avoided. Phrases like "don't stop yet" or "I'
 2. Set `draining = true` in TodoWrite.
 3. Steady-state Step A (reconcile) and Step B (release slot) continue normally — in-flight agents must still be properly recorded as they complete.
 4. Steady-state Step C (dispatch) and Step D (periodic refresh) become no-ops while `draining = true` (the guards in those steps handle this).
-5. When `in_flight` empties → run the [end-of-session drain](#end-of-session-drain) (no-progress termination — keeps polling until the merge train is stalled, with a 120-min safety ceiling) → end-of-session cleanup → end-of-session summary → exit.
+5. When `in_flight` empties → run the [end-of-session drain](#end-of-session-drain) (progress-based termination — keeps polling until every session_pr is settled, with a `max_drain_hours` safety ceiling) → end-of-session cleanup → end-of-session summary → exit.
 
 **Second trigger** — typing a stop phrase again while already draining — still waits for `in_flight` to empty (in-flight agents are never hard-cancelled), but **skips the end-of-session drain phase entirely** and goes straight to cleanup + summary. Whatever's still pending in `session_prs` at that moment lands in the summary as "still in flight at exit."
 
@@ -142,16 +142,25 @@ Once the four-step assertion passes AND step 5 re-validation clears (or was a no
 
 ## End-of-session drain
 
-Once termination conditions are met, some PRs may still be `pending` CI or waiting for auto-merge. **Don't terminate while the merge train is still draining.** The drain phase keeps the orchestrator alive past the dispatch loop's end, watching the merge train and dispatching fix-checks workers against newly-red PRs, until either every session-opened PR has settled OR the train has clearly stalled. See [RATIONALE → End-of-session drain](../do-work-RATIONALE.md#end-of-session-drain--why-it-exists-past-the-dispatch-loops-end).
+Once termination conditions are met, some PRs may still be `pending` CI or waiting for auto-merge. **Don't terminate while the merge train is still draining.** The drain phase keeps the orchestrator alive past the dispatch loop's end, watching the merge train and dispatching fix-checks workers against newly-red PRs, until every session-opened PR has settled (progress-based — per-PR head-movement quiescence, not a wall-clock window; issue [#374](https://github.com/mattsears18/shipyard/issues/374)) OR the `max_drain_hours` ceiling fires. See [RATIONALE → End-of-session drain](../do-work-RATIONALE.md#end-of-session-drain--why-it-exists-past-the-dispatch-loops-end).
 
 ### Drain protocol
 
 **Initial snapshot.** Capture the set of PRs the orchestrator opened this session (`session_prs` — track this from step A's `shipped` reconciles throughout the run). These are the PRs whose status determines drain termination. Pre-existing PRs the orchestrator only fixed via fix-checks count too (they're authored by `@me` and shipyard touched them this session). Inherited `@me` PRs left `DIRTY`-but-green by a *prior* session are also in `session_prs` — they were adopted into this session's ownership set by [setup step 5.7](./setup.md#57-seed-inherited-dirty-prs-into-session_prs-cross-session-drain-hand-off) (or step D's failed-PR scan at C=1) so this drain's `D_dirty` classifier can dispatch a fix-rebase worker against them; closes [#373](https://github.com/mattsears18/shipyard/issues/373). PRs from other authors don't.
 
-Also initialize two per-session structures that gate fix-rebase re-dispatch:
+Also initialize three per-session structures that gate fix-rebase re-dispatch and progress-based termination:
 
 - `rebase_blocked_prs = {}` — the per-session set of PR numbers that returned `blocked rebase` from a fix-rebase dispatch. A PR that blocks on rebase once doesn't get re-dispatched within the same session, even if it stays DIRTY — re-dispatching against a non-trivial conflict would just produce the same `blocked rebase` outcome and burn another worker. The set counts toward the drain's "settled" definition so a non-trivially-conflicted PR doesn't keep the drain alive indefinitely.
 - `rebase_success_counts = {}` — a per-session map of `<pr-number> → <count>` tracking how many times each PR has returned `rebased` (NOT `blocked rebase`) from a fix-rebase dispatch this session. A successful rebase that gets undone by a subsequent sibling merge is a winnable race — the merge train can land the rebased branch if CI finishes faster than the next conflicting merge — so the per-poll dispatcher SHOULD re-dispatch fix-rebase against a PR that's gone DIRTY again. The map caps total cost at 3 successful rebases per PR per session (same number as the fix-checks 3-attempt circuit breaker); a PR that hits the cap is treated as "settled — merge train moving faster than rebase can keep up, defer to next session" and surfaced in the end-of-session summary as still-DIRTY.
+- `head_unchanged_since = {}` — a per-session map of `<pr-number> → {oid, since}` tracking each open PR's last-observed `headRefOid` and the UTC timestamp it was first observed at that value (issue [#374](https://github.com/mattsears18/shipyard/issues/374)). This is the progress signal that replaces the old wall-clock ceiling: a PR whose head commit hasn't moved for `settled_minutes` (config `ci.settled_minutes`, default 20) is "settled" even if its checks are still pending — auto-merge is waiting on long-running CI, not stuck. Every poll, for each open PR: if its current `headRefOid` differs from the stored `oid` (or there's no stored entry), reset the entry to `{oid: <current>, since: <now>}`; otherwise leave `since` untouched. The PR's "head unchanged for" duration is `now - head_unchanged_since[<pr>].since`. A head-commit movement (a fresh push, a successful rebase force-push) resets the clock, so a PR actively being worked never counts as settled.
+
+Read the two #374 duration knobs once at drain entry (they don't change mid-session):
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+settled_minutes=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.settled_minutes 2>/dev/null || echo 20)
+max_drain_hours=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.max_drain_hours 2>/dev/null || echo 8)
+```
 
 The two structures are intentionally distinct: `rebase_blocked_prs` is the **deterministic-failure** gate (the same conflict will produce the same outcome on retry — don't waste a worker), `rebase_success_counts` is the **rate-limit** gate (the merge train is racing rebases — cap the spend without giving up on the first race). Conflating them — the spec's original "one-shot per PR per session" language — caused the race documented in [#265](https://github.com/mattsears18/shipyard/issues/265), where a successfully-rebased PR couldn't recover from a sibling merge re-introducing DIRTY.
 
@@ -189,7 +198,7 @@ The wrapper auto-chunks at 50 aliases per query (override via `SHIPYARD_GH_BATCH
 - `R_new` = PRs whose rollup contains a hard failure (`FAILURE` / `ERROR` / `TIMED_OUT` / `CANCELLED` / `ACTION_REQUIRED`) **on the latest run per check name** AND are NOT carrying `blocked:ci` AND are not already in `in_flight` or `failed_prs`
 - `D_dirty` = PRs whose `mergeStateStatus == "DIRTY"` AND have **no** hard-failure check **on the latest run per check name** (rollup is fully `SUCCESS` / `SKIPPED` / `NEUTRAL` / `PENDING` / `IN_PROGRESS` / `QUEUED`) AND are NOT in `in_flight` AND are NOT in `rebase_blocked_prs` (the prior dispatch returned `blocked rebase` — re-dispatching would produce the same conflict) AND have `rebase_success_counts[<pr>] < 3` (PRs that have been successfully rebased 3 times in this session are rate-limit-capped and treated as settled — the merge train is advancing faster than rebase can keep up, defer to next session). A PR that was successfully rebased earlier this session and has since gone DIRTY again from a sibling merge IS in `D_dirty` as long as its success-count is under cap — a successful rebase doesn't gate future re-dispatches the way a `blocked rebase` does.
 - `B` = PRs carrying `blocked:ci` (these are "settled — human needs to look")
-- `P_settled` = PRs whose rollup is fully `PENDING` / `IN_PROGRESS` / `QUEUED` AND whose `headRefOid` hasn't changed since the previous poll (auto-merge waiting on long-running checks)
+- `P_settled` = PRs whose rollup is fully `PENDING` / `IN_PROGRESS` / `QUEUED` AND whose `headRefOid` has been unchanged for at least `settled_minutes` (i.e. `now - head_unchanged_since[<pr>].since >= settled_minutes` — auto-merge is waiting on long-running checks, not stuck; issue [#374](https://github.com/mattsears18/shipyard/issues/374)). Before #374 this was "unchanged since the *previous poll*" — a single 60s interval — which conflated "head hasn't moved for one minute" with "settled." A pending PR mid-CI-run trivially has an unchanged head between two adjacent polls; the `settled_minutes` threshold (default 20) is what distinguishes a healthy-but-slow merge train from a genuinely stalled one. First update `head_unchanged_since[<pr>]` (reset on head movement, else leave `since` untouched) so this comparison reads the freshly-maintained timestamp.
 
 **Latest-per-name semantics for `R_new` and `D_dirty`** (issue [#333](https://github.com/mattsears18/shipyard/issues/333)). `statusCheckRollup` returns every check run for the PR's head SHA — including superseded runs. A check that ran, failed, was re-triggered, and passed appears twice (one FAILURE entry + one SUCCESS entry). A naïve `.statusCheckRollup[] | select(.conclusion=="FAILURE")` walk would (a) keep already-fixed PRs in `R_new` forever, dispatching pointless fix-checks workers that return `noop: already green`, and (b) keep already-fixed PRs OUT of `D_dirty`, sending the drain-phase fix-rebase worker the false signal "this PR has failing checks — bail" when in fact it's green. Both failure modes were observed in lightwork session `c6afe19d-a6a6-40e4-9eb8-de409d046a49` against PRs #1193 and #1211. De-duplicate by check name and take the most recent entry per check (by `completedAt`, fallback `startedAt`):
 
@@ -208,7 +217,7 @@ The `group_by(.name) | map(... | last)` reduction is load-bearing: it collapses 
 
 **Defense-in-depth advisory log.** When the orchestrator's snapshot for a PR says `fails > 0` based on the raw rollup but `fails == 0` based on the latest-per-name projection (i.e., the *only* failure entries are stale-superseded), emit `[stale-rollup-detected] PR #<M> has <N> stale FAILURE entries superseded by later SUCCESS; treating as green` to the orchestrator log before proceeding. Surfaces the failure mode for telemetry without blocking the dispatch.
 
-A PR is **settled** when any of: it's merged/closed, it's labeled `blocked:ci`, it has had a `blocked rebase` return this session (membership in `rebase_blocked_prs`), it has hit the rate-limit cap (`rebase_success_counts[<pr>] >= 3` — three successful rebases in one session, but the merge train keeps re-DIRTY-ing it; surrender for this session and let the next pick it up), or all its checks are pending AND the head commit hasn't moved AND `P_settled` has been true for it across the last 5 polls (i.e. no churn).
+A PR is **settled** when any of: it's merged/closed, it's labeled `blocked:ci`, it has had a `blocked rebase` return this session (membership in `rebase_blocked_prs`), it has hit the rate-limit cap (`rebase_success_counts[<pr>] >= 3` — three successful rebases in one session, but the merge train keeps re-DIRTY-ing it; surrender for this session and let the next pick it up), or membership in `P_settled` (its checks are all pending AND its head commit has been unchanged for at least `settled_minutes`). The progress signal — per-PR head-commit movement, not the wall clock — is what the `settled_minutes` threshold reads (issue [#374](https://github.com/mattsears18/shipyard/issues/374)). A PR actively churning (head moving every few minutes from rebases or pushes) never reaches the `settled_minutes` threshold and keeps the drain alive; a PR whose head went quiet 20+ min ago is settled regardless of how long the overall session has been running.
 
 ### Pre-dispatch head-branch reap (self-PID lock release)
 
@@ -350,28 +359,31 @@ This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or
    - **`errored`** — no bookkeeping change (matches the existing pattern for transient worker errors). The PR may re-enter `D_dirty` on the next poll and get re-dispatched naturally.
 
    This split fixes the merge-train race documented in [#265](https://github.com/mattsears18/shipyard/issues/265): a successful rebase followed by a sibling merge re-introducing DIRTY is a winnable race, NOT a stuck state. Capping at 3 successful rebases keeps the worst-case cost bounded (≤3 Haiku-pinned dispatches per PR per session) while letting normal merge-train races resolve on their own.
-3. Update the rolling 5-poll window of `M_since_last` values and the in-flight worker counts (fix-checks + fix-rebase combined).
+3. Update the per-PR `head_unchanged_since` map (reset on head movement, else leave `since` untouched — see the [Initial snapshot](#drain-protocol) structure) and the in-flight worker counts (fix-checks + fix-rebase combined). `M_since_last` feeds the status line's `merged_this_poll` token; termination no longer reads a rolling no-progress window (it's per-PR settle now, issue [#374](https://github.com/mattsears18/shipyard/issues/374)).
 4. Print one drain status line per poll:
    ```
-   [drain] open=<O> merged_this_poll=<M_since_last> newly_red=<R_new> dirty=<D_dirty> blocked_ci=<B> rebase_blocked=<|rebase_blocked_prs|> rebase_capped=<count of PRs where rebase_success_counts[<pr>] >= 3> in_flight=<n>(fix-checks=<a>, fix-rebase=<b>) · elapsed=<MM:SS>
+   [drain] open=<O> merged_this_poll=<M_since_last> newly_red=<R_new> dirty=<D_dirty> blocked_ci=<B> rebase_blocked=<|rebase_blocked_prs|> rebase_capped=<count of PRs where rebase_success_counts[<pr>] >= 3> in_flight=<n>(fix-checks=<a>, fix-rebase=<b>) · elapsed=<MM:SS>/<max_drain_hours>h
    ```
 
-   `rebase_capped` is the count of PRs that hit the 3-successful-rebase rate-limit cap — distinct from `rebase_blocked` because the failure mode is different (race against a fast merge train, not a deterministic conflict). Both classes show up in the end-of-session summary as still-DIRTY PRs needing the next session's attention.
+   `rebase_capped` is the count of PRs that hit the 3-successful-rebase rate-limit cap — distinct from `rebase_blocked` because the failure mode is different (race against a fast merge train, not a deterministic conflict). Both classes show up in the end-of-session summary as still-DIRTY PRs needing the next session's attention. The `elapsed` token now carries the `max_drain_hours` ceiling as its denominator so the operator can see how much of the ultimate budget is consumed (issue [#374](https://github.com/mattsears18/shipyard/issues/374)).
 
-**Termination criterion (forward-progress rule).** Drain continues as long as **any** of these is true:
+   **Per-PR progress detail (issue [#374](https://github.com/mattsears18/shipyard/issues/374)).** For each still-pending PR (member of neither merged/closed nor `blocked:ci`), print one indented follow-on line so the operator can watch the progress signal that determines settle:
 
-- A merge or close happened in the last 5 polls (`sum(M_since_last) > 0` over the trailing 5-min window), OR
+   ```
+       PR #<M>: head unchanged <H>m / <settled_minutes>m settled-threshold (checks: <pending|green|dirty>)
+   ```
+
+   `<H>` is `now - head_unchanged_since[<M>].since` in whole minutes. A PR that crosses `settled_minutes` reads e.g. `head unchanged 21m / 20m settled-threshold` and is now a member of `P_settled`. This is the "bonus" surface the issue asked for — it makes the otherwise-invisible head-movement clock legible while drain works.
+
+**Termination criterion (progress-based, issue [#374](https://github.com/mattsears18/shipyard/issues/374)).** The exit signal is **per-PR progress**, not the wall clock. Drain continues as long as **any** PR in `session_prs` is NOT yet settled — i.e. **any** of these is true:
+
 - Any fix-checks OR fix-rebase worker is in flight, OR
-- Any PR has had a rollup state transition in the last 5 polls (pending → green/failure, head-commit change, `mergeStateStatus` transition including DIRTY → CLEAN after a rebase, etc.)
+- Any PR is still open with a non-`blocked:ci` rollup AND its head commit has moved within the last `settled_minutes` (it's actively churning — fresh push, rebase force-push, or a check transition that re-triggered the head), OR
+- Any PR is open, not `blocked:ci`, not in `rebase_blocked_prs`, not rate-limit-capped, and its checks have not been pending-with-unmoved-head for `settled_minutes` yet (it hasn't crossed the settle threshold).
 
-Drain terminates when **all** of the following are true for 5 consecutive polls (i.e. 5 min of zero forward progress):
+Drain terminates the moment **every** PR in `session_prs` is settled AND no fix-checks / fix-rebase worker is in flight. A PR is settled per the [settled definition above](#drain-protocol): merged/closed, `blocked:ci`, in `rebase_blocked_prs`, rate-limit-capped (`rebase_success_counts[<pr>] >= 3`), or in `P_settled` (pending with `headRefOid` unchanged for `settled_minutes`). There is **no fixed 5-poll no-progress window** anymore — the per-PR `settled_minutes` head-movement threshold subsumes it. A multi-PR merge train with full E2E sharding + release-please cascades that legitimately takes >2h to land is no longer cut off mid-flight, because each PR stays unsettled exactly as long as its head keeps moving (rebases re-DIRTY-ing siblings keep resetting the clock); drain exits only once the train has genuinely gone quiet for `settled_minutes` per PR.
 
-- No PR has merged or closed.
-- No fix-checks or fix-rebase worker is in flight.
-- No rollup state has changed.
-- Every PR in `session_prs` is either (a) merged/closed, (b) `blocked:ci`, (c) in `rebase_blocked_prs` (a rebase attempt returned `blocked rebase` — non-trivial conflict), (d) rate-limit-capped (`rebase_success_counts[<pr>] >= 3` — the merge train is racing rebases faster than they can settle), or (e) pending with no head-commit movement.
-
-**Hard ceiling: 120 min.** As a safety net against degenerate cases (a 90-minute test suite, a runaway CI loop), drain forcibly exits at the 120-min mark even if forward progress is still observable. Surface this in the summary as `drain exited at 120-min ceiling — <n> PRs still pending`.
+**Ultimate ceiling: `max_drain_hours` (config `ci.max_drain_hours`, default 8h).** As a belt-and-braces safety net against degenerate cases (a runaway CI loop, an infinite rebase that keeps moving the head every poll so no PR ever settles), drain forcibly exits once total drain elapsed exceeds `max_drain_hours`, even if forward progress is still observable. This replaces the old hardcoded 120-min ceiling (issue [#374](https://github.com/mattsears18/shipyard/issues/374)) — the old value fired on wall-clock time alone, killing healthy-but-slow merge trains; the progress-based exit above is now the primary path and `max_drain_hours` is the rarely-hit outer bound. Surface a ceiling exit in the summary as `drain exited at max_drain_hours ceiling (<X>h) — <n> PRs still pending`.
 
 **On exit, regardless of how drain terminated**: report the final state of every PR in `session_prs` in the [end-of-session summary](./cleanup-summary.md#end-of-session-summary), separated by status (merged ✓ / blocked:ci / still-pending). The user can re-run `/do-work` later to sweep what's left.
 

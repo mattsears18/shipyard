@@ -532,6 +532,9 @@ assert_equals "$("$helper" get ci.skip_speculative_rerun)"                      
 "$helper" get ci.max_drain_rebases 2>/dev/null
 assert_exit_code "$?" 3 "ci.max_drain_rebases default is null (get exit-3s on null)"
 assert_equals "$("$helper" get ci.skip_drain_rebase --with-source | cut -f2)" "defaults" "ci.skip_drain_rebase source is defaults"
+# #374 drain-duration knobs ship with active non-zero defaults (not opt-in gates)
+assert_equals "$("$helper" get ci.settled_minutes)" "20" "ci.settled_minutes default is 20 (#374)"
+assert_equals "$("$helper" get ci.max_drain_hours)"  "8"  "ci.max_drain_hours default is 8 (#374)"
 
 # Setting ci.skip_drain_rebase = true (the headline cost-discipline flip)
 "$helper" set ci.skip_drain_rebase true --repo
@@ -545,6 +548,26 @@ assert_equals "$("$helper" get ci.max_drain_rebases)" "3" "set ci.max_drain_reba
 # Setting the verify-stale-failure flag
 "$helper" set ci.verify_check_failing_on_head_before_dispatch true --repo
 assert_equals "$("$helper" get ci.verify_check_failing_on_head_before_dispatch)" "true" "set ci.verify_check_failing_on_head_before_dispatch round-trips"
+
+# Setting the #374 drain-duration knobs
+"$helper" set ci.settled_minutes 30 --repo
+assert_equals "$("$helper" get ci.settled_minutes)" "30" "set ci.settled_minutes=30 round-trips as integer (#374)"
+"$helper" set ci.max_drain_hours 12 --repo
+assert_equals "$("$helper" get ci.max_drain_hours)" "12" "set ci.max_drain_hours=12 round-trips (#374)"
+
+# Schema validation rejects settled_minutes below minimum (minimum: 1)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "ci": { "settled_minutes": 0 } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "ci.settled_minutes rejects value below minimum 1 (#374)"
+
+# Schema validation rejects max_drain_hours below minimum (minimum: 0.1)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "ci": { "max_drain_hours": 0 } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "ci.max_drain_hours rejects value below minimum 0.1 (#374)"
 
 # Schema validation rejects non-boolean for skip_drain_rebase
 cat > "$repo/shipyard.config.json" <<'JSON'

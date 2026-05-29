@@ -401,6 +401,23 @@ assert_contains "$rationale_path" \
   'CI-minute discipline (issue #323)' \
   "RATIONALE.md carries the worked-example section (#323)"
 
+# (16.5) Progress-based drain termination replaces the wall-clock ceiling (issue #374).
+#   - drain.md tracks per-PR head_unchanged_since and exits on settled_minutes.
+#   - drain.md's ultimate ceiling is max_drain_hours, NOT the old hardcoded 120 min.
+#   - the old "120-min" / "120 min" wall-clock ceiling string is gone from drain.md.
+assert_contains "$drain_path" \
+  'head_unchanged_since' \
+  "drain.md tracks per-PR head_unchanged_since for progress-based settle (#374)"
+assert_contains "$drain_path" \
+  'max_drain_hours' \
+  "drain.md's ultimate ceiling is max_drain_hours, not 120 min (#374)"
+assert_contains "$drain_path" \
+  'settled_minutes' \
+  "drain.md settle threshold is the configurable settled_minutes (#374)"
+assert_not_contains "$drain_path" \
+  'Hard ceiling: 120 min' \
+  "drain.md no longer carries the 'Hard ceiling: 120 min' behavioral rule (#374; a historical-reference mention is fine)"
+
 # (17) Per-completion worktree reap at step B (issue #334).
 #
 # The A.1 `shipped #<N>` reap (#282) only fires on issue-work-mode `shipped`
