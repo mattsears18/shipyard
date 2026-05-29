@@ -238,6 +238,36 @@ echo '{"version":1}' > "$repo/shipyard.config.json"
 assert_exit_code "$?" 0 "valid minimal config passes validation"
 
 # --------------------------------------------------------------------------
+echo "== trust.authors accepts every GitHub login shape (issue #371)"
+# The trust.authors[] items used to carry pattern ^[A-Za-z0-9][A-Za-z0-9-]*$,
+# which rejected the documented GH App alias shapes app/<name> (GraphQL) and
+# <name>[bot] (REST) — the exact forms setup.md § "GH App alias normalization"
+# claims work. The pattern was dropped: the field is only a comparison key, so
+# an entry that matches nothing is a harmless no-op. Items must still be strings.
+
+# Repo layer (validated against shipyard.config.schema.json): a mixed array of
+# plain login, REST bot, GraphQL app, dependabot bot, and a nonsense-but-string
+# entry all load cleanly.
+echo '{"version":1,"trust":{"authors":["mattsears18","sentry[bot]","app/sentry","dependabot[bot]","not-a-real-user"]}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "trust.authors (repo) accepts mixed login shapes incl. app/sentry and sentry[bot]"
+
+# User layer (validated against shipyard.user-config.schema.json): same shapes.
+# (User schema requires version.)
+echo '{"version":1,"trust":{"authors":["alice","app/sentry","dependabot[bot]"]}}' > "$home/config.json"
+"$helper" validate --layer user
+assert_exit_code "$?" 0 "trust.authors (user) accepts mixed login shapes incl. app/sentry"
+rm -f "$home/config.json"
+
+# Non-string items are still rejected (items: { type: string }).
+echo '{"version":1,"trust":{"authors":["alice",42]}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "trust.authors rejects non-string (number) item"
+
+# Reset to valid
+echo '{"version":1}' > "$repo/shipyard.config.json"
+
+# --------------------------------------------------------------------------
 echo "== secret-name forbidden surface"
 # Any key matching /token|secret|api_key|password|credential/i should be
 # rejected regardless of whether the schema accepts it (the schema also

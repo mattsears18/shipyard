@@ -51,10 +51,9 @@
         "authors": {
           "type": "array",
           "items": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+            "type": "string"
           },
-          "description": "GitHub usernames whose issues are dispatch-eligible without external-author gating. Overrides the user-global trusted-authors list (does not merge — repo override is authoritative)."
+          "description": "GitHub author identities whose issues are dispatch-eligible without external-author gating. Accepts any GitHub login shape — plain logins (mattsears18), REST bot logins (sentry[bot]), and GraphQL app logins (app/sentry) — since the field is only a comparison key: an entry that matches nothing is a harmless no-op, so no pattern constraint is enforced (see issue #371). Overrides the user-global trusted-authors list (does not merge — repo override is authoritative)."
         },
         "_comment": { "type": "string" }
       }
