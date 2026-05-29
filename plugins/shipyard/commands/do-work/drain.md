@@ -210,10 +210,80 @@ The `group_by(.name) | map(... | last)` reduction is load-bearing: it collapses 
 
 A PR is **settled** when any of: it's merged/closed, it's labeled `blocked:ci`, it has had a `blocked rebase` return this session (membership in `rebase_blocked_prs`), it has hit the rate-limit cap (`rebase_success_counts[<pr>] >= 3` — three successful rebases in one session, but the merge train keeps re-DIRTY-ing it; surrender for this session and let the next pick it up), or all its checks are pending AND the head commit hasn't moved AND `P_settled` has been true for it across the last 5 polls (i.e. no churn).
 
+### Pre-dispatch head-branch reap (self-PID lock release)
+
+Closes [#370](https://github.com/mattsears18/shipyard/issues/370). Before dispatching **any** drain-phase fix-checks-only or fix-rebase worker (per-poll actions 1 and 2 below), the orchestrator MUST first release any agent worktree that's still holding a `git worktree --lock` on the PR's head branch with **our own session's PID**.
+
+**The failure mode.** A fresh drain-phase worker lands in its own isolated worktree, then runs the safe two-step (`git fetch origin <head>` + `git switch <head>`) to land on the PR's head branch (`fix-checks-only.md` step 1 / `fix-rebase.md` step 1). When the original issue-work worker's worktree is *still locked* against that head branch — because the [step A.1 immediate-reap (#282)](./steady-state.md#a-reconcile-the-return) deferred on `peer-alive`, or the worker returned `blocked` / `errored` (so the A.1 `shipped`-only reap never ran for it), or a transient `gh` failure aborted the reap — `git switch` fails with *"is already checked out at \<path\>"* and the worker bails with `blocked rebase #<M>: head branch <HEAD_REF> locked in another worktree` (`fix-rebase.md` step 1) or `Cannot apply fix to PR branch — <head> is locked by another worktree` (fix-checks-only). The fresh worker has already identified the correct fix; it just can't push it. Since the orchestrator's own end-of-session reap (cleanup-summary step 3b) runs *after* drain, drain-phase dispatches always race the lock — and drain is exactly where fix-rebase / fix-checks dispatches are supposed to land ([`dont.md`](./dont.md) bans fix-rebase outside drain). Observed in lightwork session `do-work-20260528T015557Z-14129`: 3 PRs (#1355, #1361, #1363) all bailed identically against self-PID-locked head branches.
+
+**Why it's safe to reap.** The lock holds *our orchestrator's* PID (the harness writes the orchestrator PID into every dispatched agent's worktree lock). `classify-lock` short-circuits such a lock to `self-ancestor` once `SHIPYARD_ORCHESTRATOR_PID` is declared — which means "this lock is held by an orchestrator that is itself / an ancestor of ours, about to retire its own worktree." The original worker's return was already reconciled at [step A](./steady-state.md#a-reconcile-the-return) by the time drain runs; its worktree is logically done. This is the same self-ancestor reap logic [setup.md step 3b](./setup.md#3-ensure-label-exists--recover-from-prior-session) runs at session start and the A.1 `shipped`-immediate reap (#282) runs on issue-work completion — extended to the mid-session drain dispatch site for PRs whose originating worker did NOT take the `shipped` path (so A.1 never reaped them).
+
+**The reap.** For each PR `#<M>` the drain is about to dispatch a worker against, resolve its head branch, find any `agent-*` worktree locked against that branch, and reap it iff the lock classifies as reapable (`no-lock` / `dead` / `self-ancestor`). Defer only on `peer-alive` (a genuinely-live *non-orchestrator* PID — never expected here, but the belt-and-suspenders defer matches A.1's posture):
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+cd "$(git rev-parse --show-toplevel)"
+# Declare the orchestrator PID once so classify-lock short-circuits self-locks
+# to `self-ancestor` (issue #263) regardless of process-tree shape.
+export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+
+# $head_ref is the PR's headRefName (already in the drain snapshot's
+# `headRefName` field — no extra `gh` round-trip needed).
+for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
+  [ -d "$wt_dir" ] || continue
+  branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
+  [ "$branch_ref" = "$head_ref" ] || continue
+
+  name=$(basename "$wt_dir")
+  worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
+  [ -z "$worktree_path" ] && continue
+
+  classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
+  lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+  [ -z "$lock_pid" ] && lock_pid="null"
+
+  if [ "$classification" = "peer-alive" ]; then
+    # A genuinely-live non-orchestrator PID holds the lock. Don't yank it.
+    # Defer; the fresh worker will bail with `blocked rebase` and the PR is
+    # surfaced in the summary — same outcome as pre-#370, but only for the
+    # truly-unsafe case rather than the common self-PID case.
+    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      --action deferred \
+      --worktree-path "$worktree_path" \
+      --worktree-name "$name" \
+      --session-id "<session-id>" \
+      --reason "peer-alive" \
+      --lock-pid "$lock_pid" \
+      --phase "drain-pre-dispatch" 2>/dev/null || true
+    break
+  fi
+
+  # no-lock / dead / self-ancestor — safe to reap. The helper does the
+  # `git worktree unlock` + `git worktree remove --force` AND the audit-log
+  # write in one transaction (issue #284).
+  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+    --action reaped \
+    --worktree-path "$worktree_path" \
+    --worktree-name "$name" \
+    --session-id "<session-id>" \
+    --classification "$classification" \
+    --lock-pid "$lock_pid" \
+    --phase "drain-pre-dispatch" 2>/dev/null || true
+
+  # Drop the local branch ref so the fresh worker's `git switch <head>`
+  # recreates it cleanly without the "already checked out" collision.
+  git branch -D "$head_ref" 2>/dev/null || true
+  break   # at most one worktree per head branch
+done
+git worktree prune 2>/dev/null || true
+```
+
+This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or `|| true`) so a filesystem race can't abort the drain poll. It runs **once per PR per dispatch**, immediately before the `Agent` dispatch for that PR — NOT once per poll across all PRs (a PR not being dispatched this poll, e.g. one held back by the `max_drain_rebases` cap, doesn't need its lock released yet). The `peer-alive` defer is intentionally conservative: it preserves the exact pre-#370 behavior for the genuinely-unsafe case (a live non-orchestrator process holding the lock), so #370's fix narrows the bail surface to only the truly-unsafe locks rather than removing the safety entirely. Audit entries carry `"phase":"drain-pre-dispatch"` so an operator can distinguish drain-phase reaps from setup-3b (session start), steady-state-A1-shipped (#282 immediate-reap), and reconcile-A.0.5 (#358 crash-recovery) in `~/.shipyard/reap-audit.jsonl`.
+
 **Per-poll actions.**
 
-1. If `R_new > 0`: push the newly-red PRs onto `failed_prs` (deduped) and dispatch fix-checks-only workers against them — same `--concurrency` cap, same 3-attempt rule, same `blocked:ci` stamp on exhaustion that step A enforces. Drain runs the same dispatcher logic step C uses, just with `failed_prs` as the only queue that's still drainable (no new issue work, no diverts; `divert_queue` is intentionally NOT re-evaluated during drain — a red main mid-drain becomes next session's problem because dispatching a fix-main-ci agent here would extend the session indefinitely).
-2. If `D_dirty > 0`: dispatch a fix-rebase worker for each, **subject to the `--concurrency` cap** (combined fix-checks + fix-rebase in-flight count must not exceed `--concurrency`) **AND the CI-minute config gates from issue [#323](https://github.com/mattsears18/shipyard/issues/323)**.
+1. If `R_new > 0`: push the newly-red PRs onto `failed_prs` (deduped) and dispatch fix-checks-only workers against them — same `--concurrency` cap, same 3-attempt rule, same `blocked:ci` stamp on exhaustion that step A enforces. Drain runs the same dispatcher logic step C uses, just with `failed_prs` as the only queue that's still drainable (no new issue work, no diverts; `divert_queue` is intentionally NOT re-evaluated during drain — a red main mid-drain becomes next session's problem because dispatching a fix-main-ci agent here would extend the session indefinitely). **Before each dispatch, run the [pre-dispatch head-branch reap](#pre-dispatch-head-branch-reap-self-pid-lock-release) against that PR's head branch** so the fresh fix-checks worker's `git switch <head>` doesn't collide with a self-PID-locked worktree from the originating worker (#370).
+2. If `D_dirty > 0`: dispatch a fix-rebase worker for each, **subject to the `--concurrency` cap** (combined fix-checks + fix-rebase in-flight count must not exceed `--concurrency`) **AND the CI-minute config gates from issue [#323](https://github.com/mattsears18/shipyard/issues/323)**. **Before each dispatch, run the [pre-dispatch head-branch reap](#pre-dispatch-head-branch-reap-self-pid-lock-release) against that PR's head branch** (#370) — this is the load-bearing call for fix-rebase, the mode `dont.md` confines to drain and the one the #370 repro caught bailing on every self-PID-locked PR.
 
    **CI-minute pre-dispatch gates (gated on `ci.*` config keys).** Before the per-PR re-dispatch policy below, check the config keys in this order — both default to off (preserves pre-#323 behavior); flip them in `shipyard.config.json`'s `ci.*` block to engage:
 
