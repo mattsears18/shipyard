@@ -99,6 +99,28 @@ On failure:
 
 **Record root-cause context before returning `green`.** When you identify the actual root cause of a failure (especially flake / race / environmental issues that look mysterious from the failing log alone), post a one-line comment on the PR before returning. Format: `Fix-checks: <one-line root cause>` (e.g., "Fix-checks: flaky because of a race in the test setup — serialized the fixture init"). This stops the next session's auditor or human reviewer from re-flagging the same failure mode without context. Routine "applied the obvious fix to the obvious error" cases don't need a comment — the diff is the explanation. Use `gh pr comment <M> --repo <owner/repo> --body "..."`; if it errors, log an advisory and continue — don't block the return on a comment failure. This is the fix-checks-only analog of issue-work mode's step 5.5 decision-context rule.
 
+**Record a flake event in the cross-PR flake registry when you conclude a failure was a flake (issue #378, phase 1).** Each `fix-checks-only` worker handles flakes in isolation — none of them sees that the SAME test has flaked on N other PRs this week. The flake registry is the session-spanning record that surfaces the chronic pattern so it can be escalated rather than silently re-run forever. **Gate this on config: only record when `flake_registry.enabled == true`** in the effective config (it defaults to `false`, preserving pre-#378 behavior). When enabled, the orchestrator's dispatch prompt will say so; if you're unsure whether it's enabled, you can probe it yourself:
+
+```bash
+# Only record if the registry is enabled for this repo.
+ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
+```
+
+**When to record.** Record exactly one event per (workflow, job, test) failure that you concluded was a *flake* — a transient/environmental/race failure that was NOT a real defect in the PR's diff. Concretely: you re-ran the check (or pushed a no-op-equivalent flake-mitigation) and it went green without a substantive code fix that addressed a real bug, OR the failure log shows a known-flaky shape (timeout on a runner, `boundingBox()` returning null intermittently, network blip, runner cancellation). Do NOT record a real failure you fixed with a genuine code change — that's not a flake, it's a bug your PR introduced and corrected. The registry is for chronic *non-actionable-per-PR* flakes; polluting it with real-bug fixes defeats the escalation signal.
+
+**How to record.** One call per flake event, before you return `green`. The `--test` field is optional — if you can pin the failure to a specific test ID (from the failing log), pass it; otherwise the event keys on workflow+job alone:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/flake-registry.sh" record \
+  --repo <owner/repo> --pr <M> \
+  --workflow "<workflowName>" --job "<failing job name>" \
+  [--test "<test-id>"] --action rerun-failed
+# If the record call errors (registry write failure, helper missing), log an
+# advisory and continue — never block the `green` return on a registry write.
+```
+
+The registry lives at `~/.shipyard/flake-registry.jsonl` (one line per event). The orchestrator reads it at setup/dispatch time via `flake-registry.sh report` / `flake-registry.sh crossed` to compute per-test flake rates and surface tests that have crossed the escalation threshold. **Phase 1 (this change) ships the write path + the read/aggregation/threshold tooling only** — the *enforcement* of the three escalation actions (`file-tracking-issue`, `stop-auto-rerunning`, `apply-blocked-ci`) is a deferred follow-up phase. So in phase 1 your job is just to honestly record the flake event when enabled; you do NOT yet stop re-running a chronic flake, file a tracking issue, or apply `blocked:ci` from this mode.
+
 ## Don't
 
 - Don't open a new PR. The PR is already open; this mode repairs CI only.

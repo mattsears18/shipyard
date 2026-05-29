@@ -174,6 +174,13 @@ DEFAULTS_JQ='{
     "verify_check_failing_on_head_before_dispatch": false,
     "skip_speculative_rerun": true,
     "require_in_progress_check_to_settle": false
+  },
+  "flake_registry": {
+    "enabled": false,
+    "window_days": 7,
+    "rerun_threshold": 3,
+    "distinct_prs_threshold": 2,
+    "actions": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"]
   }
 }'
 

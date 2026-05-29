@@ -215,6 +215,46 @@
         },
         "_comment": { "type": "string" }
       }
+    },
+    "flake_registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Cross-PR / cross-session flake registry (issue #378). When `enabled: true`, the `fix-checks-only` worker records one event line per flake conclusion into `~/.shipyard/flake-registry.jsonl` (via scripts/flake-registry.sh `record`), and a setup/dispatch-time reader aggregates per-(workflow,job,test) flake rates over the window to surface chronic flakes that should be escalated rather than silently re-run. Defaults preserve pre-#378 behavior (disabled — no recording, no escalation). Phase 1 ships the data layer (record + windowed report + threshold evaluation); the three escalation ACTIONS are evaluated by `flake-registry.sh crossed` but ENFORCEMENT (filing tracking issues, writing flake-suspects, applying blocked:ci) is a deferred follow-up phase.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the `fix-checks-only` worker records flake events to the registry and the orchestrator computes flake rates at setup/dispatch time. When false (default), no recording and no escalation — pre-#378 per-PR-only flake handling."
+        },
+        "window_days": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 7,
+          "description": "Rolling window (in days) over which flake events are aggregated when computing per-test flake rates and evaluating the escalation threshold. Events older than the window don't count toward escalation."
+        },
+        "rerun_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "A (workflow, job, test) flake crosses the escalation bar when it has accumulated at least this many flake events within `window_days`. Combined with `distinct_prs_threshold` (both must be met)."
+        },
+        "distinct_prs_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "A flake crosses the escalation bar only if its events span at least this many DISTINCT PRs within `window_days`. Guards against a single PR's repeated reruns being misread as a chronic cross-PR flake. Combined with `rerun_threshold` (both must be met)."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"]
+          },
+          "default": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"],
+          "description": "The escalation actions to take when a flake crosses the threshold. `file-tracking-issue` opens a chronic-flake tracking issue; `stop-auto-rerunning` adds the test to a flake-suspects list so fix-checks-only stops auto-rerunning it until a human signs off; `apply-blocked-ci` labels affected PRs blocked:ci with a reference to the tracking issue. Phase 1 (#378) ships the threshold evaluation that emits these on each crossed row; ENFORCEMENT of the actions is a deferred follow-up phase."
+        },
+        "_comment": { "type": "string" }
+      }
     }
   },
   "required": ["version"],
