@@ -146,7 +146,7 @@ Once termination conditions are met, some PRs may still be `pending` CI or waiti
 
 ### Drain protocol
 
-**Initial snapshot.** Capture the set of PRs the orchestrator opened this session (`session_prs` — track this from step A's `shipped` reconciles throughout the run). These are the PRs whose status determines drain termination. Pre-existing PRs the orchestrator only fixed via fix-checks count too (they're authored by `@me` and shipyard touched them this session). PRs from other authors don't.
+**Initial snapshot.** Capture the set of PRs the orchestrator opened this session (`session_prs` — track this from step A's `shipped` reconciles throughout the run). These are the PRs whose status determines drain termination. Pre-existing PRs the orchestrator only fixed via fix-checks count too (they're authored by `@me` and shipyard touched them this session). Inherited `@me` PRs left `DIRTY`-but-green by a *prior* session are also in `session_prs` — they were adopted into this session's ownership set by [setup step 5.7](./setup.md#57-seed-inherited-dirty-prs-into-session_prs-cross-session-drain-hand-off) (or step D's failed-PR scan at C=1) so this drain's `D_dirty` classifier can dispatch a fix-rebase worker against them; closes [#373](https://github.com/mattsears18/shipyard/issues/373). PRs from other authors don't.
 
 Also initialize two per-session structures that gate fix-rebase re-dispatch:
 
