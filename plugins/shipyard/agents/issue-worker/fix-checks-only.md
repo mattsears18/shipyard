@@ -20,6 +20,8 @@ git fetch origin "$HEAD_REF"
 git switch "$HEAD_REF"
 ```
 
+**If `git switch` fails with "is already checked out at <path>"** — the head branch is still locked in the originating worker's worktree. When dispatched from drain, the orchestrator's [pre-dispatch head-branch reap (#370)](../../commands/do-work/drain.md#pre-dispatch-head-branch-reap-self-pid-lock-release) should already have released a `self-ancestor` (our own session's PID) lock before you started; a surviving collision means the lock is `peer-alive` (a genuinely-live non-orchestrator process), which the orchestrator correctly declined to yank. Bail with `blocked #<M> at fix-checks: head branch <HEAD_REF> locked in another worktree — needs end-of-session reap` rather than working around it with a temporary branch. The next session's startup sweep clears the lock.
+
 ## Hard rules
 
 1. Do NOT modify scope. Do NOT amend the PR title/description. Do NOT close the linked issue from this PR. Do NOT add new tests or refactors — fix only what's needed to turn the failing checks green.
