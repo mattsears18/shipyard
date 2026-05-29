@@ -199,7 +199,12 @@ echo "== Plugin version bump"
 
 plugin_json="$repo_root/plugins/shipyard/.claude-plugin/plugin.json"
 # Version must be at least 1.3.31 — the floor where the shipyard.config.json
-# loader plus /shipyard:init / /shipyard:config landed.
+# loader plus /shipyard:init / /shipyard:config landed. This is the stable
+# invariant that the feature shipped: the CHANGELOG entry that originally
+# recorded it (### 1.3.31, #165) rotates out as the CHANGELOG ages, so we
+# do NOT assert its continued presence (issue #388). The feature's actual
+# surface — the command files, schemas, repo config, and do-work opt-in gate
+# asserted above — is what guards against the feature being backed out.
 current_version=$(jq -r '.version' "$plugin_json" 2>/dev/null)
 if [[ -n "$current_version" ]]; then
   # Strip semver pre-release / build suffix if any, split into integers.
@@ -220,15 +225,6 @@ else
   printf '  %sFAIL%s  plugin.json at or past 1.3.31 — .version missing\n' "$RED" "$RESET"
   fail=$((fail+1))
 fi
-
-# --------------------------------------------------------------------------
-echo "== CHANGELOG entry"
-
-changelog="$repo_root/CHANGELOG.md"
-assert_file_contains "$changelog" '### 1.3.31' "CHANGELOG has 1.3.31 entry"
-assert_file_contains "$changelog" '#165'        "CHANGELOG references issue #165"
-assert_file_contains "$changelog" '/shipyard:init' "CHANGELOG describes /shipyard:init"
-assert_file_contains "$changelog" '/shipyard:config' "CHANGELOG describes /shipyard:config"
 
 # --------------------------------------------------------------------------
 echo
