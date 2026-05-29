@@ -77,7 +77,56 @@ case $? in
   0)
     # Repo is shipyard-initialized — load the merged config so subsequent
     # steps can read tunables like trust.authors, auto_merge.policy, etc.
-    EFFECTIVE_CONFIG=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load) ;;
+    #
+    # `load` can itself fail: a `shipyard.config.json` (or
+    # `.shipyard/config.local.json`) that's present but schema-invalid makes
+    # `load` exit non-zero (70 = schema validation failed; 65 = internal
+    # helper failure) with EMPTY stdout. Capturing stdout alone would set
+    # `EFFECTIVE_CONFIG=""` and every downstream `shipyard-config.sh get`
+    # would silently fall back to built-in defaults — the user's per-repo
+    # trust list / auto-merge policy / cost-tracking knobs all ignored for
+    # the rest of the session with NO warning (issue #367). Capture the exit
+    # code and stderr, and surface a loud warning on failure.
+    CONFIG_LOAD_STDERR=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>&1 1>/tmp/shipyard-effective-config.$$)
+    CONFIG_LOAD_RC=$?
+    if [ "$CONFIG_LOAD_RC" -eq 0 ]; then
+      EFFECTIVE_CONFIG=$(cat /tmp/shipyard-effective-config.$$)
+    else
+      # Schema-invalid (or otherwise unloadable) config. Fall back to
+      # built-in defaults — but LOUDLY, and record the failure so the
+      # end-of-session summary surfaces it (the silent-degrade is the
+      # actual bug #367 flags as more important than the regex breadth).
+      EFFECTIVE_CONFIG=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null < /dev/null) || EFFECTIVE_CONFIG=""
+      # The loader's stderr already names each rejected field on its own
+      # indented line (e.g. `  .auto_merge.policy: value bogus not in
+      # enum [...]`). Extract just those lines and `; `-join them. POSIX
+      # `[[:space:]]` (not `\s`) so the grep matches on BSD grep too; awk
+      # for the join (NOT `paste -d '; '` — `paste`'s -d is a cycled list
+      # of single-char delimiters, so '; ' would alternate `;` then ` `).
+      REJECTED_FIELDS=$(printf '%s\n' "$CONFIG_LOAD_STDERR" \
+        | grep -E '^[[:space:]]+\.' \
+        | sed 's/^[[:space:]]*//' \
+        | awk 'NR>1{printf "; "} {printf "%s", $0} END{if (NR>0) print ""}')
+      [ -z "$REJECTED_FIELDS" ] && REJECTED_FIELDS="(loader exit $CONFIG_LOAD_RC; see stderr above)"
+      cat <<EOF
+warning: shipyard.config.json failed schema validation (loader exit $CONFIG_LOAD_RC).
+
+  Rejected: $REJECTED_FIELDS
+
+  Your per-repo config is NOT being applied — every config read this session
+  (trust.authors, auto_merge.policy, cost_tracking.*, ci.*, etc.) falls back
+  to built-in defaults. Fix the rejected field(s) and re-run, or run
+  /shipyard:config validate to see the full report.
+EOF
+      # Note: EFFECTIVE_CONFIG above re-runs `load` to recover the merged
+      # defaults+user layers; on a hard schema failure in the repo/local
+      # layer that re-run also exits non-zero, leaving EFFECTIVE_CONFIG="".
+      # Downstream `shipyard-config.sh get` calls each independently fall
+      # back to defaults, so an empty EFFECTIVE_CONFIG is safe (not
+      # load-bearing) — but the warning above is the user-facing signal.
+      SHIPYARD_CONFIG_SCHEMA_FAILURE="$REJECTED_FIELDS"
+    fi
+    rm -f /tmp/shipyard-effective-config.$$ ;;
   1)
     # Repo is NOT shipyard-initialized. Warn loudly and continue with
     # built-in defaults — but record the unconfigured state so the
@@ -103,6 +152,10 @@ esac
 ```
 
 `EFFECTIVE_CONFIG` is the merged result of all layers (defaults < user-global < repo < local). Subsequent steps that previously hardcoded a value should now read it via `jq` from `$EFFECTIVE_CONFIG` or via a fresh `shipyard-config.sh get <path>` call. The migration of hardcoded values is incremental — this PR introduces the loader; downstream issues (#156, #157, #160, #163) will swap each hardcoded value for a config read.
+
+**The `exists == 0` but `load` fails branch ([#367](https://github.com/mattsears18/shipyard/issues/367)).** A repo can be shipyard-initialized (`exists` returns 0) yet have a `shipyard.config.json` that fails schema validation — a typo'd enum value, an unknown top-level key, a missing required field. Before #367 the `case 0)` branch captured `load`'s stdout unconditionally; on a schema failure stdout is empty and the exit code (70) was discarded, so `EFFECTIVE_CONFIG` silently became `""` and every downstream `shipyard-config.sh get` fell back to built-in defaults with no warning — the user's per-repo trust list, auto-merge policy, and cost-tracking knobs all quietly ignored for the entire session. The branch above now captures the loader's exit code and stderr, prints a **loud one-line warning naming the rejected field(s)** plus which config keys are defaulting as a result, and records the failure detail in the session-local `SHIPYARD_CONFIG_SCHEMA_FAILURE` variable so the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) surfaces the same line. The fall-through to defaults is unchanged (still conservative-by-design — `auto_merge.policy=trusted-only`, trust resolution via the live collaborators API); the only behavioral change is that the degrade is now *visible* at both step 0.4 and end-of-session.
+
+`SHIPYARD_CONFIG_SCHEMA_FAILURE` is session-local working memory (like `SHIPYARD_UNCONFIGURED`) — not mirrored to the session-state file. It's set only on the schema-failure path; when unset, the end-of-session summary omits the `Config:` line entirely (silence is the right default for a clean config load). Treat the two as mutually-exclusive-ish in practice: `SHIPYARD_UNCONFIGURED=1` means no `shipyard.config.json` at all, while `SHIPYARD_CONFIG_SCHEMA_FAILURE` means one is present but invalid.
 
 Flags interpreted here:
 
