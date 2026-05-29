@@ -85,10 +85,11 @@ On failure:
    ```bash
    gh pr checks <M> --repo <owner/repo> --json name,state,link
    ```
-2. Pull failed logs:
+2. Pull failed logs. **Stream the output rather than redirecting it to a file** — a big `--log-failed` fetch piped to `> /tmp/log` produces zero stream output for its whole duration and can trip the harness's ~600s stall watchdog (worker-preamble § "Heartbeat emission around long-running commands"; issue [#372](https://github.com/mattsears18/shipyard/issues/372)). Pipe through `tee` if you also need the file:
    ```bash
-   gh run view <run-id> --repo <owner/repo> --log-failed
+   gh run view <run-id> --repo <owner/repo> --log-failed 2>&1 | tee /tmp/failed.log
    ```
+   The same heartbeat discipline applies to `npm ci` and to a buffered local test re-run in step 3 — keep stream output flowing so a 5–15 min command doesn't read as a stall.
 3. Reproduce locally if practical.
 4. Fix the smallest thing that resolves the failure. Don't expand scope.
 5. `git commit` + `git push` to the same branch. Never `--no-verify` (see worker-preamble). Never force-push unless rewriting history is genuinely required.
