@@ -162,6 +162,8 @@ settled_minutes=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.sett
 max_drain_hours=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.max_drain_hours 2>/dev/null || echo 8)
 ```
 
+**Run the primary-checkout branch-leak guard once at drain entry** ([#387](https://github.com/mattsears18/shipyard/issues/387)). Drain is exactly where a leaked `do-work/*` checkout on the primary does its damage: it holds git's per-branch lock on a PR head branch, so the [pre-dispatch head-branch reap](#pre-dispatch-head-branch-reap-self-pid-lock-release) below and the fix-rebase worker's `git switch <head>` both collide with it. The [#387](https://github.com/mattsears18/shipyard/issues/387) repro surfaced precisely here — drain dispatching a fix-rebase for the one DIRTY PR (#384, head `do-work/issue-378`) against a primary the harness had leaked onto `do-work/issue-378`. Restoring the primary to the default branch at drain entry frees the head branch *before* the first per-PR reap runs. Run the **exact** guard from [steady-state.md step A.0.6](./steady-state.md#a06-primary-checkout-branch-leak-guard-fires-every-reconcile-turn-before-a1) (same path-derivation, same clean-restore-vs-dirty-skip branch, same `primary_leak_counters` increments) — it is the single source of truth; do not re-derive a variant here.
+
 The two structures are intentionally distinct: `rebase_blocked_prs` is the **deterministic-failure** gate (the same conflict will produce the same outcome on retry — don't waste a worker), `rebase_success_counts` is the **rate-limit** gate (the merge train is racing rebases — cap the spend without giving up on the first race). Conflating them — the spec's original "one-shot per PR per session" language — caused the race documented in [#265](https://github.com/mattsears18/shipyard/issues/265), where a successfully-rebased PR couldn't recover from a sibling merge re-introducing DIRTY.
 
 Open-PR query for the drain loop:
@@ -227,7 +229,7 @@ Closes [#370](https://github.com/mattsears18/shipyard/issues/370). Before dispat
 
 **Why it's safe to reap.** The lock holds *our orchestrator's* PID (the harness writes the orchestrator PID into every dispatched agent's worktree lock). `classify-lock` short-circuits such a lock to `self-ancestor` once `SHIPYARD_ORCHESTRATOR_PID` is declared — which means "this lock is held by an orchestrator that is itself / an ancestor of ours, about to retire its own worktree." The original worker's return was already reconciled at [step A](./steady-state.md#a-reconcile-the-return) by the time drain runs; its worktree is logically done. This is the same self-ancestor reap logic [setup.md step 3b](./setup.md#3-ensure-label-exists--recover-from-prior-session) runs at session start and the A.1 `shipped`-immediate reap (#282) runs on issue-work completion — extended to the mid-session drain dispatch site for PRs whose originating worker did NOT take the `shipped` path (so A.1 never reaped them).
 
-**The reap.** For each PR `#<M>` the drain is about to dispatch a worker against, resolve its head branch, find any `agent-*` worktree locked against that branch, and reap it iff the lock classifies as reapable (`no-lock` / `dead` / `self-ancestor`). Defer only on `peer-alive` (a genuinely-live *non-orchestrator* PID — never expected here, but the belt-and-suspenders defer matches A.1's posture):
+**The reap.** For each PR `#<M>` the drain is about to dispatch a worker against, resolve its head branch, find any `agent-*` worktree **or the primary checkout** locked against that branch, and reap / restore it iff safe. The two holders are handled differently: an `agent-*` worktree is reaped iff the lock classifies as reapable (`no-lock` / `dead` / `self-ancestor`), deferring only on `peer-alive`; the **primary checkout** holding the head branch is the [#387](https://github.com/mattsears18/shipyard/issues/387) harness-leak case — restore it to the default branch iff its tree is clean (never reap the primary; it's the user's checkout), warn-and-skip if dirty. The drain-entry guard above usually handles the primary case first, but this per-PR check is the belt-and-suspenders for a leak that lands *mid-drain* (after the entry guard ran).
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
@@ -238,6 +240,31 @@ export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.
 
 # $head_ref is the PR's headRefName (already in the drain snapshot's
 # `headRefName` field — no extra `gh` round-trip needed).
+
+# --- Primary-checkout holder (issue #387) ---------------------------------
+# Before scanning agent-* worktrees, check whether the PRIMARY checkout is
+# the one parked on this PR's head branch (the harness-leak case). If so,
+# restore-if-clean / warn-if-dirty per the A.0.6 guard — NEVER reap the
+# primary. Frees the per-branch lock so the fix-rebase worker can switch.
+PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
+case "$PRIMARY_CHECKOUT" in
+  */.claude/worktrees/orchestrator-*) PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/orchestrator-*}" ;;
+esac
+PRIMARY_BRANCH=$(git -C "$PRIMARY_CHECKOUT" symbolic-ref --short -q HEAD 2>/dev/null || echo "<detached>")
+if [ "$PRIMARY_BRANCH" = "$head_ref" ]; then
+  DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+  if [ -z "$(git -C "$PRIMARY_CHECKOUT" status --porcelain 2>/dev/null)" ]; then
+    git -C "$PRIMARY_CHECKOUT" checkout "$DEFAULT_BRANCH" 2>/dev/null \
+      && git -C "$PRIMARY_CHECKOUT" pull --ff-only 2>/dev/null || true
+    echo "[primary-leak] restored primary from $head_ref to $DEFAULT_BRANCH before fix-rebase dispatch (#387)"
+    primary_leak_restores=$((primary_leak_restores + 1))
+  else
+    echo "[primary-leak] WARNING: primary checkout holds head branch $head_ref AND has uncommitted changes; NOT auto-restoring (possible real edits). fix-rebase for this PR will bail until you restore manually: git -C \"$PRIMARY_CHECKOUT\" checkout $DEFAULT_BRANCH (#387)"
+    primary_leak_dirty_skips=$((primary_leak_dirty_skips + 1))
+  fi
+fi
+# --------------------------------------------------------------------------
+
 for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
   [ -d "$wt_dir" ] || continue
   branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
@@ -288,6 +315,8 @@ git worktree prune 2>/dev/null || true
 ```
 
 This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or `|| true`) so a filesystem race can't abort the drain poll. It runs **once per PR per dispatch**, immediately before the `Agent` dispatch for that PR — NOT once per poll across all PRs (a PR not being dispatched this poll, e.g. one held back by the `max_drain_rebases` cap, doesn't need its lock released yet). The `peer-alive` defer is intentionally conservative: it preserves the exact pre-#370 behavior for the genuinely-unsafe case (a live non-orchestrator process holding the lock), so #370's fix narrows the bail surface to only the truly-unsafe locks rather than removing the safety entirely. Audit entries carry `"phase":"drain-pre-dispatch"` so an operator can distinguish drain-phase reaps from setup-3b (session start), steady-state-A1-shipped (#282 immediate-reap), and reconcile-A.0.5 (#358 crash-recovery) in `~/.shipyard/reap-audit.jsonl`.
+
+The **primary-checkout holder** branch (issue [#387](https://github.com/mattsears18/shipyard/issues/387)) is intentionally *not* a reap — the primary is the user's checkout, never a shipyard-owned worktree, so it's restore-if-clean / warn-if-dirty, exactly as the [A.0.6 guard](./steady-state.md#a06-primary-checkout-branch-leak-guard-fires-every-reconcile-turn-before-a1) does it. It increments the same `primary_leak_counters` map the entry-guard and steady-state guard feed, so the end-of-session friction line counts a mid-drain leak the same as a reconcile-turn one. The dirty-skip path leaves the head branch locked and the fix-rebase worker for that PR will bail `blocked rebase` — the correct conservative outcome when the primary has uncommitted work shipyard must not touch.
 
 **Per-poll actions.**
 

@@ -241,7 +241,57 @@ fi
 
 **Audit-log shape.** Entries this step writes carry `"phase":"reconcile-A.0.5"` so an operator inspecting `~/.shipyard/reap-audit.jsonl` can distinguish crash-recovery reaps from step B's per-completion sweep (`"phase":"steady-state-B-completion"`), the A.1 shipped-immediate reap (`"phase":"steady-state-A1-shipped"`), the setup-3b stale-worktree pass (no `phase`), and the cleanup-summary end-of-session sweep (no `phase`).
 
-Once A.0.5 has fired (or its prefix-check skip has been logged), proceed to A.1 and parse the return string per the per-mode handling below.
+Once A.0.5 has fired (or its prefix-check skip has been logged), proceed to A.0.6, then A.1 and parse the return string per the per-mode handling below.
+
+#### A.0.6. Primary-checkout branch-leak guard (fires every reconcile turn, BEFORE A.1)
+
+Closes [#387](https://github.com/mattsears18/shipyard/issues/387). The Claude Code harness `isolation: "worktree"` dispatch path — and/or a dispatched agent operating against the shared `.git` — can **leak a `do-work/*` branch checkout into the user's PRIMARY working tree**, even though the orchestrator runs exclusively in its own `.claude/worktrees/orchestrator-<id>` worktree and never issues a `git checkout do-work/*` against the primary. The primary HEAD reflog from the [#387](https://github.com/mattsears18/shipyard/issues/387) repro shows the leak directly (`checkout: moving from main to do-work/issue-378`, etc.) on a session whose orchestrator only ever ran `git -C <primary> worktree …` / `branch -D` / one corrective `checkout main`.
+
+**Why it matters.** A leaked `do-work/*` checkout on the primary holds git's per-branch lock on that head branch. When [drain](./drain.md) later dispatches a `fix-rebase` worker for a DIRTY PR whose head is that branch, the worker's isolated worktree cannot `git switch <head>` (`"already checked out at <primary>"`) and bails `blocked rebase` — defeating drain's whole purpose (landing DIRTY PRs). It is also a [worktree-isolation contract](./dont.md) violation: the primary is strictly read-only for the whole session, and a leaked checkout moves the primary's HEAD off the default branch — lossless only when the primary tree happens to be clean (luck, not safety).
+
+**The guard.** Root cause is harness behavior shipyard can't change, so this is a defensive assert-and-restore. Fire it every reconcile turn (here) AND at [drain entry](./drain.md#end-of-session-drain). It is **read-mostly**: the common case (primary already on the default branch) costs two `git -C` reads and writes nothing.
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+
+# The primary checkout is the repo root that contains .claude/worktrees/ —
+# i.e. the parent of the orchestrator worktree. The orchestrator's cwd is
+# `<primary>/.claude/worktrees/orchestrator-<id>`, so the primary is three
+# levels up. Resolve it absolutely (don't `cd` there — read-only `git -C`).
+PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
+case "$PRIMARY_CHECKOUT" in
+  */.claude/worktrees/orchestrator-*) PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/orchestrator-*}" ;;
+esac
+
+DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+PRIMARY_BRANCH=$(git -C "$PRIMARY_CHECKOUT" symbolic-ref --short -q HEAD 2>/dev/null || echo "<detached>")
+
+if [ "$PRIMARY_BRANCH" != "$DEFAULT_BRANCH" ]; then
+  # The primary leaked off the default branch. Two cases:
+  if [ -z "$(git -C "$PRIMARY_CHECKOUT" status --porcelain 2>/dev/null)" ]; then
+    # CLEAN tree → lossless restore. Move it back to the default branch and
+    # fast-forward. `--ff-only` can't clobber anything (no local edits exist).
+    git -C "$PRIMARY_CHECKOUT" checkout "$DEFAULT_BRANCH" 2>/dev/null \
+      && git -C "$PRIMARY_CHECKOUT" pull --ff-only 2>/dev/null || true
+    echo "[primary-leak] restored primary from $PRIMARY_BRANCH to $DEFAULT_BRANCH (#387)"
+    primary_leak_restores=$((primary_leak_restores + 1))
+  else
+    # DIRTY tree → do NOT auto-restore. Uncommitted edits on the leaked
+    # branch might be real user work; a checkout could strand or clobber it.
+    # Surface a loud warning and skip — the operator decides.
+    echo "[primary-leak] WARNING: primary checkout is on $PRIMARY_BRANCH (not $DEFAULT_BRANCH) AND has uncommitted changes; NOT auto-restoring (possible real edits). Restore manually with: git -C \"$PRIMARY_CHECKOUT\" checkout $DEFAULT_BRANCH (#387)"
+    primary_leak_dirty_skips=$((primary_leak_dirty_skips + 1))
+  fi
+fi
+```
+
+**Counters.** Increment `primary_leak_restores` on a clean restore and `primary_leak_dirty_skips` on a dirty skip — both members of the session-local `primary_leak_counters` map (see the [orchestrator-state struct list](../do-work.md#orchestrator-state)). The [end-of-session summary](./cleanup-summary.md#end-of-session-summary) surfaces the combined friction count when either is non-zero (silent on quiet sessions, per the `ci_session_counters` precedent).
+
+**Read-only against the primary — the one sanctioned exception.** [`dont.md`](./dont.md) forbids *writes* to the primary checkout. A `git -C <primary> checkout <default>` is a write to the primary's HEAD — but it is the **corrective** write that undoes a harness-leaked write, restoring the primary to the read-only-from-shipyard's-perspective state the contract assumes. It fires only when the primary is already off the default branch (the contract is already violated) AND the tree is clean (the restore is provably lossless). The dirty path never writes — it warns and defers to the human. This is the narrow carve-out `dont.md` documents; do not generalize it into "shipyard may move the primary's HEAD."
+
+**Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race or a primary checkout that isn't where the path-derivation expects (e.g. a non-standard worktree layout) cannot abort the reconcile turn. If the path derivation produces something that isn't a git repo, the `git -C` reads return empty / error and the guard no-ops.
+
+Once A.0.6 has run, proceed to A.1.
 
 #### A.1. Parse the return string
 
