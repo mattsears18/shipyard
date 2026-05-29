@@ -176,6 +176,13 @@ DEFAULTS_JQ='{
     "require_in_progress_check_to_settle": false,
     "settled_minutes": 20,
     "max_drain_hours": 8
+  },
+  "flake_registry": {
+    "enabled": false,
+    "window_days": 7,
+    "rerun_threshold": 3,
+    "distinct_prs_threshold": 2,
+    "actions": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"]
   }
 }'
 
