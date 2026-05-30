@@ -137,6 +137,22 @@ if [[ -f "$cmd_path" ]]; then
     "command output includes per-item URLs"
   assert_contains "$cmd_path" "age" \
     "command output includes per-item age"
+
+  # Single-action default (issue #391): the command must lead with the single
+  # next action, not a full ranked list. The default render is the #1-ranked
+  # item as a "→ Next:" directive; the full list is opt-in via --all.
+  assert_contains "$cmd_path" "→ Next:" \
+    "command renders the top item as a → Next: directive (single-action mode)"
+  assert_contains "$cmd_path" "--all" \
+    "command accepts an --all flag to render the full ranked list"
+  assert_contains "$cmd_path" "single-action mode" \
+    "command documents the single-action default render mode"
+  assert_contains "$cmd_path" "list mode" \
+    "command documents the opt-in list render mode"
+  # The empty-state one-liner is explicitly unchanged by the single-action
+  # refinement — it's identical across modes.
+  assert_contains "$cmd_path" "Nothing on your plate" \
+    "command keeps the unchanged empty-state one-liner"
 fi
 
 echo
