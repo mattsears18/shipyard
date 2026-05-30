@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.0 — 2026-05-30
+
+Closes [#391](https://github.com/mattsears18/shipyard/issues/391) (P2, feat) — **`/shipyard:my-turn` now leads with the single next action instead of a full ranked list**. The command's tagline promises *focus* ("what's the ONE thing blocking the most, that I should do next") but its v1 output rendered a 20-line ranked backlog by default, reintroducing exactly the prioritization burden the command was meant to remove — dogfooding on `mattsears18/lightwork` (2026-05-30) surfaced this as reading like an "issue dump" rather than "your next step." This adopts Proposal A from the issue: the default render is now just the #1-ranked item as a prominent `→ Next:` directive (with its URL and any dependency/unblocks context, since "what this unblocks" is part of "what to do next"); the full ranked list is opt-in via a new `--all` flag (or an explicit `--limit N > 1`). The 0-items empty-state one-liner is unchanged — it's identical across modes. Minor bump (new default behavior + new `--all` flag, additive).
+
+- **`plugins/shipyard/commands/my-turn.md`** — frontmatter description + `argument-hint` updated to advertise the single-next-action framing and the new `--all` flag; new **Mode resolution** subsection under Args defining single-action mode (default) vs. list mode (`--all` or `--limit N > 1`, with `--limit 1` equivalent to the default); Output section restructured to lead with the **Single-action mode** render (the `→ Next:` directive, its URL, an optional dependency/unblocks line, and a `<K> more — rerun with --all` remainder footer) followed by the existing list render as **List mode**; empty-state marked unchanged-across-modes; limit-overflow scoped to list mode; new **Don't** entry forbidding the default full-list dump.
+- **`plugins/shipyard/scripts/tests/my-turn.test.sh`** — five new regression assertions guarding the single-action default (`→ Next:` directive present, `--all` flag accepted, single-action + list modes documented, empty-state one-liner preserved).
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.7.2 → 1.8.0 (minor — new feature).
+
 ### 1.7.2 — 2026-05-30
 
 Restores green `main` — the 1.7.1 release (#387) added the `primary_leak_counters` orchestrator-state struct to the thin entry `commands/do-work.md`, growing it from 222 → 223 lines, but didn't re-baseline the line-count cap in `do-work-split.test.sh`. The `shell tests` CI job on `main` (run 26651665440 @ 9636b03a) failed the `thin entry stays <= 222 lines` assertion, leaving `main` red. The test's own contract explicitly allows the thin entry to grow when a new orchestrator-state struct lands, so the fix is the missing re-baseline that should have shipped with 1.7.1. Patch bump (test-guard fix — no plugin runtime behavior changed).

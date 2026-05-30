@@ -1,11 +1,11 @@
 ---
-description: Survey open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on the user (not on Claude). Read-only — pairs with /shipyard:do-work as the human-driven counterpart.
-argument-hint: [--repo owner/repo] [--limit N]
+description: Survey open PRs, the issue backlog, and recent comments to surface the single next action currently blocked on the user (not on Claude). Read-only — pairs with /shipyard:do-work as the human-driven counterpart.
+argument-hint: [--repo owner/repo] [--all] [--limit N]
 ---
 
 # /my-turn
 
-Print a single ranked list answering *"what do you need from me right now?"* — the PRs that need the user's review, the issues blocked on a human decision, the failing checks that exhausted the orchestrator's fix-loop, the unresolved review comments tagging the user. **Read-only / advisory-only for v1.** No mutations, no dispatch — execution stays in `/shipyard:do-work` and other dedicated commands. The user reads the output, picks an item, and acts on it manually.
+Answer *"what do you need from me right now?"* with **the single next action** — by default, the one highest-leverage thing currently blocked on the user, rendered as a focused `→ Next:` directive. Behind that #1 item sits the same ranked survey of everything blocked on a human: the PRs that need the user's review, the issues blocked on a human decision, the failing checks that exhausted the orchestrator's fix-loop, the unresolved review comments tagging the user. The full ranked list renders only on `--all` (or an explicit `--limit N > 1`). **Read-only / advisory-only for v1.** No mutations, no dispatch — execution stays in `/shipyard:do-work` and other dedicated commands. The user reads the output, picks an item, and acts on it manually.
 
 Pairs with [`/shipyard:do-work`](./do-work.md) — that one is the agent-driven loop (Claude works the backlog autonomously); this one is the human-driven counterpart (the user reads what the loop *couldn't* resolve and decides what to do).
 
@@ -14,7 +14,15 @@ Pairs with [`/shipyard:do-work`](./do-work.md) — that one is the agent-driven 
 `$ARGUMENTS` may include:
 
 - **--repo owner/repo** (optional, default: cwd's repo via `gh repo view --json nameWithOwner -q .nameWithOwner`). If not in a repo, ask via `AskUserQuestion`.
-- **--limit N** (optional, default `25`): cap the printed list at N items. Useful when the backlog is enormous and the user only wants the top of the stack. Items beyond the cap are summarized as `… and <K> more (rerun with --limit <K+N> to see all)`.
+- **--all** (optional, default off): render the **full ranked list** instead of just the single next action. Without this flag (and without an explicit `--limit N > 1`), the command prints only the #1-ranked item as a focused `→ Next:` directive — see [Output](#output). Use `--all` when you want the whole backlog of human-blocked items, not just the next step.
+- **--limit N** (optional, default `25` *when the list renders*): cap the printed list at N items. Only meaningful in list mode — i.e. when `--all` is passed, or when `--limit N` is given with `N > 1` (which itself opts into list mode). `--limit 1` is equivalent to the default single-action mode. Items beyond the cap are summarized as `… and <K> more (rerun with --limit <K+N> to see all)`.
+
+**Mode resolution.** The command runs in one of two render modes:
+
+- **Single-action mode (default)** — no `--all`, and no `--limit N` with `N > 1`. Print only the top-ranked item as a `→ Next:` directive. This is the default because the command's promise is *focus*: the one thing to do next, not a backlog to re-prioritize.
+- **List mode** — `--all` is present, OR `--limit N` is given with `N > 1`. Print the full ranked list (capped at `--limit`, default `25`). `--all` with no `--limit` shows every item.
+
+Both flags compose: `--all --limit 10` renders the list capped at 10. The mode is purely a rendering choice — every survey pass and the full ranking run identically regardless of mode; only the **render** differs (top item only vs. the capped list).
 
 ## Setup
 
@@ -125,7 +133,34 @@ An item may match multiple signals (e.g. a PR is both `blocked:ci` AND DIRTY); c
 
 ## Output
 
-Print the ranked list to the terminal. **No file artifact for v1** — the data is ephemeral and the user wants to read it once, act, and move on. The output format is intentionally terse: the user asked for "what do I need to do" — not "what's the state of the repo." Cut the framing, lead with the verb. Format:
+Print to the terminal. **No file artifact for v1** — the data is ephemeral and the user wants to read it once, act, and move on. The output format is intentionally terse: the user asked for "what do I need to do" — not "what's the state of the repo." Cut the framing, lead with the verb.
+
+The render depends on the resolved mode (see [Args → Mode resolution](#args)):
+
+### Single-action mode (default)
+
+When neither `--all` nor `--limit N > 1` is given, print **only the #1-ranked item** as a focused directive. The command's promise is *focus* — "the ONE thing blocking the most, that I should do next" — and a 20-line ranked list reintroduces exactly the prioritization burden the command exists to remove. Format:
+
+```
+→ Next: re-paste the empty EXPO_ASC_* + ANDROID_SERVICE_ACCOUNT_JSON CI secrets (#1382)
+  https://github.com/owner/repo/issues/1382
+  (then the v2.37.0 release PR #1391 can go out)
+
+5 more items — rerun with --all to see the full list
+```
+
+Rules for the single-action render:
+
+- **`→ Next:` line.** The `→ Next: ` prefix, then the **imperative action** (verb-first, sentence-case, same shape as the list-mode action — see [Rendering rules](#rendering-rules)), then the artifact ref `(#<num>)` in parentheses at the end. This is the one mandatory line.
+- **URL line.** The clickable URL on its own indented line directly below.
+- **Dependency / unblocks context (optional).** If the top item *unblocks* other tracked work (e.g. a CI-secret fix that gates a release PR, an issue whose closure is referenced by `Blocked by #<N>` on another open item), append one indented parenthetical line naming what it unblocks: `(then <downstream> can go out)` / `(unblocks #<N>)`. This is part of "what to do next" — it tells the user *why* this is the next step. Derive it from the same signals the ranking uses (the dependency edges in Pass A/B); if there's no downstream dependency, omit the line.
+- **Remainder footer (optional).** If the survey produced more than one item, append a single blank line then `<K> more item<s> — rerun with --all to see the full list` where `K` is the count of remaining items. If the top item was the only one, omit this footer. The structural footer from list mode (`main: red` / `<N> blocked:ci PRs`) still applies *in addition* when relevant — render it on its own line below the remainder footer.
+
+When the survey returns exactly one item, single-action mode renders just the `→ Next:` directive (plus its URL and any dependency line) with no remainder footer — the one item IS the whole list.
+
+### List mode (`--all`, or `--limit N > 1`)
+
+Print the full ranked list. Lead with the verb; same terse, framing-free shape as before. Format:
 
 ```
 1. #142 review and approve or request changes  <https://github.com/owner/repo/pull/142>
@@ -138,6 +173,8 @@ main: green · 1 blocked:ci PR
 ```
 
 ### Rendering rules
+
+These apply to the **list-mode** items and to the action sentence inside the single-action `→ Next:` directive.
 
 Per item — **one line by default**:
 
@@ -169,19 +206,21 @@ The ranking step still needs the underlying signals to produce the order — the
 
 ### Empty state
 
-If passes A–D return zero items: print a single friendly one-liner and exit cleanly. No banner, no multi-line prose — the empty case is the only case where the answer to "what do I need to do" is actively "nothing," and the rendering should mirror the content.
+If passes A–D return zero items: print a single friendly one-liner and exit cleanly. **Unchanged across modes** — the empty state is identical whether or not `--all` / `--limit` is passed, since there's no #1 item to lead with and no list to render. No banner, no multi-line prose — the empty case is the only case where the answer to "what do I need to do" is actively "nothing," and the rendering should mirror the content.
 
 ```
 Nothing on your plate — backlog is clean. Try /shipyard:audit to surface fresh work, or take a break.
 ```
 
-### Limit overflow
+### Limit overflow (list mode only)
 
-If the ranked list has more items than `--limit`, print the first `--limit` items then:
+In **list mode**, if the ranked list has more items than `--limit`, print the first `--limit` items then:
 
 ```
   … and <K> more (rerun with --limit <K+N> to see all)
 ```
+
+This overflow line is list-mode only. In **single-action mode** the analogous "there's more behind this" signal is the remainder footer (`<K> more item<s> — rerun with --all to see the full list`) described under [Single-action mode](#single-action-mode-default).
 
 ## Performance budget
 
@@ -204,3 +243,4 @@ If a backlog blows the budget, `--limit` already provides a knob; otherwise file
 - **Don't deep-dive on team membership for review requests.** v1 matches `$ME` directly against `reviewRequests`; team-via-membership lookups would add an extra `gh api` round-trip per PR and are out of scope. Users on teams will still see direct review requests in v1; team-level requests roll up via the GitHub UI's notification stream, which the user has anyway.
 - **Don't repeat work `/shipyard:do-work`'s upfront summary already does.** `/do-work`'s step 2 prints a buckets table with workable / skipped / blocked counts. That's a *backlog snapshot*; `/my-turn` is a *human-actions list*. They share inputs but have different shapes — don't try to merge them.
 - **Don't add framing back to the output.** No tier headers (`P0 — blocking other work`), no opening banner (`HUMAN ACTIONS NEEDED — …`), no closing prose paragraph (`Main CI on main is green, two PRs are still draining…`), no per-item title restatements, no per-item signal-label lines, no per-item age lines (except the stale suffix described in [Rendering rules](#rendering-rules)). The user asked for "what do I need to do" in imperative voice — every line of framing pushes the verb further down the screen. When in doubt: would removing this line lose any *action* information? If no, remove it.
+- **Don't dump the full ranked list by default.** The default render is [single-action mode](#single-action-mode-default) — just the #1 item as a `→ Next:` directive. A 20-line backlog reintroduces the prioritization burden the command exists to remove and reads as an issue dump rather than "your next step." The full list is opt-in via `--all` (or `--limit N > 1`). The only exception is the [empty state](#empty-state), which is identical across modes.
