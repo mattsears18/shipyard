@@ -162,16 +162,18 @@ assert_file_exists "$drain_path" "commands/do-work/drain.md exists"
 assert_file_exists "$cleanup_path" "commands/do-work/cleanup-summary.md exists"
 assert_file_exists "$dont_path" "commands/do-work/dont.md exists"
 
-# (2) The thin entry stays under 222 lines. Acceptance criterion from
+# (2) The thin entry stays under 223 lines. Acceptance criterion from
 #     #154 — the entry is allowed to grow if a new orchestrator-state
 #     struct lands, but if it grows past the cap the split is over-engineered
 #     and we'd rather know. Re-baselined from 200 → 220 after #195
 #     (`last_fresh_fetch`), #233 (`scope_bg_count`), and #246 (refresh
 #     tracker + `deferred_issues` provenance), then 220 → 222 after #323
 #     (`ci_session_counters`) added the 13th orchestrator-state struct
-#     for CI-minute discipline.
-assert_line_count_at_most "$do_work_path" 222 \
-  "thin entry stays <= 222 lines (#154 acceptance criterion)"
+#     for CI-minute discipline, then 222 → 223 after #387
+#     (`primary_leak_counters`) added the 14th struct for the
+#     primary-checkout branch-leak guard.
+assert_line_count_at_most "$do_work_path" 223 \
+  "thin entry stays <= 223 lines (#154 acceptance criterion)"
 
 # (3) RATIONALE has substantive content (≥200 lines) so the prose-rationale
 #     genuinely landed there during the #100 split.
