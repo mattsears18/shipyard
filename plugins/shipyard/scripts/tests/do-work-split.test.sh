@@ -5,8 +5,11 @@
 #
 # Spec runtime guarantees:
 #   - thin entry + RATIONALE + every phase file exists
-#   - thin entry stays < 220 lines (the routing-only contract from #154,
-#     re-baselined after #195/#233/#246 added new orchestrator-state structs)
+#   - thin entry stays under a STRUCT-DERIVED line cap (the routing-only
+#     contract from #154). #394 replaced the old hardcoded magic number
+#     (200 → 220 → 222 → 223, manually re-baselined on every struct-add)
+#     with a cap derived from the documented orchestrator-state struct
+#     count, so adding a struct updates the expectation mechanically.
 #   - RATIONALE has ≥200 lines so the prose-rationale content genuinely
 #     landed there during #100's original split
 #   - the key anchors external files reference still exist (now in the
@@ -162,18 +165,74 @@ assert_file_exists "$drain_path" "commands/do-work/drain.md exists"
 assert_file_exists "$cleanup_path" "commands/do-work/cleanup-summary.md exists"
 assert_file_exists "$dont_path" "commands/do-work/dont.md exists"
 
-# (2) The thin entry stays under 223 lines. Acceptance criterion from
-#     #154 — the entry is allowed to grow if a new orchestrator-state
-#     struct lands, but if it grows past the cap the split is over-engineered
-#     and we'd rather know. Re-baselined from 200 → 220 after #195
-#     (`last_fresh_fetch`), #233 (`scope_bg_count`), and #246 (refresh
-#     tracker + `deferred_issues` provenance), then 220 → 222 after #323
-#     (`ci_session_counters`) added the 13th orchestrator-state struct
-#     for CI-minute discipline, then 222 → 223 after #387
-#     (`primary_leak_counters`) added the 14th struct for the
-#     primary-checkout branch-leak guard.
-assert_line_count_at_most "$do_work_path" 223 \
-  "thin entry stays <= 223 lines (#154 acceptance criterion)"
+# (2) The thin entry stays under a STRUCT-DERIVED line cap. Acceptance
+#     criterion from #154 — the entry is allowed to grow if a new
+#     orchestrator-state struct lands, but if it grows past the cap the
+#     split is over-engineered and we'd rather know.
+#
+#     Issue #394: the cap used to be a hardcoded magic number that had to
+#     be manually re-baselined on every struct-addition PR (200 → 220 → 222
+#     → 223 across #195/#233/#246/#323/#387). Every bump was one forgotten
+#     edit away from reddening main: a struct-addition PR grows do-work.md
+#     by ~1 line, the stale cap fails the assertion, and if that PR merges
+#     anyway `main` goes red and a `fix-main-ci` divert burns a recovery
+#     cycle re-baselining the number.
+#
+#     The fix derives the cap mechanically from the count of documented
+#     orchestrator-state struct bullets in do-work.md's "## Orchestrator
+#     state" section (the top-level `- **`name`**` entries — exactly the
+#     thing that grows the file when a struct is added). The budget is
+#     `STRUCT_BASE + STRUCT_PER_BUDGET * <struct_count>`:
+#       - STRUCT_PER_BUDGET (2) is the per-struct line allowance. Each
+#         struct is a single (long) bullet line plus occasional follow-up
+#         sub-paragraphs (e.g. `deferred_issues`), so 2 lines/struct tracks
+#         real growth with ~1 line of headroom per struct. Adding a 15th
+#         struct raises the cap by 2 automatically — no manual edit, no
+#         red-main tripwire.
+#       - STRUCT_BASE (197) is the fixed budget for everything that is NOT
+#         a struct bullet: the section prose, the JSON schema block, the
+#         helper-subcommand table, the routing table, and the file's
+#         headers. It does NOT grow with struct count, so the #154 intent
+#         is preserved: if the thin entry balloons with non-struct prose
+#         (the "split is over-engineered, we'd rather know" tripwire), the
+#         struct count is unchanged, the derived cap doesn't move, and the
+#         assertion still fails loudly.
+#     Current state: 14 structs → cap 225, actual 223 (2 lines headroom).
+#
+#     The struct-count pattern matches a top-level bold-backtick bullet
+#     (`- **`<name>`**`) anchored to the "## Orchestrator state" section so
+#     nested sub-bullets (the indented `**…**` paragraphs under
+#     `deferred_issues`) and bold spans elsewhere in the file don't inflate
+#     the count.
+STRUCT_BASE=197
+STRUCT_PER_BUDGET=2
+# shellcheck disable=SC2016
+# The backticks in the grep pattern are literal markdown characters matching
+# the struct-bullet syntax (`- **`name`**`), not a command substitution.
+struct_count=$(
+  awk '/^## Orchestrator state$/{f=1; next} /^## /{if (f) exit} f' "$do_work_path" \
+    | grep -cE '^- \*\*`[a-z0-9_]+`\*\*'
+)
+struct_count=${struct_count:-0}
+derived_cap=$(( STRUCT_BASE + STRUCT_PER_BUDGET * struct_count ))
+assert_line_count_at_most "$do_work_path" "$derived_cap" \
+  "thin entry stays <= ${derived_cap} lines (#154/#394: ${STRUCT_BASE} base + ${STRUCT_PER_BUDGET}/struct × ${struct_count} structs)"
+
+# (2b) The struct-count derivation actually found the documented structs.
+#      A regression that renamed the "## Orchestrator state" heading or
+#      changed the struct-bullet format would silently drop struct_count to
+#      0, collapsing the derived cap back to STRUCT_BASE and re-introducing
+#      a de-facto magic number. Pin a sane floor so the derivation can't
+#      silently degrade (#394).
+if (( struct_count >= 10 )); then
+  printf '  %sPASS%s  %s (found %d structs, min 10)\n' "$GREEN" "$RESET" \
+    "struct-count derivation found the orchestrator-state bullets (#394)" "$struct_count"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (found %d structs, min 10)\n' "$RED" "$RESET" \
+    "struct-count derivation found the orchestrator-state bullets (#394)" "$struct_count"
+  fail=$((fail+1))
+fi
 
 # (3) RATIONALE has substantive content (≥200 lines) so the prose-rationale
 #     genuinely landed there during the #100 split.
