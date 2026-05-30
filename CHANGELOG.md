@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.7.2 — 2026-05-30
+
+Restores green `main` — the 1.7.1 release (#387) added the `primary_leak_counters` orchestrator-state struct to the thin entry `commands/do-work.md`, growing it from 222 → 223 lines, but didn't re-baseline the line-count cap in `do-work-split.test.sh`. The `shell tests` CI job on `main` (run 26651665440 @ 9636b03a) failed the `thin entry stays <= 222 lines` assertion, leaving `main` red. The test's own contract explicitly allows the thin entry to grow when a new orchestrator-state struct lands, so the fix is the missing re-baseline that should have shipped with 1.7.1. Patch bump (test-guard fix — no plugin runtime behavior changed).
+
+- **`plugins/shipyard/scripts/tests/do-work-split.test.sh`** — re-baseline the thin-entry line cap 222 → 223 for the 14th orchestrator-state struct (`primary_leak_counters`, #387), matching the established 200 → 220 → 222 → 223 growth pattern; comment updated to cite #387.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.7.1 → 1.7.2 (patch — CI repair).
+
 ### 1.7.1 — 2026-05-29
 
 Closes [#387](https://github.com/mattsears18/shipyard/issues/387) (P1, bug) — the **harness `isolation: "worktree"` dispatch path leaks `do-work/*` branch checkouts into the user's PRIMARY working tree**, stranding the drain. The orchestrator runs exclusively in its own `.claude/worktrees/orchestrator-<id>` worktree and never issues `git checkout do-work/*` against the primary, yet the primary HEAD reflog shows leaked checkouts (`moving from main to do-work/issue-378`, etc.) originating from the harness and/or a dispatched agent operating against the shared `.git`. The damage surfaces at drain: a leaked `do-work/*` checkout holds git's per-branch lock on a PR head branch, so a drain-phase `fix-rebase` worker can't `git switch <head>` ("already checked out at <primary>") and bails `blocked rebase` — defeating drain's whole purpose. Root cause is harness behavior shipyard can't change, so the fix is an orchestrator-side defensive guard. Patch bump (spec/docs change — the orchestrator loop is interpreted prose, no helper script touched).
