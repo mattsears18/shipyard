@@ -126,6 +126,30 @@ CI runs the same discovery + invocation in [`.github/workflows/tests.yml`](./.gi
 
 Pure-bash tests, no external dependencies. Mirror the conventions in existing test files (header comment explaining the regression being guarded against, `set -u`, repo-root discovery loop).
 
+## CI gates and branch protection
+
+The repo has three CI workflows that run the test/lint gates on every `pull_request` to `main`:
+
+- [`.github/workflows/tests.yml`](./.github/workflows/tests.yml) — runs every `*.test.sh` suite under `plugins/` (check name: **`bash test suites`**)
+- [`.github/workflows/shellcheck.yml`](./.github/workflows/shellcheck.yml) — lints + runs shell tests (check names: **`shellcheck`**, **`shell tests`**)
+- [`.github/workflows/secret-scan.yml`](./.github/workflows/secret-scan.yml) — gitleaks gate (check name: **`gitleaks`**)
+
+By default these run on every PR but are **advisory only** — `main` has no branch protection, so a PR whose tests are red can still merge (manually or via auto-merge) and the regression lands on `main`. Making them *required* status checks is a GitHub **admin** action: there's no committable file in the repo that turns it on, so it isn't something a `/shipyard:do-work` worker can ship.
+
+The decision is the maintainer's (issue [#404](https://github.com/mattsears18/shipyard/issues/404)). The single-maintainer "push direct to `main` for trivial changes" model (see [`CLAUDE.md` → Permissions](./CLAUDE.md)) **coexists** with required checks via admin bypass — the enablement leaves `enforce_admins=false`, so direct pushes keep working and only PR *merges* with red checks get blocked.
+
+To enable required checks (once, from an admin-authenticated `gh`):
+
+```sh
+# Preview the exact payload and current state — mutates nothing:
+./scripts/enable-branch-protection.sh --dry-run
+
+# Apply it:
+./scripts/enable-branch-protection.sh --apply
+```
+
+The script (`scripts/enable-branch-protection.sh`) wraps the exact `gh api` call with the correct check-context names so the contexts can't be subtly mistyped (a mistyped context waits forever on a check that never reports). If the single-maintainer direct-push model is intentional and required checks are explicitly *not* wanted, that's a valid decision too — close #404 with that rationale; the script is harmless if never run.
+
 ## Branch naming
 
 - **`/shipyard:do-work` workers** use `do-work/issue-<N>` (or mode-specific variants like `do-work/fix-main-ci-<short-sha>`). Don't name your own branches with the `do-work/` prefix — that namespace is reserved for the orchestrator's automatic branch creation and is what the next-session orphan triage scans.
