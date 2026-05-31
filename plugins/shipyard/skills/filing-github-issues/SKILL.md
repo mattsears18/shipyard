@@ -196,9 +196,10 @@ Found by `<audit type>` audit of `<url or surface>` on <YYYY-MM-DD>.
 - [ ] <Regression guard for adjacent areas if relevant>
 
 <!-- audit-key=<dimension>/<finding-type>[/<scope>] -->
+<!-- audit-run=<run-id> -->   (only when the orchestrator supplied a run id — see "Per-run attribution marker")
 ```
 
-**The `audit-key` HTML comment is mandatory** — it powers idempotent re-runs. If a body would ship without it, that's a bug in your filing process.
+**The `audit-key` HTML comment is mandatory** — it powers idempotent re-runs. If a body would ship without it, that's a bug in your filing process. The `audit-run` comment is conditional — include it only when the dispatch prompt supplied a run id (see "Per-run attribution marker" below).
 
 ## Cross-references
 
@@ -217,6 +218,45 @@ EOF
 ```
 
 HEREDOC with quoted `'EOF'` preserves backticks, dollar signs, and special chars in the body verbatim.
+
+## Capture the real issue number — never guess or read it back stale (REQUIRED)
+
+`gh issue create` prints the URL of the issue it just created to **stdout** (e.g. `https://github.com/<owner>/<repo>/issues/152`). That URL — and the number derived from it — is the **only** authoritative record of what you filed. Capture it inline and report exactly that:
+
+```bash
+issue_url=$(gh issue create --repo <owner/repo> \
+  --label <label1> --label <label2> \
+  --title "<conventional-commit title>" \
+  --body "$(cat <<'EOF'
+<body>
+EOF
+)")
+echo "filed: $issue_url"   # e.g. https://github.com/<owner>/<repo>/issues/152
+```
+
+**This matters because audits dispatch many auditors in parallel** (the `all` path runs 12+ agents at once). GitHub assigns issue numbers **sequentially across all concurrent creates**, so a number you predict ("the last issue was #149, so mine will be #150") or read back with a *separate* `gh issue list` *after* filing is unreliable — a sibling auditor's concurrent create may have taken the number you expected, and your read-back can return a stale or colliding value. The result is agent summaries whose issue numbers don't match what was actually filed, colliding numbers across agents, and — worst case — a genuine finding that was silently lost because nobody held its real number. This is the failure mode [#435](https://github.com/mattsears18/shipyard/issues/435) documents (a 15-auditor `mattsears18/mattsears18.com` run where two auditors both reported `#150`/`#152` and one real finding was never traced to its actual number).
+
+Hard rules:
+
+- **Never report a predicted number.** Don't compute "next issue number will be N" from a pre-fetch and report N.
+- **Never report a number read back from a separate post-filing `gh issue list`.** The concurrent-create race makes the read-back ambiguous. The `gh issue create` stdout is captured *inside the create call itself*, so it can't race.
+- **Report the captured URL verbatim** in your return summary (the number is derivable from the URL; when in doubt report the full URL, which is unambiguous). See "Return summary — report captured URLs" below.
+
+If `gh issue create` fails (non-zero exit, empty stdout), treat that finding as **not filed** — report it in your summary as a filing failure with the error, do NOT report a guessed number for it.
+
+## Per-run attribution marker (when the orchestrator supplies a run id)
+
+When the dispatching `/shipyard:audit` prompt supplies an **audit run id** (a short token unique to this `/audit` invocation), append it to every issue body as a hidden HTML comment alongside the `audit-key`:
+
+```
+<!-- audit-run=<run-id> -->
+```
+
+This lets the orchestrator definitively attribute filed issues to a single audit run when it reconciles after all agents return — it can `gh issue list --search '"audit-run=<run-id>"'` to enumerate exactly what this run produced, cross-check that count against the URLs each agent reported, and flag any agent whose reported URLs don't resolve (a lost or misreported filing). The marker is run-scoped and volatile by design — unlike `audit-key` (which is stable across runs for dedup), `audit-run` changes every invocation, so do NOT use it for deduplication. When the prompt supplies no run id, omit the marker.
+
+## Return summary — report captured URLs
+
+Your end-of-run summary's "Filed N issues" list MUST report the **captured `gh issue create` URLs** from the section above — one line per issue, the verbatim URL (the number is derivable from it). Never a predicted number, never a number from a separate post-filing `gh issue list`. If a `gh issue create` failed, list that finding under a "Filing failures" line with the error instead of a number, so the orchestrator's reconciliation can tell a lost finding apart from a successfully-filed one.
 
 ## Don't
 
