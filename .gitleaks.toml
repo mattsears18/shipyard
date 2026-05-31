@@ -1,14 +1,27 @@
 # gitleaks config — wired by .github/workflows/secret-scan.yml (issue #108).
 #
-# Strategy: extend the upstream default ruleset (which already covers the token
-# shapes called out in the acceptance criteria — ghp_*, sk-ant-*, AKIA*,
-# xox[bp]-*, PEM private keys) and allowlist only the intentional test
-# fixtures in `plugins/shipyard/scripts/tests/`. Those fixtures EXIST
-# specifically to exercise the runtime secret-scrubbing in
+# Strategy: extend gitleaks' upstream default ruleset and allowlist only the
+# intentional test fixtures in `plugins/shipyard/scripts/tests/`. Those
+# fixtures EXIST specifically to exercise the runtime secret-scrubbing in
 # `scripts/report-plugin-error.sh` — taking them away to silence gitleaks
 # would defeat the test suite that the sibling finding #105 wants to wire to
 # CI. So gitleaks gets told "skip those specific files" rather than the
 # rules getting watered down repo-wide.
+#
+# NOTE — two distinct scanners, don't conflate them:
+#   1. gitleaks (this config) is the COMMITTED-CONTENT scanner — it pulls in
+#      gitleaks' upstream default ruleset via [extend] below, which covers a
+#      broad shape set (classic + fine-grained GitHub tokens, Slack tokens,
+#      Google API keys, AWS keys, PEM private keys, etc.).
+#   2. The RUNTIME scrubber in `report-plugin-error.sh`'s `PY_SCRUB` is a
+#      separate, narrower pattern set that redacts secrets out of auto-report
+#      issue bodies before they're posted publicly. As of issue #402 it
+#      covers: classic + fine-grained GitHub tokens (ghp_*, github_pat_*),
+#      Anthropic/OpenAI keys (sk-ant-*, sk-*), Slack tokens (xox[baprs]-*),
+#      Google API keys (AIza…), AWS access keys (AKIA*), Bearer/Authorization
+#      headers, emails, 40+ char hex, and PEM private-key blocks. If you add a
+#      shape to one scanner, consider whether the other needs it too — they
+#      protect different surfaces (commit history vs. public auto-report).
 #
 # The `extend` block pulls in gitleaks' default rules verbatim; we only add
 # our own allowlist on top.

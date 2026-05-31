@@ -139,6 +139,44 @@ payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-a
 out=$(run_helper "$payload")
 assert_not_contains "$out" "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" "Bearer JWT scrubbed"
 
+# Slack bot token (xoxb-) — issue #402. Fixture uses an obviously-synthetic
+# body (not the realistic numeric-segment structure) so GitHub push-protection
+# doesn't flag it as a live Slack token, while still matching the scrubber's
+# `xox[baprs]-[A-Za-z0-9-]{10,}` pattern.
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: slack auth: xoxb-EXAMPLE-NOT-A-REAL-TOKEN-aaaa failed"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "xoxb-EXAMPLE-NOT-A-REAL-TOKEN-aaaa" "Slack bot token (xoxb-) scrubbed"
+
+# Slack user token (xoxp-) — issue #402
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: slack auth: xoxp-EXAMPLE-NOT-A-REAL-TOKEN-aaaa failed"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "xoxp-EXAMPLE-NOT-A-REAL-TOKEN-aaaa" "Slack user token (xoxp-) scrubbed"
+
+# Fine-grained GitHub PAT (github_pat_) — does NOT match the classic gh[pousr]_ shape — issue #402
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: gh auth: github_pat_11ABCDEFG0aBcDeFgHiJkL_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890ABCDEF failed"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "github_pat_11ABCDEFG0aBcDeFgHiJkL_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890ABCDEF" "Fine-grained GitHub PAT (github_pat_) scrubbed"
+
+# Google API key (AIza…) — issue #402
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: google auth: AIzaSyA1234567890abcdefghijklmnopqrstuv failed"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "AIzaSyA1234567890abcdefghijklmnopqrstuv" "Google API key (AIza…) scrubbed"
+
+# PEM private-key block — multiline, must collapse to one token — issue #402
+payload=$(python3 -c "
+import json
+pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAabc123def456ghi789\njkl012mno345pqr678stu901vwx234yz\n-----END RSA PRIVATE KEY-----'
+print(json.dumps({
+    'tool_name':'Agent',
+    'tool_input':{'subagent_type':'shipyard:security-auditor'},
+    'tool_response':{'is_error':True,'error':'Error: bad key:\n' + pem}
+}))
+")
+out=$(run_helper "$payload")
+assert_not_contains "$out" "MIIEpAIBAAKCAQEAabc123def456ghi789" "PEM private-key body scrubbed"
+assert_not_contains "$out" "BEGIN RSA PRIVATE KEY" "PEM private-key markers scrubbed"
+assert_contains "$out" "REDACTED_PRIVATE_KEY" "PEM block collapses to REDACTED_PRIVATE_KEY"
+
 # --------------------------------------------------------------------------
 echo "== Issue body structure"
 # --------------------------------------------------------------------------
