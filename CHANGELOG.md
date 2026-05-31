@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.20 — 2026-05-31
+
+Closes [#406](https://github.com/mattsears18/shipyard/issues/406) (P2, `audit:testing`) — **adds a test for `hooks.json` registration, closing a ghost-coverage gap in the safety layer**. Each hook *script* (`enforce-worktree-isolation.sh`, `enforce-edit-scope.sh`, `refuse-escape-symlink-commit.sh`, `report-plugin-error.sh`) had its own unit test, but nothing tested `hooks.json` itself — so a typo'd `command` path, a dropped entry, or a malformed-JSON edit would pass CI while silently neutering a safety hook (hooks fail open from Claude Code's perspective: an unresolvable command path just never fires). The new test asserts `hooks.json` is valid JSON, that every `command` path resolves to a non-empty script on disk (mapping the `${CLAUDE_PLUGIN_ROOT}` prefix to the plugin root), and that all three load-bearing safety hooks remain registered. Verified failing on a dropped-hook and a typo'd-path mutation; passing on current `main`. Picked up automatically by `tests.yml`'s `*.test.sh` glob — no workflow edit needed.
+
+- **`plugins/shipyard/hooks/tests/hooks-json.test.sh`** — new test suite validating the hook registration wiring (valid JSON, resolvable command paths, the three safety hooks present).
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.2 → 1.8.20 (patch — test-only addition; 1.8.3–1.8.19 claimed by in-flight sibling PRs).
+
 ### 1.8.17 — 2026-05-31
 
 Closes [#402](https://github.com/mattsears18/shipyard/issues/402) (P1, `audit:security`) — **the `SHIPYARD_AUTOREPORT` runtime secret-scrubber now redacts Slack tokens, fine-grained GitHub PATs, Google API keys, and PEM private-key blocks before public auto-filing**. The opt-in auto-report pipeline scrubs error excerpts, invocation prompts, and the last 80 transcript lines before posting them into a public GitHub issue, but `PY_SCRUB`'s pattern set only covered classic GitHub tokens (`gh[pousr]_`), `sk-ant-`/`sk-` keys, `AKIA` AWS keys, Bearer/Authorization headers, emails, and 40+ char hex. Several common live-credential shapes passed through unredacted — verified empirically: `xoxb-`/`xoxp-` Slack tokens, `github_pat_` fine-grained PATs (which do NOT match the classic `gh[pousr]_` shape), `AIza…` Google API keys, and `-----BEGIN … PRIVATE KEY-----` blocks all leaked into the public issue body. The fix adds the four missing pattern shapes to `PY_SCRUB`, with the multiline PEM pattern compiled `re.DOTALL` and run first so the whole block collapses before any inner base64 line can trip a narrower rule. Patch bump (security fix to an opt-in helper — no change to default behavior).
