@@ -149,7 +149,12 @@ assert_jq "$repo_schema" '.properties.cost_tracking.properties.enabled.type' "bo
 assert_jq "$user_schema" '.title' "Shipyard user-global config" "user schema has title"
 assert_jq "$user_schema" '.required | contains(["version"])' "true" "user schema requires version"
 assert_jq "$user_schema" '.properties.default_auto_merge_policy.enum | sort | join(",")' "always,never,trusted-only" "user schema default_auto_merge_policy enum"
-assert_jq "$user_schema" '.properties.pricing_override.type' "object" "user schema pricing_override is object"
+assert_jq "$user_schema" '.properties.default_models.properties.issue_work.type' "string" "user schema default_models.issue_work is string"
+# Inert keys removed in issue #403 (currency, pricing_override,
+# exclude_repos_from_cost_tracking) — none were ever consumed.
+assert_jq "$user_schema" '.properties | has("pricing_override")' "false" "user schema no longer declares pricing_override (#403)"
+assert_jq "$user_schema" '.properties | has("currency")' "false" "user schema no longer declares currency (#403)"
+assert_jq "$user_schema" '.properties | has("exclude_repos_from_cost_tracking")' "false" "user schema no longer declares exclude_repos_from_cost_tracking (#403)"
 
 # --------------------------------------------------------------------------
 echo "== Repo's own shipyard.config.json"

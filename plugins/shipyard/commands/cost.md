@@ -144,7 +144,7 @@ The command is a thin wrapper. The assistant's job is to:
 
 ## Privacy
 
-Both `cost-history.jsonl` and `cost-history-issues.jsonl` live entirely on the local filesystem — they are never uploaded anywhere by shipyard. The orchestrator's only outbound writes are to GitHub via `gh`; the ledger is not part of those flows. If you want to opt out a specific repo from cost-tracking even locally, set `cost_tracking.enabled: false` for that repo via `/shipyard:config set cost_tracking.enabled false --repo` (or the user-global equivalent `exclude_repos_from_cost_tracking` in `~/.shipyard/config.json`).
+Both `cost-history.jsonl` and `cost-history-issues.jsonl` live entirely on the local filesystem — they are never uploaded anywhere by shipyard. The orchestrator's only outbound writes are to GitHub via `gh`; the ledger is not part of those flows. If you want to opt out a specific repo from cost-tracking even locally, set `cost_tracking.enabled: false` for that repo via `/shipyard:config set cost_tracking.enabled false --repo`. To turn cost-tracking off across every repo from the user-global layer, set the `cost_tracking_enabled` alias in `~/.shipyard/config.json` (it remaps onto `cost_tracking.enabled` on load; a repo-level `cost_tracking.enabled` still wins).
 
 The ledger files are safe to `rm` — deleting them only forfeits historical reports. New sessions append fresh data after deletion.
 
@@ -161,7 +161,7 @@ Default: **keep forever**. The data is tiny (≈ 500 bytes per session record, �
 ## Related
 
 - [`/shipyard:do-work`](./do-work.md) — the orchestrator. End-of-session cleanup calls `cost-history.sh flush` ([step 7 of the cleanup chain](./do-work/cleanup-summary.md#end-of-session-cleanup)).
-- [`/shipyard:config`](./config.md) — `cost_tracking.enabled` and `exclude_repos_from_cost_tracking` opt-outs.
+- [`/shipyard:config`](./config.md) — `cost_tracking.enabled` opt-out (repo/local), and the user-global `cost_tracking_enabled` alias.
 - [`plugins/shipyard/scripts/cost-history.sh`](../scripts/cost-history.sh) — the underlying ledger / report tool.
 - [`plugins/shipyard/scripts/session-state.sh`](../scripts/session-state.sh) — the per-session ledger (`bump-tokens`, `read-tokens`).
 - Issue [#163](https://github.com/mattsears18/shipyard/issues/163) — this spec.

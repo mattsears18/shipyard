@@ -29,7 +29,7 @@ Thin wrapper around `plugins/shipyard/scripts/shipyard-config.sh` for managing t
 Effective config is computed via deep-merge in this order (later layers win):
 
 1. **Built-in defaults** — hardcoded in `shipyard-config.sh`. Always present.
-2. **`~/.shipyard/config.json`** — user-global. Pricing overrides, default models, personal opt-outs across all repos.
+2. **`~/.shipyard/config.json`** — user-global. Default models, default auto-merge policy, and the cost-tracking opt-out across all repos (set via the `default_models` / `default_auto_merge_policy` / `cost_tracking_enabled` aliases, which remap onto the canonical `models.*` / `auto_merge.policy` / `cost_tracking.enabled` paths on load — issue #403).
 3. **`<repo>/shipyard.config.json`** — committed. Repo-level shared policy. The presence of this file is what makes a repo "shipyard-initialized."
 4. **`<repo>/.shipyard/config.local.json`** — gitignored. Personal overrides for this repo only. Sparse — list only the fields you want to override.
 

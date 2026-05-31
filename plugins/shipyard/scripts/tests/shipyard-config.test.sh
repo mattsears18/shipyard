@@ -172,10 +172,12 @@ echo "== set --global (user-global)"
 out=$("$helper" set default_auto_merge_policy never --global 2>&1)
 assert_contains "$out" "config.json" "set --global writes to ~/.shipyard/config.json"
 assert_file_exists "$home/config.json" "user-global file created"
-# This field is only in the user schema, so it's not in the merged effective
-# config under that name — but loading the user layer alone should show it.
+# `show --layer user` reflects the on-disk file verbatim (the alias name), even
+# though the merge path remaps it onto auto_merge.policy (issue #403, asserted
+# in the dedicated remap section below). The raw user layer must NOT be
+# normalized so the file's actual contents stay inspectable.
 out=$("$helper" show --layer user 2>&1)
-assert_contains "$out" '"default_auto_merge_policy": "never"' "user-layer show reflects the value"
+assert_contains "$out" '"default_auto_merge_policy": "never"' "user-layer show reflects the on-disk alias verbatim"
 
 # --------------------------------------------------------------------------
 echo "== layer ordering: defaults < user < repo < local"
@@ -196,6 +198,60 @@ assert_equals "$("$helper" get trust.authors --with-source | cut -f2)" "repo"  "
 "$helper" set trust.authors '["carol"]' --local
 assert_equals "$("$helper" get trust.authors)" '["carol"]'        "local layer wins over repo"
 assert_equals "$("$helper" get trust.authors --with-source | cut -f2)" "local" "source: local"
+
+# --------------------------------------------------------------------------
+echo "== user-global aliases remap onto canonical paths (issue #403)"
+# The user-global schema declares convenience aliases (default_auto_merge_policy,
+# default_models, cost_tracking_enabled) that historically validated cleanly but
+# were silently inert — the flat last-wins merge never remapped them onto the
+# canonical paths every consumer reads. normalize_user_layer() now translates
+# them on load. These assertions lock the remap so the drift can't silently
+# return, and verify the aliases (and the three removed keys) no longer leak
+# into the effective config under their inert names.
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
+
+# default_auto_merge_policy -> auto_merge.policy (with source attribution = user).
+cat > "$home/config.json" <<'JSON'
+{
+  "version": 1,
+  "default_auto_merge_policy": "never",
+  "default_models": { "issue_work": "claude-test-model", "fix_rebase": "claude-rebase-model" },
+  "cost_tracking_enabled": false
+}
+JSON
+assert_equals "$("$helper" get auto_merge.policy)" "never" "default_auto_merge_policy remaps to auto_merge.policy"
+assert_equals "$("$helper" get auto_merge.policy --with-source | cut -f2)" "user" "remapped auto_merge.policy sourced to user layer"
+assert_equals "$("$helper" get models.issue_work)" "claude-test-model" "default_models.issue_work remaps to models.issue_work"
+assert_equals "$("$helper" get models.fix_rebase)" "claude-rebase-model" "default_models.fix_rebase remaps to models.fix_rebase"
+# A mode NOT named in default_models still falls through to the built-in default.
+assert_equals "$("$helper" get models.fix_main_ci)" "claude-sonnet-4-6" "unset mode falls through to built-in default model"
+assert_equals "$("$helper" get cost_tracking.enabled)" "false" "cost_tracking_enabled remaps to cost_tracking.enabled"
+assert_equals "$("$helper" get cost_tracking.enabled --with-source | cut -f2)" "user" "remapped cost_tracking.enabled sourced to user layer"
+
+# The alias names must NOT leak into the effective (merged) config.
+eff=$("$helper" load 2>&1)
+assert_equals "$(printf '%s' "$eff" | jq -r 'has("default_auto_merge_policy")')" "false" "default_auto_merge_policy alias absent from effective config"
+assert_equals "$(printf '%s' "$eff" | jq -r 'has("default_models")')" "false" "default_models alias absent from effective config"
+assert_equals "$(printf '%s' "$eff" | jq -r 'has("cost_tracking_enabled")')" "false" "cost_tracking_enabled alias absent from effective config"
+
+# Repo-level canonical paths still win over the user-global alias (last-wins).
+"$helper" set auto_merge.policy always --repo
+assert_equals "$("$helper" get auto_merge.policy)" "always" "repo auto_merge.policy wins over user alias"
+assert_equals "$("$helper" get auto_merge.policy --with-source | cut -f2)" "repo" "source is repo when repo overrides the alias"
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard"
+
+# The three removed keys (currency, pricing_override, exclude_repos_from_cost_tracking)
+# are no longer in the schema — setting them is now an unknown-field validation error.
+echo '{"version":1,"currency":"USD"}' > "$home/config.json"
+"$helper" validate --layer user 2>/dev/null
+assert_exit_code "$?" 70 "removed key 'currency' rejected by user schema"
+echo '{"version":1,"pricing_override":{"claude-opus-4-7":{"input":1}}}' > "$home/config.json"
+"$helper" validate --layer user 2>/dev/null
+assert_exit_code "$?" 70 "removed key 'pricing_override' rejected by user schema"
+echo '{"version":1,"exclude_repos_from_cost_tracking":["owner/repo"]}' > "$home/config.json"
+"$helper" validate --layer user 2>/dev/null
+assert_exit_code "$?" 70 "removed key 'exclude_repos_from_cost_tracking' rejected by user schema"
+rm -f "$home/config.json"
 
 # --------------------------------------------------------------------------
 echo "== deep merge preserves untouched keys across layers"
