@@ -13,14 +13,22 @@
 #
 # The fix is an idempotent preamble at the top of every bash snippet:
 #
-#   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+#   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 #
 # Semantics:
 #   - When the harness DOES set $CLAUDE_PLUGIN_ROOT, the `${VAR:-default}`
 #     short-circuits and the export is a no-op.
 #   - When the harness does NOT set it (the observed steady-state for every
-#     Bash-tool call inside this orchestrator), the fallback derives the
-#     path from `git rev-parse --show-toplevel + /plugins/shipyard`.
+#     Bash-tool call inside this orchestrator), the fallback PROBES in order:
+#       1. repo-local `<repo>/plugins/shipyard` IF it actually carries a
+#          `scripts/` dir (the dogfooding case — shipyard's own checkout);
+#       2. else the marketplace install `$HOME/.claude/plugins/marketplaces/
+#          */plugins/shipyard` (the consumer-install case — issue #417, where
+#          a marketplace-installed shipyard runs against a repo that has no
+#          repo-local plugins/shipyard, so the old bare repo-local fallback
+#          resolved to a non-existent path and every helper call exited 127);
+#       3. else the repo-local path anyway (preserves a meaningful path for
+#          error messaging when neither layer resolves).
 #
 # This test is the regression guard: if anyone adds a new bash block that
 # uses ${CLAUDE_PLUGIN_ROOT} without the preamble at its top, the test
@@ -68,7 +76,7 @@ FILES=(
 # The canonical preamble line. Anchored against literal text so any
 # substitution (e.g. swapping the fallback path) trips this test.
 # shellcheck disable=SC2016
-EXPECTED_PREAMBLE='export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"'
+EXPECTED_PREAMBLE='export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"'
 
 pass=0
 fail=0
@@ -206,6 +214,43 @@ if [[ -d "$sanity_dir" && -x "$sanity_dir/scripts/shipyard-config.sh" ]]; then
   assert_pass "preamble resolves to a directory containing scripts/shipyard-config.sh"
 else
   assert_fail "preamble resolves to a directory containing scripts/shipyard-config.sh (got '$sanity_dir')"
+fi
+
+# (5) Consumer-install sanity check (issue #417). Simulate a marketplace
+# install running against a repo with NO repo-local plugins/shipyard: the
+# old bare `$(git rev-parse --show-toplevel)/plugins/shipyard` fallback
+# resolved to a non-existent path and every helper call exited 127. The
+# new probe must fall through to the marketplace install path.
+#
+# Build a throwaway sandbox: a fake $HOME containing a marketplace tree,
+# and a fake consumer git repo with no plugins/shipyard dir. Then run the
+# preamble with cd into the consumer repo and confirm it resolves to the
+# marketplace path (not the missing repo-local one).
+sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-417)
+if [[ -n "$sandbox" && -d "$sandbox" ]]; then
+  fake_home="$sandbox/home"
+  fake_mp="$fake_home/.claude/plugins/marketplaces/shipyard/plugins/shipyard"
+  mkdir -p "$fake_mp/scripts"
+  # the probe only checks for the scripts/ dir on the repo-local branch and
+  # returns the marketplace path verbatim, so an empty marketplace dir is
+  # enough to prove the fall-through.
+  consumer_repo="$sandbox/consumer"
+  mkdir -p "$consumer_repo"
+  ( cd "$consumer_repo" && git init -q 2>/dev/null )
+
+  consumer_dir=$(env -i HOME="$fake_home" PATH="$PATH" bash -c "
+    cd '$consumer_repo'
+    $EXPECTED_PREAMBLE
+    echo \"\$CLAUDE_PLUGIN_ROOT\"
+  ")
+  if [[ "$consumer_dir" == "$fake_mp" ]]; then
+    assert_pass "preamble falls through to marketplace install when repo has no plugins/shipyard (issue #417)"
+  else
+    assert_fail "preamble falls through to marketplace install when repo has no plugins/shipyard (got '$consumer_dir', expected '$fake_mp')"
+  fi
+  rm -rf "$sandbox"
+else
+  assert_fail "could not create sandbox for consumer-install sanity check"
 fi
 
 echo

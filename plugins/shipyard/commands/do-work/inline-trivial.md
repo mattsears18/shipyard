@@ -116,7 +116,7 @@ Inline execution has no agent return to reconcile in [step A](./steady-state.md#
 - Take a single check-rollup snapshot (`gh pr view <M> --json statusCheckRollup,mergeStateStatus`) — record the `checks: green|pending|failing` state for the cost-tracking comment.
 - Post the cost-tracking comment via the same [edit-or-create flow as `shipped` returns](./steady-state.md#a-reconcile-the-return). Use the helper:
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
   "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
     --session-id "<session-id>" --pr <M> --format comment --mode inline
   ```
