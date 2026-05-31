@@ -168,12 +168,32 @@ patterns = [
     # shapes (xoxa/xoxr/xoxs).
     (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "<REDACTED_SLACK_TOKEN>"),
     (re.compile(r"sk-ant-[A-Za-z0-9\-_]{20,}"), "<REDACTED_ANTHROPIC_KEY>"),
+    # Stripe secret keys (live + test). The underscore separator means these
+    # do NOT collide with the `sk-…` OpenAI shape below, but place them ahead
+    # so the more specific Stripe prefix wins.
+    (re.compile(r"sk_live_[A-Za-z0-9]{10,}"), "<REDACTED_STRIPE_LIVE_KEY>"),
+    (re.compile(r"sk_test_[A-Za-z0-9]{10,}"), "<REDACTED_STRIPE_TEST_KEY>"),
     (re.compile(r"sk-[A-Za-z0-9]{20,}"), "<REDACTED_OPENAI_KEY>"),
     # Google API key — fixed `AIza` prefix + 35 chars.
     (re.compile(r"AIza[0-9A-Za-z\-_]{35}"), "<REDACTED_GOOGLE_API_KEY>"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "<REDACTED_AWS_ACCESS_KEY>"),
+    # GitLab personal access token — fixed `glpat-` prefix.
+    (re.compile(r"glpat-[A-Za-z0-9\-_]{16,}"), "<REDACTED_GITLAB_PAT>"),
+    # npm automation/publish token — fixed `npm_` prefix + base62 body.
+    (re.compile(r"npm_[A-Za-z0-9]{16,}"), "<REDACTED_NPM_TOKEN>"),
+    # JWT — three base64url segments separated by dots. Run before the hex
+    # rule below so a long all-hex-looking segment doesn't get partially
+    # clobbered, and capture the standalone form (the Bearer rule only catches
+    # JWTs prefixed by `Bearer `).
+    (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+"), "<REDACTED_JWT>"),
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.=]{16,}"), "Bearer <REDACTED>"),
     (re.compile(r"(?i)authorization:\s*\S+"), "Authorization: <REDACTED>"),
+    # Database connection URLs carrying inline credentials (`scheme://user:pass@host`).
+    # Only the credential-bearing form is redacted — a credential-free URL is
+    # left intact. Run before the email rule: the email pattern would otherwise
+    # match `pass@host` inside the URL and redact only part of it, leaving the
+    # scheme + username exposed.
+    (re.compile(r"(?i)\b(postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|rediss|amqp|amqps)://[^:@/\s]+:[^@/\s]+@\S+"), r"\1://<REDACTED_DB_CREDENTIALS>"),
     (re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"), "<REDACTED_EMAIL>"),
     (re.compile(r"\b[A-Fa-f0-9]{40,}\b"), "<REDACTED_HEX>"),
 ]

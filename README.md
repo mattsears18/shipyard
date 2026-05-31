@@ -309,7 +309,7 @@ export SHIPYARD_AUTOREPORT=1
 Once enabled, hooks (`PostToolUse` on `Task|Agent` and `SubagentStop`) invoke `plugins/shipyard/scripts/report-plugin-error.sh`. That script:
 
 1. **Detects** failure signals — `is_error: true`, `error:` / `stderr:` fields, or `blocked:` / `Error:` / `Traceback (...)` / `Fatal:` markers in the agent output. Only acts on subagents/skills whose name starts with `shipyard:`.
-2. **Scrubs secrets** — GitHub PATs (`ghp_…`), Anthropic / OpenAI keys (`sk-ant-…`, `sk-…`), AWS access keys, `Authorization:` / `Bearer …` headers, email addresses, `$HOME` paths, and any 40+ char hex blob.
+2. **Scrubs secrets** — GitHub PATs (`ghp_…`, `github_pat_…`), Anthropic / OpenAI keys (`sk-ant-…`, `sk-…`), Stripe keys (`sk_live_…`, `sk_test_…`), Google API keys (`AIza…`), AWS access keys (`AKIA…`), Slack tokens (`xoxb-`/`xoxp-`/…), GitLab PATs (`glpat-…`), npm tokens (`npm_…`), JWTs (three-segment base64url), SSH/RSA/EC private-key PEM blocks, database connection URLs that embed credentials (`postgres://user:pass@…`), `Authorization:` / `Bearer …` headers, email addresses, `$HOME` paths, and any 40+ char hex blob.
 3. **Builds a signature** from the skill/agent name + a digit-normalized error excerpt, then **searches open `auto-reported` issues** for a match. If found → adds a comment with the new occurrence. If not → files a fresh issue with `auto-reported` and `bug` labels.
 4. **Never breaks your session** — the helper traps errors and always exits 0. The hook runs the helper detached in the background so reports don't block the foreground.
 

@@ -177,6 +177,53 @@ assert_not_contains "$out" "MIIEpAIBAAKCAQEAabc123def456ghi789" "PEM private-key
 assert_not_contains "$out" "BEGIN RSA PRIVATE KEY" "PEM private-key markers scrubbed"
 assert_contains "$out" "REDACTED_PRIVATE_KEY" "PEM block collapses to REDACTED_PRIVATE_KEY"
 
+# Standalone JWT (not Bearer-prefixed) — three base64url segments — issue #408
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N rejected"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0" "standalone JWT scrubbed"
+assert_contains "$out" "REDACTED_JWT" "JWT redaction marker present"
+
+# Stripe live secret key — issue #408. Body kept deliberately short (below
+# GitHub push-protection's Stripe-key length threshold) but >=10 base62 chars
+# so the scrubber's `sk_live_[A-Za-z0-9]{10,}` rule still matches. The shape
+# has no delimiter to carry an obvious "EXAMPLE" marker, so short-and-fake is
+# the only way to exercise the rule without tripping push protection.
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: charge failed with sk_live_FAKEkey01x"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "sk_live_FAKEkey01x" "Stripe live key scrubbed"
+
+# Stripe test secret key — issue #408 (same short-fixture rationale as above).
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: charge failed with sk_test_FAKEkey01x"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "sk_test_FAKEkey01x" "Stripe test key scrubbed"
+
+# GitLab personal access token — issue #408
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: gitlab auth: glpat-EXAMPLEnotarealtoken01 failed"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "glpat-EXAMPLEnotarealtoken01" "GitLab PAT scrubbed"
+
+# npm automation/publish token — issue #408
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: npm publish failed with npm_EXAMPLEnotarealtoken0123456 token"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "npm_EXAMPLEnotarealtoken0123456" "npm token scrubbed"
+
+# Database connection URL carrying inline credentials — issue #408
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: cannot connect to postgres://dbuser:s3cr3tpass@db.example.com:5432/app"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "s3cr3tpass" "DB URL password scrubbed"
+assert_not_contains "$out" "dbuser:s3cr3tpass" "DB URL credentials scrubbed"
+assert_contains "$out" "REDACTED_DB_CREDENTIALS" "DB credentials redaction marker present"
+
+# mongodb+srv scheme with credentials — issue #408
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: mongodb+srv://admin:hunter2pw@cluster0.mongodb.net/db timed out"}}'
+out=$(run_helper "$payload")
+assert_not_contains "$out" "hunter2pw" "mongodb+srv URL password scrubbed"
+
+# A credential-free DB URL is left intact (no over-redaction) — issue #408
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:security-auditor"},"tool_response":{"is_error":true,"error":"Error: cannot connect to postgres://db.example.com:5432/app"}}'
+out=$(run_helper "$payload")
+assert_contains "$out" "postgres://db.example.com" "credential-free DB URL left intact"
+
 # --------------------------------------------------------------------------
 echo "== Issue body structure"
 # --------------------------------------------------------------------------
