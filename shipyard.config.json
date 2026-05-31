@@ -34,6 +34,9 @@
     "default": 2,
     "soft_collision": 3,
     "soft_collision_paths": [
+      "CLAUDE.md",
+      "CONTRIBUTING.md",
+      "README.md",
       "plugins/shipyard/commands/**/*.md",
       "plugins/shipyard/agents/**/*.md",
       "plugins/shipyard/skills/**/*.md"

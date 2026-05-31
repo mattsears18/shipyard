@@ -1134,6 +1134,7 @@ When filling a slot, walk this decision tree:
      1. **Built-in default set** (always present, defined here):
         - `CHANGELOG.md`
         - `CLAUDE.md`
+        - `CONTRIBUTING.md`
         - `README.md`
         - `E2E_TESTS.md`
         - `docs/**/*.md`
