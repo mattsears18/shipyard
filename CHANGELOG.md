@@ -4,12 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
-### 1.8.20 — 2026-05-31
+### 1.8.21 — 2026-05-31
 
-Closes [#406](https://github.com/mattsears18/shipyard/issues/406) (P2, `audit:testing`) — **adds a test for `hooks.json` registration, closing a ghost-coverage gap in the safety layer**. Each hook *script* (`enforce-worktree-isolation.sh`, `enforce-edit-scope.sh`, `refuse-escape-symlink-commit.sh`, `report-plugin-error.sh`) had its own unit test, but nothing tested `hooks.json` itself — so a typo'd `command` path, a dropped entry, or a malformed-JSON edit would pass CI while silently neutering a safety hook (hooks fail open from Claude Code's perspective: an unresolvable command path just never fires). The new test asserts `hooks.json` is valid JSON, that every `command` path resolves to a non-empty script on disk (mapping the `${CLAUDE_PLUGIN_ROOT}` prefix to the plugin root), and that all three load-bearing safety hooks remain registered. Verified failing on a dropped-hook and a typo'd-path mutation; passing on current `main`. Picked up automatically by `tests.yml`'s `*.test.sh` glob — no workflow edit needed.
+Closes [#407](https://github.com/mattsears18/shipyard/issues/407) (P2, `audit:api`) — **`worktree-reap.sh` now uses exit/return `64` for bad-usage, matching the shared error envelope every sibling script already honors**. An `api` script-contract audit found `worktree-reap.sh` was the lone divergence: where `shipyard-config.sh`, `session-state.sh`, `cost-history.sh`, `flake-registry.sh`, `gh-batch.sh`, `gh-cached.sh`, and six others map "called the helper wrong" (unknown flag, missing required flag, malformed flag value, unknown subcommand/action, unexpected positional) to `64` (`sysexits.h`'s `EX_USAGE`), `worktree-reap.sh` returned `2` for the identical conditions and contained zero `64`. The inconsistency defeats the whole point of a shared envelope — a caller branching on `64`-means-usage across the plugin's internal CLI surface silently got `2` from one script. Every one of the 28 `return 2` paths in `worktree-reap.sh` was a bad-usage error (no runtime-control returns used `2`), so all 28 renumber cleanly to `64`. No `do-work` spec call site branched on the numeric exit (they capture the stdout classification token), so no caller change was needed. Patch-class change (error-envelope alignment — no behavior change for well-formed invocations).
 
-- **`plugins/shipyard/hooks/tests/hooks-json.test.sh`** — new test suite validating the hook registration wiring (valid JSON, resolvable command paths, the three safety hooks present).
-- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.2 → 1.8.20 (patch — test-only addition; 1.8.3–1.8.19 claimed by in-flight sibling PRs).
+- **`plugins/shipyard/scripts/worktree-reap.sh`** — all 28 bad-usage `return 2` → `return 64` across `classify_lock`, `find_orphan_orchestrators`, `reap_action`, `reap_orphan_branches`, and `main`'s subcommand dispatch; the five `Exit codes:` documentation blocks (the four per-subcommand headers plus the `usage()` summary) updated `2` → `64`.
+- **`plugins/shipyard/scripts/tests/worktree-reap.test.sh`** — the 23 bad-usage `assert_exit_code "$?" "2"` assertions updated to expect `64`, plus the matching `→ exit 2` labels and section comments; all 82 tests pass.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.4 → 1.8.21 (patch — error-envelope alignment).
 
 ### 1.8.17 — 2026-05-31
 
@@ -56,6 +57,15 @@ Closes [#409](https://github.com/mattsears18/shipyard/issues/409) (P2, `audit:pr
 
 - **`plugins/shipyard/scripts/flake-registry.sh`** — new `# Privacy` section in the header comment, mirroring the cost-history privacy posture: states the file is local-only and never uploaded, points to `flake_registry.enabled: false` (the default) as the opt-out, and notes `reset` moves the file to `.bak.<ts>`.
 - **`CLAUDE.md`** — the `## Cost-tracking ledger` section now lists `flake-registry.jsonl` in the local-persistence table and adds a paragraph documenting its local-only posture, the off-by-default collection, and the `flake_registry.enabled` opt-in/opt-out alongside the cost ledger.
+=======
+### 1.8.7 — 2026-05-31
+
+Closes [#407](https://github.com/mattsears18/shipyard/issues/407) (P2, `audit:api`) — **`worktree-reap.sh` now uses exit/return `64` for bad-usage, matching the shared error envelope every sibling script already honors**. An `api` script-contract audit found `worktree-reap.sh` was the lone divergence: where `shipyard-config.sh`, `session-state.sh`, `cost-history.sh`, `flake-registry.sh`, `gh-batch.sh`, `gh-cached.sh`, and six others map "called the helper wrong" (unknown flag, missing required flag, malformed flag value, unknown subcommand/action, unexpected positional) to `64` (`sysexits.h`'s `EX_USAGE`), `worktree-reap.sh` returned `2` for the identical conditions and contained zero `64`. The inconsistency defeats the whole point of a shared envelope — a caller branching on `64`-means-usage across the plugin's internal CLI surface silently got `2` from one script. Every one of the 28 `return 2` paths in `worktree-reap.sh` was a bad-usage error (no runtime-control returns used `2`), so all 28 renumber cleanly to `64`. No `do-work` spec call site branched on the numeric exit (they capture the stdout classification token), so no caller change was needed. Patch-class change (error-envelope alignment — no behavior change for well-formed invocations).
+
+- **`plugins/shipyard/scripts/worktree-reap.sh`** — all 28 bad-usage `return 2` → `return 64` across `classify_lock`, `find_orphan_orchestrators`, `reap_action`, `reap_orphan_branches`, and `main`'s subcommand dispatch; the five `Exit codes:` documentation blocks (the four per-subcommand headers plus the `usage()` summary) updated `2` → `64`.
+- **`plugins/shipyard/scripts/tests/worktree-reap.test.sh`** — the 23 bad-usage `assert_exit_code "$?" "2"` assertions updated to expect `64`, plus the matching `→ exit 2` labels and section comments; all 82 tests pass.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.4 → 1.8.7 (patch — error-envelope alignment; 1.8.5 / 1.8.6 claimed by in-flight sibling PRs).
+>>>>>>> 0ff725a (chore(scripts,errors): align worktree-reap.sh bad-usage exits to 64)
 
 ### 1.8.4 — 2026-05-31
 
