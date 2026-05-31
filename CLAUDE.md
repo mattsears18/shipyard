@@ -62,7 +62,7 @@ Shipyard runs against a 4-layer config. Effective config is the deep-merge of al
 | Layer | Path | Committed? | Purpose |
 |---|---|---|---|
 | 1. Built-in defaults | hardcoded in `plugins/shipyard/scripts/shipyard-config.sh` | n/a | Always present; bottom layer |
-| 2. User-global | `~/.shipyard/config.json` | no (per-user) | Pricing overrides, default models, personal opt-outs across every repo |
+| 2. User-global | `~/.shipyard/config.json` | no (per-user) | Default models, default auto-merge policy, cost-tracking opt-out — across every repo (set via the `default_*` / `cost_tracking_enabled` aliases, remapped onto canonical paths on load) |
 | 3. Repo-level | `<repo>/shipyard.config.json` | **yes** | Shared policy, reviewable in PRs; opt-in surface for `/shipyard:do-work` |
 | 4. Personal override | `<repo>/.shipyard/config.local.json` | no (gitignored) | Per-repo personal overrides without touching committed policy |
 
@@ -115,6 +115,6 @@ Persistent cross-session token-usage records live at `~/.shipyard/`. Every `/shi
 
 Use `/shipyard:cost report` to query the persistent ledger. `--last 30d` (default), `--repo <owner/name>`, `--by-issue`, `--by-mode`, `--by-model`, `--top N`, `--trend`, and `--format markdown|csv|json` compose. `/shipyard:cost reset` is destructive but safe (moves to `.bak.<ts>` instead of `rm`); `/shipyard:cost export --to <path>.tar.gz` produces a portable backup.
 
-The ledger is local-only — shipyard never uploads it anywhere. To opt a specific repo out of cost-tracking, set `cost_tracking.enabled: false` for that repo, or add the repo to `exclude_repos_from_cost_tracking` in `~/.shipyard/config.json`. The ledger files are safe to `rm`; deletion only forfeits historical reports.
+The ledger is local-only — shipyard never uploads it anywhere. To opt a specific repo out of cost-tracking, set `cost_tracking.enabled: false` for that repo; to opt out across every repo from the user-global layer, set `cost_tracking_enabled: false` in `~/.shipyard/config.json` (it remaps onto `cost_tracking.enabled` on load — a repo-level value still wins). The ledger files are safe to `rm`; deletion only forfeits historical reports.
 
 The **flake registry** at `~/.shipyard/flake-registry.jsonl` (the cross-PR/cross-session flake ledger from #378) follows the same local-only posture: it lives entirely on the local filesystem and is never uploaded anywhere. It records non-PII CI metadata (repo, PR, workflow, job, test id, session id, timestamp), but on a private repo that still accumulates a cross-session record of your test names and PR numbers, so it stays local by design. Collection is **off by default** — flip `flake_registry.enabled: true` to opt in. To opt back out, set `flake_registry.enabled: false`. `flake-registry.sh reset` moves the file to `.bak.<ts>` (recoverable, not `rm`'d); the file is otherwise safe to `rm`, which only forfeits the historical flake-rate window.

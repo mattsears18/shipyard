@@ -473,6 +473,54 @@ load_user() {
   cat "$path"
 }
 
+# --------------------------------------------------------------------------
+# User-layer key remapping (issue #403).
+#
+# The user-global schema historically declared convenience aliases under
+# their own top-level names (default_auto_merge_policy, default_models,
+# cost_tracking_enabled) instead of the canonical paths every consumer
+# reads (auto_merge.policy, models.*, cost_tracking.enabled). Because the
+# merge is a flat last-wins union with no key remapping, a user who set
+# `default_auto_merge_policy: never` got a clean validate pass and zero
+# effect — the alias landed under its own name and nothing read it.
+#
+# This step translates the aliases into the canonical paths BEFORE the user
+# layer feeds the deep-merge, so a user-global setting actually overrides the
+# built-in default (with repo/local still winning per last-wins). The aliases
+# are removed from the normalized object so they can never leak into the
+# effective config under their inert names.
+#
+# Reads raw user JSON on stdin (or "{}"), emits the normalized object.
+normalize_user_layer() {
+  jq '
+    # default_auto_merge_policy -> auto_merge.policy
+    (if has("default_auto_merge_policy")
+       then .auto_merge = ((.auto_merge // {}) + {policy: .default_auto_merge_policy})
+       else . end)
+    # default_models.<k> -> models.<k> (merge key-by-key; explicit models.* still wins)
+    | (if has("default_models")
+         then .models = (.default_models + (.models // {}))
+         else . end)
+    # cost_tracking_enabled -> cost_tracking.enabled
+    | (if has("cost_tracking_enabled")
+         then .cost_tracking = ((.cost_tracking // {}) + {enabled: .cost_tracking_enabled})
+         else . end)
+    # Drop the aliases so they never leak into the effective config inert.
+    | del(.default_auto_merge_policy, .default_models, .cost_tracking_enabled)
+  '
+}
+
+# Load the user layer normalized for merge consumption. This is what feeds
+# the effective/merged config (cmd_load, cmd_show effective + source-map,
+# cmd_get value + source). The raw load_user() is reserved for the
+# `show --layer user` / `validate --layer user` paths, which must reflect
+# the on-disk file verbatim.
+load_user_merged() {
+  local raw
+  raw=$(load_user) || return $?
+  printf '%s' "$raw" | normalize_user_layer
+}
+
 load_repo() {
   local path
   if ! path=$(repo_config_path); then
@@ -551,7 +599,7 @@ cmd_load() {
 
   local d u r l
   d=$(load_defaults) || exit $?
-  u=$(load_user) || exit $?
+  u=$(load_user_merged) || exit $?
   r=$(load_repo) || exit $?
   l=$(load_local) || exit $?
   deep_merge_layers "$d" "$u" "$r" "$l"
@@ -585,7 +633,10 @@ cmd_show() {
   # the latest non-empty source wins.
   local d u r l merged
   d=$(load_defaults) || exit $?
-  u=$(load_user) || exit $?
+  # Use the normalized user layer so the source map attributes a remapped
+  # canonical path (e.g. auto_merge.policy set via the user-global alias
+  # default_auto_merge_policy) to the "user" layer, not "defaults" (#403).
+  u=$(load_user_merged) || exit $?
   r=$(load_repo) || exit $?
   l=$(load_local) || exit $?
   merged=$(deep_merge_layers "$d" "$u" "$r" "$l")
@@ -685,10 +736,12 @@ cmd_get() {
   fi
 
   if [[ $with_source -eq 1 ]]; then
-    # Resolve source by checking each layer in reverse order.
+    # Resolve source by checking each layer in reverse order. The user layer
+    # is normalized (#403) so a value set via a user-global alias resolves to
+    # the "user" source at its canonical path, matching the effective value.
     local d u r l src="defaults"
     d=$(load_defaults)
-    u=$(load_user) || exit $?
+    u=$(load_user_merged) || exit $?
     r=$(load_repo) || exit $?
     l=$(load_local) || exit $?
     for layer_name in local repo user defaults; do
