@@ -5,13 +5,13 @@ All notable changes to the plugins in this repository will be documented here.
 ## shipyard
 
 
-### 1.8.22 — 2026-05-31
+### 1.8.23 — 2026-05-31
 
 Closes [#418](https://github.com/mattsears18/shipyard/issues/418) (P2, `enhancement`) — **adds a worker-preamble section warning every worker mode to mirror new string constants into the locale / parity files a repo's parity test requires before opening a PR**. A recurring, self-inflicted CI red: a worker adds a user-facing string to a centralized strings module (`lib/strings.ts` etc.) but forgets the matching key in every locale file, reddening the repo's key-parity test (`i18n.test.ts` etc.) and costing a fix-checks cycle to add the one missing key. A single `mattsears18/lightwork` session tripped this 3× across PRs #1443 / #1444 / #1447. The new section generalizes the class (i18n locale parity, enum↔lookup-table parity, snapshot/fixture parity), gives a grep-then-mirror check before push, and bounds it with a "when NOT to worry" caveat for diffs that don't touch a string module or repos with no parity test. Lives in the shared preamble (not per-mode) because the failure mode is identical across every worker that pushes. Patch bump (docs/spec guidance, no runtime behavior change).
 
 - **`plugins/shipyard/skills/worker-preamble/SKILL.md`** — new `## Mirror new string constants into locale / parity files` section in the local-test-correctness cluster (after the test-runner silent-pass sections), with the lightwork repro, the general-class shapes, the grep-then-mirror check, and the when-NOT-to caveat.
 - **`plugins/shipyard/scripts/tests/worker-preamble.test.sh`** — three regression assertions guarding the new section's heading, the "parity test" CI-red trigger naming, and the mirror-the-key prescription.
-- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.11 → 1.8.22 (patch; honors the orchestrator-supplied next-available slot across this session's in-flight PRs).
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.11 → 1.8.23 (patch; honors the orchestrator-supplied next-available slot across this session's in-flight PRs).
 
 ### 1.8.21 — 2026-05-31
 
