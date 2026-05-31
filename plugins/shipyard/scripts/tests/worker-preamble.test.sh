@@ -235,6 +235,25 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md names the parity test as the CI-red trigger (issue #418)"
   assert_contains "$skill_path" "mirror the new key into every file the test requires" \
     "SKILL.md prescribes mirroring the key into every required locale/parity file (issue #418)"
+
+  # Issue #440 — "GitHub push-protection blocking a synthetic test-fixture
+  # secret" section. The section exists because a worker adding a NEW test
+  # fixture with a realistic-shaped secret (to exercise a scrubber / secret-scan
+  # rule) gets its push bounced by GitHub's server-side push-protection — a
+  # SEPARATE scanner from .gitleaks.toml, so the fixture being gitleaks-
+  # allowlisted does not exempt it (the #402 / #408 scrubber-fixture workers hit
+  # exactly this). Removing the section regresses the never-click-the-unblock-URL
+  # + rewrite-to-synthetic + rebuild-the-commit contract.
+  assert_contains "$skill_path" "## GitHub push-protection blocking a synthetic test-fixture secret" \
+    "SKILL.md covers the push-protection synthetic-fixture block (issue #440)"
+  assert_contains "$skill_path" "NEVER click the server-side unblock URL" \
+    "SKILL.md tells the worker never to click the push-protection unblock URL (issue #440)"
+  assert_contains "$skill_path" "obviously-synthetic value that still matches the pattern under test" \
+    "SKILL.md prescribes rewriting the fixture to an obviously-synthetic value (issue #440)"
+  assert_contains "$skill_path" "flagged blob never enters pushed history" \
+    "SKILL.md prescribes rebuilding the commit so the flagged blob never enters pushed history (issue #440)"
+  assert_contains "$skill_path" "NOT the same scanner as \`.gitleaks.toml\`" \
+    "SKILL.md distinguishes push-protection from the .gitleaks.toml committed-content scanner (issue #440)"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after

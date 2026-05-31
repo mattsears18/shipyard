@@ -304,6 +304,34 @@ The `refuse-escape-symlink-commit.sh` hook (registered as PreToolUse → Bash in
 
 If you genuinely need to commit a symlink with `../` in the target (rare — and a strong signal to re-think the design), return `blocked:` so a human can decide. The hook intentionally has no bypass flag, paralleling the no-`--no-verify` rule for commit hooks.
 
+## GitHub push-protection blocking a synthetic test-fixture secret
+
+A push-time analogue to the classifier-denial boundary ([#440](https://github.com/mattsears18/shipyard/issues/440)): you add a NEW test fixture containing a realistic-shaped secret — `xoxb-`/`xoxp-` Slack tokens, `sk_live_`/`sk_test_` Stripe keys, `ghp_`/`github_pat_` GitHub tokens, `AKIA…` AWS keys — because the fixture's whole job is to exercise a scrubber, a secret-scanning rule, or a redaction regex you're adding. The fixture value is **synthetic** (made up, matches the shape but unlocks nothing), but it's realistic enough that **GitHub's server-side push-protection** rejects your `git push` with a `GH013: Repository rule violations` / "Push cannot contain secrets" error naming the detector that matched (Slack API Token, Stripe API Key, etc.).
+
+**The trap: this is NOT the same scanner as `.gitleaks.toml`.** This repo wires two distinct committed-content scanners, and allowlisting a fixture in one does NOT exempt it from the other:
+
+- **`.gitleaks.toml`** (driven by `.github/workflows/secret-scan.yml`) is the in-repo gitleaks config. Its `[allowlist].paths` already exempts the scrubber test fixtures (`plugins/shipyard/scripts/tests/report-plugin-error.test.sh`, etc.) — so the CI gitleaks job stays green on those files.
+- **GitHub native push-protection** (Settings → Code security → "Push protection") is a *separate, server-side* detector that runs on every push regardless of `.gitleaks.toml`. It has its own ruleset and its own (org/repo-level) bypass surface. A path allowlisted in `.gitleaks.toml` is still subject to push-protection. This is exactly the surprise the #402 and #408 scrubber-fixture workers hit: the fixtures were already gitleaks-allowlisted, yet the push still bounced.
+
+**What to do when push-protection blocks a synthetic-fixture push, in order:**
+
+1. **NEVER click the server-side unblock URL.** The error output includes an "allow secret" / "unblock" link that registers a push-protection bypass for that blob. Following it is a repo-security-posture decision (it tells GitHub "this secret is intentional, let it through forever"), which is a **maintainer** decision, not a worker decision — and it normalizes a bypass path that a future real-secret leak could ride. Treat the unblock URL exactly like the classifier-denial "argue past it" surface: off-limits.
+2. **Rewrite the fixture to an obviously-synthetic value that still matches the pattern under test.** The detector keys on *shape*; your test keys on *the scrubber matching the shape*. Both are satisfied by a value that's clearly fake to a human reader — embed an `EXAMPLE` / `NOT-A-REAL-TOKEN` / `DO-NOT-USE` marker inside the token body while preserving the prefix and length class the regex needs:
+   ```
+   # Bounced by push-protection (realistic random-looking body — shown
+   # here abstractly so this very doc doesn't trip the detector):
+   xoxb-<11 digits>-<11 digits>-<24 random alphanumerics>
+   # Synthetic, still matches the xoxb-[…] shape under test, passes push-protection:
+   xoxb-EXAMPLE-NOT-A-REAL-TOKEN-000000000000
+   ```
+   Verify the rewritten value still exercises the regex/scrubber you're testing — run the test locally — before re-pushing. The point is a fixture that (a) the detector lets through and (b) still asserts what the original asserted.
+3. **Rebuild the commit so the flagged blob never enters pushed history.** Push-protection scans the *diff*, but the flagged blob also lives in your local commit. A plain amend-then-push can still bounce if the original blob is reachable. Rebuild the offending commit (`git commit --amend` for a single-commit branch, or `git rebase` to rewrite the commit that introduced the blob) so the realistic-shaped value is gone from the history you push — then `git push --force-with-lease` your own feature branch. (Force-pushing *your own* `do-work/issue-<N>` branch is fine per the "don't force-push shared/main" rule; this isn't a shared branch.)
+4. **If the fixture genuinely can't be made synthetic-looking while still testing what it must** (rare — some detectors validate a checksum, e.g. Stripe key Luhn-style checks, so an `EXAMPLE`-laced body won't match), do NOT click the unblock URL and do NOT bypass. Return `blocked: push-protection blocks synthetic fixture and value can't be made obviously-fake while still matching the detector — needs maintainer decision on repo push-protection bypass` and let the maintainer decide whether to register a bypass or restructure the test.
+
+**Mirror to `.gitleaks.toml` when you add a fixture file.** If your new fixture lives in a *new* file (not one already covered by `.gitleaks.toml`'s `[allowlist].paths`), the CI gitleaks job will red on it even after push-protection is satisfied. Add the new fixture path to `.gitleaks.toml`'s `paths` allowlist in the same PR — otherwise you trade a push-time block for a CI-time red and pay a fix-checks cycle. The two scanners protect the same surface (committed content) but are configured independently; a synthetic-fixture PR usually needs to satisfy both.
+
+**When NOT to worry about this.** A diff with no new realistic-shaped secret values can't trip push-protection — most PRs never touch this. The failure mode is specific to work that *adds* secret-shaped fixtures (scrubber tests, secret-scan rule tests, redaction-regex tests). And if push-protection blocks a value that is NOT synthetic — a real token that leaked into your diff — none of the above applies: scrub the real secret out entirely, rotate it if it was ever real, and never commit it. The synthetic-fixture path is for values that were fake from the start.
+
 ## Never `--no-verify`
 
 You are forbidden from passing `--no-verify`, `--no-gpg-sign`, `--no-commit-hooks`, or any other flag that bypasses commit hooks, even if you believe the hook failure is environmental, unrelated to your changes, or a false positive. If a pre-commit hook fails:
