@@ -61,7 +61,7 @@
 #                        if both are set.
 #     Exit codes:
 #       0  classification emitted
-#       2  bad usage (missing path, malformed flag value)
+#       64 bad usage (missing path, malformed flag value)
 #
 # Callers should reap on `no-lock` / `dead` / `self-ancestor`, defer on
 # `peer-alive`.
@@ -100,7 +100,7 @@
 #                       to `$HOME/.shipyard`). Mirrors session-state.sh.
 #     Exit codes:
 #       0  enumeration succeeded (output may be empty)
-#       2  bad usage (missing required flag)
+#       64 bad usage (missing required flag)
 #
 #   reap-orphan-branches --repo-root <path> --session-id <id>
 #        [--dry-run]
@@ -132,7 +132,7 @@
 #       live and dry-run). Empty stdout when nothing was reaped.
 #     Exit codes:
 #       0  sweep succeeded (output may be empty)
-#       2  bad usage (missing required flag, unknown flag)
+#       64 bad usage (missing required flag, unknown flag)
 #
 #   reap --action <reaped|deferred|reaped-orphan-orchestrator>
 #        --worktree-path <path> --worktree-name <name>
@@ -214,7 +214,7 @@
 #          to log success or not). Exit 0 means the audit-line write
 #          itself was attempted; an actual write failure on the JSONL
 #          file (permissions, full disk) is fire-and-forget.
-#       2  bad usage (missing required flag, unknown action, invalid
+#       64 bad usage (missing required flag, unknown action, invalid
 #          numeric value for actor-pid/lock-pid).
 #
 # Pure bash + `ps` + `date` + `git`. No jq, no python — the helper has to
@@ -306,7 +306,7 @@ Exit codes:
   0  classification emitted (classify-lock) / PID printed or empty
      (detect-orchestrator-pid) / enumeration succeeded, output may be
      empty (find-orphan-orchestrators) / audit-log write attempted (reap)
-  2  usage error (missing path, malformed flag, missing required flag)
+  64 usage error (missing path, malformed flag, missing required flag)
 EOF
 }
 
@@ -423,7 +423,7 @@ classify_lock() {
       --orchestrator-pid)
         if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
           echo "classify-lock: --orchestrator-pid requires a non-negative integer (got: ${2:-})" >&2
-          return 2
+          return 64
         fi
         orchestrator_pid="$2"
         shift 2
@@ -432,7 +432,7 @@ classify_lock() {
         local val="${1#--orchestrator-pid=}"
         if ! [[ "$val" =~ ^[0-9]+$ ]]; then
           echo "classify-lock: --orchestrator-pid requires a non-negative integer (got: $val)" >&2
-          return 2
+          return 64
         fi
         orchestrator_pid="$val"
         shift
@@ -442,14 +442,14 @@ classify_lock() {
         ;;
       -*)
         echo "classify-lock: unknown flag: $1" >&2
-        return 2
+        return 64
         ;;
       *)
         if [ -z "$lock_file" ]; then
           lock_file="$1"
         else
           echo "classify-lock: unexpected positional arg: $1" >&2
-          return 2
+          return 64
         fi
         shift
         ;;
@@ -462,12 +462,12 @@ classify_lock() {
   # above; this guard catches malformed env-var values.
   if [ -n "$orchestrator_pid" ] && ! [[ "$orchestrator_pid" =~ ^[0-9]+$ ]]; then
     echo "classify-lock: SHIPYARD_ORCHESTRATOR_PID must be a non-negative integer (got: $orchestrator_pid)" >&2
-    return 2
+    return 64
   fi
 
   if [ -z "$lock_file" ]; then
     usage
-    return 2
+    return 64
   fi
 
   if [ ! -f "$lock_file" ]; then
@@ -563,22 +563,22 @@ find_orphan_orchestrators() {
         ;;
       -*)
         echo "find-orphan-orchestrators: unknown flag: $1" >&2
-        return 2
+        return 64
         ;;
       *)
         echo "find-orphan-orchestrators: unexpected positional arg: $1" >&2
-        return 2
+        return 64
         ;;
     esac
   done
 
   if [ -z "$repo_root" ]; then
     echo "find-orphan-orchestrators: --repo-root is required" >&2
-    return 2
+    return 64
   fi
   if [ -z "$current_session_id" ]; then
     echo "find-orphan-orchestrators: --current-session-id is required" >&2
-    return 2
+    return 64
   fi
 
   local orch_root="$repo_root/.claude/worktrees"
@@ -770,11 +770,11 @@ reap_action() {
         ;;
       -*)
         echo "reap: unknown flag: $1" >&2
-        return 2
+        return 64
         ;;
       *)
         echo "reap: unexpected positional arg: $1" >&2
-        return 2
+        return 64
         ;;
     esac
   done
@@ -783,25 +783,25 @@ reap_action() {
   # in the action dispatch below.
   if [ -z "$action" ]; then
     echo "reap: --action is required" >&2
-    return 2
+    return 64
   fi
   if [ -z "$worktree_path" ]; then
     echo "reap: --worktree-path is required" >&2
-    return 2
+    return 64
   fi
   if [ -z "$worktree_name" ]; then
     echo "reap: --worktree-name is required" >&2
-    return 2
+    return 64
   fi
   if [ -z "$session_id" ]; then
     echo "reap: --session-id is required" >&2
-    return 2
+    return 64
   fi
 
   # actor_pid must be numeric.
   if ! [[ "$actor_pid" =~ ^[0-9]+$ ]]; then
     echo "reap: --actor-pid must be a non-negative integer (got: $actor_pid)" >&2
-    return 2
+    return 64
   fi
 
   # lock_pid is either `null` (literal) or a non-negative integer; we emit
@@ -809,7 +809,7 @@ reap_action() {
   # invalid JSON. Catch it early.
   if [ "$lock_pid" != "null" ] && ! [[ "$lock_pid" =~ ^[0-9]+$ ]]; then
     echo "reap: --lock-pid must be 'null' or a non-negative integer (got: $lock_pid)" >&2
-    return 2
+    return 64
   fi
 
   # Resolve the audit-log path lazily. Mirrors the cost-history /
@@ -889,7 +889,7 @@ reap_action() {
     reaped)
       if [ -z "$classification" ]; then
         echo "reap: --classification is required when --action=reaped" >&2
-        return 2
+        return 64
       fi
       # Perform the actual worktree remove unless the caller explicitly
       # asks us to skip (used when the caller has already removed it).
@@ -903,7 +903,7 @@ reap_action() {
     deferred)
       if [ -z "$reason" ]; then
         echo "reap: --reason is required when --action=deferred" >&2
-        return 2
+        return 64
       fi
       # `deferred` means we DIDN'T remove the worktree — caller is logging
       # the decision to defer. No `git worktree remove` should fire.
@@ -912,7 +912,7 @@ reap_action() {
     reaped-orphan-orchestrator)
       if [ -z "$reaped_session_id" ]; then
         echo "reap: --reaped-session-id is required when --action=reaped-orphan-orchestrator" >&2
-        return 2
+        return 64
       fi
       # Try the structured `git worktree remove --force` path first. On
       # failure (typical when the worktree dir is on disk but no longer
@@ -936,7 +936,7 @@ reap_action() {
       ;;
     *)
       echo "reap: unknown --action: $action" >&2
-      return 2
+      return 64
       ;;
   esac
 
@@ -994,22 +994,22 @@ reap_orphan_branches() {
         ;;
       -*)
         echo "reap-orphan-branches: unknown flag: $1" >&2
-        return 2
+        return 64
         ;;
       *)
         echo "reap-orphan-branches: unexpected positional arg: $1" >&2
-        return 2
+        return 64
         ;;
     esac
   done
 
   if [ -z "$repo_root" ]; then
     echo "reap-orphan-branches: --repo-root is required" >&2
-    return 2
+    return 64
   fi
   if [ -z "$session_id" ]; then
     echo "reap-orphan-branches: --session-id is required" >&2
-    return 2
+    return 64
   fi
 
   # Step 1 — enumerate local worktree-agent-* branches.
@@ -1125,13 +1125,13 @@ main() {
       ;;
     -h|--help|help|"")
       usage
-      [ -z "$sub" ] && return 2
+      [ -z "$sub" ] && return 64
       return 0
       ;;
     *)
       echo "worktree-reap.sh: unknown subcommand: $sub" >&2
       usage
-      return 2
+      return 64
       ;;
   esac
 }

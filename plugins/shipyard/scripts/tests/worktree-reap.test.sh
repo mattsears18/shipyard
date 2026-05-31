@@ -35,7 +35,7 @@
 #   6) lock with sibling-process PID
 #                          → `peer-alive`     (original behaviour preserved
 #                                              for genuine peer agents)
-#   7) bad usage           → exit 2
+#   7) bad usage           → exit 64
 #   8) regression guard: canonical lock format with peer/own PID
 #                          → `peer-alive` / `self-ancestor`
 #   9) issue #263 — SHIPYARD_ORCHESTRATOR_PID env var matches lock PID
@@ -51,7 +51,7 @@
 #  13) issue #263 — env-var-declared PID is dead but lock PID alive and
 #       matches it — defends against stale-env-var-recycled-PID match
 #                          → ancestor walk continues (no false short-circuit)
-#  14) issue #263 — bad flag values exit 2
+#  14) issue #263 — bad flag values exit 64
 #  15-17) detect-orchestrator-pid match / no-match / exit code
 #  18-30) issue #280 — find-orphan-orchestrators subcommand covers:
 #         - empty layouts (no worktrees dir, no orchestrator-* entries)
@@ -229,16 +229,16 @@ wait "$sibling_pid" 2>/dev/null
 
 # --- (7) bad usage: missing path ---
 bash "$helper" classify-lock 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(7) classify-lock without path → exit 2"
+assert_exit_code "$?" "64" \
+  "(7) classify-lock without path → exit 64"
 
 bash "$helper" 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(7a) no subcommand → exit 2"
+assert_exit_code "$?" "64" \
+  "(7a) no subcommand → exit 64"
 
 bash "$helper" unknown-cmd 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(7b) unknown subcommand → exit 2"
+assert_exit_code "$?" "64" \
+  "(7b) unknown subcommand → exit 64"
 
 # --- (8) regression guard: classify-lock with an alive-but-not-self PID
 # extracted from a real-looking lock-file content (matches the format the
@@ -353,27 +353,27 @@ result=$(run_classify_with_env "$lock_stale_env" "$dead_pid_for_env")
 assert_equals "$result" "dead" \
   "(13) env var matches lock PID but PID is dead → 'dead' (pid_alive gate fires first)"
 
-# --- (14) bad flag values exit 2 ---
+# --- (14) bad flag values exit 64 ---
 bash "$helper" classify-lock "$tmpdir/anything.lock" --orchestrator-pid 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(14) --orchestrator-pid with no value → exit 2"
+assert_exit_code "$?" "64" \
+  "(14) --orchestrator-pid with no value → exit 64"
 
 bash "$helper" classify-lock "$tmpdir/anything.lock" --orchestrator-pid notanumber 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(14a) --orchestrator-pid with non-numeric value → exit 2"
+assert_exit_code "$?" "64" \
+  "(14a) --orchestrator-pid with non-numeric value → exit 64"
 
 bash "$helper" classify-lock "$tmpdir/anything.lock" --orchestrator-pid=notanumber 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(14b) --orchestrator-pid=notanumber → exit 2"
+assert_exit_code "$?" "64" \
+  "(14b) --orchestrator-pid=notanumber → exit 64"
 
 bash "$helper" classify-lock "$tmpdir/anything.lock" --unknown-flag 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(14c) unknown flag → exit 2"
+assert_exit_code "$?" "64" \
+  "(14c) unknown flag → exit 64"
 
-# Malformed env-var value also surfaces as exit 2 (a config bug we want loud).
+# Malformed env-var value also surfaces as exit 64 (a config bug we want loud).
 SHIPYARD_ORCHESTRATOR_PID=notanumber bash "$helper" classify-lock "$tmpdir/anything.lock" 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(14d) SHIPYARD_ORCHESTRATOR_PID=notanumber → exit 2"
+assert_exit_code "$?" "64" \
+  "(14d) SHIPYARD_ORCHESTRATOR_PID=notanumber → exit 64"
 
 # Empty env var is treated as unset — same as not passing the env var at all.
 # `$tmpdir/anything.lock` doesn't exist → no-lock.
@@ -545,29 +545,29 @@ expected=$(printf '%s\n%s' \
 assert_equals "$result" "$expected" \
   "(25) multiple orphans → all emitted, current session excluded"
 
-# --- (26) bad usage — missing --repo-root → exit 2 ---
+# --- (26) bad usage — missing --repo-root → exit 64 ---
 SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
   --current-session-id foo >/dev/null 2>&1
-assert_exit_code "$?" "2" \
-  "(26) missing --repo-root → exit 2"
+assert_exit_code "$?" "64" \
+  "(26) missing --repo-root → exit 64"
 
-# --- (27) bad usage — missing --current-session-id → exit 2 ---
+# --- (27) bad usage — missing --current-session-id → exit 64 ---
 SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
   --repo-root "$fake_repo" >/dev/null 2>&1
-assert_exit_code "$?" "2" \
-  "(27) missing --current-session-id → exit 2"
+assert_exit_code "$?" "64" \
+  "(27) missing --current-session-id → exit 64"
 
-# --- (28) bad usage — unknown flag → exit 2 ---
+# --- (28) bad usage — unknown flag → exit 64 ---
 SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
   --repo-root "$fake_repo" --current-session-id foo --unknown 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(28) unknown flag → exit 2"
+assert_exit_code "$?" "64" \
+  "(28) unknown flag → exit 64"
 
-# --- (29) bad usage — unexpected positional → exit 2 ---
+# --- (29) bad usage — unexpected positional → exit 64 ---
 SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
   --repo-root "$fake_repo" --current-session-id foo trailing-positional 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(29) unexpected positional arg → exit 2"
+assert_exit_code "$?" "64" \
+  "(29) unexpected positional arg → exit 64"
 
 # --- (30) --flag=value form works for --repo-root and --current-session-id ---
 reset_fake_layout
@@ -587,7 +587,7 @@ assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-equals-form-o
 #   - Action-specific line shapes match what the inline printf templates
 #     in setup.md / cleanup-summary.md used to emit (so existing tooling
 #     reading the log doesn't see a behavior change).
-#   - Required-flag validation surfaces as exit 2 with a useful stderr.
+#   - Required-flag validation surfaces as exit 64 with a useful stderr.
 #   - SHIPYARD_HOME / $HOME/.shipyard precedence works.
 #   - `--skip-remove` path doesn't invoke git.
 #   - Orphan-orchestrator raw-rm fallback path emits the -raw-rm action
@@ -790,46 +790,46 @@ else
   fail=$((fail+1))
 fi
 
-# --- (37) bad usage: --action required → exit 2 ---
+# --- (37) bad usage: --action required → exit 64 ---
 run_reap --worktree-path "$reap_repo/x" --worktree-name "x" --session-id s
-assert_exit_code "$?" "2" \
-  "(37) missing --action → exit 2"
+assert_exit_code "$?" "64" \
+  "(37) missing --action → exit 64"
 
 # --- (38) bad usage: --classification required when --action=reaped ---
 run_reap --action reaped --worktree-path "$reap_repo/x" --worktree-name "x" \
   --session-id s --lock-pid null --skip-remove
-assert_exit_code "$?" "2" \
-  "(38) reaped without --classification → exit 2"
+assert_exit_code "$?" "64" \
+  "(38) reaped without --classification → exit 64"
 
 # --- (39) bad usage: --reason required when --action=deferred ---
 run_reap --action deferred --worktree-path "$reap_repo/x" --worktree-name "x" \
   --session-id s --lock-pid null
-assert_exit_code "$?" "2" \
-  "(39) deferred without --reason → exit 2"
+assert_exit_code "$?" "64" \
+  "(39) deferred without --reason → exit 64"
 
 # --- (40) bad usage: --reaped-session-id required when --action=reaped-orphan-orchestrator ---
 run_reap --action reaped-orphan-orchestrator \
   --worktree-path "$reap_repo/x" --worktree-name "x" --session-id s
-assert_exit_code "$?" "2" \
-  "(40) reaped-orphan-orchestrator without --reaped-session-id → exit 2"
+assert_exit_code "$?" "64" \
+  "(40) reaped-orphan-orchestrator without --reaped-session-id → exit 64"
 
-# --- (41) bad usage: unknown --action → exit 2 ---
+# --- (41) bad usage: unknown --action → exit 64 ---
 run_reap --action bogus --worktree-path "$reap_repo/x" --worktree-name "x" \
   --session-id s --skip-remove
-assert_exit_code "$?" "2" \
-  "(41) unknown --action → exit 2"
+assert_exit_code "$?" "64" \
+  "(41) unknown --action → exit 64"
 
 # --- (42) bad usage: --lock-pid must be 'null' or non-negative integer ---
 run_reap --action reaped --worktree-path "$reap_repo/x" --worktree-name "x" \
   --session-id s --classification "dead" --lock-pid "not-a-pid" --skip-remove
-assert_exit_code "$?" "2" \
-  "(42) --lock-pid with non-numeric, non-'null' value → exit 2"
+assert_exit_code "$?" "64" \
+  "(42) --lock-pid with non-numeric, non-'null' value → exit 64"
 
 # --- (43) bad usage: --actor-pid must be numeric ---
 run_reap --action reaped --worktree-path "$reap_repo/x" --worktree-name "x" \
   --session-id s --classification "dead" --lock-pid null --actor-pid "abc" --skip-remove
-assert_exit_code "$?" "2" \
-  "(43) --actor-pid with non-numeric value → exit 2"
+assert_exit_code "$?" "64" \
+  "(43) --actor-pid with non-numeric value → exit 64"
 
 # --- (44) --flag=value form parity for all reap flags ---
 reset_reap_layout
@@ -951,7 +951,7 @@ assert_exit_code "$?" "0" \
 #   - Idempotent — second pass with no orphan branches produces empty output.
 #   - Dry-run mode emits reaped-branch: lines without deleting or auditing.
 #   - Audit log entry has the expected shape.
-#   - Bad-usage cases exit 2.
+#   - Bad-usage cases exit 64.
 #   - --repo-root=value and --session-id=value forms accepted.
 # ============================================================================
 
@@ -1105,29 +1105,29 @@ else
     "$GREEN" "$RESET"
 fi
 
-# --- (52) bad usage — missing --repo-root → exit 2 ---
+# --- (52) bad usage — missing --repo-root → exit 64 ---
 SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
   --session-id foo >/dev/null 2>&1
-assert_exit_code "$?" "2" \
-  "(52) missing --repo-root → exit 2"
+assert_exit_code "$?" "64" \
+  "(52) missing --repo-root → exit 64"
 
-# --- (53) bad usage — missing --session-id → exit 2 ---
+# --- (53) bad usage — missing --session-id → exit 64 ---
 SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
   --repo-root "$rob_repo" >/dev/null 2>&1
-assert_exit_code "$?" "2" \
-  "(53) missing --session-id → exit 2"
+assert_exit_code "$?" "64" \
+  "(53) missing --session-id → exit 64"
 
-# --- (54) bad usage — unknown flag → exit 2 ---
+# --- (54) bad usage — unknown flag → exit 64 ---
 SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
   --repo-root "$rob_repo" --session-id foo --unknown-flag 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(54) unknown flag → exit 2"
+assert_exit_code "$?" "64" \
+  "(54) unknown flag → exit 64"
 
-# --- (55) bad usage — unexpected positional → exit 2 ---
+# --- (55) bad usage — unexpected positional → exit 64 ---
 SHIPYARD_HOME="$rob_home" bash "$helper" reap-orphan-branches \
   --repo-root "$rob_repo" --session-id foo trailing 2>/dev/null
-assert_exit_code "$?" "2" \
-  "(55) unexpected positional arg → exit 2"
+assert_exit_code "$?" "64" \
+  "(55) unexpected positional arg → exit 64"
 
 # --- (56) --flag=value form accepted ---
 reset_rob_layout
