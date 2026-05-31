@@ -835,12 +835,54 @@ reap_action() {
     printf '%s\n' "$line" >> "$audit_log" 2>/dev/null || true
   }
 
+  # Issue #405 — JSON-escape a string value so an interpolated field can't
+  # corrupt or inject into the audit ledger. Values like --reason,
+  # --worktree-name, --session-id, --classification, and --phase flow
+  # straight from caller-controlled branch / worktree / session identifiers
+  # that are only validated non-empty, so a `"`, `\`, or control character
+  # in any of them would otherwise produce malformed JSONL (or, with a
+  # crafted value, forge additional record fields).
+  #
+  # Pure bash — the script header (no jq, no python) is load-bearing: this
+  # helper is called from the cleanup loop potentially once per worktree.
+  # Escapes the six characters JSON requires (`"`, `\`, and the C0 controls
+  # backspace / form-feed / newline / carriage-return / tab via their
+  # short escapes) plus any remaining control character (U+0000–U+001F) via
+  # the \u00XX long form. Emits the surrounding double-quotes.
+  json_str() {
+    local s="$1" out="" c i
+    # Backslash first so we don't double-escape the backslashes we add.
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\b'/\\b}
+    s=${s//$'\f'/\\f}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\t'/\\t}
+    # Catch any remaining control chars (e.g. U+0001) with the \u00XX form.
+    # Cheap fast-path: only walk the string when a raw control byte survives.
+    if [[ "$s" == *[$'\x01'-$'\x1f']* ]]; then
+      out=""
+      for (( i=0; i<${#s}; i++ )); do
+        c=${s:i:1}
+        case "$c" in
+          [$'\x01'-$'\x1f'])
+            printf -v c '\\u%04x' "'$c"
+            ;;
+        esac
+        out+="$c"
+      done
+      s="$out"
+    fi
+    printf '"%s"' "$s"
+  }
+
   # Format the optional ,"phase":"<p>" suffix. Empty when --phase wasn't
   # set; the audit-line constructions below append it after the
-  # action-specific body.
+  # action-specific body. The phase value is JSON-escaped (issue #405).
   local phase_suffix=""
   if [ -n "$phase" ]; then
-    phase_suffix=",\"phase\":\"$phase\""
+    phase_suffix=",\"phase\":$(json_str "$phase")"
   fi
 
   case "$action" in
@@ -856,7 +898,7 @@ reap_action() {
         git worktree unlock "$worktree_path" 2>/dev/null || true
         git worktree remove --force "$worktree_path" 2>/dev/null || true
       fi
-      emit_line "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"worktree\":\"$worktree_name\",\"action\":\"reaped\",\"classification\":\"$classification\",\"lock_pid\":$lock_pid$phase_suffix}"
+      emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"reaped\",\"classification\":$(json_str "$classification"),\"lock_pid\":$lock_pid$phase_suffix}"
       ;;
     deferred)
       if [ -z "$reason" ]; then
@@ -865,7 +907,7 @@ reap_action() {
       fi
       # `deferred` means we DIDN'T remove the worktree — caller is logging
       # the decision to defer. No `git worktree remove` should fire.
-      emit_line "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"worktree\":\"$worktree_name\",\"action\":\"deferred\",\"reason\":\"$reason\",\"lock_pid\":$lock_pid$phase_suffix}"
+      emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"deferred\",\"reason\":$(json_str "$reason"),\"lock_pid\":$lock_pid$phase_suffix}"
       ;;
     reaped-orphan-orchestrator)
       if [ -z "$reaped_session_id" ]; then
@@ -890,7 +932,7 @@ reap_action() {
           fi
         fi
       fi
-      emit_line "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"worktree\":\"$worktree_name\",\"action\":\"$actual_action\",\"reaped_session_id\":\"$reaped_session_id\"$phase_suffix}"
+      emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":$(json_str "$actual_action"),\"reaped_session_id\":$(json_str "$reaped_session_id")$phase_suffix}"
       ;;
     *)
       echo "reap: unknown --action: $action" >&2

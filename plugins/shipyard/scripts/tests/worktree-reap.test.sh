@@ -860,6 +860,73 @@ else
   fail=$((fail+1))
 fi
 
+# --- (44b) issue #405 — adversarial field values produce valid single-line
+# JSON. A --reason / --worktree-name / --session-id carrying `"`, `\`, or a
+# newline must NOT corrupt the ledger or inject extra JSON fields. Before the
+# fix these flowed in via raw string interpolation; now they're JSON-escaped.
+reset_reap_layout
+# Crafted --reason that, unescaped, would close the string early and forge a
+# `classification` field — the exact injection the issue calls out.
+adv_reason='x","action":"reaped","classification":"forged'
+adv_name=$'weird"name\\with\ttab'
+adv_session=$'sess\nion"id'
+run_reap \
+  --action deferred \
+  --worktree-path "$reap_repo/.git/worktrees/agent-adv" \
+  --worktree-name "$adv_name" \
+  --session-id "$adv_session" \
+  --actor-pid 7 \
+  --reason "$adv_reason" \
+  --lock-pid null \
+  --skip-remove
+assert_exit_code "$?" "0" \
+  "(44b) reap with adversarial field values exits 0"
+
+# Exactly one line must have been written (a newline in --session-id must not
+# split the record into two lines).
+adv_line_count=$(wc -l < "$audit_log" | tr -d ' ')
+assert_equals "$adv_line_count" "1" \
+  "(44b-1) adversarial values produce a single ledger line"
+
+adv_line=$(cat "$audit_log")
+# The crafted reason must NOT have injected a real classification field — a
+# `deferred` record has no classification key, so its presence would mean the
+# injection landed.
+case "$adv_line" in
+  *'"classification"'*)
+    printf '  %sFAIL%s  (44b-2) injection landed — forged classification key present: %s\n' "$RED" "$RESET" "$adv_line"
+    fail=$((fail+1))
+    ;;
+  *)
+    printf '  %sPASS%s  (44b-2) crafted --reason did not inject a forged field\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+    ;;
+esac
+
+# The whole line must parse as valid JSON. Prefer jq (present in CI); fall
+# back to python3; skip-with-pass only if neither is available so the suite
+# stays green on a bare machine (the substring guards above still ran).
+if command -v jq >/dev/null 2>&1; then
+  if printf '%s\n' "$adv_line" | jq -e . >/dev/null 2>&1; then
+    printf '  %sPASS%s  (44b-3) adversarial ledger line is valid JSON (jq parse)\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (44b-3) adversarial ledger line is NOT valid JSON — line was: %s\n' "$RED" "$RESET" "$adv_line"
+    fail=$((fail+1))
+  fi
+elif command -v python3 >/dev/null 2>&1; then
+  if printf '%s\n' "$adv_line" | python3 -c 'import json,sys; json.loads(sys.stdin.read())' >/dev/null 2>&1; then
+    printf '  %sPASS%s  (44b-3) adversarial ledger line is valid JSON (python parse)\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (44b-3) adversarial ledger line is NOT valid JSON — line was: %s\n' "$RED" "$RESET" "$adv_line"
+    fail=$((fail+1))
+  fi
+else
+  printf '  %sPASS%s  (44b-3) skipped JSON-parse assertion (no jq/python3 available)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+
 # --- (45) deferred action does NOT invoke git worktree remove (no error
 # even when worktree-path is bogus, because we never call git). This is a
 # behavioral guard: deferred means "we are reporting the decision to defer";
