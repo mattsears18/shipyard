@@ -15,13 +15,16 @@
 #      Google API keys, AWS keys, PEM private keys, etc.).
 #   2. The RUNTIME scrubber in `report-plugin-error.sh`'s `PY_SCRUB` is a
 #      separate, narrower pattern set that redacts secrets out of auto-report
-#      issue bodies before they're posted publicly. As of issue #402 it
+#      issue bodies before they're posted publicly. As of issue #408 it
 #      covers: classic + fine-grained GitHub tokens (ghp_*, github_pat_*),
-#      Anthropic/OpenAI keys (sk-ant-*, sk-*), Slack tokens (xox[baprs]-*),
-#      Google API keys (AIza…), AWS access keys (AKIA*), Bearer/Authorization
-#      headers, emails, 40+ char hex, and PEM private-key blocks. If you add a
-#      shape to one scanner, consider whether the other needs it too — they
-#      protect different surfaces (commit history vs. public auto-report).
+#      Anthropic/OpenAI keys (sk-ant-*, sk-*), Stripe keys (sk_live_*,
+#      sk_test_*), Slack tokens (xox[baprs]-*), Google API keys (AIza…),
+#      AWS access keys (AKIA*), GitLab PATs (glpat-*), npm tokens (npm_*),
+#      JWTs (three-segment base64url), Bearer/Authorization headers, emails,
+#      database URLs that embed credentials (scheme://user:pass@host), 40+
+#      char hex, and PEM private-key blocks. If you add a shape to one
+#      scanner, consider whether the other needs it too — they protect
+#      different surfaces (commit history vs. public auto-report).
 #
 # The `extend` block pulls in gitleaks' default rules verbatim; we only add
 # our own allowlist on top.
