@@ -154,6 +154,30 @@ For each finding you'd file:
 
 This makes dedup behavior idempotent: running `/audit lighthouse` twice in a row should produce zero new issues on the second run.
 
+## Verify before you file (REQUIRED — hard gate)
+
+**This is a hard gate, not a guideline.** Every finding you file MUST be backed by a concrete evidence artifact you *freshly read and confirmed against ground truth* in a step that **completed before** the `gh issue create` call — never an artifact captured in the same speculative parallel batch as the create, and never a claim you assumed without reading. This closes the failure mode [#434](https://github.com/mattsears18/shipyard/issues/434) documents: a single `mattsears18/mattsears18.com` audit run filed **13 of 44 issues as fabricated false positives** (closed #146–#149, #151, #138, #145, #154, #156, #165 on the target repo) because four auditors batched reconnaissance reads in the *same* parallel tool-call group as `gh issue create` and filed against unverified (sometimes empty or garbled) command output, then self-corrected and retracted after reading the files properly. A `tailwind.config.ts` "doesn't exist" finding was filed against a repo where the file *does* exist; a "remove unused `@tailwindcss/typography`" finding named a package that isn't a dependency at all.
+
+The defense is structural — sequence your work so the evidence read always precedes the create:
+
+1. **Complete ALL reconnaissance first.** Run every read / `curl` / `grep` / file-inspect / computed-style measurement and let it return. Do NOT interleave `gh issue create` into the same parallel batch as the reads that justify it — a `gh issue create` and the `grep`/`cat`/`curl` that supports its claim must be in **separate, sequential** tool-call turns, with the evidence read strictly first. (Recon reads can be parallelized *with each other*; the create cannot be parallelized *with its own evidence*.)
+2. **Confirm each claim against ground truth before filing it.** "The README links to a dead file" → first `git cat-file -e HEAD:<path>` (or read the README and resolve the link) and observe the actual result. "The package is unused" → first `grep` the dependency manifest *and* the import sites and observe it's truly absent. "The live site lacks security headers" → first `curl -sI <url>` and read the actual response headers. A finding whose evidence you did not freshly observe this session is not fileable.
+3. **Self-review pass: re-read the cited evidence before the create.** Immediately before each `gh issue create`, re-confirm the specific artifact the body cites still says what you claim — open the file at the cited line, re-check the metric, re-read the `curl` output. This is the cheapest possible guard against acting on stale or garbled recon output, and it's where the #434 auditors' self-corrections *should* have happened (they happened *after* filing instead).
+4. **If the evidence is empty, garbled, or ambiguous, do NOT file.** An empty `grep` result, a truncated `curl`, a command that errored — these are "I could not confirm," not "the defect exists." A finding you cannot positively confirm against a freshly-read artifact is dropped, not filed speculatively. When recon is inconclusive, re-run the read; if it stays inconclusive, the finding fails the evidence bar (see `shipyard:audit-rubrics` § "Evidence bar") and is not filed.
+
+This gate works *with* the `## Evidence bar` in `shipyard:audit-rubrics`: that section says every finding needs a screenshot / DOM / metric / file-path; **this** section says that artifact must be freshly read and confirmed *before* — not concurrently with, not after — the create. Same first-party-evidence principle, sequenced.
+
+### If you filed a false positive anyway: the retraction path
+
+If you discover after filing that a finding was wrong (the self-review pass above is meant to catch this *before* the create, but defense in depth), the correct action is to close the issue you filed with a comment explaining the retraction:
+
+```bash
+gh issue close <N> --repo <owner/repo> \
+  --comment "Retracting: filed in error during the <YYYY-MM-DD> audit — <one-line reason the finding was a false positive, e.g. 'tailwind.config.ts does exist; recon read returned stale output'>."
+```
+
+Closing an issue **you yourself created this session** is in-scope cleanup, not an out-of-scope mutation — you are reversing your own action. If the safety classifier denies the close (observed in the #434 session — agents were blocked from closing their own false issues), do NOT retry through a workaround. Instead, **report the false positive in your end-of-run summary** under a `Filed in error (needs retraction)` line naming the issue number and the reason, so the orchestrator can close it during reconciliation. Either way the retraction is visible; the in-summary record is the fallback when the direct close is denied.
+
 ## Conventional Commit title prefixes
 
 Required — most target repos enforce this via commitlint, and the conventional-commit title is what release-please picks up to drive changelog + version bumps. Pick:

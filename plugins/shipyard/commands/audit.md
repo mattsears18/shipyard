@@ -62,7 +62,7 @@ Pass this exact value into every agent prompt (see the template below) and keep 
 
 Build each agent prompt like:
 
-> Audit `<URL or repo>` for `<audit-type>` and file GitHub issues in `<owner/repo>`. Use the shared `shipyard:filing-github-issues` skill for filing conventions and `shipyard:audit-rubrics` for severity/grouping. File P0–P2 findings autonomously — no approval gates. **Audit run id: `<AUDIT_RUN_ID>`** — stamp it into every issue body as `<!-- audit-run=<AUDIT_RUN_ID> -->` per the filing skill's "Per-run attribution marker" section. **Capture the real issue URL from each `gh issue create`'s stdout and report those captured URLs** — never a guessed or read-back number (see the skill's "Capture the real issue number" section). Return a one-paragraph summary of what was filed, listing the captured URLs.
+> Audit `<URL or repo>` for `<audit-type>` and file GitHub issues in `<owner/repo>`. Use the shared `shipyard:filing-github-issues` skill for filing conventions and `shipyard:audit-rubrics` for severity/grouping. File P0–P2 findings autonomously — no approval gates. **Verify every finding against ground truth before you file it** — complete all reconnaissance reads first and confirm each claim against a freshly-read evidence artifact in a step that finishes *before* the `gh issue create` call; never batch a create into the same speculative parallel tool-call group as the recon that justifies it (see the filing skill's "Verify before you file" gate, issue #434). **Audit run id: `<AUDIT_RUN_ID>`** — stamp it into every issue body as `<!-- audit-run=<AUDIT_RUN_ID> -->` per the filing skill's "Per-run attribution marker" section. **Capture the real issue URL from each `gh issue create`'s stdout and report those captured URLs** — never a guessed or read-back number (see the skill's "Capture the real issue number" section). Return a one-paragraph summary of what was filed, listing the captured URLs; if you filed anything in error, list it under a "Filed in error (needs retraction)" line so the orchestrator can close it during reconciliation.
 
 ## Pre-dispatch: create the screenshots directory
 
@@ -90,6 +90,13 @@ Once all agents return — **before** writing the summary — reconcile what was
    - **Every enumerated issue should be claimed** by exactly one agent's reported URL. An enumerated issue no agent reported → a filing the agent forgot to surface (recoverable — it's in the tracker). Two agents reporting the same URL → a collision (one agent reported a number that was actually a sibling's).
 
 3. **Surface any mismatch in the summary's "Process notes" section** — name the agent, the reported-vs-actual discrepancy, and the recovered real URL. Don't silently paper over it; the whole point of #435 is that a lost finding stays visible.
+
+4. **Close any issue an agent flagged as filed in error (issue #434).** The verify-before-file gate in `shipyard:filing-github-issues` should keep false positives from being filed at all, but when an agent self-corrects *after* filing it reports the bad issue under a `Filed in error (needs retraction)` line (it may have been blocked by the safety classifier from closing its own issue). For each such reported issue, close it from the orchestrator with a retraction comment, then note the retraction in "Process notes":
+
+   ```bash
+   gh issue close <N> --repo <owner/repo> \
+     --comment "Retracting: filed in error during this audit run (false positive per the filing agent's self-correction)."
+   ```
 
 When the orchestrator did not supply a run id (older flow, or a single-auditor `/audit <type>` where the collision can't occur), skip the marker enumeration and reconcile against the agent's reported URLs directly — a single auditor's captured URLs are already unambiguous.
 

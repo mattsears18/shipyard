@@ -90,6 +90,8 @@ Every issue needs at least one of:
 
 No evidence → not a finding worth filing.
 
+**The evidence must be freshly observed this session, not assumed — and observed *before* you file.** A file-path you believe exists but didn't `cat`/`git cat-file -e`, a metric you expected but didn't measure, a header you assumed-missing but didn't `curl` for — none of these clear the bar. This is the structural half of the verify-before-file gate in `shipyard:filing-github-issues` § "Verify before you file": that section forbids batching the `gh issue create` into the same speculative parallel tool-call group as the recon that justifies it (the failure mode behind issue [#434](https://github.com/mattsears18/shipyard/issues/434), where four auditors filed 13 fabricated issues against unverified command output). Read the evidence, confirm it against ground truth, *then* file — never the reverse, never concurrently.
+
 ## Title quality bar
 
 A good audit issue title:
