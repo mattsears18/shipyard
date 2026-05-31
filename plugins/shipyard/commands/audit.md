@@ -47,11 +47,22 @@ When dispatching multiple agents, send them as multiple `Agent` tool calls in a 
 
 Every agent applies its own `audit:<dimension>` label to issues it files — that gives the tracker a single filter dimension to find issues by audit source (e.g. `is:open label:audit:lighthouse`).
 
+## Generate the audit run id (once, before dispatch)
+
+Before building any agent prompt, generate a short token unique to *this* `/audit` invocation. Every dispatched auditor stamps it into the bodies of the issues it files (`<!-- audit-run=<run-id> -->`), which is what makes post-run reconciliation definitive — the orchestrator can enumerate exactly what this run produced regardless of how many auditors filed concurrently (the parallel-create collision in issue [#435](https://github.com/mattsears18/shipyard/issues/435)).
+
+```bash
+AUDIT_RUN_ID="audit-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%04x' $RANDOM)"
+echo "$AUDIT_RUN_ID"   # e.g. audit-20260531T140312Z-a3f1
+```
+
+Pass this exact value into every agent prompt (see the template below) and keep it for the reconciliation step in the end-of-run summary.
+
 ## Agent prompt template
 
 Build each agent prompt like:
 
-> Audit `<URL or repo>` for `<audit-type>` and file GitHub issues in `<owner/repo>`. Use the shared `shipyard:filing-github-issues` skill for filing conventions and `shipyard:audit-rubrics` for severity/grouping. File P0–P2 findings autonomously — no approval gates. Return a one-paragraph summary of what was filed.
+> Audit `<URL or repo>` for `<audit-type>` and file GitHub issues in `<owner/repo>`. Use the shared `shipyard:filing-github-issues` skill for filing conventions and `shipyard:audit-rubrics` for severity/grouping. File P0–P2 findings autonomously — no approval gates. **Audit run id: `<AUDIT_RUN_ID>`** — stamp it into every issue body as `<!-- audit-run=<AUDIT_RUN_ID> -->` per the filing skill's "Per-run attribution marker" section. **Capture the real issue URL from each `gh issue create`'s stdout and report those captured URLs** — never a guessed or read-back number (see the skill's "Capture the real issue number" section). Return a one-paragraph summary of what was filed, listing the captured URLs.
 
 ## Pre-dispatch: create the screenshots directory
 
@@ -63,14 +74,34 @@ mkdir -p ".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
 
 This directory is a sibling to the `<YYYY-MM-DD>-shipyard-audit.html` report this command writes after the run, and is the orchestrator's promise to the auditors: the path exists and is safe to write into. Auditors save screenshots there with stable, finding-keyed filenames (e.g. `login.png`, `modal-focus-trap.png`), embed them via relative path in issue bodies (`![](./.shipyard/audits/<YYYY-MM-DD>/screenshots/<file>.png)`), and delete any unreferenced screenshots before returning. The user-visible effect is that `git status` after `/shipyard:audit` no longer shows stray PNGs in the repo root — all audit artifacts live under `.shipyard/` and stay out of the host repo's tracked tree (unless the host repo opts to commit them via its own `.gitignore` rules).
 
+## Reconcile filed issues before summarizing (issue #435)
+
+Once all agents return — **before** writing the summary — reconcile what was actually filed against what the agents reported. Parallel auditors file via `gh issue create` concurrently and GitHub assigns issue numbers sequentially across all the concurrent creates, so an agent that predicts its number or reads it back with a separate post-filing `gh issue list` can report a colliding or stale number; a genuine finding can be silently lost when nobody held its real number. The filing skill now requires each auditor to capture the URL from `gh issue create`'s stdout and report *that* — this step is the orchestrator's cross-check that the requirement held.
+
+1. **Enumerate this run's filings by the run-id marker.** Every auditor stamped `<!-- audit-run=<AUDIT_RUN_ID> -->` into each issue body, so a single search returns exactly what this run produced:
+
+   ```bash
+   gh issue list --repo <owner/repo> --search "\"audit-run=$AUDIT_RUN_ID\"" --state all --limit 200 \
+     --json number,title,url,labels
+   ```
+
+2. **Cross-check against the URLs the agents reported.** Collect every captured URL from the agents' returned summaries. Then:
+   - **Every reported URL must resolve** to an issue in the run-id enumeration. A reported URL that doesn't appear → flag the agent (it reported a number it didn't actually file, or the marker was dropped).
+   - **Every enumerated issue should be claimed** by exactly one agent's reported URL. An enumerated issue no agent reported → a filing the agent forgot to surface (recoverable — it's in the tracker). Two agents reporting the same URL → a collision (one agent reported a number that was actually a sibling's).
+
+3. **Surface any mismatch in the summary's "Process notes" section** — name the agent, the reported-vs-actual discrepancy, and the recovered real URL. Don't silently paper over it; the whole point of #435 is that a lost finding stays visible.
+
+When the orchestrator did not supply a run id (older flow, or a single-auditor `/audit <type>` where the collision can't occur), skip the marker enumeration and reconcile against the agent's reported URLs directly — a single auditor's captured URLs are already unambiguous.
+
 ## End-of-run summary
 
-Once all agents return, present a consolidated summary:
+Once all agents return — and after the reconciliation step above — present a consolidated summary:
 
 - **Per-audit verdict** (one line each)
-- **Issues filed** (numbered list with URLs, grouped by audit)
+- **Issues filed** (numbered list with URLs, grouped by audit) — use the **captured `gh issue create` URLs** the agents reported and the reconciliation confirmed; never a predicted number.
 - **Skipped — duplicates** (with links to the existing issues)
 - **Out of scope / surfaces not reviewed** (so the user can ask for follow-ups)
+- **Process notes** (any reconciliation mismatches: agents whose reported URLs didn't resolve, collisions, or recovered lost findings)
 
 Do not file any issues from the main session — that's each agent's job. The main session orchestrates and reports.
 
