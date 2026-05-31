@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.11 — 2026-05-31
+
+Closes [#396](https://github.com/mattsears18/shipyard/issues/396) (P2, `enhancement`) — **`/shipyard:audit` now defaults to `all` when invoked with no audit type, instead of prompting for one**. Running bare `/audit` previously hit no specified fallback, so the command surfaced an `AskUserQuestion` to pick a type — an extra round-trip for what should be the most useful default. The `all` value already had dispatch wiring, so this is a defaulting change, not new dispatch logic. The no-URL case (a pure codebase like this repo with no deployed surface) is handled explicitly: non-URL auditors run unconditionally, and the command prompts once for a single shared URL for the web-dependent auditors (`lighthouse`, `web-ux`, `a11y`, `seo`, `pwa`), skipping them gracefully under "Surfaces NOT reviewed" if the user declines.
+
+- **`plugins/shipyard/commands/audit.md`** — Audit-type arg reframed from "required, first positional" to "optional … defaults to `all` when omitted" with an explicit no-prompt note; `argument-hint` frontmatter changed `<type|all>` → `[type|all]`; a defaulting paragraph added to the Dispatching section covering the no-arg path and the shared-URL prompt-once policy for the web auditors.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.10 → 1.8.11 (patch — docs/spec defaulting change, no runtime behavior added).
+
 ### 1.8.10 — 2026-05-31
 
 Closes [#399](https://github.com/mattsears18/shipyard/issues/399) (P2, `audit:dx`) — **adds a canonical `scripts/setup.sh` entry point so a fresh checkout reaches a verified-runnable state in one command**. A `dx` audit flagged that the repo shipped no setup script, devcontainer, Makefile, or Justfile, so every new contributor reconstructed the install + test sequence from the README by hand. Because this repo has no build step (the plugin is a directory of markdown + bash scripts), "setup" means confirming the documented host prerequisites are present and running the bash test suite — exactly the flow CONTRIBUTING.md's "Getting started" already documents, now wrapped behind a single invocation. `./scripts/setup.sh` checks for `bash`, `git`, `gh`, `shellcheck`, and `jq` (with a soft warning for an unauthenticated `gh`), then runs the same `find plugins -name '*.test.sh'` discovery + invocation CI uses; `--check` stops after the prerequisite check and `--help` prints usage. Minor bump (new contributor-facing tooling; no plugin runtime behavior changed).

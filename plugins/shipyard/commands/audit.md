@@ -1,6 +1,6 @@
 ---
 description: Audit a web/mobile app across one or more dimensions and autonomously file GitHub issues for the findings.
-argument-hint: <type|all> [url] [--repo owner/repo]
+argument-hint: [type|all] [url] [--repo owner/repo]
 ---
 
 # /audit
@@ -11,11 +11,15 @@ Run an autonomous audit and file GitHub issues for every finding. No approval ga
 
 `$ARGUMENTS` may include:
 
-- **Audit type** (required, first positional): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `security`, `a11y`, `seo`, `privacy`, `release-readiness`, `pwa`, `tech-debt`, `testing`, `dx`, `docs`, `observability`, `api`, or `all`.
+- **Audit type** (optional, first positional — **defaults to `all` when omitted**): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `security`, `a11y`, `seo`, `privacy`, `release-readiness`, `pwa`, `tech-debt`, `testing`, `dx`, `docs`, `observability`, `api`, or `all`. When `/audit` is run with no audit-type argument, proceed straight to `all` — do **not** prompt via `AskUserQuestion` to pick a type.
 - **URL** (optional, second positional, web audits only): the page to audit. If omitted and the audit needs a URL, ask via `AskUserQuestion`.
 - **--repo owner/repo** (optional): target GitHub repo. If omitted, auto-detect via `gh repo view --json nameWithOwner -q .nameWithOwner`. If that fails (not in a repo), ask via `AskUserQuestion`.
 
 ## Dispatching
+
+**Default to `all` when no audit type was parsed from args.** If `$ARGUMENTS` contains no recognizable audit-type token (bare `/audit`, or only a URL / `--repo` flag), treat the type as `all` and proceed — do **not** surface an `AskUserQuestion` asking which type to run. `all` already has dispatch wiring (every agent below, parallel), so the no-arg path is a defaulting decision, not new dispatch logic.
+
+`all` includes web/URL-dependent auditors (`lighthouse`, `web-ux`, `a11y`, `seo`, `pwa`). When defaulting to `all` with no URL supplied (e.g. a pure codebase like this repo with no deployed surface), run the non-URL auditors unconditionally and prompt **once** for a single shared URL via `AskUserQuestion`. If the user supplies a URL, hand it to every URL-dependent auditor; if the user declines (or there is no deployed surface), skip the URL-dependent auditors gracefully and note them under "Surfaces NOT reviewed" in the end-of-run summary. Do not block the non-URL auditors on the URL prompt — they dispatch regardless.
 
 Resolve the target repo *once* in the main session and pass it to every agent. Then dispatch:
 
