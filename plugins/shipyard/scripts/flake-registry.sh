@@ -51,6 +51,23 @@
 #   - Cheap rotation: `prune` rewrites without the stale lines; `reset`
 #     moves the file aside.
 #
+# Privacy (same posture as cost-history.sh / cost.md's privacy notice):
+#
+#   flake-registry.jsonl lives entirely on the local filesystem at
+#   $SHIPYARD_HOME/ (default ~/.shipyard/) — it is NEVER uploaded anywhere
+#   by shipyard. The only outbound writes shipyard makes are to GitHub via
+#   `gh`; the registry is not part of any of those flows. The data recorded
+#   (repo, pr, workflow, job, test id, session id, timestamp) is not PII,
+#   but on a private repo it accumulates a cross-session record of your CI
+#   test names and PR numbers, so it stays local by design.
+#
+#   To opt OUT of collection entirely, set `flake_registry.enabled: false`
+#   (the default) — when disabled, the fix-checks-only worker records no
+#   events and nothing is written to flake-registry.jsonl. The file is safe
+#   to `rm`; `reset` moves it to .bak.<ts> (recoverable, not rm'd) so a
+#   manual archival rotation is just a `mv` away. Deleting it only forfeits
+#   the historical flake-rate window.
+#
 # Subcommands:
 #
 #   record --repo <owner/repo> --pr <N> --workflow <name> --job <name>
