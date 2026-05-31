@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.24 — 2026-05-31
+
+Closes [#418](https://github.com/mattsears18/shipyard/issues/418) and [#398](https://github.com/mattsears18/shipyard/issues/398) — **coordination-managed rebase resolving in-flight PRs** (#424, #423). Combines worker-preamble string-constant mirroring guidance (P2, `enhancement`) with opt-in pre-commit hooks mirroring CI gates locally (P1, `audit:dx`). A recurring CI red: a worker adds a user-facing string to a centralized strings module (`lib/strings.ts` etc.) but forgets the matching key in every locale file, reddening the repo's key-parity test; the worker-preamble section now warns every mode and provides a grep-then-mirror check. In parallel, opt-in pre-commit hooks (`shellcheck`, `gitleaks`, hygiene) now mirror the repo's CI gates at commit time, so failures surface before a push burns a cycle. The hooks are strictly opt-in (`pre-commit install`), so the existing `bash` + `gh` + `shellcheck` toolchain remains the only hard prerequisite. Patch bump (additive dev tooling + docs/spec guidance, no plugin runtime behavior changed).
+
+- **`plugins/shipyard/skills/worker-preamble/SKILL.md`** — new `## Mirror new string constants into locale / parity files` section in the local-test-correctness cluster (after the test-runner silent-pass sections), with the general-class shapes and the grep-then-mirror check.
+- **`plugins/shipyard/scripts/tests/worker-preamble.test.sh`** — three regression assertions guarding the new section's heading, the "parity test" CI-red trigger naming, and the mirror-the-key prescription.
+- **`.pre-commit-config.yaml`** (new) — pre-commit framework config: shellcheck + gitleaks `local`/`system` hooks mirroring the CI gates, plus `pre-commit/pre-commit-hooks` hygiene hooks; header comment documents the setup (`pre-commit install`), the CI-mirror rationale, and the `language: system` choice.
+- **`CONTRIBUTING.md`** — new optional step 4 under **Getting started** documenting the opt-in hook install (`pip install pre-commit` / `pre-commit install`), what the hooks cover, and that they remain opt-in so the hard-prerequisite toolchain is unchanged.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump → 1.8.24 (patch — coordination-supplied rebase).
 
 ### 1.8.23 — 2026-05-31
 

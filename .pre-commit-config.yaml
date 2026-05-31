@@ -1,0 +1,74 @@
+# Pre-commit hooks for mattsears18/shipyard.
+#
+# Mirrors the repo's CI gates locally so format/lint failures surface at commit
+# time instead of after a push burns a CI cycle (issue #398). This repo is a
+# shell-script + markdown plugin — there is no compile step and no npm/lint-staged
+# toolchain — so the hooks match the two shell-facing CI gates one-for-one:
+#
+#   1. shellcheck on staged `*.sh`        ← mirrors .github/workflows/shellcheck.yml
+#   2. gitleaks on staged files           ← mirrors .github/workflows/secret-scan.yml
+#
+# Plus a few low-cost generic hygiene hooks (trailing whitespace, EOF newline,
+# YAML/JSON validity) that catch the most common formatting churn before it lands.
+#
+# Setup (one-time, opt-in — the hooks do NOT run until installed):
+#
+#   pip install pre-commit        # or: brew install pre-commit / pipx install pre-commit
+#   pre-commit install            # registers the git pre-commit hook
+#
+# After `pre-commit install`, the hooks run automatically on `git commit` against
+# only the staged files. To run across the whole repo on demand:
+#
+#   pre-commit run --all-files
+#
+# Pinning rationale: hook repos are pinned to a specific `rev` (not a floating
+# branch) so a contributor's local run matches CI and an upstream repoint can't
+# silently change behavior — the same supply-chain posture the CI workflows use
+# by pinning actions to commit SHAs.
+
+repos:
+  # shellcheck — mirrors .github/workflows/shellcheck.yml. Runs the contributor's
+  # locally-installed `shellcheck` binary (a `local` / `system`-language hook)
+  # rather than the upstream shellcheck-precommit hook, which pulls a Docker
+  # image — Docker is not a documented prerequisite for this repo, but
+  # `shellcheck` already is (see Getting started in CONTRIBUTING.md). The local
+  # `.shellcheckrc` (severity=style) is picked up automatically by shellcheck,
+  # so the local result matches the CI result. `types: [shell]` + `files: \.sh$`
+  # scope the hook to staged shell scripts only; pre-commit passes just the
+  # staged paths as arguments.
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck (staged *.sh)
+        entry: shellcheck
+        language: system
+        types: [shell]
+        files: \.sh$
+
+  # gitleaks — mirrors .github/workflows/secret-scan.yml. Runs the contributor's
+  # locally-installed `gitleaks` binary (a `local` / `system`-language hook)
+  # rather than building gitleaks from source via the upstream golang hook env.
+  # Rationale: the source-build path is slow on a cold cache and brittle on some
+  # toolchains (a Go-built binary the host dynamic linker rejects), and the repo
+  # already treats `shellcheck` as an installed prerequisite — gitleaks fits the
+  # same "bring your own binary" model. Install with `brew install gitleaks`
+  # (or see https://github.com/gitleaks/gitleaks#installing). `gitleaks protect
+  # --staged` scans only the staged diff and auto-discovers `.gitleaks.toml` at
+  # the repo root, so the local result matches the CI secret-scan gate.
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (staged files)
+        entry: gitleaks protect --staged --redact --config .gitleaks.toml
+        language: system
+        pass_filenames: false
+
+  # Generic hygiene — cheap, language-agnostic formatting catches.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict

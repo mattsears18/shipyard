@@ -23,6 +23,12 @@ If you're a first-time contributor (human or a fresh Claude Code session), start
    find plugins -type f -name '*.test.sh' -print0 | sort -z | xargs -0 -n1 bash
    ```
    See [Testing](#testing) below for the test layout and how CI invokes the same command.
+4. _(Optional but recommended)_ Install the pre-commit hooks so lint/secret failures surface at commit time instead of after a push burns a CI cycle:
+   ```sh
+   pip install pre-commit   # or: brew install pre-commit / pipx install pre-commit
+   pre-commit install       # registers the git pre-commit hook for this clone
+   ```
+   The hooks mirror the CI gates (shellcheck on staged `*.sh`, gitleaks on staged files) plus a few generic hygiene checks — see [`.pre-commit-config.yaml`](./.pre-commit-config.yaml). They run only against staged files on `git commit`; run `pre-commit run --all-files` to sweep the whole tree on demand. The hooks are opt-in (nothing runs until you `pre-commit install`), so the existing `bash` + `gh` + `shellcheck` toolchain remains the only hard prerequisite.
 
 The repo currently hosts one plugin (`plugins/shipyard/`), so contributing usually means editing files under that directory. See [Repo layout](#repo-layout) for the tour.
 
