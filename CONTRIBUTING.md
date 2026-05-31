@@ -14,7 +14,11 @@ If you're a first-time contributor (human or a fresh Claude Code session), start
    cd shipyard
    ```
 2. Make sure you have `bash`, `gh` (authenticated via `gh auth login`), and [`shellcheck`](https://github.com/koalaman/shellcheck) installed. There are no other build-time dependencies — the plugin is a directory of markdown + bash scripts, no compile step.
-3. Run the test suite to confirm everything's green:
+3. Run the one-command setup to confirm your environment and the suite are green:
+   ```sh
+   ./scripts/setup.sh
+   ```
+   It checks the prerequisites above (plus `git` and `jq`), then runs the bash test suite. Use `./scripts/setup.sh --check` to verify prerequisites without running the tests. To invoke the suite directly (the same discovery CI uses):
    ```sh
    find plugins -type f -name '*.test.sh' -print0 | sort -z | xargs -0 -n1 bash
    ```

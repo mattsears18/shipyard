@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.10 — 2026-05-31
+
+Closes [#399](https://github.com/mattsears18/shipyard/issues/399) (P2, `audit:dx`) — **adds a canonical `scripts/setup.sh` entry point so a fresh checkout reaches a verified-runnable state in one command**. A `dx` audit flagged that the repo shipped no setup script, devcontainer, Makefile, or Justfile, so every new contributor reconstructed the install + test sequence from the README by hand. Because this repo has no build step (the plugin is a directory of markdown + bash scripts), "setup" means confirming the documented host prerequisites are present and running the bash test suite — exactly the flow CONTRIBUTING.md's "Getting started" already documents, now wrapped behind a single invocation. `./scripts/setup.sh` checks for `bash`, `git`, `gh`, `shellcheck`, and `jq` (with a soft warning for an unauthenticated `gh`), then runs the same `find plugins -name '*.test.sh'` discovery + invocation CI uses; `--check` stops after the prerequisite check and `--help` prints usage. Minor bump (new contributor-facing tooling; no plugin runtime behavior changed).
+
+- **`scripts/setup.sh`** (new) — prerequisite check + test-suite runner; resolves the repo root from its own location so it runs from any cwd, exits non-zero on a missing tool or a failing suite (safe as a CI / pre-flight gate), and supports `--check` / `--help`.
+- **`plugins/shipyard/scripts/tests/setup-script.test.sh`** (new) — regression guard asserting the script exists, is executable, has a bash shebang, documents each prerequisite, exercises the `--check` / `--help` / unknown-arg fast paths, and lints clean under `shellcheck`.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.9 → 1.8.10 (minor — new tooling).
+
 ### 1.8.9 — 2026-05-31
 
 Closes [#409](https://github.com/mattsears18/shipyard/issues/409) (P2, `audit:privacy`) — **the flake registry at `~/.shipyard/flake-registry.jsonl` now has a documented local-only privacy notice and opt-out**. A `privacy` audit noted that the cost ledger documents its local-only posture and opt-out (`cost.md` / `CLAUDE.md`), but the flake registry introduced by #378 / #385 had no equivalent statement anywhere — leaving a user who discovers the file with no authored confirmation it isn't uploaded and no documented way to disable collection. The data (repo, PR, workflow, job, test id, session id, timestamp) is non-PII, but on a private repo it accumulates a cross-session record of CI test names and PR numbers, so the locality guarantee and opt-out deserve the same disclosure the repo already gives the cost ledger. Docs-only patch bump — no behavior change.
