@@ -1274,7 +1274,7 @@ When filling a slot, walk this decision tree:
 
    The preamble is gated on the `user-feedback` label being present on the candidate at dispatch time. The rest of the standard prompt (worktree discipline, branch naming, `--label shipyard`, auto-merge, snapshot) is unchanged.
 
-   **Phase-1 slice augmentation ([#298](https://github.com/mattsears18/shipyard/issues/298)).** When the candidate carries a `phase_1_scope` field on its `ready_issues` entry (populated by [setup.md step 6](../setup.md#6-initial-scope-pre-flight) or step D's scope-refill from a scope agent that chose to slice), append an extra Context paragraph to the dispatch prompt between the `mode:` line and the Return values line:
+   **Phase-1 slice augmentation ([#298](https://github.com/mattsears18/shipyard/issues/298)).** When the candidate carries a `phase_1_scope` field on its `ready_issues` entry (populated by [setup.md step 6](./setup.md#6-initial-scope-pre-flight) or step D's scope-refill from a scope agent that chose to slice), append an extra Context paragraph to the dispatch prompt between the `mode:` line and the Return values line:
 
    > **Phase-1 slice (scope-agent-supplied):** This issue was scoped as a multi-phase change. You are working **only** the phase-1 slice described below. Items explicitly listed as out-of-scope MUST be filed as follow-up issues (one per phase, with `Closes` references only when the phase logically depends on this PR landing first) rather than included in this PR. Slice: `<phase_1_scope>`.
 
