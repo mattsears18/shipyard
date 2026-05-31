@@ -88,6 +88,20 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
 
    If the rebase produced zero new commits because the branch was already a fast-forward of default (rare — would mean `mergeStateStatus` was lying), return `noop: not dirty (already fast-forward)`. No push needed.
 
+5.5. **Assert no conflict markers survived the resolution — bail if any remain (issue [#436](https://github.com/mattsears18/shipyard/issues/436)).** A `git status`-clean working tree is NOT sufficient proof that a trivial auto-resolution (step 4) actually removed every conflict marker: a "take both blocks, drop the markers" CHANGELOG concat that leaves a stray `=======` or `>>>>>>> <sha>` line still stages clean and commits clean. Before the force-push, grep the rebased tree for the anchored conflict-marker pattern and refuse to push if any line matches:
+
+   ```bash
+   if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- . ; then
+     git rebase --abort 2>/dev/null || true
+     echo "blocked rebase #<M>: conflict markers remain after resolution — needs manual rebase"
+     exit 0
+   fi
+   ```
+
+   The regex is exactly seven of `<` / `=` / `>` at line start followed by a space or end-of-line — the same pattern the repo's `conflict-marker-scan.sh` CI gate (and the `check-merge-conflict` pre-commit hook) use, so a worker that passes this assertion also passes the CI gate. `git grep` exits 0 (and prints the offending `file:line`) when it finds a match, so the `if` branch fires exactly when a marker survived; bail with `blocked rebase` rather than force-pushing the corruption. This is the worker-side half of issue #436's two-layer defense — the CI gate (`.github/workflows/conflict-markers.yml`) is the repo-side catch-net for any path that bypasses this assertion (a non-shipyard force-push, a manual merge), and this assertion stops a fix-rebase dispatch from being the thing that needs catching.
+
+   The original poison-the-main incident was caught only because a *later* manual rebase inherited the markers; the green CI run that merged the corrupted CHANGELOG had no gate that greps for markers. This assertion + the CI gate close that hole from both ends.
+
 6. **Push the rebased branch.** This is a fast-forward-incompatible operation (rebase rewrites commit SHAs), so a force push with lease is required:
    ```bash
    git push --force-with-lease origin "$HEAD_REF"

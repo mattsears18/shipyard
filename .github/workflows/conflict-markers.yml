@@ -1,0 +1,47 @@
+name: Conflict markers
+
+# Fails any push to main or PR that carries an unresolved Git conflict
+# marker in a tracked file.
+#
+# Rationale (issue #436): during a high-concurrency /shipyard:do-work
+# session a fix-rebase/merge force-pushed a CHANGELOG.md with unresolved
+# conflict markers (`=======` / `>>>>>>> <sha>`) which then merged to
+# `main`. None of the existing gates (shellcheck.yml, tests.yml,
+# secret-scan.yml) grep for conflict markers, so the corruption rode a
+# green CI run onto the default branch and every subsequent PR branched
+# from a poisoned base. This gate is the repo-side catch-net the storm
+# was missing.
+#
+# This is intentionally a separate workflow from shellcheck.yml (#102),
+# tests.yml (#105), secret-scan.yml (#108), and the intake gates —
+# separate concern, separate file, no shared matrix. Splitting keeps each
+# gate debuggable in isolation and lets failures be addressed without
+# rerunning unrelated jobs (the same convention every other gate follows).
+#
+# Security note: the workflow only reads the checked-out tree and runs a
+# repo-local script. No secrets, no event-payload interpolation into
+# `run:` blocks, no `pull_request_target`. The third-party checkout action
+# is pinned by full commit SHA so a tag-repoint supply-chain attack can't
+# compromise it. See
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  conflict-markers:
+    name: conflict markers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Scan tracked files for conflict markers
+        shell: bash
+        run: bash plugins/shipyard/scripts/conflict-marker-scan.sh
