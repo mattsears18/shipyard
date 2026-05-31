@@ -1,6 +1,10 @@
 {
   "name": "shipyard",
+<<<<<<< HEAD
   "version": "1.8.21",
+=======
+  "version": "1.8.22",
+>>>>>>> 773904b (feat(worker-preamble): warn workers to mirror new string keys into locale/parity files)
   "description": "Autonomous engineering loop: audits surface work, /do-work refines and dispatches, parallel workers in isolated worktrees ship the fixes.",
   "author": {
     "name": "Matt Sears",

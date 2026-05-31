@@ -220,6 +220,21 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md tells Auto Mode workers to skip the symlink and go straight to npm ci (issue #328)"
   assert_contains "$skill_path" "cp -al" \
     "SKILL.md documents cp -al hard-link copy as an alternative to the symlink (issue #328)"
+
+  # Issue #418 — "Mirror new string constants into locale / parity files"
+  # section. The section exists because a worker that adds a user-facing string
+  # to a centralized strings module (lib/strings.ts etc.) but forgets to mirror
+  # the key into every locale file the repo's parity test requires (i18n.test.ts
+  # etc.) reds CI on a key-parity assertion — a recurring, self-inflicted CI
+  # break that costs a fix-checks cycle each time (lightwork repro: 3× in one
+  # session across PRs #1443 / #1444 / #1447). Removing the section regresses the
+  # mirror-the-key-before-push contract.
+  assert_contains "$skill_path" "## Mirror new string constants into locale / parity files" \
+    "SKILL.md covers the locale/parity mirror check (issue #418)"
+  assert_contains "$skill_path" "parity test" \
+    "SKILL.md names the parity test as the CI-red trigger (issue #418)"
+  assert_contains "$skill_path" "mirror the new key into every file the test requires" \
+    "SKILL.md prescribes mirroring the key into every required locale/parity file (issue #418)"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
