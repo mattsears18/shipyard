@@ -425,8 +425,8 @@ assert_contains "$do_work_path" \
   'reconciled_agent_ids' \
   "do-work.md struct list names reconciled_agent_ids (#317)"
 assert_contains "$do_work_path" \
-  'thirteen mental data structures' \
-  "do-work.md opening sentence reflects post-#323 struct count (thirteen)"
+  'fifteen mental data structures' \
+  "do-work.md opening sentence reflects post-#437 struct count (fifteen)"
 assert_contains "$steady_state_path" \
   'A.−1. Reconcile-once gate' \
   "steady-state.md carries the A.−1 reconcile-once gate (#317)"
@@ -996,6 +996,53 @@ assert_contains "$rationale_path348" \
 assert_contains "$rationale_path348" \
   'issues/348' \
   "RATIONALE cites issue #348 as the source of Detector 2"
+
+# (24) Batch-dispatch version pre-allocation via a session-local version_cursor
+#      (issue #437).
+#
+# The #339 next-available-version computation walks `session_prs` for OPEN PRs
+# to find the highest claimed manifest version. At the initial pool fill
+# (setup.md step 7) and any simultaneous multi-dispatch (steady-state.md step C
+# multi-fill), the sibling workers' PRs are NOT open yet, so every worker in
+# the batch reads the same floor (main's version) and the per-dispatch walk
+# computes the same next_available_version for all of them. Result: the first
+# C>=2 batch all claim main+1 and N-1 of them go DIRTY on the version row,
+# eating a drain-rebase storm. Repro: session do-work-20260531T172554Z-8676,
+# --concurrency 4 — the first batch all picked 1.8.2; 3 of 4 went DIRTY.
+#
+# The fix introduces a session-local `version_cursor` high-water mark that
+# tracks the highest version slot CLAIMED BY DISPATCH (not just by open PRs).
+# The next-available-version computation seeds from `max(version_cursor,
+# session_prs-walk)` and advances the cursor to the value it hands out, so
+# sibling workers dispatched in the same batch (before any PR is open) still
+# receive distinct monotonic slots (main+1, main+2, ... main+N).
+#
+# Surfaces:
+#   - do-work.md struct list grows a 15th entry `version_cursor` (session-local).
+#   - do-work.md opening sentence count word advances (thirteen -> fifteen,
+#     pinned by the "fifteen mental data structures" assertion above).
+#   - steady-state.md step C's next-available-version computation seeds from
+#     and advances version_cursor.
+#   - setup.md step 7 (initial pool fill) pre-allocates monotonic versions
+#     across the batch via the cursor before firing the parallel Agent burst.
+assert_contains "$do_work_path" \
+  'version_cursor' \
+  "do-work.md struct list names version_cursor (#437)"
+assert_contains "$do_work_path" \
+  'issues/437' \
+  "do-work.md cites issue #437 as the source of version_cursor"
+assert_contains "$steady_state_path" \
+  'issues/437' \
+  "steady-state.md cites issue #437 as the source of the batch pre-allocation fix"
+assert_contains "$steady_state_path" \
+  'version_cursor' \
+  "steady-state.md step C seeds/advances version_cursor in the version computation (#437)"
+assert_contains "$setup_path" \
+  'issues/437' \
+  "setup.md cites issue #437 as the source of the batch pre-allocation fix"
+assert_contains "$setup_path" \
+  'version_cursor' \
+  "setup.md step 7 pre-allocates monotonic versions across the batch via version_cursor (#437)"
 
 echo
 if (( fail > 0 )); then

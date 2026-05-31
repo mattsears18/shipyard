@@ -1209,7 +1209,7 @@ When filling a slot, walk this decision tree:
    vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
    ```
 
-   When `vc_enabled == "true"` AND `vc_manifest` is non-empty, walk `session_prs` to find the highest manifest version any in-flight PR has already claimed:
+   When `vc_enabled == "true"` AND `vc_manifest` is non-empty, walk `session_prs` to find the highest manifest version any in-flight PR has already claimed — then take the max of that and the session-local `version_cursor` ([#437](https://github.com/mattsears18/shipyard/issues/437)) so versions claimed by **sibling workers dispatched in the same batch** (whose PRs aren't open yet, so the `session_prs` walk can't see them) are still respected:
 
    ```bash
    # Read the current main version from origin's HEAD as the floor.
@@ -1237,15 +1237,31 @@ When filling a slot, walk this decision tree:
      max_inflight_version=$(printf '%s\n%s\n' "$max_inflight_version" "$pr_version" | sort -V | tail -1)
    done
 
+   # #437: fold in the session-local version_cursor — the high-water mark of
+   # versions ALREADY HANDED OUT by dispatch this session, including to
+   # batch-siblings whose PRs aren't open yet (so the session_prs walk above
+   # is blind to them). The cursor holds the LAST value handed out; bumping
+   # it (below) yields the next free slot. Without this, two workers in the
+   # same step-7/step-C batch both read the same max_inflight_version and
+   # collide on main+1.
+   if [ -n "${version_cursor:-}" ]; then
+     max_inflight_version=$(printf '%s\n%s\n' "$max_inflight_version" "$version_cursor" | sort -V | tail -1)
+   fi
+
    # next_available_version = max_inflight_version + patch bump.
    if [ -n "$max_inflight_version" ]; then
      # Parse semver X.Y.Z; increment Z by 1.
      IFS='.' read -r MAJ MIN PAT <<< "$max_inflight_version"
      next_available_version="${MAJ}.${MIN}.$((PAT + 1))"
+     # Advance the cursor to the value we're handing out so the NEXT dispatch
+     # in this same batch (or the next sequential dispatch before this PR
+     # opens) sees it as claimed and bumps past it. This is the load-bearing
+     # write that makes a batch of N simultaneous dispatches monotonic.
+     version_cursor="$next_available_version"
    else
      # No floor available (manifest read failed, no in-flight bumps) — omit
      # the field rather than guess. Worker falls back to its normal bump-
-     # from-main path.
+     # from-main path. Leave version_cursor untouched.
      next_available_version=""
    fi
    ```
@@ -1257,6 +1273,8 @@ When filling a slot, walk this decision tree:
    When `next_available_version` is empty (coordination disabled, manifest read failed, no in-flight bumps to compute against), the paragraph is omitted entirely and the worker uses its normal "bump-from-origin/main HEAD" path. Workers never need to special-case the field's absence — the issue-work spec's normal path is the no-coordination default; the injected paragraph is the override.
 
    **Why this is a per-dispatch computation, not a one-shot session-startup pre-fetch.** The set of in-flight PRs evolves throughout the session — every successful `shipped` reconcile adds a new entry to `session_prs`, and a dispatch that fires 2 minutes after the previous return must read the updated set. Caching the result across dispatches would re-introduce the exact failure mode the computation exists to prevent (two consecutive dispatches both seeing the same pre-bump floor). The cost is bounded: each PR check is 2 small `gh api` calls (file content + PR view), and `session_prs` is typically small (≤10 in a long session). On large sessions the [`gh-cached.sh --ttl 60`](./setup.md#09-gh-cachedsh-wrapper-opt-in-per-call-site) wrapper around the file-content fetches keeps the cost flat.
+
+   **The `version_cursor` is what makes a *batch* of simultaneous dispatches monotonic ([#437](https://github.com/mattsears18/shipyard/issues/437)).** The per-dispatch `session_prs` walk above is correct for *sequential* dispatch (C=1, or step C re-fills that fire after a sibling PR has already opened): by the time worker N+1 is dispatched, worker N's PR is open and its version is visible in the walk. It is **not** sufficient for a *batch* dispatch — the initial pool fill at [setup.md step 7](./setup.md#7-initial-pool-fill) and any step C multi-fill fire N `Agent` calls in one message, before *any* of those N PRs exist. All N walks see the identical floor and compute the identical `next_available_version`. The cursor fixes this because the orchestrator runs the computation block **N times in sequence** when composing the batch's N prompts (once per slot) — each run reads the cursor the previous run advanced, so slot 1 gets `main+1` and sets the cursor to `main+1`, slot 2 reads the cursor and gets `main+2`, … slot N gets `main+N`. The `Agent` calls still fire simultaneously, but the *version assignment* that feeds each prompt was computed serially against the shared cursor. The cursor is session-local working memory (not the session-state file) — it is consulted and advanced **only** when `vc_enabled == "true"` and `vc_manifest` is non-empty; on a non-coordinated repo it is never touched, and the existing `session_prs`-walk-only behavior is unchanged. It does not need to outlive the session: a fresh session re-seeds the floor from `origin/<default-branch>`'s manifest on its first dispatch, and any in-flight PRs from a prior session are picked up by the `session_prs` walk's open-PR scan.
 
    Use `subagent_type: "shipyard:issue-worker"` (default model — Opus). Prompt template:
 
