@@ -153,9 +153,24 @@ if home and home not in ("/", ""):
     s = s.replace(home, "~")
 
 patterns = [
+    # Multiline PEM private-key block. Compiled with re.DOTALL so the inner
+    # `[\s\S]*?` spans the newline-delimited base64 body between the
+    # BEGIN/END markers. Run first so the whole block collapses to one token
+    # before any inner line can match a narrower pattern (e.g. a base64 body
+    # line tripping the 40+ char hex rule).
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL), "<REDACTED_PRIVATE_KEY>"),
+    # Fine-grained GitHub PAT — `github_pat_…` does NOT match the classic
+    # `gh[pousr]_` shape below (it starts with `gi`), so it needs its own
+    # pattern. Placed before the classic shape for clarity.
+    (re.compile(r"github_pat_[A-Za-z0-9_]{22,}"), "<REDACTED_GH_TOKEN>"),
     (re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"), "<REDACTED_GH_TOKEN>"),
+    # Slack tokens — bot (xoxb), user (xoxp), and the app/refresh/legacy
+    # shapes (xoxa/xoxr/xoxs).
+    (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "<REDACTED_SLACK_TOKEN>"),
     (re.compile(r"sk-ant-[A-Za-z0-9\-_]{20,}"), "<REDACTED_ANTHROPIC_KEY>"),
     (re.compile(r"sk-[A-Za-z0-9]{20,}"), "<REDACTED_OPENAI_KEY>"),
+    # Google API key — fixed `AIza` prefix + 35 chars.
+    (re.compile(r"AIza[0-9A-Za-z\-_]{35}"), "<REDACTED_GOOGLE_API_KEY>"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "<REDACTED_AWS_ACCESS_KEY>"),
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.=]{16,}"), "Bearer <REDACTED>"),
     (re.compile(r"(?i)authorization:\s*\S+"), "Authorization: <REDACTED>"),
