@@ -92,7 +92,7 @@ Extract the `usage` payload from the Agent tool result — the harness emits it 
 Invoke:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
   --session-id "<session-id>" \
   --issue <N>            `# present for issue-work and fix-checks-only on issue-anchored PRs` \
@@ -114,7 +114,7 @@ The strict path requires the harness to emit `input_tokens` / `output_tokens` / 
 When the `<usage>` block has `total_tokens` but no breakdown, fall back to the **degraded path** rather than skipping the bump entirely:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
   --session-id "<session-id>" \
   --issue <N> --pr <M> \
@@ -182,7 +182,7 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 **Skip silently on clean terminal returns** — when the prefix check passes (`shipped` / `green` / `noop:` / `blocked` / `rebased` / `reaped:`), do NOT run this step. Step B's per-completion reap is the right path for clean returns; running A.0.5 too would double-call into `classify-lock` for the common case and waste tool calls. The skip is a no-op — proceed directly to A.1.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 # The agent's last-line return text from the harness notification. The
 # orchestrator already has this in working memory for A.1's parse below.
 return_text="<the agent's last-line return text, trimmed>"
@@ -252,7 +252,7 @@ Closes [#387](https://github.com/mattsears18/shipyard/issues/387). The Claude Co
 **The guard.** Root cause is harness behavior shipyard can't change, so this is a defensive assert-and-restore. Fire it every reconcile turn (here) AND at [drain entry](./drain.md#end-of-session-drain). It is **read-mostly**: the common case (primary already on the default branch) costs two `git -C` reads and writes nothing.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 
 # The primary checkout is the repo root that contains .claude/worktrees/ —
 # i.e. the parent of the orchestrator worktree. The orchestrator's cwd is
@@ -302,7 +302,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Then post a cost-tracking comment on the resulting PR.** The session-state file's `.tokens.per_pr[<M>]` bucket was populated by every `bump-tokens` call made while the worker was in flight (see [Cost-tracking write-through](../do-work.md#cost-tracking-write-through) below). Read it as a Markdown body via the helper and post on the PR with edit-or-create semantics keyed on the `<!-- do-work-cost-tracking -->` sentinel:
 
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
   # 1. Read the cost summary as a Markdown comment body.
   BODY=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
     --session-id "<session-id>" --pr <M> --format comment)
@@ -335,7 +335,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Then reap the agent's worktree immediately — don't wait for end-of-session cleanup.** Closes [#282](https://github.com/mattsears18/shipyard/issues/282): the worker's local branch `do-work/issue-<N>` and worktree directory lingering until end-of-session cleanup is what locks subsequent same-session fix-rebase dispatches out of `git switch <head>` (git enforces one-worktree-per-branch). Reaping immediately on `shipped` frees the PR's head branch right when the merge train might next want to rebase it. The worker has already returned (this is what `shipped` IS), so its worktree is no-longer-live by definition — the classify-lock pass still runs as defensive belt-and-suspenders, but the expected classification is `dead` (process gone) or `self-ancestor` (lock held the orchestrator's PID per the harness convention).
 
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
   # Locate the agent worktree whose branch is do-work/issue-<N>. Walk
   # .git/worktrees/agent-* and match on the HEAD ref. Same idiom as the
   # concurrent-session guard further down in step C.
@@ -478,7 +478,7 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 - **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed — no re-add needed.) **Refresh the cost-tracking comment** for `<M>` so the cumulative total includes this fix-checks dispatch's tokens (A.0 bumped them into `.tokens.per_pr[<M>]`). Same edit-or-create semantics as the `shipped` hook:
 
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
   # 1. Read the cost summary as a Markdown comment body (now includes the
   # cumulative total across the original ship + every fix-checks follow-up).
   BODY=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
@@ -672,7 +672,7 @@ When a `shipped #<N> via PR #<M>` return is reconciled (issue-work mode only —
 4. **Invalidate the `gh-cached.sh` backlog cache** if any issues were unblocked. The next step-C lightweight backlog re-check needs to see the label change:
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
    if [ "${unblocked_count:-0}" -gt 0 ]; then
      "${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" invalidate --session-id "<session-id>"
    fi
@@ -698,7 +698,7 @@ Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 The single-point reap below covers every one of these. The A.1 `shipped #<N>` path is **not** removed — it remains the load-bearing same-turn reap for the issue-work merge-train coordination case (per #282's rationale), and the duplicate-reap is harmless: the helper's `git worktree remove --force` against a path the A.1 pass already removed is a silent no-op.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 # Capture the agent id BEFORE the in-memory slot removal — the path
 # derivation needs it. The agent_id is the same task-id the harness uses
 # end-to-end (see step A.−1 for the keying convention) and matches the
@@ -769,7 +769,7 @@ fi
 **Soft-blocked in-window filter (per [#300](https://github.com/mattsears18/shipyard/issues/300)).** Step 4's workable filter does NOT exclude `blocked:agent-soft` — by design, so the label doesn't leak across sessions — but within a session, immediately re-dispatching a worker against an issue another worker just bailed soft on would just re-encounter the same ambiguity. The in-memory `session_blocked_soft` map (populated by step A.1's `blocked` handler — `{issue_number → ISO-8601 timestamp of the bail}`) gates this. Before appending any net-new issue to `raw_backlog`, check:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 # blocked_agent.soft_retry_minutes — default 30 — from shipyard-config.sh.
 soft_retry_minutes=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" \
   get blocked_agent.soft_retry_minutes 2>/dev/null || echo "30")
@@ -803,7 +803,7 @@ Apply the **dispatch rules** to pick the next job:
 **Per-slot dispatch metadata write-through.** When a new slot lands in `.in_flight`, the orchestrator's write-through call MUST include the slot's `started_at` ISO-8601 UTC timestamp alongside `kind` / `target` / `claimed_paths` / `agent_id`. The timestamp powers [`/shipyard:status`](../status.md)'s `ELAPSED` column and the stale-worker detection — without it, every worker would render as "elapsed 0s, stale" the moment a new orchestrator instance reads the file. Per-slot `progress_current` / `progress_total` start as `null` and are managed by the worker via `session-state.sh set-progress --slot <id>` if the worker is doing batch work (the typical issue-work / fix-checks-only worker doesn't bother — the kind alone is enough). Example shape — see [the schema doc](../do-work.md#schema) for the canonical fields:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 # --allow-degraded-init survives the mid-session file-disappear race
 # (issue #281). Without it, a concurrent /do-work session's orphan-sweep
 # reaping this file mid-session would surface as exit 3 on the next
@@ -959,7 +959,7 @@ When filling a slot, walk this decision tree:
    **2a. Stale-failure check (`ci.verify_check_failing_on_head_before_dispatch`).** When the config key is `true`, fetch the failing check's run-SHA and compare against the PR's current `headRefOid`:
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
    verify_stale=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
      ci.verify_check_failing_on_head_before_dispatch 2>/dev/null || echo "false")
    if [ "$verify_stale" = "true" ]; then
@@ -1010,7 +1010,7 @@ When filling a slot, walk this decision tree:
    **2b. In-progress-settle check (`ci.require_in_progress_check_to_settle`).** When the config key is `true`, defer the dispatch when any check is still running on the current SHA:
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
    require_settle=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
      ci.require_in_progress_check_to_settle 2>/dev/null || echo "false")
    if [ "$require_settle" = "true" ]; then
@@ -1040,7 +1040,7 @@ When filling a slot, walk this decision tree:
    **Why it's safe to reap.** The lock holds *our orchestrator's* PID (the harness writes the orchestrator PID into every dispatched agent's worktree lock), so `classify-lock` short-circuits it to `self-ancestor` once `SHIPYARD_ORCHESTRATOR_PID` is declared — "this lock is held by an orchestrator that is itself / an ancestor of ours." The originating worker's return was already reconciled at [step A](#a-reconcile-the-return) by the time this dispatch runs; its worktree is logically done. This is the same self-ancestor reap logic [setup.md step 3b](./setup.md#3-ensure-label-exists--recover-from-prior-session) runs at session start, the A.1 `shipped`-immediate reap (#282) runs on issue-work completion, and the #370 drain pre-dispatch reap runs during drain — extended here to the mid-session steady-state fix-checks dispatch site.
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
    cd "$(git rev-parse --show-toplevel)"
    # Declare the orchestrator PID once so classify-lock short-circuits self-locks
    # to `self-ancestor` (issue #263) regardless of process-tree shape.
@@ -1164,7 +1164,7 @@ When filling a slot, walk this decision tree:
    **Concurrent-session guard (per-dispatch, before self-assign).** Check whether any peer Claude Code instance (a different orchestrator PID) already holds a live lock on any `agent-*` worktree that targets the same issue number `<N>`. This prevents two parallel `/do-work` sessions from independently dispatching against the same issue and racing to push to the same `do-work/issue-<N>` branch.
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
    # Check every agent-* worktree whose branch matches do-work/issue-<N>
    peer_locked=false
    # Declare our orchestrator PID so classify-lock distinguishes our own
@@ -1202,7 +1202,7 @@ When filling a slot, walk this decision tree:
    Gated on three config keys from the merged effective config:
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
    vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
    vc_manifest=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
    vc_version_jq=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")

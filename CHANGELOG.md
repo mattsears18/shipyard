@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.16 — 2026-05-31
+
+Closes [#417](https://github.com/mattsears18/shipyard/issues/417) (P1, `bug`) — **the `CLAUDE_PLUGIN_ROOT` re-export preamble now probes the marketplace install path before falling back to the (often non-existent) repo-local path**, so `/shipyard:do-work` helper scripts resolve on consumer installs. On a repo that installed shipyard via the marketplace (e.g. `mattsears18/lightwork`), there is no repo-local `plugins/shipyard` dir; the old bare `$(git rev-parse --show-toplevel)/plugins/shipyard` fallback resolved to `<repo>/plugins/shipyard` which doesn't exist, and — because the harness doesn't export `$CLAUDE_PLUGIN_ROOT` into Bash-tool subshells (the #354 quirk) — every `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` call exited 127 for the whole session. The new preamble keeps the dogfooding case (repo-local source, guarded by a `scripts/` dir check) as the first probe, then falls through to `$HOME/.claude/plugins/marketplaces/*/plugins/shipyard` (newest match), then to the repo-local path anyway for meaningful error messaging. Patch bump (fix; no behavior change for dogfooding checkouts).
+
+- **`plugins/shipyard/commands/do-work/{setup,steady-state,drain,cleanup-summary,inline-trivial}.md`** — all 49 occurrences of the canonical preamble swapped to the probing form; setup.md step 0.3 prose now documents the three-layer probe (repo-local → marketplace glob → repo-local default).
+- **`plugins/shipyard/scripts/tests/claude-plugin-root-preamble.test.sh`** — `EXPECTED_PREAMBLE` anchor + header comment updated to the new line; adds a hermetic consumer-install sanity check (fake `$HOME` marketplace tree + repo-local-less git repo) asserting the preamble falls through to the marketplace path (issue #417).
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.15 → 1.8.16 (patch — fix).
+
 ### 1.8.15 — 2026-05-31
 
 Closes [#412](https://github.com/mattsears18/shipyard/issues/412) (P2, `audit:docs`) — **replaces the README's static "Last verified against shipyard 1.3.44" footer with a relative CHANGELOG pointer that can't rot**. A `docs` audit flagged that the footer's pinned verification version (1.3.44) had fallen five minor series behind the shipped release, asserting a freshness guarantee the doc no longer carried. Because this repo cuts a release on nearly every PR, any literal version pinned in committed prose drifts immediately — so the fix swaps the version-bearing sentence for a `See CHANGELOG.md for the current shipyard release.` pointer rather than re-pinning a value that would be stale by the next merge.
