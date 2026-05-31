@@ -800,6 +800,46 @@ assert_contains "$config_sh_path339" \
   '"manifest_version_jq": ".version"' \
   "shipyard-config.sh defaults set manifest_version_jq to .version (#339)"
 
+# (20.5) CHANGELOG-serialization gate + silent-direct-merge warning (#438).
+#
+# On a version-coordinated repo (version_coordination.enabled + a non-empty
+# changelog_path) where every PR appends a top-of-file CHANGELOG entry,
+# parallel drain rebases cannot converge — each merge moves the CHANGELOG
+# insert point, re-DIRTYing every sibling that just rebased. The fix lands
+# in four coordinated surfaces:
+#   - schema + config defaults — new `serialize_drain_rebase` boolean key in
+#     the version_coordination block (default true)
+#   - drain.md per-poll action 2 — a serialization gate that caps effective
+#     drain-rebase concurrency to 1 when the gate is engaged
+#   - setup.md step 1.3 — a setup-time warning when allow_auto_merge=false +
+#     admin (the silent-direct-merge shape that breaks C>=2 coordination)
+schema_path438="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
+config_sh_path438="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
+
+assert_contains "$schema_path438" \
+  '"serialize_drain_rebase"' \
+  "shipyard.config.schema.json registers version_coordination.serialize_drain_rebase (#438)"
+assert_contains "$config_sh_path438" \
+  '"serialize_drain_rebase": true' \
+  "shipyard-config.sh defaults set version_coordination.serialize_drain_rebase to true (#438)"
+
+assert_contains "$drain_path" \
+  'issues/438' \
+  "drain.md cites issue #438 as the source of the CHANGELOG-serialization gate"
+assert_contains "$drain_path" \
+  'serialize_drain_rebase' \
+  "drain.md per-poll action 2 reads version_coordination.serialize_drain_rebase (#438)"
+assert_contains "$drain_path" \
+  'CHANGELOG-serialization gate' \
+  "drain.md documents the CHANGELOG-serialization gate (#438)"
+
+assert_contains "$setup_path" \
+  'silent-direct-merge' \
+  "setup.md step 1.3 detects the silent-direct-merge repo shape (#438)"
+assert_contains "$setup_path" \
+  'allow_auto_merge' \
+  "setup.md step 1.3 reads allow_auto_merge to warn about the direct-merge shape (#438)"
+
 # (21) Step 0.7 bg cleanup group survives zsh's nomatch option when no
 #      agent-* worktrees exist (issue #335).
 #

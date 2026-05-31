@@ -179,6 +179,11 @@
           "default": "",
           "description": "Optional path (relative to repo root) of the CHANGELOG file whose `### <version>` heading row is coordination-managed alongside the manifest. Surfaced in the dispatch prompt so the worker knows to add a fresh entry above the highest in-flight version. Empty string means the worker only honors `next_available_version` for the manifest and is free to compose changelog prose without coordination."
         },
+        "serialize_drain_rebase": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true (default) AND `enabled` is true AND `changelog_path` is non-empty, the end-of-session drain phase caps effective fix-rebase concurrency to 1 — it dispatches a fix-rebase for at most one DIRTY PR per poll and waits for it to merge (or settle) before rebasing the next. Closes issue #438: on repos where every PR appends a top-of-file CHANGELOG entry, parallel drain rebases cannot converge — each merge moves the CHANGELOG insert point, re-DIRTYing every sibling that just rebased, so the only stable order is one-at-a-time. The cap applies ONLY to fix-rebase dispatch; fix-checks-only dispatch against red PRs is unaffected (a red PR is urgent regardless of the CHANGELOG serialization point). Set false to restore parallel drain rebases on a coordinated repo whose CHANGELOG convention is conflict-free (e.g. per-PR fragment files merged at release time)."
+        },
         "_comment": { "type": "string" }
       }
     },

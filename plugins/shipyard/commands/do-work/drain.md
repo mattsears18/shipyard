@@ -380,6 +380,38 @@ The **primary-checkout holder** branch (issue [#387](https://github.com/mattsear
 
    The two gates are intentionally distinct: `skip_drain_rebase: true` is the "I'd rather see DIRTY PRs in the summary than burn CI" stance; `max_drain_rebases: <N>` is the "rebase the top-N and surface the rest" compromise. Most cost-conscious operators on repos with expensive E2E will pick one or the other; a few will set both (in which case `skip_drain_rebase` wins).
 
+   **CHANGELOG-serialization gate (gated on `version_coordination.serialize_drain_rebase`).** Closes issue [#438](https://github.com/mattsears18/shipyard/issues/438). On a repo where every PR appends a top-of-file `### <version>` CHANGELOG entry (the canonical version-coordinated shape — `version_coordination.enabled` AND a non-empty `changelog_path`), **parallel drain rebases cannot converge**: each merge moves the CHANGELOG insert point, so the moment one rebased PR lands, every sibling that just rebased onto the previous CHANGELOG head goes DIRTY again on the CHANGELOG-append row. The #438 repro saw drain rebases for 6 distinctly-versioned PRs (1.8.18–1.8.23) all re-DIRTY on the CHANGELOG insert after the first merge; only **serial** rebase (rebase one → let it merge → rebase the next) converged. When the gate is engaged, drain dispatches a fix-rebase for **at most one** DIRTY PR per poll and does not dispatch the next until the in-flight one has merged (or settled out of DIRTY). This runs **after** the CI-minute truncation above — it caps the already-truncated `D_dirty` set to its single lowest-numbered member:
+
+   ```bash
+   # Read the coordination keys once per poll. Defaults preserve pre-#438
+   # behavior on non-coordinated repos: serialize_drain_rebase defaults true,
+   # but the gate only engages when enabled AND changelog_path is non-empty,
+   # so a repo without version_coordination.enabled never serializes.
+   vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+     version_coordination.enabled 2>/dev/null || echo "false")
+   vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+     version_coordination.changelog_path 2>/dev/null || echo "")
+   vc_serialize=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+     version_coordination.serialize_drain_rebase 2>/dev/null || echo "true")
+
+   if [ "$vc_enabled" = "true" ] && [ -n "$vc_changelog" ] && [ "$vc_serialize" = "true" ]; then
+     # If a fix-rebase worker is already in flight this drain, dispatch NONE
+     # this poll — wait for it to merge (or settle out of DIRTY) before
+     # rebasing the next. The in-flight count is the combined fix-checks +
+     # fix-rebase count; the fix-rebase component is what gates here.
+     if [ "$fix_rebase_in_flight" -gt 0 ]; then
+       echo "[drain] version_coordination.serialize_drain_rebase: a fix-rebase is in flight; deferring remaining DIRTY PRs ($D_dirty) to a later poll. (#438)"
+       D_dirty=""   # dispatch nothing this poll
+     else
+       # No rebase in flight — dispatch exactly the lowest-numbered DIRTY PR
+       # (D_dirty is already sorted lowest-first) and defer the rest.
+       D_dirty=$(echo "$D_dirty" | head -n 1)
+     fi
+   fi
+   ```
+
+   The deferred PRs are NOT surfaced as "needs manual rebase" the way `skip_drain_rebase` / `max_drain_rebases` skips are — they remain in `D_dirty` and get picked up on a subsequent poll once the in-flight rebase merges. Serialization trades wall-clock (one rebase + its CI per merge cycle) for convergence; it does not skip any rebase, so it composes cleanly with the CI-minute gates above (which DO skip — a PR truncated by `max_drain_rebases` is surfaced and never re-enters `D_dirty`, whereas a PR deferred by this gate does). The gate is a no-op on repos without `version_coordination.enabled` or without a `changelog_path`, and can be disabled on a coordinated repo whose CHANGELOG convention is conflict-free (per-PR fragment files) by setting `version_coordination.serialize_drain_rebase: false`.
+
    Fix-checks dispatches in action 1 above take priority — a red PR is more urgent than a stale base. After filling the pool with fix-checks workers, any remaining slots dispatch fix-rebase workers from the (possibly cap-truncated) `D_dirty` set (lowest PR number first, so dispatch order is deterministic across re-dispatches). The per-PR re-dispatch policy splits by return outcome:
 
    - **`blocked rebase #<M>: <reason>`** — add `<M>` to `rebase_blocked_prs`. Do NOT re-dispatch this session even if the PR is still DIRTY at subsequent polls; the same conflict will produce the same outcome. The drain's settled definition counts `rebase_blocked_prs` membership as settled so the PR doesn't keep the drain alive forever.

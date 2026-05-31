@@ -166,7 +166,8 @@ DEFAULTS_JQ='{
     "enabled": false,
     "manifest_path": "",
     "manifest_version_jq": ".version",
-    "changelog_path": ""
+    "changelog_path": "",
+    "serialize_drain_rebase": true
   },
   "ci": {
     "skip_drain_rebase": false,
