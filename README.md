@@ -387,4 +387,4 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the navigable index of operationa
 
 ---
 
-<sub>Last verified against shipyard 1.3.44.</sub>
+<sub>See [`CHANGELOG.md`](./CHANGELOG.md) for the current shipyard release.</sub>

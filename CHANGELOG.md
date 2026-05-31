@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.15 — 2026-05-31
+
+Closes [#412](https://github.com/mattsears18/shipyard/issues/412) (P2, `audit:docs`) — **replaces the README's static "Last verified against shipyard 1.3.44" footer with a relative CHANGELOG pointer that can't rot**. A `docs` audit flagged that the footer's pinned verification version (1.3.44) had fallen five minor series behind the shipped release, asserting a freshness guarantee the doc no longer carried. Because this repo cuts a release on nearly every PR, any literal version pinned in committed prose drifts immediately — so the fix swaps the version-bearing sentence for a `See CHANGELOG.md for the current shipyard release.` pointer rather than re-pinning a value that would be stale by the next merge.
+
+- **`README.md`** — footer line at the bottom of the file changed from `Last verified against shipyard 1.3.44.` to a relative `See [CHANGELOG.md](./CHANGELOG.md) for the current shipyard release.` pointer.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump 1.8.11 → 1.8.15 (patch — docs-only; coordination-supplied slot honoring in-flight sibling PRs).
+
 ### 1.8.11 — 2026-05-31
 
 Closes [#396](https://github.com/mattsears18/shipyard/issues/396) (P2, `enhancement`) — **`/shipyard:audit` now defaults to `all` when invoked with no audit type, instead of prompting for one**. Running bare `/audit` previously hit no specified fallback, so the command surfaced an `AskUserQuestion` to pick a type — an extra round-trip for what should be the most useful default. The `all` value already had dispatch wiring, so this is a defaulting change, not new dispatch logic. The no-URL case (a pure codebase like this repo with no deployed surface) is handled explicitly: non-URL auditors run unconditionally, and the command prompts once for a single shared URL for the web-dependent auditors (`lighthouse`, `web-ux`, `a11y`, `seo`, `pwa`), skipping them gracefully under "Surfaces NOT reviewed" if the user declines.
