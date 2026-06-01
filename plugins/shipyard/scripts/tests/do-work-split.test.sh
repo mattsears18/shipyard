@@ -1108,6 +1108,32 @@ for f in "$steady_state_path" "$drain_path"; do
     "$fname cites issue #452 as the source of the cwd-independent derivation"
 done
 
+# (26) Per-PR release rule — worker bumps in its own PR, never defers (#460).
+#
+# Repos that carry a release-process rule in CLAUDE.md (e.g. this repo's
+# "ALWAYS cut a release when a PR merges") require every merged PR to bump
+# the manifest version + add a CHANGELOG entry IN THE SAME PR. The
+# issue-work spec previously gave no deterministic contract for this, so
+# sibling workers in one session diverged: one deferred the bump (its PR
+# merged-direct leaving main undocumented, forcing a separate catch-up
+# release PR that nearly collided on the version row), the other included
+# it. The fix lands in issue-work.md step 4: when a per-PR release rule is
+# present, including the bump is mandatory and deferral is forbidden.
+issue_work_path460="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+
+assert_contains "$issue_work_path460" \
+  'issues/460' \
+  "issue-work.md cites issue #460 as the source of the per-PR-release-rule contract"
+assert_contains "$issue_work_path460" \
+  'bump in your own PR, never defer' \
+  "issue-work.md step 4 establishes the bump-in-PR-never-defer contract (#460)"
+assert_contains "$issue_work_path460" \
+  'including the bump in your own PR is mandatory, not optional' \
+  "issue-work.md step 4 makes the in-PR bump mandatory when a per-PR release rule is present (#460)"
+assert_contains "$issue_work_path460" \
+  'composes with' \
+  "issue-work.md step 4 documents how the release rule composes with the next_available_version coordination contract (#460)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
