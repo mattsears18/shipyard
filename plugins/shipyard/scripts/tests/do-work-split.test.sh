@@ -1044,6 +1044,40 @@ assert_contains "$setup_path" \
   'version_cursor' \
   "setup.md step 7 pre-allocates monotonic versions across the batch via version_cursor (#437)"
 
+# (N) Primary-leak guard derives PRIMARY_CHECKOUT independent of cwd (#452).
+#
+# The harness can silently relocate the orchestrator's own Bash-tool cwd
+# into a just-returned dispatched agent's `agent-*` isolation worktree on a
+# reconcile turn. The original A.0.6 / drain-entry derivation read
+# `git rev-parse --show-toplevel` and stripped only an `orchestrator-*`
+# suffix — so when cwd had leaked into an `agent-*` worktree, the strip
+# didn't match, PRIMARY_CHECKOUT pointed at the AGENT worktree, and the
+# guard read that worktree's `do-work/issue-<N>` branch as the "primary
+# branch", ran `checkout <default>` against the wrong tree, and emitted a
+# phantom `[primary-leak] restored primary …` line while never inspecting
+# the real primary.
+#
+# The fix derives the primary from `git worktree list --porcelain`'s first
+# `worktree ` entry (always the main working tree, regardless of cwd), with
+# the cwd-strip retained only as a fallback — now covering `agent-*` too.
+# Both surfaces (steady-state.md A.0.6 + drain.md drain-entry guard) get the
+# same derivation.
+for f in "$steady_state_path" "$drain_path"; do
+  fname=$(basename "$f")
+  # The cwd-independent porcelain derivation must be present.
+  assert_contains "$f" \
+    'git worktree list --porcelain' \
+    "$fname primary-leak guard derives PRIMARY_CHECKOUT from worktree list, not cwd (#452)"
+  # The fallback strip must now ALSO cover agent-* (the leaked-cwd case),
+  # not just orchestrator-*.
+  assert_contains "$f" \
+    '*/.claude/worktrees/agent-*)' \
+    "$fname fallback cwd-strip covers the agent-* leak case (#452)"
+  assert_contains "$f" \
+    'issue #452' \
+    "$fname cites issue #452 as the source of the cwd-independent derivation"
+done
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
