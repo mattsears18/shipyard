@@ -1044,6 +1044,36 @@ assert_contains "$setup_path" \
   'version_cursor' \
   "setup.md step 7 pre-allocates monotonic versions across the batch via version_cursor (#437)"
 
+# (25) Pre-push verification runs a superset of CI's required checks, not a
+#      hand-picked subset (#453).
+#
+# An issue-work worker that verifies an ad-hoc subset of the repo's test
+# suites can ship a change that passes its subset and reds a CI gate it
+# skipped. On a repo where PRs direct-merge (admin on an
+# `allow_auto_merge: false` repo), that surfaces as broken `main` rather
+# than a held-back red PR. Repro: PR #441 direct-merged green-locally yet
+# reddened main because the worker ran do-work-split / config / init-config
+# / shellcheck but NOT claude-plugin-root-preamble.test.sh — the suite
+# guarding the file it edited. The fix lands in issue-work.md step 4:
+# make the local gate a superset of CI's required checks, and discover the
+# suites the way CI discovers them (glob/find) rather than from memory.
+issue_work_path453="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+
+assert_contains "$issue_work_path453" \
+  'issues/453' \
+  "issue-work.md cites issue #453 as the source of the superset-of-CI verification contract"
+assert_contains "$issue_work_path453" \
+  'superset of CI' \
+  "issue-work.md step 4 establishes the local-gate-is-a-superset-of-CI contract (#453)"
+assert_contains "$issue_work_path453" \
+  'Discover the suites the way CI discovers them' \
+  "issue-work.md step 4 tells the worker to mirror CI's discovery command, not enumerate from memory (#453)"
+# shellcheck disable=SC2016
+# Backticks/single-quotes are literal markdown punctuation in the needle.
+assert_contains "$issue_work_path453" \
+  'guarded paths intersect your PR' \
+  "issue-work.md step 4 requires running every discovered suite whose guarded paths intersect the changed files (#453)"
+
 # (N) Primary-leak guard derives PRIMARY_CHECKOUT independent of cwd (#452).
 #
 # The harness can silently relocate the orchestrator's own Bash-tool cwd
