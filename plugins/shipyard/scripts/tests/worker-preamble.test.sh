@@ -288,6 +288,26 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md prescribes chmod +x on the worktree hook files as remediation (issue #459)"
   assert_contains "$skill_path" "Never reach for \`--no-verify\` as a \"workaround.\"" \
     "SKILL.md forbids --no-verify as the fix for a silently-skipped hook (issue #459)"
+
+  # Issue #475 — "Pin the default branch in git-using test fixtures" section.
+  # The section exists because a worker authoring a *.test.sh fixture that
+  # `git init`s a throwaway repo and later names the default branch (e.g.
+  # `git checkout main`) passes its pre-push sweep on macOS (init.defaultBranch
+  # = main) but reds on CI's Ubuntu runner (init.defaultBranch = master) with
+  # `pathspec 'main' did not match`. On a merged-direct-ungated repo there is no
+  # PR gate to catch it, so main goes red (repro: #466 fixture → recovery #473).
+  # Removing the section regresses the pin-the-branch authoring rule and the
+  # GIT_CONFIG_GLOBAL=master verification recipe.
+  assert_contains "$skill_path" "## Pin the default branch in git-using test fixtures" \
+    "SKILL.md covers the git-fixture default-branch pin (issue #475)"
+  assert_contains "$skill_path" "init.defaultBranch" \
+    "SKILL.md names init.defaultBranch as the invisible host dependency (issue #475)"
+  assert_contains "$skill_path" "git init -q -b main" \
+    "SKILL.md prescribes pinning the fixture's initial branch with git init -b (issue #475)"
+  assert_contains "$skill_path" "GIT_CONFIG_GLOBAL" \
+    "SKILL.md provides the GIT_CONFIG_GLOBAL=master verification recipe (issue #475)"
+  assert_contains "$skill_path" "did not match" \
+    "SKILL.md names the pathspec-did-not-match CI failure (issue #475)"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after

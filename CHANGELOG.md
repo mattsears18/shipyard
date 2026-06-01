@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.49 — 2026-06-01
+
+Adds a worker-preamble guidance section (#475) so the local-vs-CI `init.defaultBranch` divergence that reddened `main` in #466/#473 can't recur silently. The recovery in 1.8.47 (#473) pinned the one fixture that broke; this generalizes the lesson into the shared preamble every worker mode loads. The new "Pin the default branch in git-using test fixtures" section names the failure mode (macOS `init.defaultBranch=main` passes the pre-push sweep, GitHub-hosted Ubuntu `master` reds CI with `pathspec 'main' did not match`, and a `merged-direct-ungated` repo has no PR gate to catch it), gives the authoring rule (`git init -q -b main` when a fixture `git init`s and then names the default branch), and supplies a deterministic verification recipe (re-run the changed suite under an ephemeral `GIT_CONFIG_GLOBAL` forcing `init.defaultBranch=master` — exactly how #473 reproduced the failure). Implements option 1+2 from #475; the existing bare `git init -q` fixtures that never name the default branch are intentionally left untouched per the section's own "don't churn" caveat.
+
+- **`plugins/shipyard/skills/worker-preamble/SKILL.md`** — new "Pin the default branch in git-using test fixtures" section, slotted into the silent-pass-pre-push family alongside the Node-bootstrap / Husky-hook / worktree-ignore / locale-parity sections.
+- **`plugins/shipyard/scripts/tests/worker-preamble.test.sh`** — five regression assertions pin the new section (header present, names `init.defaultBranch`, prescribes `git init -q -b main`, provides the `GIT_CONFIG_GLOBAL` recipe, names the `did not match` CI failure). Full `*.test.sh` sweep passes; shellcheck clean.
+
 ### 1.8.48 — 2026-06-01
 
 Broadens the step 1.3 silent-direct-merge detector (#465) so it catches the **admin + zero-required-status-checks** repo shape, not just the original #438 `allow_auto_merge: false` + admin case. The real trigger for an ungated immediate admin direct-merge is "admin AND the default branch has no required checks for `--auto` to wait on" — which fires *even when `allow_auto_merge` is `true`*. The prior gate stayed silent on exactly that shape (this repo: `allow_auto_merge=true`, dispatcher admin, no required checks), so a session direct-merged issue PRs out of version order, leapfrogging a pre-allocated version and forcing a manual rebase. The detector now reads `repos/<owner/repo>/branches/<default>/protection/required_status_checks` and warns (recommending `--concurrency 1` or adding a required check) when admin + zero required checks holds, independent of `allow_auto_merge`. Warning-only — no behavior change to merge config.
