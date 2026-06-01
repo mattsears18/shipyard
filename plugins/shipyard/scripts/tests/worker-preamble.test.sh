@@ -221,6 +221,22 @@ if [[ -f "$skill_path" ]]; then
   assert_contains "$skill_path" "cp -al" \
     "SKILL.md documents cp -al hard-link copy as an alternative to the symlink (issue #328)"
 
+  # Issue #458 — Next 16 / Turbopack constraint on the node_modules link
+  # strategies. Next.js 16's Turbopack refuses a node_modules that resolves
+  # outside the worktree's filesystem root, so the ../../../node_modules symlink
+  # (and the cp -al hard-link copy, whose real inodes still live under the
+  # primary checkout) fail with "Symlink ... points out of the filesystem root".
+  # Workers on a Turbopack repo waste one tool-call turn rediscovering this
+  # unless the preamble tells them to detect Turbopack/Next 16 and skip directly
+  # to npm ci. The fix adds the detection snippet + constraint at the symlink
+  # remediation spot. Removing these docs regresses the Turbopack-skip contract.
+  assert_contains "$skill_path" "Next 16 / Turbopack constraint" \
+    "SKILL.md names the Next 16 / Turbopack constraint on the link strategies (issue #458)"
+  assert_contains "$skill_path" "points out of the filesystem root" \
+    "SKILL.md names the Turbopack 'points out of the filesystem root' failure (issue #458)"
+  assert_contains "$skill_path" "uses_turbopack" \
+    "SKILL.md provides the Turbopack/Next-16 detection snippet (issue #458)"
+
   # Issue #418 — "Mirror new string constants into locale / parity files"
   # section. The section exists because a worker that adds a user-facing string
   # to a centralized strings module (lib/strings.ts etc.) but forgets to mirror
