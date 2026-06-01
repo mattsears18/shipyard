@@ -242,10 +242,18 @@ SESSION_ID=$(cat "$ORCH_WT/.shipyard-session-id")
 # ... use $SESSION_ID in subsequent calls; e.g. session-state.sh update --session-id "$SESSION_ID" --set '...'
 ```
 
-Equivalently — when `$ORCH_WT` isn't already in scope but the cwd is inside the orchestrator worktree — derive the worktree root via `git rev-parse --show-toplevel` and read from there:
+Equivalently — when `$ORCH_WT` isn't already in scope — derive the orchestrator worktree path and read the stash from there. **Do NOT derive it from `git rev-parse --show-toplevel`** (issue [#477](https://github.com/mattsears18/shipyard/issues/477)): `git rev-parse --show-toplevel` returns whatever worktree the shell's cwd is in, and the harness can silently relocate the orchestrator's own Bash-tool cwd into a just-returned **agent's** `agent-*` isolation worktree on a reconcile turn (the same `isolation: "worktree"` cwd-leak class as [#452](https://github.com/mattsears18/shipyard/issues/452), which [A.0.6's primary-leak guard](./steady-state.md#a06-primary-checkout-branch-leak-guard-fires-every-reconcile-turn-before-a1) already hardens against). When cwd is in an `agent-*` worktree, `git rev-parse --show-toplevel` returns the **agent** worktree path — which has no `.shipyard-session-id` stash (that file lives only in the orchestrator worktree, per the "MUST live inside the orchestrator's own worktree" rule above). The `cat` then comes up empty, every downstream `session-state.sh` call is invoked with an empty `--session-id` and exits 64 (`--session-id is required`), and the turn silently loses its cost attribution + `session_prs` append (a lost `session_prs` append can strand a PR out of the drain watch list).
+
+Derive the orchestrator worktree from `git worktree list --porcelain` instead — its `orchestrator-*` entry is the orchestrator's worktree regardless of which linked worktree the cwd happens to be in (all linked worktrees share one worktree list). This is the same porcelain-first idiom A.0.6 uses to find the primary; here we walk for the `orchestrator-*` entry rather than the first entry. Keep the cwd-derived read as a last-resort fallback for a non-worktree layout where the porcelain walk comes up empty:
 
 ```bash
-SESSION_ID=$(cat "$(git rev-parse --show-toplevel)/.shipyard-session-id")
+# Porcelain-derive the orchestrator worktree (cwd-independent — issue #477).
+ORCH_WT=$(git worktree list --porcelain 2>/dev/null \
+  | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
+# Fallback: cwd-derived read only if the porcelain walk found no orchestrator
+# worktree (non-worktree layout). Vulnerable to the #477 cwd-leak, so last resort.
+[ -z "$ORCH_WT" ] && ORCH_WT="$(git rev-parse --show-toplevel 2>/dev/null)"
+SESSION_ID=$(cat "$ORCH_WT/.shipyard-session-id" 2>/dev/null)
 ```
 
 **Defense in depth — `session-state.sh` enforces a cross-repo write guard.** Even if the orchestrator's id-stash mechanism is bypassed or corrupted, `session-state.sh update` and `session-state.sh bump-tokens` accept an `--expected-repo <owner/repo>` flag (also accepted via `SHIPYARD_EXPECTED_REPO=<owner/repo>` env var). When the flag is set and the resolved session file's `.repo` field doesn't match, the call exits 66 with a loud stderr log naming both repos — refusing the write rather than silently corrupting another session's state. The orchestrator SHOULD pass `--expected-repo <owner/repo>` on every `update` and `bump-tokens` call; the `--skip-repo-check` flag is reserved for the rare legitimate cross-repo helper (e.g., the orphan-sweep at step 1.6, which intentionally operates on session files belonging to other repos). See [session-state.sh's cross-repo guard](../../scripts/session-state.sh) for the exit-code contract.
