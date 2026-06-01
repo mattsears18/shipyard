@@ -122,7 +122,7 @@ else
   if ! cd "$work"; then
     bad "could not cd into the behavioral fixture dir"
   else
-    git init -q
+    git init -q -b main  # pin default branch — CI's init.defaultBranch may not be 'main' (#466 main-CI fix)
     git config user.email t@t.t
     git config user.name t
     git config commit.gpgsign false
