@@ -362,6 +362,38 @@ A recurring, self-inflicted CI red ([#418](https://github.com/mattsears18/shipya
 
 **When NOT to worry about this.** Diffs that don't touch a centralized string / constant module (pure logic, config, docs) can't trip a key-parity test — skip the check. And if the repo has no parity test (the grep comes up empty), there's nothing to mirror; don't invent locale files the repo doesn't have.
 
+## Pin the default branch in git-using test fixtures
+
+A pre-push silent-pass with an *invisible host dependency* ([#475](https://github.com/mattsears18/shipyard/issues/475)): you add or edit a shell test fixture that builds a throwaway repo with a bare `git init` and later refers to the default branch by name — `git checkout main`, `git rev-parse main`, `git branch -f main`, an assertion against a `refs/heads/main` ref. Your pre-push sweep runs the suite locally and it passes — because your dev machine's `init.defaultBranch` is `main` (the macOS / recent-git default). CI's runner is GitHub-hosted Ubuntu, whose `init.defaultBranch` is **`master`**, so the fresh repo's initial branch is `master`, the `main` pathspec doesn't resolve, and the test reds with `error: pathspec 'main' did not match any file(s) known to git` (or an empty-ref assertion failure). The break only surfaces post-push, and on a repo that admin-direct-merges **ungated** (no required status checks — the `merged-direct-ungated` case) there is no PR gate to catch it before it reddens the default branch.
+
+Repro ([#466](https://github.com/mattsears18/shipyard/issues/466) → recovery [#473](https://github.com/mattsears18/shipyard/issues/473)): a worker added `plugins/shipyard/scripts/tests/fix-rebase-version-coordination.test.sh`, which `git init -q`'d a fixture repo then `git checkout main`'d it. The worker's macOS pre-push sweep passed; PR #472 admin-direct-merged ungated; CI's Ubuntu runner failed the `git checkout main` with `pathspec 'main' did not match`, cascading three assertion failures and reddening both the `Tests` and `Shell scripts (lint + tests)` workflows on `main`. Recovery PR #473 pinned the fixture with `git init -q -b main`.
+
+**The authoring rule.** When your diff **adds or edits a `*.test.sh` (or any test fixture) that runs `git init` and then references the default branch by name**, pin the fixture's initial branch so it's deterministic regardless of the host's `init.defaultBranch`:
+
+```bash
+# Pin the default branch — CI's init.defaultBranch may be 'master', not 'main'.
+git init -q -b main
+# (equivalent, for older git that lacks `git init -b`:)
+git -c init.defaultBranch=main init -q
+```
+
+A bare `git init` whose fixture never names the default branch (it only uses `git branch` / `git for-each-ref` generically, or commits onto whatever the initial branch is without caring what it's called) is **not** at risk — don't churn those. The risk is specifically *bare `git init` + a hard-coded branch name later in the same fixture*.
+
+**The verification recipe (catches the whole class deterministically).** Pinning is the fix; this is the cheap way to *prove* you got it — and to catch any fixture you edited that still has a latent host dependency. Re-run the new/changed suite once under a forced non-`main` default, exactly how recovery PR #473 reproduced the failure. An ephemeral `GIT_CONFIG_GLOBAL` pointed at a config that sets `init.defaultBranch=master` reproduces CI's Ubuntu environment without touching your real git config:
+
+```bash
+# Reproduce CI's `init.defaultBranch=master` locally and re-run the suite.
+# If it passes here, it passes on CI's Ubuntu runner too.
+tmp_gitconfig="$(mktemp)"
+printf '[init]\n\tdefaultBranch = master\n' > "$tmp_gitconfig"
+GIT_CONFIG_GLOBAL="$tmp_gitconfig" bash plugins/shipyard/scripts/tests/<changed-suite>.test.sh
+rm -f "$tmp_gitconfig"
+```
+
+A suite that passes under `init.defaultBranch=master` has no remaining host dependency on the default-branch name; one that fails has exactly the #475 gap and needs a `git init -b main` pin (or its assertions de-hardcoded) before you push.
+
+**When NOT to worry about this.** Diffs that don't add or edit a git-using `*.test.sh` fixture (pure docs, config, non-shell tests, a fixture that doesn't shell out to `git init`) can't trip this — skip the check. And a target repo that isn't shell-test-driven, or whose CI runner shares your host's `init.defaultBranch`, won't surface the divergence; the recipe is cheap insurance specifically when you're authoring a new git-using shell fixture against a self-hosting repo like `mattsears18/shipyard`.
+
 ## Pre-commit hygiene — escape symlinks
 
 A companion failure mode to the dependency-bootstrap symlink ([#351](https://github.com/mattsears18/shipyard/issues/351)): the worker creates `node_modules → ../../../node_modules` per the bootstrap rules above, then accidentally stages it into a commit via a stray `git add -A`, a misclick on `git add node_modules`, or path globbing that happens to include the symlink. The committed `120000` symlink mode rides into the commit and stays dangerous forever — when a downstream consumer cherry-picks the commit onto a different checkout depth, `../../../node_modules` resolves to a different (or non-existent) path. The salvage cost is a follow-up `fix(repo): remove stray node_modules symlink from cherry-pick` commit on the receiving end; the prevention cost is zero if you follow the symlink-creation hygiene above.
