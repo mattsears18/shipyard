@@ -2,4 +2,7 @@
 docs/superpowers/
 .claude/*
 !.claude/settings.json
+!.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/stop-shellcheck.sh
 .shipyard/

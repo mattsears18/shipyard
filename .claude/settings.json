@@ -32,5 +32,18 @@
       "Bash(git commit *--no-gpg-sign*)",
       "Bash(git commit *--no-commit-hooks*)"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-shellcheck.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
