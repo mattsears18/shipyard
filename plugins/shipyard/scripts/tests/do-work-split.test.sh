@@ -840,6 +840,21 @@ assert_contains "$setup_path" \
   'allow_auto_merge' \
   "setup.md step 1.3 reads allow_auto_merge to warn about the direct-merge shape (#438)"
 
+# (20b) Step 1.3 detector broadened to ALSO fire on admin + zero required
+#       status checks, independent of allow_auto_merge (#465). The original
+#       #438 gate only checked allow_auto_merge==false; on a repo with
+#       allow_auto_merge=true but no required checks, an admin's --auto still
+#       direct-merges immediately and version coordination breaks silently.
+assert_contains "$setup_path" \
+  'required_status_checks' \
+  "setup.md step 1.3 reads the default branch's required_status_checks (#465)"
+assert_contains "$setup_path" \
+  'required_checks_count' \
+  "setup.md step 1.3 gates on the required-checks count for the #465 case"
+assert_contains "$setup_path" \
+  'issues/465' \
+  "setup.md step 1.3 cites issue #465 as the source of the broadened gate"
+
 # (21) Step 0.7 bg cleanup group survives zsh's nomatch option when no
 #      agent-* worktrees exist (issue #335).
 #

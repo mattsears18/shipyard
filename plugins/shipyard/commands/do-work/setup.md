@@ -655,26 +655,43 @@ Cache all three for the session.
 
 (The trusted-author allowlist used by step 4's filter and step 7's `originating_author_trust` computation is populated separately by [step 1.7 below](#17-resolve-trusted-author-allowlist).)
 
-### 1.3 Detect the silent-direct-merge repo shape (`allow_auto_merge: false` + admin)
+### 1.3 Detect the silent-direct-merge repo shape (admin + ungated-merge config)
 
-Closes issue [#438](https://github.com/mattsears18/shipyard/issues/438). When a repo has `allow_auto_merge: false` **and** the dispatching user has admin permissions, the worker's `gh pr merge --auto` does **not** queue — it silently falls through to a **direct merge** (the `merged-direct` outcome documented in `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.5 and issue [#340](https://github.com/mattsears18/shipyard/issues/340)). At `--concurrency ≥ 2` that breaks version coordination in two compounding ways: (1) whichever PR direct-merges first advances `main`'s manifest version, so every concurrent PR with a lower-or-equal version goes DIRTY even when distinctly pre-assigned a version; (2) every merge changes the top-of-file CHANGELOG entry, re-DIRTYing even distinctly-versioned rebased PRs on the CHANGELOG insert point (the cascade the [drain CHANGELOG-serialization gate](./drain.md#drain-protocol) addresses).
+Closes issues [#438](https://github.com/mattsears18/shipyard/issues/438) and [#465](https://github.com/mattsears18/shipyard/issues/465). When the dispatching user has admin permissions, the worker's `gh pr merge --auto` can silently fall through to a **direct merge** instead of queuing (the `merged-direct` outcome documented in `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.5 and issue [#340](https://github.com/mattsears18/shipyard/issues/340)). At `--concurrency ≥ 2` that breaks version coordination in two compounding ways: (1) whichever PR direct-merges first advances `main`'s manifest version, so every concurrent PR with a lower-or-equal version goes DIRTY even when distinctly pre-assigned a version; (2) every merge changes the top-of-file CHANGELOG entry, re-DIRTYing even distinctly-versioned rebased PRs on the CHANGELOG insert point (the cascade the [drain CHANGELOG-serialization gate](./drain.md#drain-protocol) addresses).
 
-This is a **warning, not a behavior change** — the orchestrator does not flip auto-merge config on the repo (that's a maintainer decision). Detect the shape once at setup and warn so the operator understands why C≥2 version coordination on this repo cannot hold without serialized merges:
+There are **two distinct repo shapes** that trigger this admin direct-merge, and the original #438 detector only caught the first:
+
+1. **`allow_auto_merge: false` + admin** (the original #438 case). With auto-merge disabled at the repo level, `gh pr merge --auto` has nothing to queue against, so an admin's call falls through to an immediate direct merge.
+2. **admin + the default branch has zero *required* status checks** (the #465 case, which fires **regardless of `allow_auto_merge`**). Even with `allow_auto_merge: true`, when there are no required checks gating the branch, `gh pr merge --auto` has no pending check to wait on — so an admin's call merges *immediately* rather than queuing behind CI. The #465 repro: session `do-work-20260601T013917Z-76896` on this repo (`allow_auto_merge=true`, dispatcher is admin, no required checks) saw 3 of 4 issue-work PRs direct-merge out of version order, leapfrogging a pre-allocated version and forcing a manual rebase. The original detector stayed silent because it only checked `allow_auto_merge == false`.
+
+This is a **warning, not a behavior change** — the orchestrator does not flip auto-merge config or add required checks on the repo (that's a maintainer decision). Detect both shapes once at setup and warn so the operator understands why C≥2 version coordination on this repo cannot hold without serialized merges:
 
 ```bash
-# One REST read covers both signals (the GraphQL `gh repo view --json`
+# One REST read covers the repo-level signals (the GraphQL `gh repo view --json`
 # surface doesn't expose allow_auto_merge — only the REST endpoint does).
 am_shape=$(gh api "repos/<owner/repo>" \
   --jq '{allow_auto_merge: .allow_auto_merge, admin: .permissions.admin}' 2>/dev/null || echo '{}')
 allow_auto_merge=$(echo "$am_shape" | jq -r '.allow_auto_merge // empty')
 viewer_admin=$(echo "$am_shape" | jq -r '.admin // empty')
 
-if [ "$allow_auto_merge" = "false" ] && [ "$viewer_admin" = "true" ]; then
-  echo "[setup] WARNING (#438): this repo has allow_auto_merge=false AND you have admin — \`gh pr merge --auto\` will SILENTLY DIRECT-MERGE (no queue). At --concurrency >= 2, version/CHANGELOG coordination across in-flight PRs cannot hold: the first PR to merge advances main and re-DIRTYs siblings. Recommend --concurrency 1 here, or enable allow_auto_merge on the repo so --auto actually queues. version_coordination.serialize_drain_rebase (drain phase) mitigates the CHANGELOG cascade but not the steady-state leapfrog."
+# Required-status-checks read for the default branch (#465). A 404 (no branch
+# protection rule), an empty list, or any error means "zero required checks" —
+# the exact shape where an admin --auto merges immediately. The same endpoint
+# the main-CI required-workflows resolution uses (see step 4.5a).
+required_checks_count=$(gh api \
+  "repos/<owner/repo>/branches/<default-branch>/protection/required_status_checks" \
+  --jq '(.checks // []) | length' 2>/dev/null || echo 0)
+[ -z "$required_checks_count" ] && required_checks_count=0
+
+# Shape 1 (#438): allow_auto_merge disabled + admin.
+# Shape 2 (#465): admin + zero required checks — fires regardless of allow_auto_merge.
+if { [ "$allow_auto_merge" = "false" ] && [ "$viewer_admin" = "true" ]; } \
+   || { [ "$viewer_admin" = "true" ] && [ "$required_checks_count" = "0" ]; }; then
+  echo "[setup] WARNING (#438/#465): \`gh pr merge --auto\` will SILENTLY DIRECT-MERGE on this repo (no queue) — you have admin and either allow_auto_merge=false (#438) or the default branch has zero required status checks (#465, fires even when allow_auto_merge=true). At --concurrency >= 2, version/CHANGELOG coordination across in-flight PRs cannot hold: the first PR to merge advances main and re-DIRTYs siblings. Recommend --concurrency 1 here, or add a required status check (and/or enable allow_auto_merge) so --auto actually queues. version_coordination.serialize_drain_rebase (drain phase) mitigates the CHANGELOG cascade but not the steady-state leapfrog."
 fi
 ```
 
-The warning fires unconditionally of `--concurrency` (the steady-state leapfrog is worst at C≥2, but a C=1 operator who later raises concurrency benefits from having seen it once). It's a single REST read folded into the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) alongside step 1's reads — fire it in the same burst, not serially. If the REST read fails (network, permission), the `|| echo '{}'` fallback makes both signals empty and the warning is simply skipped — no hard failure on a diagnostic read.
+The warning fires unconditionally of `--concurrency` (the steady-state leapfrog is worst at C≥2, but a C=1 operator who later raises concurrency benefits from having seen it once). It's two REST reads folded into the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) alongside step 1's reads — fire them in the same burst, not serially. If either read fails (network, permission), the fallbacks (`|| echo '{}'` for the repo read, `|| echo 0` for the required-checks read) make the missing signals empty/zero and the worst case is an extra advisory warning on a transient required-checks read failure — no hard failure on a diagnostic read. Note the `required_checks_count=0` fallback means a *transient* failure of the required-checks read on an admin repo will surface the warning; that's the conservative direction (warn-on-doubt) for a diagnostic-only line.
 
 ### 1.5 Initialise the session state file
 
