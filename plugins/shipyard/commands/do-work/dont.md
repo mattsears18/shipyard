@@ -1,6 +1,6 @@
 # /shipyard:do-work — Don't
 
-The orchestrator's rule list — load-bearing prohibitions across every phase. The *why* for each rule lives in [RATIONALE → Don't extended](../do-work-RATIONALE.md#don't--extended-rationale-for-the-load-bearing-rules); cross-references are inline where the full discussion matters. The thin entry [`commands/do-work.md`](../do-work.md) links here from the [phase routing summary](../do-work.md#phase-files).
+The orchestrator's rule list — load-bearing prohibitions across every phase. The *why* for each rule lives in [RATIONALE → Don't extended](../do-work-RATIONALE.md#dont--extended-rationale-for-the-load-bearing-rules); cross-references are inline where the full discussion matters. The thin entry [`commands/do-work.md`](../do-work.md) links here from the [phase routing summary](../do-work.md#phase-routing).
 
 **Dispatch-loop discipline:**
 
@@ -35,7 +35,7 @@ The orchestrator's rule list — load-bearing prohibitions across every phase. T
 - **Don't accept a `green #<M>` return from a fix-checks-only worker without verifying the rollup.** ([why](../do-work-RATIONALE.md#dont-accept-a-green-return-without-verifying-the-rollup))
 - **Don't treat a fix-checks-only worker's narrative status string as authoritative.** ([why](../do-work-RATIONALE.md#dont-treat-a-narrative-status-string-as-authoritative))
 - **Don't dispatch fix-rebase outside the end-of-session drain.** Steady-state dispatch never produces a DIRTY PR; dispatching mid-session would churn branches auto-merge was about to rebase or race with a fix-checks worker.
-- **Don't retry a `blocked rebase` PR within the same session.** A `blocked rebase` return signals a non-trivial conflict that won't resolve on retry; `rebase_blocked_prs` membership counts toward the drain's "settled" definition. **`rebased` returns are different** — a successfully-rebased PR that goes DIRTY again from a sibling merge IS eligible for re-dispatch (the merge train can still win that race), subject to the 3-successful-rebase rate-limit cap tracked in `rebase_success_counts`. See [drain.md's per-poll actions](./drain.md#per-poll-actions) for the split-gate rationale and [#265](https://github.com/mattsears18/shipyard/issues/265) for the race the split fixes.
+- **Don't retry a `blocked rebase` PR within the same session.** A `blocked rebase` return signals a non-trivial conflict that won't resolve on retry; `rebase_blocked_prs` membership counts toward the drain's "settled" definition. **`rebased` returns are different** — a successfully-rebased PR that goes DIRTY again from a sibling merge IS eligible for re-dispatch (the merge train can still win that race), subject to the 3-successful-rebase rate-limit cap tracked in `rebase_success_counts`. See [drain.md's end-of-session drain](./drain.md#end-of-session-drain) for the split-gate rationale and [#265](https://github.com/mattsears18/shipyard/issues/265) for the race the split fixes.
 
 **Worktree + filesystem discipline:**
 
@@ -47,7 +47,7 @@ The orchestrator's rule list — load-bearing prohibitions across every phase. T
 - Don't remove the `shipyard` label on block, abandon, or any other outcome. `shipyard` stays put through the whole cycle; only `blocked:ci` comes and goes via step A (apply) and [step 3d's auto-clear sweep](./setup.md#3-ensure-label-exists--recover-from-prior-session) (remove).
 - **Don't omit the `shipyard:worker-preamble` skill reference from any dispatched agent's prompt.** Every dispatch prompt loads the skill instead of inlining the verbatim preamble. Closes [#107](https://github.com/mattsears18/shipyard/issues/107).
 - **Don't skip `git worktree unlock` before `git worktree remove --force`** on agent worktrees. Without unlocking, the remove fails with `cannot remove a locked working tree`.
-- **Don't reap a live-PID worktree — at startup OR at shutdown.** Always check the lock PID before unlocking / removing. ([why](../do-work-RATIONALE.md#dont-reap-a-live-pid-worktree--at-startup-or-at-shutdown))
+- **Don't reap a live-PID worktree — at startup OR at shutdown.** Always check the lock PID before unlocking / removing. ([why](../do-work-RATIONALE.md#dont-reap-a-peer-alive-worktree--at-startup-or-at-shutdown))
 
 **Security boundary:**
 
