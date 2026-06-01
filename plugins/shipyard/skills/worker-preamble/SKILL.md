@@ -252,7 +252,24 @@ The check is a one-liner; the remediation is the substantive part.
    fi
    ```
 
-2. **Fall back to `npm ci`.** Most correct, slowest (30–90s typical). Use when the symlink path doesn't exist (worktree was created somewhere unusual), when running under Auto Mode (see constraint above), or when a previous attempt with the symlink hit native-module loader errors:
+   **Next 16 / Turbopack constraint — skip BOTH link strategies, go straight to `npm ci` ([#458](https://github.com/mattsears18/shipyard/issues/458)).** Next.js 16's Turbopack refuses a `node_modules` that resolves outside the worktree's filesystem root, failing the build/dev/test with `Symlink ... points out of the filesystem root`. The `../../../node_modules` symlink target is literally outside the worktree root, so the symlink path (path 1) is dead on a Turbopack repo — and the `cp -al` hard-link copy is risky too (Turbopack resolves the real inode, which still lives under the primary checkout's tree, so it can trip the same root check). Don't attempt either link strategy and let each worker rediscover the failure; **detect Turbopack/Next 16 first and fall through deterministically to `npm ci` (path 2)**:
+   ```bash
+   # Turbopack/Next-16 detection: a next >=16 dep, OR a --turbopack flag wired
+   # into any package.json script (next dev/build --turbopack), OR a turbopack
+   # config key. Any hit ⇒ skip the link strategies, go straight to npm ci.
+   uses_turbopack=false
+   if [ -f package.json ]; then
+     next_major=$(node -p "((require('./package.json').dependencies?.next||require('./package.json').devDependencies?.next||'').match(/\d+/)||[0])[0]" 2>/dev/null)
+     if { [ -n "$next_major" ] && [ "$next_major" -ge 16 ] 2>/dev/null; } \
+        || grep -q -- '--turbopack' package.json 2>/dev/null \
+        || node -e "process.exit(require('./package.json').turbopack?0:1)" 2>/dev/null; then
+       uses_turbopack=true
+     fi
+   fi
+   ```
+   When `uses_turbopack=true`, skip path 1's symlink AND its `cp -al` alternative entirely and run `npm ci` (path 2) — the link strategies cannot satisfy Turbopack's root check, so attempting them first only burns a turn on a predictable failure (the same wasted-turn logic as the Auto Mode constraint above). Repro: session `do-work-20260601T004608Z` against `mattsears18/mattsears18.com` (Next 16 + Turbopack) — workers #169 / #140 / #170 each hit `Symlink points out of the filesystem root` on the symlink path and self-recovered to `npm ci`.
+
+2. **Fall back to `npm ci`.** Most correct, slowest (30–90s typical). Use when the symlink path doesn't exist (worktree was created somewhere unusual), when running under Auto Mode (see constraint above), when the repo uses Next 16 / Turbopack (see constraint above — the link strategies fail Turbopack's filesystem-root check), or when a previous attempt with the symlink hit native-module loader errors:
    ```bash
    npm ci --no-audit --no-fund --prefer-offline
    ```
