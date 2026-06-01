@@ -246,10 +246,20 @@ export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.
 # the one parked on this PR's head branch (the harness-leak case). If so,
 # restore-if-clean / warn-if-dirty per the A.0.6 guard — NEVER reap the
 # primary. Frees the per-branch lock so the fix-rebase worker can switch.
-PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
-case "$PRIMARY_CHECKOUT" in
-  */.claude/worktrees/orchestrator-*) PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/orchestrator-*}" ;;
-esac
+# Derive PRIMARY_CHECKOUT independent of cwd (issue #452) — the harness can
+# leak the orchestrator's cwd into a dispatched agent-* worktree, and a
+# cwd-strip that only handles orchestrator-* would mis-derive the primary
+# and mutate the wrong tree. `git worktree list --porcelain`'s first
+# `worktree ` entry is always the primary, whatever the cwd. Fall back to
+# the cwd-strip (now covering agent-* too) only if the porcelain read is empty.
+PRIMARY_CHECKOUT="$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10); exit}')"
+if [ -z "$PRIMARY_CHECKOUT" ]; then
+  PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
+  case "$PRIMARY_CHECKOUT" in
+    */.claude/worktrees/orchestrator-*) PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/orchestrator-*}" ;;
+    */.claude/worktrees/agent-*)        PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/agent-*}" ;;
+  esac
+fi
 PRIMARY_BRANCH=$(git -C "$PRIMARY_CHECKOUT" symbolic-ref --short -q HEAD 2>/dev/null || echo "<detached>")
 if [ "$PRIMARY_BRANCH" = "$head_ref" ]; then
   DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)

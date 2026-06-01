@@ -254,14 +254,27 @@ Closes [#387](https://github.com/mattsears18/shipyard/issues/387). The Claude Co
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
 
-# The primary checkout is the repo root that contains .claude/worktrees/ —
-# i.e. the parent of the orchestrator worktree. The orchestrator's cwd is
-# `<primary>/.claude/worktrees/orchestrator-<id>`, so the primary is three
-# levels up. Resolve it absolutely (don't `cd` there — read-only `git -C`).
-PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
-case "$PRIMARY_CHECKOUT" in
-  */.claude/worktrees/orchestrator-*) PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/orchestrator-*}" ;;
-esac
+# The primary checkout is the repo root that contains .claude/worktrees/.
+# Derive it INDEPENDENT of cwd (issue #452): `git rev-parse --show-toplevel`
+# returns whatever worktree the shell's cwd is in, and the harness can
+# silently relocate the orchestrator's cwd into a *dispatched agent's*
+# `agent-*` worktree on a reconcile turn (same class of harness env-leak as
+# #387/#322/#354, but hitting the orchestrator's own cwd). A cwd-derived
+# strip that only handles `orchestrator-*` then leaves PRIMARY_CHECKOUT
+# pointing at the agent worktree, and this guard mutates the wrong tree
+# while emitting a phantom restore line. `git worktree list --porcelain`'s
+# FIRST `worktree ` entry is ALWAYS the primary (the main working tree),
+# regardless of which linked worktree the cwd happens to be in — all linked
+# worktrees share one worktree list. Fall back to the cwd-strip only if the
+# porcelain read comes up empty (non-worktree layout). Read-only `git -C`.
+PRIMARY_CHECKOUT="$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10); exit}')"
+if [ -z "$PRIMARY_CHECKOUT" ]; then
+  PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
+  case "$PRIMARY_CHECKOUT" in
+    */.claude/worktrees/orchestrator-*) PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/orchestrator-*}" ;;
+    */.claude/worktrees/agent-*)        PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/agent-*}" ;;
+  esac
+fi
 
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
 PRIMARY_BRANCH=$(git -C "$PRIMARY_CHECKOUT" symbolic-ref --short -q HEAD 2>/dev/null || echo "<detached>")
@@ -290,6 +303,8 @@ fi
 **Read-only against the primary — the one sanctioned exception.** [`dont.md`](./dont.md) forbids *writes* to the primary checkout. A `git -C <primary> checkout <default>` is a write to the primary's HEAD — but it is the **corrective** write that undoes a harness-leaked write, restoring the primary to the read-only-from-shipyard's-perspective state the contract assumes. It fires only when the primary is already off the default branch (the contract is already violated) AND the tree is clean (the restore is provably lossless). The dirty path never writes — it warns and defers to the human. This is the narrow carve-out `dont.md` documents; do not generalize it into "shipyard may move the primary's HEAD."
 
 **Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race or a primary checkout that isn't where the path-derivation expects (e.g. a non-standard worktree layout) cannot abort the reconcile turn. If the path derivation produces something that isn't a git repo, the `git -C` reads return empty / error and the guard no-ops.
+
+**cwd-independent derivation (issue [#452](https://github.com/mattsears18/shipyard/issues/452)).** The harness can silently relocate the orchestrator's own Bash-tool cwd into a just-returned **agent's** `agent-*` isolation worktree on a reconcile turn (the same `isolation: "worktree"` env-leak class as [#387](https://github.com/mattsears18/shipyard/issues/387) / [#322](https://github.com/mattsears18/shipyard/issues/322) / [#354](https://github.com/mattsears18/shipyard/issues/354), but hitting the orchestrator's cwd rather than the primary's HEAD). The original derivation read `git rev-parse --show-toplevel` and stripped only an `orchestrator-*` suffix — so when cwd was in an `agent-*` worktree, the strip didn't match, `PRIMARY_CHECKOUT` was left pointing at the **agent** worktree, and the guard read that worktree's `do-work/issue-<N>` branch as the "primary branch," ran `checkout <default>` against the *agent* tree, and emitted a **phantom** `[primary-leak] restored primary …` line while never inspecting the real primary. The fix derives the primary from `git worktree list --porcelain`'s first `worktree ` entry — always the main working tree regardless of which linked worktree the cwd is in (all linked worktrees share one worktree list) — with the cwd-strip retained only as a fallback (now covering `agent-*` as well) for a layout where the porcelain read comes up empty.
 
 Once A.0.6 has run, proceed to A.1.
 
