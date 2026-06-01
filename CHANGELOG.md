@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.47 — 2026-06-01
+
+Restores green `main` after PR #472 (#466) merged ungated (admin direct-merge, no required checks) and its new regression suite failed CI — **the test's throwaway repo assumed `main` was the `git init` default branch, which holds on the worker's macOS but not on CI's Ubuntu git** (`init.defaultBranch` differs), so `git checkout main` failed with `pathspec 'main' did not match` and three downstream assertions cascaded. Reproduced deterministically by forcing `init.defaultBranch=master`; the one-line fix pins the branch at init. A live instance of the `merged-direct-ungated` hazard tracked by #465.
+
+- **`plugins/shipyard/scripts/tests/fix-rebase-version-coordination.test.sh`** — `git init -q` → `git init -q -b main` so the fixture's default branch is deterministic regardless of the host's `init.defaultBranch`. Verified green under both `master` and `main` defaults; full `*.test.sh` sweep passes; shellcheck clean.
+
 ### 1.8.46 — 2026-06-01
 
 Closes [#466](https://github.com/mattsears18/shipyard/issues/466) (P2, `fix`) — **teaches fix-rebase mode to deterministically resolve the version-coordinated `plugin.json`/CHANGELOG re-number conflict instead of bailing `blocked rebase` and forcing a manual rebase.** On a `version_coordination.enabled` repo, when a sibling PR merges first and advances the manifest version while this PR carries an earlier pre-allocated slot, the rebase conflicts on the manifest `.version` row + the top-of-file CHANGELOG entry. fix-rebase.md's trivial-or-bail policy classified the single-value `.version` collision as "both sides edited the same JSON key" → non-trivial → bail, and even the CHANGELOG "take both" rule would have left a bogus out-of-order entry — so a version-leapfrogged PR was a guaranteed `blocked rebase` even though the resolution is fully mechanical. Repro: session `do-work-20260601T013917Z-76896`, PR #462 (pre-allocated 1.8.38, main advanced to 1.8.41) — the orchestrator resolved it by hand to 1.8.42. The fix adds a narrow §4.6 carve-out: when coordination is enabled AND every conflicted hunk is on the manifest `.version` row + the CHANGELOG top-of-file insert, take main's version, bump to the next free patch, re-number this PR's CHANGELOG heading to that slot, and place it newest-first. Bails when the conflict touches source/spec content beyond those two rows, and pairs with the existing post-resolution conflict-marker assertion (#436).
