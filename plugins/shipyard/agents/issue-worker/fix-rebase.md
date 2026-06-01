@@ -68,16 +68,53 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
      - Append-only docs like `CLAUDE.md`, `README.md`, `E2E_TESTS.md`, `CONTRIBUTING.md` — both sides added new bullets/sections to the end (or to a non-overlapping section). Concat both, drop the conflict markers, no semantic merging required.
      - `ci.yml` shard matrix appends — both sides added an entry to an array literal. Concat the array entries, dedupe, no reordering.
      - Lockfiles (`package-lock.json` / `pnpm-lock.yaml` / `Cargo.lock` / `go.sum`) when the conflict is on dependency entries that both sides touched independently — **DO NOT manually resolve.** Instead re-run the package manager (`pnpm install` / `npm install` / `cargo update` / `go mod tidy`) inside the rebased worktree so the lockfile is regenerated against the rebased `package.json` / `Cargo.toml` / `go.mod`. If the regeneration succeeds and the result is committable, that counts as trivial; if the regeneration itself errors (incompatible peer deps, version pinning conflict, etc.) bail.
+     - **Version-coordinated manifest `.version` row + CHANGELOG top-of-file entry — see [§4.6 below](#46-version-coordinated-manifest--changelog-re-number-trivial-resolution-issue-466).** On a repo with `version_coordination.enabled`, the manifest version row (e.g. `plugin.json` `.version`) would otherwise read as a "both sides edited the same JSON key with different values" conflict — which the non-trivial rules below bail on. But when that row is *coordination-managed*, the resolution is **deterministic** (take main's version, bump to the next free patch, re-number this PR's CHANGELOG heading to that slot, place newest-first), not a semantic judgment about which side is correct. §4.6 carves this exact case out of the bail rule. The carve-out is **narrow**: it applies only when *every* conflicted hunk is on the manifest `.version` row or the CHANGELOG top-of-file insert — any conflict touching source/spec content beyond those two falls back to the bail rule below.
 
    - **Non-trivial conflicts — bail immediately:** anything where the merge requires semantic judgment about which side's change is correct or how they should compose. Examples:
      - Both sides modified the same function body / same imports block / same type definition.
      - One side renamed a file the other side modified.
-     - Both sides edited the same JSON config key with different values.
+     - Both sides edited the same JSON config key with different values — **except** the version-coordinated manifest `.version` row, which §4.6 resolves deterministically. The carve-out is solely for the coordination-managed version row; every other JSON-key collision (a feature flag, a config default, a dependency pin set by hand) is still non-trivial and bails.
      - Anything involving test fixtures or snapshots where you can't tell from the diff alone which output is right.
 
      For any non-trivial conflict, `git rebase --abort` to restore the branch to its pre-rebase state, then return `blocked rebase #<M>: <one-line conflict description, e.g. "merge conflict in src/auth.ts — both sides modified handleLogin">`. The orchestrator will leave the PR for human rebase and the drain will continue without it.
 
    The instinct to "just resolve it, the conflict looks small enough" is the failure mode this rule exists to prevent. If you have to read more than the conflict markers to figure out the right resolution, it's non-trivial. Bail.
+
+4.6. **Version-coordinated manifest + CHANGELOG re-number — trivial resolution (issue [#466](https://github.com/mattsears18/shipyard/issues/466)).** This is the one structured exception to step 4's "both sides edited the same JSON key ⇒ bail" rule. On a repo where `version_coordination.enabled`, every PR cuts a release by bumping a shared manifest `.version` row and prepending a `### <version>` CHANGELOG entry. When a sibling PR merges first and advances the manifest version (e.g. to `1.8.41`) while this PR still carries an earlier pre-allocated version (e.g. `1.8.38`), the rebase conflicts on **two deterministic rows**: the manifest `.version` line and the top-of-file CHANGELOG heading. The resolution is mechanical — take main's version, bump to the next free patch, re-number this PR's CHANGELOG heading to that slot, place it newest-first — and is exactly the resolution the orchestrator otherwise performs by hand. Bailing here forces a manual rebase over a pure version number; this carve-out resolves it in-dispatch instead.
+
+   **Eligibility gate — ALL must hold, else fall back to the step 4 bail rule:**
+
+   1. The repo opts into coordination: `version_coordination.enabled == "true"` AND `version_coordination.manifest_path` is non-empty. Read both from the merged config (re-derive `CLAUDE_PLUGIN_ROOT` first — variables don't survive across Bash tool calls):
+      ```bash
+      export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+      vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
+      vc_manifest=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
+      vc_version_jq=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")
+      vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
+      ```
+      When `vc_enabled != "true"` or `vc_manifest` is empty, this carve-out does not apply — bail per step 4.
+   2. **The conflicted file set is a subset of `{manifest_path, changelog_path}`.** List the conflicted paths with `git diff --name-only --diff-filter=U` and confirm every entry is either `vc_manifest` or (when non-empty) `vc_changelog`. If ANY conflicted file is outside that two-file set — a source file, a spec markdown, a test — the conflict touches content beyond the coordinated rows: `git rebase --abort` and bail with `blocked rebase #<M>: conflict extends beyond coordinated manifest+CHANGELOG rows — needs manual rebase`.
+      ```bash
+      conflicted=$(git diff --name-only --diff-filter=U)
+      for f in $conflicted; do
+        if [ "$f" != "$vc_manifest" ] && { [ -z "$vc_changelog" ] || [ "$f" != "$vc_changelog" ]; }; then
+          git rebase --abort 2>/dev/null || true
+          echo "blocked rebase #<M>: conflict extends beyond coordinated manifest+CHANGELOG rows ($f) — needs manual rebase"
+          exit 0
+        fi
+      done
+      ```
+   3. **Within `manifest_path`, the ONLY conflicted hunk is the version row.** A conflict on any other manifest key (a dependency, a permissions block, a description) is a real semantic conflict — abort and bail `blocked rebase #<M>: manifest conflict outside the .version row — needs manual rebase`. Inspect the conflict hunks (`git diff` on the file) and confirm the `<<<<<<<` / `=======` / `>>>>>>>` block brackets only the line carrying the version string the `vc_version_jq` expression selects.
+   4. **Within `changelog_path` (when coordinated), the ONLY conflict is the top-of-file entry insert** — both sides prepended a new `### <version>` heading block at the top of the same section. A conflict deeper in the file (both sides edited the *same* existing entry's prose) is non-trivial — abort and bail `blocked rebase #<M>: CHANGELOG conflict outside the top-of-file insert — needs manual rebase`.
+
+   **Resolution (only when all four gates hold):**
+
+   1. **Compute the next free version.** `main`'s manifest version is the floor (it's the `>>>>>>>`/`theirs` side of the manifest conflict — read it directly from the rebased-onto tree: `git show "origin/$DEFAULT_BRANCH:$vc_manifest" | jq -r "$vc_version_jq"`). The next free patch is that floor with its rightmost semver component incremented by 1. Use the **patch bump of main's version**, NOT this PR's stale pre-allocated version. (If a later sibling already claimed `floor+1` and this PR would collide again, the next rebase pass re-runs this resolution against the new floor — each pass advances to the next free slot.)
+   2. **Write the resolved manifest.** Set the `.version` row to the computed next-free version. Take main's side for every other key (there are none in conflict per gate 3, so a plain `git checkout --theirs "$vc_manifest"` followed by a single `jq`-set of the version row is the cleanest mechanical resolution — or hand-edit the one conflicted line to the computed value and delete the markers).
+   3. **Re-number + reorder the CHANGELOG entry (when coordinated).** This PR's CHANGELOG block keeps its prose but its `### <old-version> — <date>` heading is renumbered to `### <next-free-version> — <date>`, and the block is placed **newest-first**: above main's newly-merged top entry. The result must be strictly descending by version with no out-of-order or duplicate `###` headings. (A naïve CHANGELOG "take both" concat would leave this PR's stale lower-versioned entry *below* main's — that out-of-order entry is exactly the bug the issue calls out; re-number + hoist to the top fixes it.)
+   4. `git add "$vc_manifest"` (and `"$vc_changelog"` when coordinated), then `git rebase --continue`.
+
+   After resolving, fall through to step 5 (clean-tree check) and **step 5.5 (the [#436](https://github.com/mattsears18/shipyard/issues/436) conflict-marker assertion) — which is non-negotiable here**: the version-row + CHANGELOG hand-resolution is precisely the "take both, drop the markers" shape that can leave a stray `=======` / `>>>>>>>` line behind. Step 5.5's `git grep` for surviving markers is the safety net that turns a botched re-number into a clean `blocked rebase` instead of a poisoned force-push. Do not skip it.
 
 5. **Verify the working tree is clean after resolution.** Every conflict was either auto-resolvable or you bailed in step 4. If you got here with `git status` showing nothing staged/unstaged but the rebase didn't complete, something is off — bail with `blocked rebase #<M>: rebase ended in inconsistent state`.
 
