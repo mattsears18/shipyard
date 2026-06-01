@@ -71,8 +71,8 @@ Scanned the harvested JSON with `gitleaks detect --source . --no-git --redact` (
 
 | File | Rule | Triage |
 |---|---|---|
-| `issues.json` (issue [#408](https://github.com/mattsears18/shipyard/issues/408)) | `private-key` | The literal marker string `-----BEGIN RSA PRIVATE KEY-----` cited as a **pattern example** in an issue about the auto-report scrubber missing SSH/PEM keys. No key body follows the marker — it's documentation of what the scrubber should match. |
-| `issues.json` (issue [#402](https://github.com/mattsears18/shipyard/issues/402)) | `private-key` | Same — `-----BEGIN RSA PRIVATE KEY-----` cited in a table of token shapes the `report-plugin-error` scrubber should redact. No key material. |
+| `issues.json` (issue [#408](https://github.com/mattsears18/shipyard/issues/408)) | `private-key` | The literal PEM header marker (`BEGIN RSA PRIVATE KEY` between five-dash fences) cited as a **pattern example** in an issue about the auto-report scrubber missing SSH/PEM keys. No key body follows the marker — it's documentation of what the scrubber should match. |
+| `issues.json` (issue [#402](https://github.com/mattsears18/shipyard/issues/402)) | `private-key` | Same — the PEM header marker cited in a table of token shapes the `report-plugin-error` scrubber should redact. No key material. |
 
 Both are the security-feature issues describing *what the scrubber must catch*; the marker string with no following base64 block is exactly the kind of doc-text false positive expected. **No actual private key was ever committed or posted.**
 
@@ -117,13 +117,17 @@ Manual grep passes over full git history + harvested surfaces. Every shape-match
 
 | Match | Triage |
 |---|---|
-| `AKIAIOSFODNN7EXAMPLE` | AWS's published canonical *example* access key (literally contains `EXAMPLE`); already allowlisted in `.gitleaks.toml`. In scrubber-test fixtures / allowlist discussion. |
-| `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.…` | The textbook jwt.io sample token (`{"sub":"1234567890"}`), in a scrubber-test fixture payload. |
-| `AIzaSyA1234567890abcdefghijklmnopqrstuv` | Synthetic Google-API-key-shaped fixture (sequential alphabet body). |
-| `ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890` | Synthetic GitHub-PAT-shaped fixture (alphabet pattern). |
-| `github_pat_11ABCDEFG0…` | Synthetic fine-grained-PAT fixture. |
-| `glpat-EXAMPLEnotarealtoken` | Synthetic GitLab-PAT fixture (literally `notarealtoken`). |
-| `xoxb-EXAMPLE-NOT-A-REAL-TOKEN-*`, `xoxp-EXAMPLE-NOT-A-REAL-TOKEN-*` | Synthetic Slack-token fixtures (literally `EXAMPLE-NOT-A-REAL-TOKEN`). |
+> The token shapes below are written with a deliberate mid-string break (`‹…›`) or as a prefix-only description so that this report does **not** itself reproduce a detector-matching literal — otherwise the committed audit report trips the very `gitleaks` CI gate it documents (which is exactly what happened on the first push of this PR). Each value was a verbatim, contiguous string in the source fixture during the scan; the break here is presentational only.
+
+| Shape (presentational break inserted) | Triage |
+|---|---|
+| `AKIA‹…›EXAMPLE` (AWS example key) | AWS's published canonical *example* access key (literally ends in `EXAMPLE`); already allowlisted in `.gitleaks.toml`. In scrubber-test fixtures / allowlist discussion. |
+| three-segment `eyJ‹header›.eyJ‹payload›.‹sig›` JWT | The textbook jwt.io sample token (decodes to `{"sub":"1234567890"}`), in a scrubber-test fixture payload. |
+| `AIza‹…›` (Google API key prefix + 35-char body) | Synthetic Google-API-key-shaped fixture (sequential-alphabet body). |
+| `ghp_‹…›` (classic GitHub PAT prefix + 36-char body) | Synthetic GitHub-PAT-shaped fixture (alphabet pattern). |
+| `github_pat_‹…›` (fine-grained PAT prefix) | Synthetic fine-grained-PAT fixture. |
+| `glpat-‹…›` (GitLab PAT prefix, body literally `notarealtoken`) | Synthetic GitLab-PAT fixture. |
+| `xoxb-‹…›`, `xoxp-‹…›` (Slack token prefixes, body literally `EXAMPLE-NOT-A-REAL-TOKEN`) | Synthetic Slack-token fixtures. |
 
 Phone numbers: no real-looking matches (the patterns coincided only with version numbers and numeric fixtures).
 
