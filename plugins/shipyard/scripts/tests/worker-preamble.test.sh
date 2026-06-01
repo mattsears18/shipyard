@@ -254,6 +254,24 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md prescribes rebuilding the commit so the flagged blob never enters pushed history (issue #440)"
   assert_contains "$skill_path" "NOT the same scanner as \`.gitleaks.toml\`" \
     "SKILL.md distinguishes push-protection from the .gitleaks.toml committed-content scanner (issue #440)"
+
+  # Issue #459 — "Husky / core.hooksPath hooks silently skipped on a missing
+  # exec bit" section. The section exists because a fresh `git worktree add`
+  # checks out hook files with their committed mode and runs no npm `prepare`
+  # lifecycle script, so a repo whose .husky/pre-commit was committed 100644
+  # (or whose hooks are provisioned only via `husky install`) ends up with
+  # inert hooks — git silently skips a non-executable hook (advisory hint to
+  # stderr, exit 0), so lint-staged / prettier never run and no --no-verify
+  # was passed (mattsears18.com session do-work-20260601T004608Z, #170 worker).
+  # Removing the section regresses the detect-and-chmod-or-npm-ci contract.
+  assert_contains "$skill_path" "## Husky / \`core.hooksPath\` hooks silently skipped on a missing exec bit" \
+    "SKILL.md covers the non-executable-hook silent-skip (issue #459)"
+  assert_contains "$skill_path" "silently ignores a hook that isn't marked executable" \
+    "SKILL.md names the git silent-skip behavior for non-executable hooks (issue #459)"
+  assert_contains "$skill_path" "chmod +x" \
+    "SKILL.md prescribes chmod +x on the worktree hook files as remediation (issue #459)"
+  assert_contains "$skill_path" "Never reach for \`--no-verify\` as a \"workaround.\"" \
+    "SKILL.md forbids --no-verify as the fix for a silently-skipped hook (issue #459)"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
