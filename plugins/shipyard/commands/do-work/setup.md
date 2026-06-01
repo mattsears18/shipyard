@@ -689,7 +689,18 @@ viewer_admin=$(echo "$am_shape" | jq -r '.admin // empty')
 required_checks_count=$(gh api \
   "repos/<owner/repo>/branches/<default-branch>/protection/required_status_checks" \
   --jq '(.checks // []) | length' 2>/dev/null || echo 0)
-[ -z "$required_checks_count" ] && required_checks_count=0
+# Normalize to a numeric shape (#479). `gh api` does NOT apply `--jq` to error
+# responses: on a 404 ("Branch not protected" — exactly the zero-required-checks
+# shape this detector targets) it prints the raw error JSON to *stdout* and exits
+# non-zero, so `|| echo 0` *appends* `0` to that body instead of replacing it,
+# leaving e.g. `required_checks_count=[{"message":"Branch not protected",...}0]`.
+# That is not "0", so shape-2 below would never match — silently suppressing the
+# warning on precisely the repos it exists to warn about. Collapse any non-digit
+# value (404 body, empty) to `0`, which is the correct semantic: a 404 means the
+# branch has zero required checks.
+case "$required_checks_count" in
+  ''|*[!0-9]*) required_checks_count=0 ;;
+esac
 
 # Shape 1 (#438): allow_auto_merge disabled + admin.
 # Shape 2 (#465): admin + zero required checks — fires regardless of allow_auto_merge.
@@ -699,7 +710,7 @@ if { [ "$allow_auto_merge" = "false" ] && [ "$viewer_admin" = "true" ]; } \
 fi
 ```
 
-The warning fires unconditionally of `--concurrency` (the steady-state leapfrog is worst at C≥2, but a C=1 operator who later raises concurrency benefits from having seen it once). It's two REST reads folded into the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) alongside step 1's reads — fire them in the same burst, not serially. If either read fails (network, permission), the fallbacks (`|| echo '{}'` for the repo read, `|| echo 0` for the required-checks read) make the missing signals empty/zero and the worst case is an extra advisory warning on a transient required-checks read failure — no hard failure on a diagnostic read. Note the `required_checks_count=0` fallback means a *transient* failure of the required-checks read on an admin repo will surface the warning; that's the conservative direction (warn-on-doubt) for a diagnostic-only line.
+The warning fires unconditionally of `--concurrency` (the steady-state leapfrog is worst at C≥2, but a C=1 operator who later raises concurrency benefits from having seen it once). It's two REST reads folded into the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch) alongside step 1's reads — fire them in the same burst, not serially. If either read fails (network, permission), the fallbacks (`|| echo '{}'` for the repo read, `|| echo 0` for the required-checks read) plus the `case` numeric-shape normalize on `required_checks_count` make the missing signals empty/zero, and the worst case is an extra advisory warning on a transient required-checks read failure — no hard failure on a diagnostic read. The normalize is load-bearing (#479): `gh api` does not apply `--jq` to error responses, so on a 404 (`Branch not protected` — the zero-required-checks shape this detector targets) it writes the raw error body to *stdout* and `|| echo 0` *appends* `0` rather than replacing the body; without the `case` collapse the resulting non-numeric string never equals `"0"` and shape-2 stays silently suppressed on exactly the repos it warns about. With the normalize in place, a 404 or any transient failure of the required-checks read on an admin repo collapses to `0` and surfaces the warning; that's the conservative direction (warn-on-doubt) for a diagnostic-only line.
 
 ### 1.5 Initialise the session state file
 
