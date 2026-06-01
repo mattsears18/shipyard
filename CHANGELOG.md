@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.48 — 2026-06-01
+
+Broadens the step 1.3 silent-direct-merge detector (#465) so it catches the **admin + zero-required-status-checks** repo shape, not just the original #438 `allow_auto_merge: false` + admin case. The real trigger for an ungated immediate admin direct-merge is "admin AND the default branch has no required checks for `--auto` to wait on" — which fires *even when `allow_auto_merge` is `true`*. The prior gate stayed silent on exactly that shape (this repo: `allow_auto_merge=true`, dispatcher admin, no required checks), so a session direct-merged issue PRs out of version order, leapfrogging a pre-allocated version and forcing a manual rebase. The detector now reads `repos/<owner/repo>/branches/<default>/protection/required_status_checks` and warns (recommending `--concurrency 1` or adding a required check) when admin + zero required checks holds, independent of `allow_auto_merge`. Warning-only — no behavior change to merge config.
+
+- **`plugins/shipyard/commands/do-work/setup.md`** — step 1.3 heading + prose document both triggering shapes; the embedded shell reads `required_status_checks` count and ORs the new `admin + 0 required checks` condition into the existing gate, with an `|| echo 0` fallback (warn-on-doubt) for a transient read failure. Warning text broadened to name both #438 and #465.
+- **`plugins/shipyard/scripts/tests/do-work-split.test.sh`** — three new assertions pin the broadened detector (reads `required_status_checks`, gates on `required_checks_count`, cites `issues/465`). Full `*.test.sh` sweep passes; shellcheck clean.
+
 ### 1.8.47 — 2026-06-01
 
 Restores green `main` after PR #472 (#466) merged ungated (admin direct-merge, no required checks) and its new regression suite failed CI — **the test's throwaway repo assumed `main` was the `git init` default branch, which holds on the worker's macOS but not on CI's Ubuntu git** (`init.defaultBranch` differs), so `git checkout main` failed with `pathspec 'main' did not match` and three downstream assertions cascaded. Reproduced deterministically by forcing `init.defaultBranch=master`; the one-line fix pins the branch at init. A live instance of the `merged-direct-ungated` hazard tracked by #465.
