@@ -257,6 +257,49 @@ The check is a one-liner; the remediation is the substantive part.
 
 **Why this lives in the preamble and not per-mode.** Every dispatched worker (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch) eventually runs `git push` against the target repo. The silent-test-skip failure mode is identical across modes. One check in the shared preamble beats five copy-pasted recipes in the per-mode files.
 
+## Husky / `core.hooksPath` hooks silently skipped on a missing exec bit
+
+A third silent-quality-gate-bypass, adjacent to the two above but with a different root cause ([#459](https://github.com/mattsears18/shipyard/issues/459)). Here `node_modules` is present and the test config is fine — but the repo's **pre-commit hook itself never runs**, because the hook file in your fresh agent worktree lacks the executable bit. The commit lands with lint-staged / prettier / eslint never having fired, and you didn't pass `--no-verify` — git skipped the hook on its own.
+
+**Mechanism.** Husky (and any repo that sets `core.hooksPath` to a committed hooks dir) relies on the hook file being mode `100755`. Git **silently ignores a hook that isn't marked executable** — it prints a one-line `hint:` to stderr (`hint: The '.husky/pre-commit' hook was ignored because it's not set as executable.`) and then **exits 0, committing anyway**. The hint is advisory; the commit is not blocked. Two ways a fresh worktree ends up with non-executable hooks:
+
+- **The hook was committed without the exec bit.** `git worktree add` checks out each file with the mode recorded in the index. If the repo committed `.husky/pre-commit` as `100644` (a common mistake — easy to do on Windows or after a `chmod`-losing copy), every checkout, worktree or not, gets a non-executable hook. The primary checkout often masks this because the developer ran `husky install` once, which can re-set the bit out-of-band.
+- **The repo provisions hooks via a `prepare` / `postinstall` script that never ran in the worktree.** Husky v9's `prepare: "husky"` script (run by `npm install`) is what wires `core.hooksPath` and sets perms. A bare `git worktree add` runs no npm lifecycle script, so if the repo depends on `prepare` to make hooks live, the worktree's hooks are inert. (This overlaps the dependency-bootstrap gap above — if you `npm ci` to bootstrap deps, its `prepare` script usually fixes the hooks as a side effect; the failure mode here is specifically the path where deps were symlinked, not `npm ci`'d, so `prepare` never ran.)
+
+Confirmed repro (issue #459): `mattsears18.com` session `do-work-20260601T004608Z`, the #170 issue-work worker — git silently skipped the non-executable `.husky/pre-commit`, so lint-staged / formatting gates never ran on the commit. A local sanity check shows the behavior cleanly: a `.husky/pre-commit` that `exit 1`s blocks the commit when mode `755`, but is skipped (commit exits 0, only a `hint:` to stderr) when mode `644`.
+
+**The check.** Before your first commit, if the repo wires a committed hooks dir (`.husky/` present, or `git config core.hooksPath` resolves inside the worktree), confirm the hooks that exist are executable. Cheap one-liner:
+
+```bash
+# Resolve the hooks dir: explicit core.hooksPath wins, else .husky/ is the husky default.
+HOOKS_DIR="$(git config --get core.hooksPath || true)"
+[ -z "$HOOKS_DIR" ] && [ -d .husky ] && HOOKS_DIR=.husky
+if [ -n "$HOOKS_DIR" ] && [ -d "$HOOKS_DIR" ]; then
+  # Any extensionless regular hook file present-but-not-executable is the silent-skip risk.
+  NON_EXEC=$(find "$HOOKS_DIR" -maxdepth 1 -type f ! -perm -u+x ! -name '*.*' 2>/dev/null)
+  if [ -n "$NON_EXEC" ]; then
+    echo "worker-preamble: hooks present but not executable — git will silently skip them:" >&2
+    echo "$NON_EXEC" >&2
+  fi
+fi
+```
+
+The `! -name '*.*'` filter skips husky's own helper files (`_/husky.sh`, `.gitignore`) — hook entrypoints are extensionless (`pre-commit`, `commit-msg`, `pre-push`).
+
+**Remediation, in order:**
+
+1. **`chmod +x` the hook files in the worktree.** Restores the exec bit locally so git runs the hooks for *your* commits. This does NOT change the committed mode (so it's not a stray diff) — it only fixes the working-tree perms for this worktree's lifetime, which is exactly the scope of the problem:
+   ```bash
+   chmod +x "$HOOKS_DIR"/* 2>/dev/null || true
+   ```
+   If the underlying cause is the committed mode being `100644` (not just a worktree-checkout artifact), that's a real repo bug worth fixing in the issue you're working — but only if it's in scope. Don't fold a `git update-index --chmod=+x` mode-fix into an unrelated PR; file a follow-up issue instead.
+
+2. **Or `npm ci` to let the `prepare` script re-provision hooks.** If the repo wires hooks through husky's `prepare` script and you haven't bootstrapped deps yet, `npm ci` runs `prepare` as a lifecycle step, which re-sets `core.hooksPath` and the exec bits. Prefer this when you're already going to `npm ci` for the dependency-bootstrap check above — one command fixes both gaps.
+
+3. **Never reach for `--no-verify` as a "workaround."** This is the inverse of the `--no-verify` prohibition: the hook *should* run and you must make it run, not skip it because it's inconvenient that it isn't running. A silently-skipped hook is a latent quality-gate bypass; the fix is to make the gate fire, never to formalize the bypass.
+
+**When NOT to worry about this.** Repos with no `.husky/` and no `core.hooksPath` (the hooks live in the default `.git/hooks`, which `git worktree add` shares from the common dir and which carry their committed mode) — there's nothing to fix. Documentation-only diffs that wouldn't trip a lint-staged gate anyway. And the shipyard repo itself has no husky setup, so a worker dispatched against `mattsears18/shipyard` skips this check — it's the *target-repo* hooks (lightwork, mattsears18.com, etc.) that this guards.
+
 ## Test-runner silent-pass when the target repo ignores worktree paths
 
 A second silent-pass failure mode, distinct from the missing-`node_modules` case above ([#369](https://github.com/mattsears18/shipyard/issues/369)). Here `node_modules` is fully present and the binaries resolve fine — but the target repo's test config **ignores the worker's own worktree path**, so the runner silently skips every test the worker just wrote.
