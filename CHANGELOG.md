@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.41 — 2026-06-01
+
+Closes [#457](https://github.com/mattsears18/shipyard/issues/457) (P2, `bug`) — **splits the `merged-direct` auto-merge outcome into `merged-direct` (CI green at merge) vs `merged-direct-ungated` (PR landed before CI completed), and makes the ungated case force an unconditional main-CI refresh so a post-merge red is caught.** On a repo where the dispatching user is an admin AND no *required* status checks are configured, the issue-work step-6 `gh pr merge --auto` silently falls through to an immediate admin direct-merge — landing the PR while its `build` check is still `IN_PROGRESS`. The "auto-merge waits for green" guarantee does not hold in that configuration: if the post-merge build then fails on the default branch, `main` goes red with no PR-level gate having caught it. Repro: session `do-work-20260601T004608Z` against `mattsears18/mattsears18.com` landed all 25 issue-work PRs (#182–#210) as `merged-direct` with `checks: pending`. The fix surfaces the precondition (admin + no required checks ⇒ ungated immediate merge) explicitly, refines the worker's return suffix off the check rollup, and exempts the `merged-direct-ungated` case from the step-D adaptive-skip carve-out so the main-CI divert reliably watches the merge commit.
+
+- **`plugins/shipyard/skills/worker-preamble/SKILL.md`** — step 1.5 auto-merge categorization gains the `merged-direct` ⇒ `merged-direct-ungated` refinement keyed on the step-2 check rollup, plus the admin/no-required-checks precondition; step-2 note corrected (a direct-merge is not green "by definition").
+- **`plugins/shipyard/agents/issue-worker/issue-work.md`** — step 7 refines the suffix off the rollup; step 8 adds the `auto-merge: merged-direct-ungated` return shape.
+- **`plugins/shipyard/commands/do-work/steady-state.md`** — step-D refresh trigger 1 fires unconditionally for the `merged-direct-ungated` sub-case (exempt from the rule-4 adaptive-skip carve-out).
+- **`plugins/shipyard/commands/do-work/inline-trivial.md`** — inline path mirrors the refinement.
+- **`plugins/shipyard/scripts/tests/do-work-split.test.sh`** — 7-assertion regression block pinning the new outcome + precondition language (164 tests green, shellcheck clean).
+
 ### 1.8.40 — 2026-06-01
 
 Closes [#459](https://github.com/mattsears18/shipyard/issues/459) (P2) — **closes a third silent-quality-gate-bypass in fresh agent worktrees: husky / `core.hooksPath` pre-commit hooks that git silently skips because the hook file lacks the executable bit.** A `git worktree add` checks out hook files with their committed mode and runs no npm `prepare` lifecycle script, so a repo whose `.husky/pre-commit` was committed `100644` (or whose hooks are provisioned only via `husky install`) ends up with inert hooks in the worker's worktree — git prints an advisory `hint:` to stderr and commits anyway (exit 0), so lint-staged / prettier / eslint never run and no `--no-verify` was passed. Repro: `mattsears18.com` session `do-work-20260601T004608Z`, the #170 issue-work worker. The fix adds a worker-preamble section with a detect-and-`chmod`-or-`npm ci` remediation, sitting alongside the existing missing-`node_modules` and worktree-path-ignore silent-pass sections.

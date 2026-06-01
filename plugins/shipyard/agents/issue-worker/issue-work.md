@@ -284,10 +284,10 @@ gh pr view <pr-num> --repo <owner/repo> --json state,autoMergeRequest \
   --jq '{state, autoMerge: (.autoMergeRequest != null)}'
 ```
 
-Categorize into one of three `auto-merge:` values for the return-string suffix:
+Categorize into one of three *base* `auto-merge:` values for the return-string suffix:
 
 - `.autoMerge == true` → **`auto-merge: enabled`** (queued; auto-merge armed and waiting on checks).
-- `.state == "MERGED"` → **`auto-merge: merged-direct`** (gh silently direct-merged because `allow_auto_merge: false` at the repo level but the dispatching user has admin permissions; PR is already landed).
+- `.state == "MERGED"` → **`auto-merge: merged-direct`** (gh silently direct-merged because `allow_auto_merge: false` at the repo level but the dispatching user has admin permissions; PR is already landed). **This base value is refined to `merged-direct-ungated` after the check-rollup snapshot below** — see the refinement note.
 - Otherwise (`.state == "OPEN"` AND `.autoMerge == false`) → **`auto-merge: unavailable — needs manual merge`** (the merge call genuinely failed and no merge happened).
 
 When `originating_author_trust == "external"` and step 6 took the external branch (no `gh pr merge --auto` was called), skip this snapshot — the return-string suffix is fixed at `auto-merge: gated — external-author origin, needs-human-review label applied` per [step 8](#8-return).
@@ -309,7 +309,12 @@ Categorize the latest-per-name `checks`:
 - Any `conclusion in {FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED}` on the latest run for a check → `checks: failing` (rare — usually CI hasn't run yet). Orchestrator triage will catch this on the next iteration.
 - Otherwise (`QUEUED` / `IN_PROGRESS` / `PENDING`) → `checks: pending`. Normal case right after push.
 
-For `merged-direct` PRs the rollup snapshot reflects the post-merge head SHA's checks (typically all green by definition — the merge wouldn't have landed otherwise). Expect `checks: green` in the normal case.
+**Refine `merged-direct` → `merged-direct-ungated` using this rollup (issue [#457](https://github.com/mattsears18/shipyard/issues/457)).** When the base auto-merge value from above is `merged-direct`, the merge already landed — but whether CI *gated* that merge depends on the repo's required-status-checks config. On a repo with required checks, gh blocks the admin direct-merge until they pass, so the rollup snapshot is `checks: green`. On a repo with **no required checks**, the direct-merge fires immediately and the rollup is commonly `checks: pending` (CI still in flight) — the PR landed ungated. Apply:
+
+- base `merged-direct` AND `checks: green` → keep **`auto-merge: merged-direct`** (CI completed green before/at merge; effectively gated). Informational.
+- base `merged-direct` AND `checks: pending` or `checks: failing` → emit **`auto-merge: merged-direct-ungated`** (PR landed before CI completed; nothing gated it — the merge commit is on the default branch and may yet flip `main` red). This is a loud advisory the orchestrator's reconcile uses to refresh its main-CI watch so a post-merge red is caught by a `fix-main-ci` divert.
+
+This refinement is the precondition the issue asks to surface: **admin + no required checks ⇒ ungated immediate merge.** The `enabled` and `unavailable` base values are never refined — they don't direct-merge, so there's no ungated-landing to flag.
 
 Then return.
 
@@ -319,9 +324,13 @@ When auto-merge is engaged and you've snapshotted check state → done. Return o
 
 > `shipped #<N> via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
 
-When the post-call snapshot showed the PR is already MERGED (gh silently direct-merged because the repo has `allow_auto_merge: false` but the dispatching user has admin permissions — issue [#340](https://github.com/mattsears18/shipyard/issues/340)) → return:
+When the post-call snapshot showed the PR is already MERGED **and the check rollup was `green`** (gh silently direct-merged because the repo has `allow_auto_merge: false` but the dispatching user has admin permissions, and CI had completed green at merge time — issue [#340](https://github.com/mattsears18/shipyard/issues/340)) → return:
 
-> `shipped #<N> via PR #<M> (auto-merge: merged-direct, checks: <green|pending|failing>)`
+> `shipped #<N> via PR #<M> (auto-merge: merged-direct, checks: green)`
+
+When the post-call snapshot showed the PR is already MERGED **but the check rollup was `pending` or `failing`** (gh admin-direct-merged on a repo with no required status checks, so the PR landed before CI completed — issue [#457](https://github.com/mattsears18/shipyard/issues/457)) → return:
+
+> `shipped #<N> via PR #<M> (auto-merge: merged-direct-ungated, checks: <pending|failing>)`
 
 When the post-call snapshot showed the PR is still OPEN and `autoMergeRequest` is null (the merge call genuinely failed) → return:
 
