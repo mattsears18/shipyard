@@ -1134,6 +1134,52 @@ assert_contains "$issue_work_path460" \
   'composes with' \
   "issue-work.md step 4 documents how the release rule composes with the next_available_version coordination contract (#460)"
 
+# (27) merged-direct → merged-direct-ungated refinement (issue #457).
+#
+# On a repo where the dispatching user has admin AND no required status
+# checks are configured, the issue-work step-6 `gh pr merge --auto` silently
+# falls through to an immediate admin direct-merge — landing the PR while
+# its CI is still IN_PROGRESS. The "auto-merge waits for green" guarantee
+# does not hold, and a post-merge build failure reddens main with no
+# PR-level gate having caught it. The fix splits the existing `merged-direct`
+# outcome (#340) by the check-rollup snapshot: a direct-merge that landed
+# green stays `merged-direct`; a direct-merge that landed while checks were
+# pending/failing becomes `merged-direct-ungated`, which the orchestrator
+# treats as an unconditional main-CI refresh trigger so a fix-main-ci divert
+# catches the fallout.
+#   - worker-preamble step 1.5 documents the split + the admin/no-required-
+#     checks precondition.
+#   - issue-work.md step 7 refines the suffix off the rollup; step 8 adds
+#     the `auto-merge: merged-direct-ungated` return shape.
+#   - inline-trivial.md mirrors the refinement on the inline path.
+#   - steady-state.md step D trigger 1 fires unconditionally for the
+#     merged-direct-ungated sub-case (exempt from the adaptive-skip carve-out).
+worker_preamble_path457="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+issue_work_path457="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+inline_trivial_path457="$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
+
+assert_contains "$worker_preamble_path457" \
+  'merged-direct-ungated' \
+  "worker-preamble names the merged-direct-ungated refinement (#457)"
+assert_contains "$worker_preamble_path457" \
+  'no required status checks' \
+  "worker-preamble documents the admin + no-required-checks precondition (#457)"
+assert_contains "$worker_preamble_path457" \
+  'issues/457' \
+  "worker-preamble cites issue #457 as the source of the ungated-merge refinement"
+assert_contains "$issue_work_path457" \
+  'merged-direct-ungated' \
+  "issue-work.md step 8 includes the auto-merge: merged-direct-ungated return suffix (#457)"
+assert_contains "$issue_work_path457" \
+  'issues/457' \
+  "issue-work.md cites issue #457 for the ungated-merge refinement"
+assert_contains "$inline_trivial_path457" \
+  'merged-direct-ungated' \
+  "inline-trivial.md mirrors the merged-direct-ungated refinement on the inline path (#457)"
+assert_contains "$steady_state_path" \
+  'merged-direct-ungated' \
+  "steady-state.md step D fires an unconditional refresh for merged-direct-ungated (#457)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
