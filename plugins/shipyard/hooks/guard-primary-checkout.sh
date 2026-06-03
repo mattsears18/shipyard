@@ -89,8 +89,10 @@ case "$tool_name" in
 esac
 
 # Resolve the working directory the tool call runs in.
+# Fail-open (exit 0) when cwd is absent from the hook payload — we can't
+# determine whether we're in the primary checkout, so allow per the
+# fail-open contract (issue #482: "fail-open on any uncertainty").
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
-[[ -z "$cwd" ]] && cwd="${PWD:-}"
 [[ -z "$cwd" ]] && exit 0
 [[ -d "$cwd" ]] || exit 0
 
