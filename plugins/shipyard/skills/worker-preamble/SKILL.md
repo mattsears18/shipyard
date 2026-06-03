@@ -27,7 +27,7 @@ gh pr create --repo <owner/repo> --label shipyard ...
 
 The `shipyard` label is the orchestrator's session stamp on every PR it produces. Hooks, the orphan-triage sweep, the failing-PR scan, and the end-of-session summary all key off it; omitting it makes the PR invisible to the orchestrator's own state machine. Add other mode-specific labels (e.g. `needs-human-review` for external-trust PRs) **alongside** `shipyard`, never as a replacement.
 
-For issue-work mode the PR body MUST include `Closes #<N>` (case-insensitive, on its own line) so the issue auto-closes on merge. For synthetic diverts (fix-main-ci, fix-failing-prs-batch) there is no issue to close — omit the `Closes` line.
+For issue-work mode the PR body MUST include a **closing keyword** — `Closes #<N>` (or `Fixes`/`Resolves #<N>`), case-insensitive, on its own line — so the issue auto-closes on merge. A **bare reference** (`Refs #<N>`, `Related to #<N>`, plain `#<N>`) does NOT register a closing link and leaves the issue OPEN forever after merge; the bare forms are reserved for *additional, non-resolving* issue mentions only. Repo-local "don't auto-close" conventions govern incidental references — they do NOT exempt the dispatched issue's resolving PR, which is the intended-close case (see `agents/issue-worker/issue-work.md` § "5. Commit + push + PR" and § "5.8 Post-PR-create closing-link verification" — issue [#481](https://github.com/mattsears18/shipyard/issues/481)). For synthetic diverts (fix-main-ci, fix-failing-prs-batch) there is no issue to close — omit the `Closes` line.
 
 ## Auto-merge + snapshot-and-return pattern
 

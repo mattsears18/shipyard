@@ -179,6 +179,10 @@ EOF
 
 The body **must** include `Closes #<N>` (case-insensitive, on its own line) so the issue auto-closes on merge. The `--label shipyard` is required by the worker-preamble skill — see that skill for the rationale.
 
+**Use a closing keyword for the dispatched issue — never a bare reference ([#481](https://github.com/mattsears18/shipyard/issues/481)).** The resolving PR for your dispatched issue `#<N>` **is** the issue's resolution, so its body MUST reference `#<N>` with one of GitHub's [closing keywords](https://docs.github.com/en/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue) — `Closes #<N>`, `Fixes #<N>`, or `Resolves #<N>`. A **bare reference** — `Refs #<N>`, `Related to #<N>`, or a plain `#<N>` — does NOT register a closing link: GitHub leaves the issue OPEN forever after the PR merges, the work ships, the issue silently lingers, and `/do-work` can re-pick an already-resolved issue (polluting the "zero matching issues remain" termination signal). The bare-reference forms are reserved exclusively for *additional, non-resolving* issue mentions in the same body (e.g. "also touches #<other>" where `#<other>` is NOT being resolved by this PR).
+
+**Repo-local "don't auto-close" conventions are exempt for the resolving PR.** Some target repos carry a `CLAUDE.md` rule like *"Never write GitHub's auto-close keywords + `#N` unless you mean to close issue N on merge; for reference-without-closing use `Refs #N` / `Related to #N` / bare `#N`."* That rule governs **incidental** references — it does NOT mean "never use closing keywords." When the PR you are opening **is** the dispatched issue's resolution, you DO mean to close `#<N>` on merge, so the closing keyword is the correct and required form and the repo-local caution does not apply to it. Do NOT over-apply the caution by downgrading the dispatched issue's `Closes #<N>` to a bare `Refs #<N>` — that's the exact conflation that left a resolving PR's issue stuck OPEN (the #481 repro: `lightwork#1581` merged with `Refs #1580`, leaving #1580 OPEN). Apply the repo-local bare-reference convention only to *other* issues mentioned alongside the dispatched one.
+
 ### 5.5 Record decision context (when applicable)
 
 Before enabling auto-merge, leave a **comment trail for non-trivial decisions** the next maintainer (human or AI) couldn't recover from the diff alone. Git history captures *what* changed; comments capture *why this approach over the rejected ones*. The point isn't to narrate every step — most PRs need no decision comment at all — it's to write down reasoning that would otherwise be permanently lost when this session ends.
@@ -243,6 +247,50 @@ fi
 When this check trips, the auto-merge call is skipped entirely — the PR sits OPEN with `needs-human-review` so a maintainer can audit it (close as no-op, or land manually if the empty diff was actually intentional). Do NOT proceed to step 6.
 
 This check runs unconditionally regardless of `originating_author_trust`. A trusted-author 0-file PR is exactly the failure mode #356 documents (the lightwork repro was a trusted maintainer's session); the trust signal gates auto-merge for *valid* PRs, not for empty ones.
+
+### 5.8 Post-PR-create closing-link verification
+
+Closes [#481](https://github.com/mattsears18/shipyard/issues/481) — the **stuck-open** failure mode. A worker can write `Closes #<N>` into the PR body in [step 5](#5-commit--push--pr) and still end up with a PR that does NOT register a closing link — most commonly because the worker over-applied a repo-local "don't auto-close" convention and downgraded the keyword to a bare `Refs #<N>` (the #481 repro: `lightwork#1581` merged with `Refs #1580`, leaving #1580 OPEN forever). A bare reference renders an issue mention without linking it as a closing reference, so the issue silently lingers OPEN after the PR merges. Step 5 mandates the keyword; this step is the enforcement that the keyword actually took effect on GitHub's side.
+
+**After `gh pr create` and before arming auto-merge in [step 6](#6-enable-auto-merge-gated-on-originating_author_trust)**, assert that GitHub registered `#<N>` as a closing reference for the PR. `closingIssuesReferences` is GitHub's canonical "this PR auto-closes that issue" signal — the same projection [step 0](#0-pre-flight-confirm-the-issue-is-still-workable) uses to detect duplicate PRs. If `#<N>` is absent, patch the PR body to prepend a `Closes #<N>` line, then re-verify:
+
+```bash
+# Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch".
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
+  exit 0
+fi
+
+# Does the PR register #<N> as a closing reference?
+CLOSES=$(gh pr view <pr-num> --repo <owner/repo> --json closingIssuesReferences \
+  --jq "[.closingIssuesReferences[]?.number] | index(<N>) != null")
+
+if [ "$CLOSES" != "true" ]; then
+  # The body didn't register a closing link (bare reference, typo'd keyword,
+  # or it was dropped). Patch the body to prepend a closing keyword.
+  CURRENT_BODY=$(gh pr view <pr-num> --repo <owner/repo> --json body --jq '.body')
+  gh pr edit <pr-num> --repo <owner/repo> --body "Closes #<N>
+
+${CURRENT_BODY}"
+
+  # Re-verify after the patch — GitHub re-parses the body on edit.
+  CLOSES=$(gh pr view <pr-num> --repo <owner/repo> --json closingIssuesReferences \
+    --jq "[.closingIssuesReferences[]?.number] | index(<N>) != null")
+  if [ "$CLOSES" != "true" ]; then
+    echo "blocked #<N> at closing-link-verify: PR body patched with Closes #<N> but GitHub still does not register the closing link — manual triage required (PR: <url>)"
+    gh pr edit <pr-num> --repo <owner/repo> --add-label needs-human-review || true
+    exit 0
+  fi
+fi
+```
+
+**Why prepend rather than rewrite.** Prepending a fresh `Closes #<N>` line is idempotent and non-destructive — it preserves the existing body (summary, test plan, decision comments) while guaranteeing the closing directive is present on its own line. If the body already had a (somehow-non-registering) closing line, the duplicate is harmless: GitHub de-dupes closing references by issue number.
+
+**Why bail when the re-verify still fails.** If GitHub refuses to register the link even after the body carries an explicit `Closes #<N>` on its own line, something unusual is going on (cross-repo reference, the issue was transferred, a permissions edge case). Don't arm auto-merge on a PR that won't close its issue — that's the exact end-to-end-guarantee break this step exists to catch. Surface it with `needs-human-review` and a `blocked:` return so a maintainer can investigate, rather than silently shipping a PR that leaves the issue stuck OPEN.
+
+This check runs **before** the [§5.7 phantom-merge guard's](#57-post-pr-create-diff-sanity-check-defense-in-depth) auto-merge decision interleaves — order them so the empty-diff guard (§5.7) and the closing-link guard (§5.8) both pass before step 6 arms auto-merge. Both run unconditionally regardless of `originating_author_trust`.
 
 ### 6. Enable auto-merge (gated on `originating_author_trust`)
 
@@ -364,3 +412,4 @@ When blocked → return:
 - Don't edit `.github/workflows/` or branch protection to make a check pass.
 - **Don't switch modes mid-dispatch.** If your PR opens and CI immediately goes red, return per this mode's contract (`shipped #<N> via PR #<M> (... checks: failing)`) — the orchestrator's reconcile + dispatch loop will spawn a fresh fix-checks-only worker against the PR. Switching modes inside one dispatch breaks the per-mode-file load model the entry router relies on.
 - **Don't open an empty PR.** The phantom-merge guard in [§4.5](#45-pre-pr-create-diff-sanity-check) bails when the local diff is empty; [§5.7](#57-post-pr-create-diff-sanity-check-defense-in-depth) catches the race-window edge case. If either fires, return `blocked:` rather than letting an empty PR's `Closes #N` keyword close the linked issue (see issue [#356](https://github.com/mattsears18/shipyard/issues/356) for the failure mode).
+- **Don't use a bare reference (`Refs #N` / `Related to #N` / plain `#N`) for the dispatched issue.** The resolving PR MUST use a closing keyword (`Closes`/`Fixes`/`Resolves #N`), or GitHub leaves the issue OPEN forever after merge — the work ships, the issue lingers, and `/do-work` can re-pick it (see [§5](#5-commit--push--pr) and the [§5.8](#58-post-pr-create-closing-link-verification) verification step). Repo-local "don't auto-close" conventions apply only to *incidental* references, never to the dispatched issue's resolving PR — don't over-apply the caution (issue [#481](https://github.com/mattsears18/shipyard/issues/481)).
