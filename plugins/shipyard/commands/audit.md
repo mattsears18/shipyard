@@ -126,7 +126,7 @@ Reports are **styled HTML, not markdown** — markdown is fine for grep / versio
 
    Do NOT `git add` it. The directory is meant to stay local — the host repo decides whether to track `.shipyard/` via its own `.gitignore`.
 
-2. **Ensure the shared stylesheet exists at `.shipyard/styles.css`.** Every report links to this single file via a relative `../styles.css` href, so all reports under `.shipyard/audits/` and `.shipyard/do-work/` share one CSS source. The CSS is per-host-repo — it sits in the host repo's `.shipyard/`, NOT bundled in the plugin — so the plugin's job is to *write* the file the first time any report-writing command runs against the host repo and never again. Each report-writing command (this one, `/shipyard:do-work`, any future report writer) runs the same idempotent check:
+2. **Ensure the shared stylesheet exists at `.shipyard/styles.css`.** Every audit report links to this single file via a relative `../styles.css` href, so all reports under `.shipyard/audits/` share one CSS source. The CSS is per-host-repo — it sits in the host repo's `.shipyard/`, NOT bundled in the plugin — so the plugin's job is to *write* the file the first time `/shipyard:audit` runs against the host repo and never again. (`/shipyard:do-work` writes its reports to `~/.shipyard/do-work-reports/` instead — outside any git checkout, since its orchestrator worktree is reaped and the primary checkout is read-only / hook-guarded for the session — with its own copy of this stylesheet at `~/.shipyard/do-work-reports/styles.css`; see [#488](https://github.com/mattsears18/shipyard/issues/488).) The audit writer runs the same idempotent check:
 
    ```bash
    if [ ! -f .shipyard/styles.css ]; then

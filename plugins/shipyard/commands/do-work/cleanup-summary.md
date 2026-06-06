@@ -4,7 +4,7 @@ The session's wind-down trio. Runs after [drain](./drain.md) exits:
 
 1. **End-of-session cleanup** — reap agent worktrees, prune branches, flush the cost ledger, retire the session-state file. Last step retires the orchestrator's own worktree.
 2. **End-of-session summary** — bucket breakdown + flat session-result lines, printed to chat.
-3. **Write the consolidated report to disk** — same content, styled HTML, saved under `.shipyard/do-work/`.
+3. **Write the consolidated report to disk** — same content, styled HTML, saved under `~/.shipyard/do-work-reports/<owner>-<repo>/`.
 
 The thin entry [`commands/do-work.md`](../do-work.md) owns the [orchestrator-state struct list](../do-work.md#orchestrator-state) and the [session state file schema](../do-work.md#session-state-file); this file owns the actual cleanup-reap + summary-render + report-write semantics.
 
@@ -305,21 +305,37 @@ If either query fails (e.g., the label doesn't exist yet because this is a fresh
 
 ## Write the consolidated report to disk
 
-After emitting the chat summary, persist the same content to `./.shipyard/do-work/<YYYY-MM-DD>-do-work-session.html`. Mirrors the `/shipyard:audit` report-writer ([commands/audit.md](../audit.md) → "Write the consolidated report to disk") — `/shipyard:audit` writes to `.shipyard/audits/`, `/shipyard:do-work` writes to `.shipyard/do-work/`. Reports are styled HTML (not markdown) so the maintainer can read in a browser with badges, hover states, and clickable links.
+After emitting the chat summary, persist the same content to a styled HTML report at `${SHIPYARD_HOME:-$HOME/.shipyard}/do-work-reports/<owner>-<repo>/<YYYY-MM-DD>-do-work-session.html`. Reports are styled HTML (not markdown) so the maintainer can read in a browser with badges, hover states, and clickable links.
+
+**Why shipyard-home, not in-repo `.shipyard/do-work/` ([#488](https://github.com/mattsears18/shipyard/issues/488)).** Unlike `/shipyard:audit` — which runs interactively in the user's session and writes to the in-repo `.shipyard/audits/` — `/shipyard:do-work` has **no writable in-repo location for a persistent artifact**:
+
+- The orchestrator runs in a linked worktree (`.claude/worktrees/orchestrator-<session-id>`) that is **force-removed** at end-of-session cleanup (step 6), so anything written there is destroyed.
+- The user's **primary checkout is read-only for the whole session** (the worktree-isolation contract), and on any machine with the global `enforce-worktree.sh` `PreToolUse` hook installed, a `Write` to the primary's `.shipyard/do-work/` is **hard-blocked** ("targets the PRIMARY checkout") — the report could never be produced in its intended environment.
+
+Writing to shipyard's own home directory (`~/.shipyard/do-work-reports/`, alongside the cost-history ledger and session-state files) sidesteps both: it's outside any git checkout, so it's never hook-blocked and survives worktree reap. Reports for every repo accumulate under one root, partitioned by `<owner>-<repo>`. `SHIPYARD_HOME` overrides the default `~/.shipyard` for tests / sandboxed runs.
 
 **Skip the write when** `shipped_count + filed_count + reaped_worktrees == 0`, or when the user drained immediately after backlog overview without shipping anything.
 
-1. **Create the directory:** `mkdir -p .shipyard/do-work`. Do NOT `git add` and do NOT amend `.gitignore`. The host repo decides whether to track `.shipyard/`.
+1. **Resolve the reports root and create the per-repo directory.** The repo slug is `<owner>/<repo>` with `/` → `-` so it's a single path segment:
 
-2. **Ensure the shared stylesheet exists at `.shipyard/styles.css`.** Idempotent — only write when the file does not exist (`if [ ! -f .shipyard/styles.css ]`); never clobber a user-edited version. Full CSS template lives in [`commands/audit.md`](../audit.md) → "Write the consolidated report to disk" step 2 (canonical source). Reports reference it via `../styles.css`.
+   ```bash
+   REPORTS_ROOT="${SHIPYARD_HOME:-$HOME/.shipyard}/do-work-reports"
+   REPO_SLUG="$(echo '<owner/repo>' | tr '/' '-')"
+   REPORTS_DIR="$REPORTS_ROOT/$REPO_SLUG"
+   mkdir -p "$REPORTS_DIR"
+   ```
+
+   This is outside any git checkout — no `git add`, no `.gitignore` interaction, and never blocked by the worktree-isolation hook.
+
+2. **Ensure the shared stylesheet exists at `$REPORTS_ROOT/styles.css`** (one stylesheet shared by every repo's reports). Idempotent — only write when the file does not exist (`if [ ! -f "$REPORTS_ROOT/styles.css" ]`); never clobber a user-edited version. Full CSS template lives in [`commands/audit.md`](../audit.md) → "Write the consolidated report to disk" step 2 (canonical source). Reports reference it via `../styles.css` (the report sits one level deeper, under `$REPORTS_ROOT/<owner>-<repo>/`).
 
 3. **Compute the target path.** Base name `<YYYY-MM-DD>-do-work-session.html` (local timezone); suffix `-2`, `-3`, etc. on same-day re-runs:
 
    ```bash
    base="$(date +%Y-%m-%d)-do-work-session"
-   path=".shipyard/do-work/${base}.html"
+   path="$REPORTS_DIR/${base}.html"
    n=2
-   while [ -e "$path" ]; do path=".shipyard/do-work/${base}-${n}.html"; n=$((n+1)); done
+   while [ -e "$path" ]; do path="$REPORTS_DIR/${base}-${n}.html"; n=$((n+1)); done
    ```
 
 4. **Write the report** using the `Write` tool. HTML skeleton below — populate placeholders directly:
@@ -449,8 +465,8 @@ After emitting the chat summary, persist the same content to `./.shipyard/do-wor
 
    Omit sections that have no content (e.g. zero diversions → drop the line; no cross-PR conflicts → drop the entire "Notable cross-PR conflicts" section; no shipyard improvement issues filed → drop that section entirely). Don't pad with empty rows — empty rows are noise. The shape is "everything the chat summary said, plus context the chat summary elided for brevity." Escape interpolated user-supplied text appropriately (`&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`, `"` → `&quot;` inside attributes) — issue titles are the most likely place to forget escaping.
 
-5. **Surface the path in chat** as the last line of your reply so the user sees where it landed:
+5. **Surface the path in chat** as the last line of your reply so the user sees where it landed. Show the resolved absolute path (the `$path` computed in step 3):
 
-   > Report saved: `.shipyard/do-work/<filename>.html`
+   > Report saved: `~/.shipyard/do-work-reports/<owner>-<repo>/<filename>.html`
 
-If the orchestrator's working directory isn't a git repo or `.shipyard/` can't be created (read-only filesystem, permissions), report the failure inline (`Report could not be saved: <reason>`) and continue — don't block the chat summary on it. The report is a side-effect, not a contract; the chat summary is the source of truth and runs unconditionally.
+If `${SHIPYARD_HOME:-$HOME/.shipyard}/do-work-reports/` can't be created (read-only filesystem, permissions), report the failure inline (`Report could not be saved: <reason>`) and continue — don't block the chat summary on it. The report is a side-effect, not a contract; the chat summary is the source of truth and runs unconditionally.
