@@ -17,6 +17,39 @@ Three rules, no exceptions:
 2. **Never use `gh pr checkout <M>`.** That command resolves to the cwd at call time and switches whatever working tree is there. If your cwd has drifted (or the harness mis-set it), `gh pr checkout` will move the user's primary HEAD without warning. Always use `git fetch origin <branch>` followed by `git switch <branch>` — those operate on the cwd's git context predictably and won't escape it.
 3. **Never `git switch` to the repo's default branch (`main` / `master` / etc.) when your work is done.** The global "switch back to main when local work is done" rule is for the user's *primary* checkout, not your isolated worktree. Parking your worktree on `[main]` locks the user's primary out of `git switch main` (git enforces one-worktree-per-branch). Leave your worktree on your work branch — the orchestrator's cleanup phase handles the rest.
 
+## Step-0 cwd fail-fast — assert you're actually in your worktree ([#486](https://github.com/mattsears18/shipyard/issues/486))
+
+The three rules above assume your initial working directory **is** the isolated worktree. That assumption is normally true — but it is set by the **Claude Code harness**, not by shipyard, and an `isolation: "worktree"` dispatch can land with its process cwd **pinned to the PRIMARY checkout root** instead of the created worktree. When that happens, every git-mutating command you run targets the user's primary checkout, and on any repo with the global `enforce-worktree.sh` PreToolUse hook installed (the exact environment shipyard's worktree-isolation contract assumes) the hook hard-blocks your `git commit` as *"targets the PRIMARY checkout."*
+
+**This is the [#486](https://github.com/mattsears18/shipyard/issues/486) failure mode, and it is catastrophic when undetected:** the worker runs the *entire* task — implements the fix, validates it, stages the diff — and only dies at the **final `git commit`**, after burning its whole run (the #486 repro: ~94 min of Opus on a single dispatch). The orchestrator can't rescue the staged work either (its own session may share the mispinned cwd; `EnterWorktree` refuses a subagent cwd override), so the validated work is recoverable only by a human-run commit out-of-band.
+
+**Why shipyard can't fix the root cause.** The cwd is set by the harness's dispatch machinery, not by anything in this repo — shipyard cannot force an `isolation: "worktree"` dispatch's process cwd to the created worktree, nor pin the orchestrator session's cwd to its `orchestrator-<session-id>` worktree. Those are AC items (1) and (2) of [#486](https://github.com/mattsears18/shipyard/issues/486), and they are **harness-level, out of shipyard's control**. The in-repo mitigation is to **fail fast at step 0** so a mispinned dispatch returns immediately instead of after a full wasted run — this guard, plus a regression test, are the shipyard-implementable slice.
+
+**The check — run it once, first thing, before any task work.** Compare your worktree toplevel against the repo's known worktree-vs-primary shape. A shipyard-orchestrated dispatch's cwd, when correct, resolves to a path under `.claude/worktrees/` (the worker's `agent-*` worktree or the orchestrator's `orchestrator-*` worktree). When the cwd is mispinned to primary, `git rev-parse --show-toplevel` resolves to the primary checkout root — which is the **parent** of `.claude/worktrees/`, and which `git rev-parse --git-common-dir` reveals because a linked worktree's `.git` is a *file* pointing at `<primary>/.git/worktrees/<name>`, whereas the primary's `.git` is a directory:
+
+```bash
+# Step-0 cwd fail-fast (#486). Run before implementing anything.
+TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"
+COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"
+
+# A linked worktree has a *separate* per-worktree git dir
+# (<common>/worktrees/<name>) distinct from the common dir. The PRIMARY
+# checkout has git-dir == git-common-dir. If they're equal, this cwd is a
+# primary checkout, NOT an isolated worktree — the dispatch-isolation cwd
+# override is wrong.
+if [ -n "$TOPLEVEL" ] && [ "$(cd "$GIT_DIR" 2>/dev/null && pwd -P)" = "$(cd "$COMMON_DIR" 2>/dev/null && pwd -P)" ]; then
+  echo "blocked: dispatch-isolation cwd override is wrong — my cwd ($TOPLEVEL) is a PRIMARY checkout, not an isolated worktree. An isolation: \"worktree\" dispatch was pinned to the primary checkout root (see #486). Every git-mutating command here would target the user's primary checkout and the enforce-worktree hook will block my final commit. Failing fast at step 0 instead of burning the full run. Re-dispatch required."
+  exit 0
+fi
+```
+
+The `git-dir == git-common-dir` equality is the load-bearing signal: it is true **only** for a primary checkout and false for every linked worktree, regardless of where under the tree the cwd sits, so it catches the mispin without hard-coding the primary's absolute path or assuming a `.claude/worktrees/` layout. (For an extra belt: a correct dispatch's toplevel contains `/.claude/worktrees/` — but the git-dir equality is the canonical test and the one the regression guard asserts.)
+
+**Return `blocked:`, not `reaped:`.** The mispin is a deterministic property of *this* dispatch's cwd — re-running the identical dispatch could land the same wrong cwd, so it is not the retryable-infrastructure-noise case `reaped:` is reserved for. `blocked:` is correct: the orchestrator's reconcile tags the issue `blocked:agent`, surfacing the harness-level misroute for a human (or a future harness fix) rather than silently re-enqueueing a dispatch that may misfire the same way. **This guard runs in every worker mode** — the catastrophic-wasted-run failure mode is identical whether the dispatch was issue-work, fix-checks-only, fix-rebase, fix-main-ci, or fix-failing-prs-batch, so it lives in the shared preamble rather than per-mode.
+
+**When NOT to fire.** A correctly-pinned dispatch (cwd under `.claude/worktrees/agent-*` or `orchestrator-*`) has git-dir ≠ git-common-dir and sails through — the guard is a no-op on the normal path, one cheap `git rev-parse` pair. Running outside any orchestrated session (a human invoking a worker spec by hand in the primary checkout for testing) would trip it, which is correct: a worker spec is not meant to mutate the primary checkout.
+
 ## PR-creation contract
 
 When opening a PR from any worker mode, every call **MUST** include:

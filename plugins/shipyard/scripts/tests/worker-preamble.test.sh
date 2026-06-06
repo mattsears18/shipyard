@@ -308,6 +308,32 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md provides the GIT_CONFIG_GLOBAL=master verification recipe (issue #475)"
   assert_contains "$skill_path" "did not match" \
     "SKILL.md names the pathspec-did-not-match CI failure (issue #475)"
+
+  # Issue #486 — "Step-0 cwd fail-fast" section. The section exists because
+  # an `isolation: "worktree"` dispatch can land with its process cwd pinned
+  # to the PRIMARY checkout root instead of the created worktree (a harness-
+  # level misroute shipyard can't fix at the source — AC items (1)/(2) of
+  # #486 are out of shipyard's control). When that happens every git-mutating
+  # command targets the primary checkout and the enforce-worktree hook blocks
+  # the worker's final commit — but only after the worker has burned its whole
+  # run (the repro: ~94 min of Opus dying at the final `git commit`). The
+  # in-repo mitigation is a step-0 pre-flight assertion that fails fast with a
+  # clear "dispatch-isolation cwd override is wrong" message instead of running
+  # the full task and dying at commit. Removing the section (or the git-dir ==
+  # git-common-dir primary-checkout detection that backs it) regresses the
+  # fail-fast contract.
+  assert_contains "$skill_path" "## Step-0 cwd fail-fast" \
+    "SKILL.md covers the step-0 cwd fail-fast guard (issue #486)"
+  assert_contains "$skill_path" "dispatch-isolation cwd override is wrong" \
+    "SKILL.md emits the 'dispatch-isolation cwd override is wrong' bail message (issue #486)"
+  assert_contains "$skill_path" "git rev-parse --git-common-dir" \
+    "SKILL.md uses git-common-dir to detect a primary checkout vs a linked worktree (issue #486)"
+  assert_contains "$skill_path" "git-dir == git-common-dir" \
+    "SKILL.md names the git-dir == git-common-dir primary-checkout signal (issue #486)"
+  assert_contains "$skill_path" "pinned to the PRIMARY checkout" \
+    "SKILL.md names the cwd-pinned-to-primary failure mode (issue #486)"
+  assert_contains "$skill_path" "This guard runs in every worker mode" \
+    "SKILL.md states the cwd fail-fast runs in every worker mode (issue #486)"
 fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
