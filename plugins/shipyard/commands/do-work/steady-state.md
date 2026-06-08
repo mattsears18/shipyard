@@ -174,6 +174,24 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 - Empty string / single whitespace — the subprocess died before emitting any final message.
 - Narrative status updates (`"Routine progress.", "shard 3/3 passes."`, `"Waiting for monitor..."`) — contract violation per [`shipyard:worker-preamble` § Return-contract discipline](../../skills/worker-preamble/SKILL.md#return-contract-discipline), but observationally indistinguishable from a crash for reap purposes.
 
+**Pre-reap recovery check — save committed work before discarding the worktree ([#493](https://github.com/mattsears18/shipyard/issues/493)).** Before reaping a crashed worker's worktree, check whether the worker left any commits that aren't yet on `origin`. A worker that crashed *after* committing locally has already done the expensive work — its commit passed the pre-commit gate (typecheck/lint/format/secrets). Reaping the worktree without first recovering that commit forces a full redo: another Opus dispatch, another pre-commit run, another user wall-clock wait. The recovery converts a network-drop from "lose N committed PRs + redo from scratch" into "push + open PR for the work already done."
+
+**Recovery semantics, in order:**
+
+1. `git -C <worktree_path> rev-list --count origin/<default>..HEAD` — if the count is **0**, there is no committed work to recover; proceed directly to the reap.
+2. If count **> 0**, the worker committed at least one commit before crashing. Reaching a commit means pre-commit hooks passed (the commit is hook-validated). Attempt to push the branch to origin:
+   ```bash
+   git -C "$worktree_path" push origin "do-work/issue-<N>" 2>&1
+   ```
+   Log success or failure. If the push fails (network still down, permissions issue, the branch is already on origin ahead of this commit), continue to step 3 rather than reaping silently — a failed push still leaves the local commit recoverable by a human inspection of the worktree before it's removed.
+3. After a successful push, check whether an open PR already exists for the branch. If no PR exists, create one using the normal issue-work PR template (`Closes #<N>` keyword, `--label shipyard`, `--auto`). If a PR already exists (the worker pushed but crashed before creating the PR), create the PR against the existing branch. If PR creation fails, log it and proceed to the reap anyway — the commit is now on origin and the branch is recoverable via the GitHub UI.
+4. Append the recovered PR number to `session_prs` so the cost-tracking, drain, and end-of-session summary paths all see it as a session-opened PR. Re-enqueue `<N>` via the normal `shipped` reconcile path so auto-merge is armed: call `gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch` (the same step-6 pattern from issue-work.md). Snapshot `state` and `autoMergeRequest` exactly as step 7 of issue-work.md directs; emit a `[reconcile-A.0.5-recovery] #<N> crash-recovered via PR #<M> (auto-merge: <...>, checks: <...>)` log line.
+5. Then proceed to the reap. The recovery does not skip the reap — the worktree is still a crashed agent's directory and needs to be cleaned up.
+
+**Scope: recovery applies to issue-work crash returns only.** The issue number `<N>` and the branch name `do-work/issue-<N>` are both in-flight metadata for issue-work dispatches. Synthetic-divert modes (fix-main-ci, fix-failing-prs-batch) and fix-checks-only / fix-rebase dispatches use different branch-naming conventions and don't have a single issue to recover against — don't attempt recovery for them. Check the in-flight slot's `kind` field (per the [in_flight schema](../do-work.md#orchestrator-state)): if it is not `issue` (the value issue-work dispatches carry), skip the recovery check and proceed directly to the reap. The issue number to recover against is the slot's `target` field.
+
+**Fire-and-forget posture for recovery.** Every recovery step (push, PR-create, auto-merge arm, `session_prs` append) suffixes `2>/dev/null || true` or uses a `|| log_advisory; continue` pattern. A failed recovery step is not a reason to abort the reconcile turn — the reap still happens, the slot still gets released. The recovery is best-effort: if network is still down or the branch is force-pushed over by a concurrent session, the commit may be lost, but the reconcile loop continues intact. Log each recovery step's outcome at `[reconcile-A.0.5-recovery]` prefix so the operator can inspect what happened for each crashed worker.
+
 **The reap.** Derive the worktree path from the slot's `agent_id` (still in `.in_flight.<slot-id>.agent_id` at this point — slot release is step B, which runs later). Classify the lock, then:
 
 - `no-lock` / `dead` / `self-ancestor` → reap normally. Same shape as step B but with `--phase reconcile-A.0.5` so the audit log distinguishes the crash-recovery reap from the per-completion sweep.
@@ -216,6 +234,67 @@ if [ "$is_terminal" = "false" ]; then
     lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
     [ -z "$lock_pid" ] && lock_pid="null"
 
+    # Pre-reap recovery check (#493): before reaping, check whether the
+    # crashed worker left committed work that hasn't been pushed yet. This
+    # only applies to issue-work dispatches (the slot's kind == "issue")
+    # since those are the only ones with a named do-work/issue-<N> branch
+    # and a linked issue to recover against. The issue number is the slot's
+    # `target` field (per the do-work.md in_flight schema).
+    slot_kind="${.in_flight[<slot-id>].kind}"
+    slot_issue="${.in_flight[<slot-id>].target}"
+    if [ "$slot_kind" = "issue" ] && [ -n "$slot_issue" ] && [ -d "$worktree_path" ]; then
+      DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
+      # Fetch so origin/<default> ref is current.
+      git -C "$worktree_path" fetch origin "$DEFAULT_BRANCH" 2>/dev/null || true
+      ahead_count=$(git -C "$worktree_path" rev-list --count "origin/${DEFAULT_BRANCH}..HEAD" 2>/dev/null || echo "0")
+
+      if [ "$ahead_count" -gt 0 ] 2>/dev/null; then
+        echo "[reconcile-A.0.5-recovery] slot=<slot-id> issue=#${slot_issue} has ${ahead_count} committed-but-unpushed commit(s); attempting pre-reap recovery (#493)"
+
+        # Step 1: push the branch. Pre-commit hooks already passed (the commit
+        # succeeded); this is an orchestrator-side recovery push on a dead
+        # agent's branch.
+        push_out=$(git -C "$worktree_path" push origin "do-work/issue-${slot_issue}" 2>&1) && push_ok=true || push_ok=false
+        echo "[reconcile-A.0.5-recovery] push do-work/issue-${slot_issue}: ok=${push_ok} (${push_out:0:120})"
+
+        if [ "$push_ok" = "true" ]; then
+          # Step 2: check whether an open PR already exists for this branch.
+          existing_pr=$(gh pr list --repo <owner/repo> --state open \
+            --head "do-work/issue-${slot_issue}" \
+            --json number --jq '.[0].number // empty' 2>/dev/null || true)
+
+          if [ -z "$existing_pr" ]; then
+            # No PR yet — create one with the standard issue-work template.
+            recovered_pr=$(gh pr create \
+              --repo <owner/repo> \
+              --head "do-work/issue-${slot_issue}" \
+              --label shipyard \
+              --title "fix: crash-recovered work for issue #${slot_issue}" \
+              --body "$(printf 'Closes #%s\n\n## Summary\nCrash-recovered by orchestrator A.0.5 pre-reap recovery (#493). Worker crashed after committing but before pushing/opening a PR. Pre-commit hooks passed on the original commit.\n\n## Test plan\n- [ ] Verify acceptance criteria from #%s are met\n' "$slot_issue" "$slot_issue")" \
+              2>/dev/null) && pr_ok=true || pr_ok=false
+            echo "[reconcile-A.0.5-recovery] gh pr create: ok=${pr_ok} pr=${recovered_pr}"
+          else
+            recovered_pr="$existing_pr"
+            pr_ok=true
+            echo "[reconcile-A.0.5-recovery] PR #${existing_pr} already open for do-work/issue-${slot_issue}; skipping create"
+          fi
+
+          if [ "$pr_ok" = "true" ] && [ -n "$recovered_pr" ]; then
+            # Step 3: arm auto-merge and snapshot, exactly as step 6-7 of
+            # issue-work.md. Fire-and-forget — recovery must not block reap.
+            gh pr merge "$recovered_pr" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true
+            # Snapshot state for the log line.
+            snap=$(gh pr view "$recovered_pr" --repo <owner/repo> \
+              --json state,autoMergeRequest \
+              --jq '{state, autoMerge: (.autoMergeRequest != null)}' 2>/dev/null || echo '{}')
+            echo "[reconcile-A.0.5-recovery] PR #${recovered_pr} snapshot: ${snap}"
+            # Add to session_prs so drain/summary see it.
+            session_prs+=("$recovered_pr")
+          fi
+        fi
+      fi
+    fi
+
     # Crash-aware reap: unlike step B's `peer-alive → defer` branch, A.0.5
     # reaps on every classification including peer-alive. The agent is
     # non-recoverable by definition (it crashed or violated the return
@@ -235,11 +314,11 @@ if [ "$is_terminal" = "false" ]; then
 fi
 ```
 
-**Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race (the worktree was already reaped by a concurrent path, the lock file is gone, etc.) cannot abort the reconcile turn. If the reap silently fails, step B's per-completion sweep is the next safety net and end-of-session cleanup is the ultimate one.
+**Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race (the worktree was already reaped by a concurrent path, the lock file is gone, etc.) cannot abort the reconcile turn. If the reap silently fails, step B's per-completion sweep is the next safety net and end-of-session cleanup is the ultimate one. The same discipline applies to the pre-reap recovery steps — a failed push or PR-create is logged but never blocks the reconcile turn.
 
 **Interaction with step B.** Step B still fires on every completion path — A.0.5 does NOT replace it. The duplicate-reap is harmless: the `reap` helper's `git worktree remove --force` against a path A.0.5 already removed is a silent no-op. The point of A.0.5 is to take the reap action *earlier in the turn* on crash-like returns (closing the window where step B's `peer-alive` defer leaks the worktree), not to remove the per-completion sweep.
 
-**Audit-log shape.** Entries this step writes carry `"phase":"reconcile-A.0.5"` so an operator inspecting `~/.shipyard/reap-audit.jsonl` can distinguish crash-recovery reaps from step B's per-completion sweep (`"phase":"steady-state-B-completion"`), the A.1 shipped-immediate reap (`"phase":"steady-state-A1-shipped"`), the setup-3b stale-worktree pass (no `phase`), and the cleanup-summary end-of-session sweep (no `phase`).
+**Audit-log shape.** Entries this step writes carry `"phase":"reconcile-A.0.5"` so an operator inspecting `~/.shipyard/reap-audit.jsonl` can distinguish crash-recovery reaps from step B's per-completion sweep (`"phase":"steady-state-B-completion"`), the A.1 shipped-immediate reap (`"phase":"steady-state-A1-shipped"`), the setup-3b stale-worktree pass (no `phase`), and the cleanup-summary end-of-session sweep (no `phase`). Recovery log lines carry `[reconcile-A.0.5-recovery]` prefix (stdout, not the audit JSONL) so a session transcript search surfaces them independently of the reap audit.
 
 Once A.0.5 has fired (or its prefix-check skip has been logged), proceed to A.0.6, then A.1 and parse the return string per the per-mode handling below.
 
