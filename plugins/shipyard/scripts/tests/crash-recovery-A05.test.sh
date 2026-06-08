@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Test: the pre-reap recovery check added to A.0.5 (issue #493) is
-# documented in commands/do-work/steady-state.md with the correct
-# semantics: before reaping a crashed worker's worktree, check for
-# committed-but-unpushed work and recover it via push + PR-create.
+# Test: the pre-reap recovery checks in A.0.5 are documented in
+# commands/do-work/steady-state.md with the correct semantics:
+#
+#   - issue #493: before reaping a crashed worker's worktree, check for
+#     committed-but-unpushed work and recover it via push + PR-create.
+#   - issue #495: extend the recovery to also salvage UNCOMMITTED
+#     working-tree edits via an auto-commit with --no-verify before pushing.
 #
 # Background — issue #493: a worker that crashes AFTER committing locally
 # but BEFORE pushing has already done the expensive work (pre-commit hooks
@@ -11,9 +14,15 @@
 # `git rev-list --count origin/<default>..HEAD > 0` → push the branch →
 # open a PR (if none exists) → arm auto-merge → then reap.
 #
-# This test is the regression guard: if the recovery check is removed,
-# the issue-work-only scope guard is lost, the rev-list signal is dropped,
-# or the fire-and-forget posture is broken, the test fails.
+# Background — issue #495: a worker that crashes/stalls BEFORE committing
+# (watchdog kill, pre-commit hook hang) leaves edits in the working tree
+# that rev-list --count == 0 cannot detect. This extends the recovery to:
+# dirty working tree → `git add -A` + `git commit --no-verify` → then fall
+# through to the existing #493 push+PR-create+auto-merge path.
+#
+# This test is the regression guard for both: if either recovery check is
+# removed, the issue-work-only scope guard is lost, the rev-list/status
+# signal is dropped, or the fire-and-forget posture is broken, the test fails.
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -95,7 +104,7 @@ assert_section_ordering() {
 }
 
 echo ""
-echo "Test: pre-reap crash-recovery in A.0.5 — issue #493 regression guard"
+echo "Test: pre-reap crash-recovery in A.0.5 — issue #493 + #495 regression guard"
 echo ""
 
 # 1) The spec file exists.
@@ -192,12 +201,80 @@ assert_section_ordering "$steady_state_path" \
   "Crash-aware reap: unlike step B" \
   "recovery check precedes reap call in document order"
 
-# 14) The zero-commits-ahead case is handled — when count == 0, skip
-#     recovery and proceed directly to reap (no false-positive recovery
-#     attempts on true-redo crashes).
+# 14) The zero-commits-ahead case is handled — when count == 0, the spec
+#     now checks for a dirty working tree before skipping to the reap.
 assert_contains "$steady_state_path" \
   '"0"' \
-  "A.0.5 recovery skips when ahead_count is 0"
+  "A.0.5 recovery references count==0 case"
+
+# ── New assertions for issue #495 (dirty-worktree recovery) ──────────────
+
+echo ""
+echo "Test: dirty-worktree uncommitted-edits recovery (#495 extension)"
+echo ""
+
+# 15) Issue #495 is referenced inline — traceability requirement.
+assert_contains "$steady_state_path" \
+  "[#495]" \
+  "A.0.5 names issue #495 inline"
+
+# 16) The dirty-worktree detection signal is present — git status --porcelain
+#     is the load-bearing "does the worker have uncommitted edits?" check.
+assert_contains "$steady_state_path" \
+  "status --porcelain" \
+  "A.0.5 recovery uses git status --porcelain to detect dirty working tree"
+
+# 17) The auto-commit step uses --no-verify (the pre-commit gate may be what
+#     hung the worker; CI is the safety net).
+assert_contains "$steady_state_path" \
+  "commit --no-verify" \
+  "A.0.5 dirty-worktree recovery commits with --no-verify"
+
+# 18) The dirty-worktree path stages all changes before committing.
+assert_contains "$steady_state_path" \
+  "add -A" \
+  "A.0.5 dirty-worktree recovery stages all changes with git add -A"
+
+# 19) The dirty-worktree log line uses the same [reconcile-A.0.5-recovery]
+#     prefix so operators can grep for it alongside the committed-work path.
+assert_contains "$steady_state_path" \
+  "dirty-worktree auto-commit" \
+  "A.0.5 dirty-worktree recovery uses dirty-worktree auto-commit log marker"
+
+# 20) The dirty-worktree recovery falls through to the same push path as
+#     the committed-but-unpushed recovery — the push is present in the
+#     elif branch, not duplicated at a separate level.
+assert_section_ordering "$steady_state_path" \
+  "dirty working tree but no commits" \
+  "Shared PR-create + auto-merge block" \
+  "dirty-worktree branch precedes shared PR-create block"
+
+# 21) The shared PR-create block follows the if/elif so both paths use it —
+#     the guard that defaults push_ok must be present to avoid set -u errors
+#     when neither branch ran (clean worktree, no committed work).
+# shellcheck disable=SC2016
+# Literal grep needle — ${push_ok:-false} is matched verbatim in the spec, not expanded.
+assert_contains "$steady_state_path" \
+  'push_ok="${push_ok:-false}"' \
+  "A.0.5 shared block guards push_ok with a default to handle clean-worktree case"
+
+# 22) The scope guard (kind == "issue") also covers the dirty-worktree path —
+#     the entire if/elif block lives inside the slot_kind == "issue" gate.
+#     The code-level marker for the dirty-worktree branch is the elif line;
+#     it must appear AFTER the slot_kind gate, not before it.
+# shellcheck disable=SC2016
+# Literal grep needle — $slot_kind is matched verbatim in the spec, not expanded.
+assert_section_ordering "$steady_state_path" \
+  '[ "$slot_kind" = "issue" ]' \
+  "dirty working tree but no commits; attempting dirty-worktree" \
+  "dirty-worktree recovery is inside the slot_kind==issue scope guard"
+
+# 23) The auto-commit recovery is called out in the fire-and-forget posture
+#     paragraph — the existing text covers recovery steps generically, but
+#     the prose update for #495 must extend it.
+assert_contains "$steady_state_path" \
+  "#495" \
+  "A.0.5 fire-and-forget or recovery prose references #495"
 
 echo ""
 echo "Results: $pass passed, $fail failed"
