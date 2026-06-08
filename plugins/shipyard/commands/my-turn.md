@@ -131,6 +131,14 @@ Within each tier, sort by `createdAt` ascending (oldest first). Surface a single
 
 An item may match multiple signals (e.g. a PR is both `blocked:ci` AND DIRTY); collapse to a single rendered row, keep the highest-priority signal, list the secondary signals in the "why" column.
 
+### Release-please / version-bump PRs (discretionary)
+
+A release-please / version-bump PR is a **manual gate, not a blocker.** The commits it releases are already on the default branch; the PR only bumps version + changelog, and nothing downstream cascades from it — it doesn't block other PRs, CI, or development, and release-please keeps rolling more commits into it while it sits open. Recognize one by the same heuristic `/shipyard:do-work` uses for its auto-merge exception: a `chore(release):` title prefix **or** a `release-please--*` head branch.
+
+Such a PR is **discretionary housekeeping** — rank it at the **bottom of P2**, never P0/P1, regardless of which Pass-A signal it matched. A CLEAN release PR is "ready to ship whenever you want," not "blocked on you," so promoting it conflates *highest-ranked human-only item* with *blocking other work* — the exact false-urgency this de-prioritization prevents.
+
+**Exception — promote only on a concrete downstream dependency.** If another open item explicitly waits on the release shipping — it carries `Blocked by #<release-PR>` in its body, or otherwise references the version going live — the release PR is genuinely gating tracked work and MAY rank up to the tier of the work it unblocks. Absent such an edge, it stays discretionary.
+
 ## Output
 
 Print to the terminal. **No file artifact for v1** — the data is ephemeral and the user wants to read it once, act, and move on. The output format is intentionally terse: the user asked for "what do I need to do" — not "what's the state of the repo." Cut the framing, lead with the verb.
@@ -155,8 +163,14 @@ Rules for the single-action render:
 - **URL line.** The clickable URL on its own indented line directly below.
 - **Dependency / unblocks context (optional).** If the top item *unblocks* other tracked work (e.g. a CI-secret fix that gates a release PR, an issue whose closure is referenced by `Blocked by #<N>` on another open item), append one indented parenthetical line naming what it unblocks: `(then <downstream> can go out)` / `(unblocks #<N>)`. This is part of "what to do next" — it tells the user *why* this is the next step. Derive it from the same signals the ranking uses (the dependency edges in Pass A/B); if there's no downstream dependency, omit the line.
 - **Remainder footer (optional).** If the survey produced more than one item, append a single blank line then `<K> more item<s> — rerun with --all to see the full list` where `K` is the count of remaining items. If the top item was the only one, omit this footer. The structural footer from list mode (`main: red` / `<N> blocked:ci PRs`) still applies *in addition* when relevant — render it on its own line below the remainder footer.
+- **Release-please / version-bump PR as the top item.** A discretionary release PR (per [Ranking → Release-please / version-bump PRs](#release-please--version-bump-prs-discretionary)) must **never** render as the sole `→ Next:` directive unless a concrete downstream dependency is blocked on the release shipping (the same exception that lets it rank up). The bottom-of-P2 ranking already keeps it out of the top slot whenever any other human-blocked item exists; this rule covers the case where it is the *only* item. Instead of a false-urgency directive, render the discretionary phrasing — the same shape as the [empty state](#empty-state), because there's no action *blocked on you*, just an open option:
 
-When the survey returns exactly one item, single-action mode renders just the `→ Next:` directive (plus its URL and any dependency line) with no remainder footer — the one item IS the whole list.
+  ```
+  Nothing blocking you — the release PR #<num> is ready to ship whenever you want.
+    https://github.com/owner/repo/pull/<num>
+  ```
+
+When the survey returns exactly one item, single-action mode renders just the `→ Next:` directive (plus its URL and any dependency line) with no remainder footer — the one item IS the whole list. (The lone-release-PR case above is the exception: it renders the discretionary phrasing instead of a `→ Next:` directive.)
 
 ### List mode (`--all`, or `--limit N > 1`)
 
@@ -239,6 +253,7 @@ If a backlog blows the budget, `--limit` already provides a knob; otherwise file
 - **Don't scan other repos.** Current repo only. Cross-repo digest is a future v2; for v1 the user can re-run with `--repo` in different cwds.
 - **Don't write a report file.** v1 is terminal-only. If the user wants persistence, they can pipe via shell redirection from outside the slash-command UI; that's their concern, not the command's. Add `--output <path>` later if useful.
 - **Don't surface PRs / issues authored by bots** (Dependabot, Renovate, etc.) unless they specifically request review from `$ME` — those auto-update PRs are noise in a "human action needed" list and have their own automation handling them.
+- **Don't present an open release-please / version-bump PR as a top-priority "next action."** A manual gate is discretionary, not blocking — the commits it releases are already on the default branch and nothing downstream cascades from it. Surface it as housekeeping (bottom of P2 — see [Ranking → Release-please / version-bump PRs](#release-please--version-bump-prs-discretionary)); only let it rank up or render as a top `→ Next:` directive when something downstream explicitly blocks on the release shipping. When it's the only human-blocked item, prefer the "release is ready whenever you want" phrasing over a false-urgency directive.
 - **Don't include items where the next action is obviously Claude's, not the user's.** A PR with failing checks but NOT carrying `blocked:ci` is still inside `/shipyard:do-work`'s fix-loop — surfacing it would tell the user to step on the orchestrator's work. The `blocked:ci` label is the explicit "Claude gave up, human must" signal; absence of it means leave it alone.
 - **Don't deep-dive on team membership for review requests.** v1 matches `$ME` directly against `reviewRequests`; team-via-membership lookups would add an extra `gh api` round-trip per PR and are out of scope. Users on teams will still see direct review requests in v1; team-level requests roll up via the GitHub UI's notification stream, which the user has anyway.
 - **Don't repeat work `/shipyard:do-work`'s upfront summary already does.** `/do-work`'s step 2 prints a buckets table with workable / skipped / blocked counts. That's a *backlog snapshot*; `/my-turn` is a *human-actions list*. They share inputs but have different shapes — don't try to merge them.
