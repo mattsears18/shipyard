@@ -174,12 +174,12 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 - Empty string / single whitespace — the subprocess died before emitting any final message.
 - Narrative status updates (`"Routine progress.", "shard 3/3 passes."`, `"Waiting for monitor..."`) — contract violation per [`shipyard:worker-preamble` § Return-contract discipline](../../skills/worker-preamble/SKILL.md#return-contract-discipline), but observationally indistinguishable from a crash for reap purposes.
 
-**Pre-reap recovery check — save committed work before discarding the worktree ([#493](https://github.com/mattsears18/shipyard/issues/493)).** Before reaping a crashed worker's worktree, check whether the worker left any commits that aren't yet on `origin`. A worker that crashed *after* committing locally has already done the expensive work — its commit passed the pre-commit gate (typecheck/lint/format/secrets). Reaping the worktree without first recovering that commit forces a full redo: another Opus dispatch, another pre-commit run, another user wall-clock wait. The recovery converts a network-drop from "lose N committed PRs + redo from scratch" into "push + open PR for the work already done."
+**Pre-reap recovery check — save committed and uncommitted work before discarding the worktree ([#493](https://github.com/mattsears18/shipyard/issues/493), [#495](https://github.com/mattsears18/shipyard/issues/495)).** Before reaping a crashed worker's worktree, check whether the worker left any work that hasn't reached `origin` yet. Two cases apply: (a) the worker committed locally but hadn't pushed yet, and (b) the worker's working tree is dirty (edits staged or unstaged, never committed). Either way the worker completed expensive work that a full redo would duplicate. The recovery converts a mid-run stall or watchdog kill from "lose N edits + redo from scratch" into "salvage + push + open PR for the work already done."
 
 **Recovery semantics, in order:**
 
-1. `git -C <worktree_path> rev-list --count origin/<default>..HEAD` — if the count is **0**, there is no committed work to recover; proceed directly to the reap.
-2. If count **> 0**, the worker committed at least one commit before crashing. Reaching a commit means pre-commit hooks passed (the commit is hook-validated). Attempt to push the branch to origin:
+1. `git -C <worktree_path> rev-list --count origin/<default>..HEAD` — if the count is **> 0**, the worker committed work that hasn't been pushed; jump to step 2 (push path). If the count is **0**, no commit landed yet — check whether the working tree is dirty (`git -C <worktree_path> status --porcelain` non-empty). If the working tree is dirty and the branch is `do-work/issue-<N>`, auto-commit all changes with `--no-verify` (the pre-commit gate may be exactly what hung the worker; CI is the real gate) and then push normally (step 2). Log the commit SHA and a `[reconcile-A.0.5-recovery] dirty-worktree auto-commit` prefix. If both `rev-list --count == 0` AND `status --porcelain` is empty, there is no work to recover; proceed directly to the reap.
+2. If count **> 0** (or a dirty-worktree auto-commit just landed), the worker committed at least one commit before crashing. Reaching a commit means either pre-commit hooks passed (the commit is hook-validated) or the recovery committed with `--no-verify` (CI is the safety net). Attempt to push the branch to origin:
    ```bash
    git -C "$worktree_path" push origin "do-work/issue-<N>" 2>&1
    ```
@@ -257,7 +257,36 @@ if [ "$is_terminal" = "false" ]; then
         push_out=$(git -C "$worktree_path" push origin "do-work/issue-${slot_issue}" 2>&1) && push_ok=true || push_ok=false
         echo "[reconcile-A.0.5-recovery] push do-work/issue-${slot_issue}: ok=${push_ok} (${push_out:0:120})"
 
-        if [ "$push_ok" = "true" ]; then
+      elif [ -n "$(git -C "$worktree_path" status --porcelain 2>/dev/null)" ]; then
+        # Dirty-working-tree recovery (#495): the worker crashed/stalled before
+        # committing, but left edits in the working tree. Stage all changes and
+        # commit with --no-verify (the pre-commit gate may be exactly what hung
+        # the worker; CI is the real gate for an uncommitted-worktree recovery).
+        # This mirrors the #493 committed-but-unpushed path: auto-commit first,
+        # then fall through to the shared push+PR-create+auto-merge block below.
+        echo "[reconcile-A.0.5-recovery] slot=<slot-id> issue=#${slot_issue} has dirty working tree but no commits; attempting dirty-worktree auto-commit recovery (#495)"
+        git -C "$worktree_path" add -A 2>/dev/null || true
+        autocommit_out=$(git -C "$worktree_path" commit --no-verify \
+          -m "fix: crash-recovery auto-commit for issue #${slot_issue} (orchestrator A.0.5 #495)" \
+          2>&1) && autocommit_ok=true || autocommit_ok=false
+        autocommit_sha=$(git -C "$worktree_path" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        echo "[reconcile-A.0.5-recovery] dirty-worktree auto-commit: ok=${autocommit_ok} sha=${autocommit_sha} (${autocommit_out:0:120})"
+
+        if [ "$autocommit_ok" = "true" ]; then
+          push_out=$(git -C "$worktree_path" push origin "do-work/issue-${slot_issue}" 2>&1) && push_ok=true || push_ok=false
+          echo "[reconcile-A.0.5-recovery] push do-work/issue-${slot_issue}: ok=${push_ok} (${push_out:0:120})"
+        else
+          push_ok=false
+        fi
+      fi
+
+      # Shared PR-create + auto-merge block for both committed-but-unpushed
+      # (#493) and dirty-worktree auto-commit (#495) recovery paths.
+      # push_ok is set by whichever branch above ran; if neither ran (no
+      # committed work AND clean working tree) push_ok is unset — guard with
+      # a default to avoid an unbound-variable error under set -u.
+      push_ok="${push_ok:-false}"
+      if [ "$push_ok" = "true" ]; then
           # Step 2: check whether an open PR already exists for this branch.
           existing_pr=$(gh pr list --repo <owner/repo> --state open \
             --head "do-work/issue-${slot_issue}" \
@@ -270,7 +299,7 @@ if [ "$is_terminal" = "false" ]; then
               --head "do-work/issue-${slot_issue}" \
               --label shipyard \
               --title "fix: crash-recovered work for issue #${slot_issue}" \
-              --body "$(printf 'Closes #%s\n\n## Summary\nCrash-recovered by orchestrator A.0.5 pre-reap recovery (#493). Worker crashed after committing but before pushing/opening a PR. Pre-commit hooks passed on the original commit.\n\n## Test plan\n- [ ] Verify acceptance criteria from #%s are met\n' "$slot_issue" "$slot_issue")" \
+              --body "$(printf 'Closes #%s\n\n## Summary\nCrash-recovered by orchestrator A.0.5 pre-reap recovery (#493/#495). Worker crashed/stalled before or after committing. CI is the safety net for uncommitted-worktree recoveries.\n\n## Test plan\n- [ ] Verify acceptance criteria from #%s are met\n' "$slot_issue" "$slot_issue")" \
               2>/dev/null) && pr_ok=true || pr_ok=false
             echo "[reconcile-A.0.5-recovery] gh pr create: ok=${pr_ok} pr=${recovered_pr}"
           else
@@ -291,7 +320,6 @@ if [ "$is_terminal" = "false" ]; then
             # Add to session_prs so drain/summary see it.
             session_prs+=("$recovered_pr")
           fi
-        fi
       fi
     fi
 
