@@ -110,6 +110,11 @@ if [[ -f "$cmd_path" ]]; then
     "command surfaces needs-human-review-labeled issues"
   assert_contains "$cmd_path" "needs-refinement" \
     "command surfaces needs-refinement-labeled issues"
+  # Issue #499: needs-design issues are dispatch-excluded by /do-work, so
+  # /my-turn must surface them as a human-blocked decision item — otherwise
+  # they fall through both loops and stack up with no path to a human.
+  assert_contains "$cmd_path" "needs-design" \
+    "command surfaces needs-design-labeled issues (issue #499)"
   assert_contains "$cmd_path" "draft" \
     "command surfaces stale draft PRs"
 

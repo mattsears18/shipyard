@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.61 — 2026-06-09
+
+Gives `/shipyard:my-turn` a surfacing signal for the `needs-design` label so design-gated issues stop falling through both loops (#499). `/shipyard:do-work` correctly *excludes* `needs-design` from dispatch (it's not agent-workable until the design call is made — the client-side filter in `do-work/setup.md` step 4, `drain.md`, and `steady-state.md`), but `my-turn.md` had no Pass B signal or ranking entry for it, so a `needs-design` issue was dispatch-excluded by `/do-work` *and* invisible to `/my-turn` — stacking up in the backlog with no path to a human. Since `needs-design` is by definition "blocked on a human decision," it's exactly the kind of item `/my-turn` exists to surface.
+
+- **`plugins/shipyard/commands/my-turn.md`** — added a Pass B (issue signals) entry for the `needs-design` label, a **P1 — decisions** ranking-tier entry (it's a human call, not a blocker of other work), and a render action-verb example (`make the design call (see thread) or break into spike + impl`). Pairs with #498 — if a do-work non-shippable-defer surfacing label lands on `needs-design`, this is what makes those defers visible.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump to 1.8.61.
+
 ### 1.8.60 — 2026-06-08
 
 Applies a `needs-decomposition` surfacing label when a `/do-work` scope agent confirms an issue is non-shippable as a single PR (the "epic" case), closing the human-handoff gap (#498). Previously, when the scope pre-flight reached `confirmed-non-shippable-as-single-PR` it posted a diagnosis comment but applied *no label*, so the issue fell through the cracks of both automated loops: `/do-work` re-scoped it every single session (a scope agent burning tokens to re-derive the same "too big" conclusion), and `/my-turn` — being entirely label-driven — never surfaced it as a human decision. The intended diagnosis-comment handoff never reached the human queue. The fix adds a dedicated `needs-decomposition` label (semantically distinct from `needs-design` / `needs-triage`), applies it only for the `confirmed-non-shippable-as-single-PR` defer class (the other four defer classes are not decomposition handoffs and keep the no-label behavior), and adds it to `/do-work`'s dispatch-exclusion set so the same epic stops being re-scoped. The drain-phase scope-agent re-validation removes the label again if a fresh pass finds the issue ready (a slicing-miss defer can still recover). The companion `/my-turn` surfacing side is tracked separately in #499.

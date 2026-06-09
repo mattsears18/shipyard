@@ -75,6 +75,7 @@ From this projection, derive per-issue signals:
 
 - **Issue with `needs-human-review` label** — `/shipyard:do-work` is skipping it until a human signs off (canonical case: refined user-feedback issues awaiting maintainer approval). The reviewer **is the user** (or, more precisely: a maintainer; the survey assumes `$ME` is one).
 - **Issue with `needs-refinement` label** and no `<!-- do-work-refinement-agent -->` sentinel in any comment — `/shipyard:refine-issues` hasn't run yet OR ran and got blocked; the user may need to nudge it. (`needs-refinement` is the generic pipeline gate; the refiner branches by source signal — user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through.)
+- **Issue with `needs-design` label** — blocked on a human design decision. `/shipyard:do-work` deliberately **excludes** `needs-design` from dispatch (it's not agent-workable until the design call is made — see the client-side filter in [`do-work/setup.md`](./do-work/setup.md) step 4, [`do-work/drain.md`](./do-work/drain.md), and [`do-work/steady-state.md`](./do-work/steady-state.md)), so without a `/my-turn` signal a design-gated issue is invisible to both loops and stacks up in the backlog with no path to a human. `needs-design` is, by definition, "blocked on a human decision" — exactly what `/my-turn` exists to surface. The human action is to make the design call (or break the issue into a design spike + an implementation issue so the impl half becomes dispatch-eligible).
 - **Issue with `blocked:agent-hard` label** (or legacy `blocked:agent` — same semantics, awaiting migration per [#300](https://github.com/mattsears18/shipyard/issues/300)) where every body-referenced blocker (`Blocked by #<M>`) is `CLOSED` / `MERGED` — likely clearable; user should remove the label.
 - **Issue authored by `$ME` with no linked PR and no `blocked:agent-hard` / legacy `blocked:agent` / `needs-design` label** — the user filed something and nothing's happened; `/shipyard:do-work` should be picking it up, but if it's not (wrong priority label, missing labels), the user should triage. (`blocked:agent-soft` issues ARE workable and auto-clear at next-session backlog fetch — they don't need user triage.)
 - **Issue where the last comment was authored by someone other than `$ME` AND the comment text contains `?` or `@<$ME>`** — someone asked a question or pinged the user; awaiting response. Implementation: walk `comments` newest-first, find the last non-`$ME` comment, check for `?` substring or `@<login>` mention of `$ME`.
@@ -113,6 +114,7 @@ Merge the candidates from passes A–D into a single ranked list. Each item carr
 - **P1 — decisions**
   - PRs with `blocked:ci` (3-attempt orchestrator fix-loop exhausted, needs human eyes)
   - Issues with `needs-refinement` and no refinement-agent sentinel yet
+  - Issues with `needs-design` (dispatch-excluded by `/do-work`; blocked on a human design call, not on Claude)
   - Issues authored by `$ME` with no linked PR (the user filed it, nothing happened)
   - Open review comment threads on `$ME`'s PRs awaiting reply
   - Issues where the last comment was a question or `@$ME` mention from someone else
@@ -194,7 +196,7 @@ Per item — **one line by default**:
 
 - **Index** (1-based, monotonic across the entire list) followed by `.`
 - **Artifact ref** — `#<num>` only (no `PR`/`Issue` prefix — the URL discloses the type; the number is the disambiguator).
-- **Imperative action** — verb-first, sentence-case, no trailing period. This is the only mandatory content. Examples: `review and approve or request changes`, `investigate failing check, fix or escalate`, `reply to question or close`, `enable Email/Password in Firebase Console for <project>`, `set real values for placeholder secrets via firebase functions:secrets:set --project test`.
+- **Imperative action** — verb-first, sentence-case, no trailing period. This is the only mandatory content. Examples: `review and approve or request changes`, `investigate failing check, fix or escalate`, `reply to question or close`, `make the design call (see thread) or break into spike + impl`, `enable Email/Password in Firebase Console for <project>`, `set real values for placeholder secrets via firebase functions:secrets:set --project test`.
 - **Stale suffix** (optional) — append `(<N>d stale)` only when the item's age crosses a threshold worth flagging: **≥7d** for any item, or **≥1d** for `awaiting your review` (the highest-leverage block). Default: no age string. The point is a flag, not a metric.
 - **URL** — clickable `<https://...>` at end of line so terminals render it as a hyperlink. Two spaces before the URL for visual separation.
 
