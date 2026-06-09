@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.8.62 — 2026-06-09
+
+Surfaces non-clearable `blocked:agent-hard` refuses as a `/my-turn` human-review item (#500). Before this change, `/my-turn` Pass B only surfaced a `blocked:agent-hard` issue when it was *auto-clearable* — i.e. when every `Blocked by #N` reference in the body was already CLOSED/MERGED (a P2 "housekeeping: remove the stale label" item). The common case — a genuine security / scope / prompt-injection *refuse* that `steady-state.md`'s bail-classification table stamps `blocked:agent-hard` precisely because it "genuinely needs human review" — has no `Blocked by` references at all (or has an open one), so it never surfaced. The result: `/do-work` hard-blocks the issue out of dispatch across sessions while `/my-turn` stays silent, and real refuses stack up with no handoff. The fix splits the signal by clearability: a non-clearable hard-block (≥1 referenced blocker still open, OR zero `Blocked by` refs) now ranks **P1 — decisions** with the action "review the refuse reason in the comment; clear, re-scope, or close"; the clearable subset stays **P2 — housekeeping**.
+
+- **`plugins/shipyard/commands/my-turn.md`** — Pass B's `blocked:agent-hard` bullet split into non-clearable (P1) and clearable (P2) signals with the `Blocked by #N` reference-state decision rule (zero refs ⇒ refuse ⇒ non-clearable); the P1 — decisions and P2 — housekeeping ranking tiers updated to carry the two cases; Rendering-rules action-verb examples extended with both the non-clearable ("review the refuse reason…") and clearable ("remove the blocked:agent-hard label…") actions.
+- **`plugins/shipyard/scripts/tests/my-turn.test.sh`** — four new assertions (non-clearable split documented, clearable-vs-non-clearable distinction, the `Blocked by` keying, and the `#500` citation), bringing the suite to 29 assertions.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump to 1.8.62.
+
 ### 1.8.61 — 2026-06-09
 
 Gives `/shipyard:my-turn` a surfacing signal for the `needs-design` label so design-gated issues stop falling through both loops (#499). `/shipyard:do-work` correctly *excludes* `needs-design` from dispatch (it's not agent-workable until the design call is made — the client-side filter in `do-work/setup.md` step 4, `drain.md`, and `steady-state.md`), but `my-turn.md` had no Pass B signal or ranking entry for it, so a `needs-design` issue was dispatch-excluded by `/do-work` *and* invisible to `/my-turn` — stacking up in the backlog with no path to a human. Since `needs-design` is by definition "blocked on a human decision," it's exactly the kind of item `/my-turn` exists to surface.
@@ -19,6 +27,7 @@ Applies a `needs-decomposition` surfacing label when a `/do-work` scope agent co
 - **`plugins/shipyard/commands/do-work/drain.md`** — the 5.b scope-agent re-validation ready-shape branch now removes `needs-decomposition` (gated on the original `confirmed-non-shippable-as-single-PR` class) when a re-validated defer flips to ready, with a `(removed needs-decomposition)` log suffix, so a slicing-miss epic isn't left hidden behind the new exclusion label.
 - **`plugins/shipyard/commands/do-work.md`** — the `deferred_issues` orchestrator-state note documents the new label application for the unsliceable class and the drain-phase removal.
 - **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump to 1.8.60.
+
 
 ### 1.8.59 — 2026-06-08
 
