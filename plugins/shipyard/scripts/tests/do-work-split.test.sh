@@ -1231,6 +1231,49 @@ assert_contains "$setup_path" \
   'Split the mutations' \
   "setup.md step 6 requires --remove-assignee as its own gh edit, not combined with --add-label (#508)"
 
+# (29) Soft-collision same-section content conflicts are documented as
+#      expected, with a named orchestrator drain branch (issue #507).
+#
+# The soft-collision tier lets up to --soft-collision-concurrency workers
+# claim the same additive-docs path on the premise that PR-land conflicts
+# are trivially resolvable (version-coordination's fix-rebase.md §4.6 carve-
+# out resolves the manifest .version row + CHANGELOG top-of-file insert).
+# That premise breaks when two+ siblings edit the SAME SECTION of the same
+# soft-collision file: the conflict is real prose content, not a coordinated
+# row, so §4.6 does NOT apply, fix-rebase correctly bails `blocked rebase:
+# conflict extends beyond coordinated manifest+CHANGELOG rows`, and there was
+# no documented orchestrator recovery — the DIRTY PR stranded ad hoc.
+# Repro: session do-work-20260609T025704Z-59825 — issues #499/#500/#501 all
+# edited the same my-turn.md Pass-B section; #504 and #506 went DIRTY and had
+# to be hand-resolved.
+#
+# The fix (Option 1 — document + accept) makes the limitation explicit:
+#   - steady-state.md soft-collision rules state a same-section conflict is
+#     EXPECTED (not a worker failure) and §4.6 does not cover it.
+#   - the blocked-rebase reconcile path names the soft-collision sub-case so
+#     the still-DIRTY → manual-resolution outcome is a documented drain
+#     branch, not ad hoc.
+#   - the RATIONALE and dont.md soft-collision sections record the premise
+#     boundary.
+assert_contains "$steady_state_path" \
+  'issues/507' \
+  "steady-state.md cites issue #507 for the same-section soft-collision conflict boundary"
+assert_contains "$steady_state_path" \
+  'conflict extends beyond coordinated manifest+CHANGELOG rows' \
+  "steady-state.md documents the expected fix-rebase bail string on a same-section soft-collision conflict (#507)"
+assert_contains "$steady_state_path" \
+  'same section' \
+  "steady-state.md names the same-section case that escapes the §4.6 carve-out (#507)"
+assert_contains "$rationale_path" \
+  'issues/507' \
+  "RATIONALE cites issue #507 for the soft-collision same-section premise boundary"
+assert_contains "$rationale_path" \
+  'same section' \
+  "RATIONALE records that same-section soft-collision edits produce content conflicts §4.6 does not resolve (#507)"
+assert_contains "$dont_path" \
+  'issues/507' \
+  "dont.md cites issue #507 where it notes a same-section soft-collision conflict is expected, not a worker failure"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
