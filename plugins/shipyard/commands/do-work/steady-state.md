@@ -323,6 +323,25 @@ if [ "$is_terminal" = "false" ]; then
       fi
     fi
 
+    # Anchor cwd to a stable directory BEFORE the reap (issue #497). The
+    # harness can leak the orchestrator's Bash-tool cwd into the very
+    # `agent-*` worktree we're about to `git worktree remove --force`; once
+    # that directory is gone, EVERY subsequent bare git command in this
+    # block (the `prune` below, any follow-up `fetch`/`log`) fails with
+    # `fatal: Unable to read current working directory`. `git rev-parse
+    # --show-toplevel` can't rescue it either — git resolves its own cwd
+    # before reading anything, so it fails first. The fix is to `cd` away
+    # from the doomed directory while cwd is STILL valid (here, before the
+    # remove). Derive the anchor cwd-independently via the #477 porcelain
+    # idiom — orchestrator worktree first, primary (first `worktree ` entry)
+    # as fallback — so we never re-derive from the leaked cwd. `cd /` is the
+    # last-resort floor (any extant dir works; the reap uses absolute paths).
+    STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
+      | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
+    [ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
+      | awk '/^worktree /{print substr($0,10); exit}')
+    cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
+
     # Crash-aware reap: unlike step B's `peer-alive → defer` branch, A.0.5
     # reaps on every classification including peer-alive. The agent is
     # non-recoverable by definition (it crashed or violated the return
@@ -343,6 +362,8 @@ fi
 ```
 
 **Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race (the worktree was already reaped by a concurrent path, the lock file is gone, etc.) cannot abort the reconcile turn. If the reap silently fails, step B's per-completion sweep is the next safety net and end-of-session cleanup is the ultimate one. The same discipline applies to the pre-reap recovery steps — a failed push or PR-create is logged but never blocks the reconcile turn.
+
+**cwd-anchor-before-reap invariant (issue [#497](https://github.com/mattsears18/shipyard/issues/497)).** Every reap block in this file — A.0.5 here, the [A.1 `shipped`-immediate reap (#282)](#a1-parse-the-return-string), [step B's per-completion reap (#334)](#b-release-the-slot), and [step C 2d's pre-dispatch reap (#368)](#c-dispatch-a-replacement-if-work-remains--mandatory-action) — opens with a `cd "${STABLE_DIR:-/}"` that anchors the shell to a stable directory **before** any `git worktree remove --force` / `git worktree prune` runs. The hazard it closes: the harness can leak the orchestrator's Bash-tool cwd into the very `agent-*` worktree the block is about to remove (the same `isolation: "worktree"` cwd-leak class as [#452](https://github.com/mattsears18/shipyard/issues/452) / [#477](https://github.com/mattsears18/shipyard/issues/477)). Once `git worktree remove --force` deletes that directory, **every** subsequent bare git command in the same block — the `prune`, any follow-up `fetch`/`log` — dies with `fatal: Unable to read current working directory`, silently half-failing the reap (and, on the reconcile turn, skipping the post-merge CI watch — exactly the `merged-direct-ungated` path where that watch matters most). The anchor must be derived **cwd-independently** via the #477 porcelain idiom (`git worktree list --porcelain`'s `orchestrator-*` entry, falling back to the first `worktree ` entry = the primary), and it must run **while cwd is still valid** — i.e., before the remove, not after. Note that `git rev-parse --show-toplevel` can NOT be used to recover a block whose cwd is *already* deleted (git resolves its own cwd before reading anything, so it fails first); the `cd` therefore has to pre-empt the deletion rather than react to it. `cd /` is the last-resort floor — any extant directory works, since the reap itself operates on absolute paths.
 
 **Interaction with step B.** Step B still fires on every completion path — A.0.5 does NOT replace it. The duplicate-reap is harmless: the `reap` helper's `git worktree remove --force` against a path A.0.5 already removed is a silent no-op. The point of A.0.5 is to take the reap action *earlier in the turn* on crash-like returns (closing the window where step B's `peer-alive` defer leaks the worktree), not to remove the per-completion sweep.
 
@@ -458,15 +479,34 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+  # Anchor cwd to a stable directory BEFORE the reap (issue #497). The
+  # harness can leak the orchestrator's cwd into an `agent-*` worktree that
+  # this block then `git worktree remove --force`s; once that dir is gone,
+  # the `git worktree prune` below (and any follow-up git command) fails
+  # with `fatal: Unable to read current working directory`. The old
+  # `cd "$(git rev-parse --show-toplevel)"` could NOT rescue it — git
+  # resolves its own (deleted) cwd before reading anything, so the
+  # rev-parse fails first and the cd is a no-op. Derive the anchor
+  # cwd-independently via the #477 porcelain idiom (orchestrator worktree
+  # first, primary as fallback) while cwd is still valid here, then cd to
+  # it so the remove/prune never run with cwd inside the doomed directory.
+  STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
+  [ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{print substr($0,10); exit}')
+  cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
+  # PRIMARY is the first `worktree ` entry — the .git/worktrees walk below
+  # needs the primary's path (linked worktrees share the common .git dir).
+  PRIMARY_CHECKOUT=$(git worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{print substr($0,10); exit}')
   # Locate the agent worktree whose branch is do-work/issue-<N>. Walk
   # .git/worktrees/agent-* and match on the HEAD ref. Same idiom as the
   # concurrent-session guard further down in step C.
-  cd "$(git rev-parse --show-toplevel)"
   # Bootstrap the orchestrator PID so classify-lock can short-circuit
   # on our own session's locks (issue #263).
   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
 
-  for wt_dir in "$(git rev-parse --show-toplevel)/.git/worktrees"/agent-*; do
+  for wt_dir in "${PRIMARY_CHECKOUT}/.git/worktrees"/agent-*; do
     [ -d "$wt_dir" ] || continue
     branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')
     [ "$branch_ref" = "do-work/issue-<N>" ] || continue
@@ -827,8 +867,24 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 # `.claude/worktrees/agent-<id>` directory name the harness creates for
 # `isolation: "worktree"` dispatches.
 completed_agent_id="${.in_flight[<slot-id>].agent_id}"
-wt_dir=".git/worktrees/agent-${completed_agent_id}"
-worktree_path="$(git rev-parse --show-toplevel)/.claude/worktrees/agent-${completed_agent_id}"
+# Anchor cwd to a stable directory BEFORE deriving paths or reaping (issue
+# #497). The harness can leak the orchestrator's cwd into the very
+# `agent-${completed_agent_id}` worktree this block removes; once it's gone,
+# the `git worktree prune` below and the `$(git rev-parse --show-toplevel)`
+# path derivation both fail with `fatal: Unable to read current working
+# directory` (git resolves its own cwd before doing anything). Derive a
+# stable anchor cwd-independently via the #477 porcelain idiom (orchestrator
+# worktree first, primary as fallback) and cd to it first, then derive the
+# primary/worktree paths from porcelain rather than the leaked cwd.
+STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
+  | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
+[ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
+  | awk '/^worktree /{print substr($0,10); exit}')
+cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
+PRIMARY_CHECKOUT=$(git worktree list --porcelain 2>/dev/null \
+  | awk '/^worktree /{print substr($0,10); exit}')
+wt_dir="${PRIMARY_CHECKOUT}/.git/worktrees/agent-${completed_agent_id}"
+worktree_path="${PRIMARY_CHECKOUT}/.claude/worktrees/agent-${completed_agent_id}"
 
 if [ -d "$wt_dir" ]; then
   # Bootstrap the orchestrator PID so classify-lock can short-circuit on
@@ -1165,14 +1221,31 @@ When filling a slot, walk this decision tree:
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
-   cd "$(git rev-parse --show-toplevel)"
+   # Anchor cwd to a stable directory BEFORE the reap (issue #497). The
+   # harness can leak the orchestrator's cwd into an `agent-*` worktree this
+   # block then `git worktree remove --force`s; once that dir is gone, the
+   # `git worktree prune` below fails with `fatal: Unable to read current
+   # working directory`. The old `cd "$(git rev-parse --show-toplevel)"`
+   # could NOT rescue it — git resolves its own (deleted) cwd before reading
+   # anything, so the rev-parse fails first and the cd no-ops. Derive the
+   # anchor cwd-independently via the #477 porcelain idiom (orchestrator
+   # worktree first, primary as fallback) while cwd is still valid, then cd
+   # to it so the remove/prune never run with cwd inside the doomed dir.
+   STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
+     | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
+   [ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
+     | awk '/^worktree /{print substr($0,10); exit}')
+   cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
+   # Walk the primary's .git/worktrees (porcelain-derived, cwd-independent).
+   PRIMARY_CHECKOUT=$(git worktree list --porcelain 2>/dev/null \
+     | awk '/^worktree /{print substr($0,10); exit}')
    # Declare the orchestrator PID once so classify-lock short-circuits self-locks
    # to `self-ancestor` (issue #263) regardless of process-tree shape.
    export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
 
    # $head_ref is the PR's headRefName (already known from the failed-PR scan's
    # snapshot — no extra `gh` round-trip needed).
-   for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
+   for wt_dir in $(find "${PRIMARY_CHECKOUT}/.git/worktrees" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
      [ -d "$wt_dir" ] || continue
      branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
      [ "$branch_ref" = "$head_ref" ] || continue
