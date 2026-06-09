@@ -1150,6 +1150,197 @@ line_count=$(wc -l < "$rob_audit_log" 2>/dev/null | tr -d ' ')
 assert_equals "$line_count" "2" \
   "(57a) two orphan branches → two audit-log lines"
 
+# ============================================================================
+# reap-session-worktrees subcommand tests (issue #509)
+#
+# Covers the targeted this-session reap that runs as the FIRST pass at
+# end-of-session cleanup, before the generic .git/worktrees/agent-* sweep,
+# so a slow generic sweep on a busy checkout can't strand this session's own
+# shipped worktrees (#509 repro: 17 worktrees, ~6 reaped, then the loop
+# stalled before reaching this session's own merged-work worktrees).
+#
+# Matrix:
+#   58) dry-run → status lines emitted, worktrees NOT removed, no audit
+#   59) real run → safe-classification worktrees removed + audit lines with
+#       phase: "cleanup-session-targeted"
+#   60) nonexistent agent-id (already reaped by steady-state #282) → no line,
+#       no error
+#   61) flag + stdin sources unioned
+#   62) duplicate agent-id → single status line (dedup)
+#   63) peer-alive lock (live non-ancestor PID) → deferred, worktree kept
+#   64) SHIPYARD_ORCHESTRATOR_PID short-circuit → self-ancestor → reaped
+#   65) bad usage (missing --repo-root / --session-id / unknown flag) → 64
+#   66) no agent-ids supplied → empty output, exit 0
+# ============================================================================
+
+echo
+echo "worktree-reap.sh reap-session-worktrees tests (issue #509)"
+echo
+
+rsw_repo="$tmpdir/rsw-repo"
+rsw_home="$tmpdir/rsw-home"
+rsw_audit_log="$rsw_home/reap-audit.jsonl"
+
+# Build a fresh primary checkout with N agent worktrees. Each agent-<id>
+# worktree is a real linked worktree on its own do-work/issue-<n> branch, so
+# `git worktree remove` behaves exactly as it does in production.
+reset_rsw_layout() {
+  rm -rf "$rsw_repo" "$rsw_home"
+  mkdir -p "$rsw_home"
+  mkdir -p "$rsw_repo"
+  (
+    cd "$rsw_repo" || exit 1
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+  ) >/dev/null 2>&1
+}
+
+# Add an agent worktree named agent-<id> on branch do-work/issue-<id>.
+rsw_add_worktree() {
+  local id="$1"
+  git -C "$rsw_repo" worktree add -q \
+    ".claude/worktrees/agent-$id" -b "do-work/issue-$id" >/dev/null 2>&1
+}
+
+run_rsw() {
+  SHIPYARD_HOME="$rsw_home" bash "$helper" reap-session-worktrees \
+    --repo-root "$rsw_repo" \
+    --session-id "rsw-test-session" \
+    "$@" 2>/dev/null
+}
+
+# --- (58) dry-run → lines emitted, worktrees kept, no audit log ---
+reset_rsw_layout
+rsw_add_worktree aaa
+rsw_add_worktree bbb
+result=$(run_rsw --agent-id aaa --agent-id bbb --dry-run | sort)
+expected=$(printf 'reaped: agent-aaa\nreaped: agent-bbb')
+assert_equals "$result" "$expected" \
+  "(58) dry-run → reaped: lines for both worktrees"
+[ -d "$rsw_repo/.claude/worktrees/agent-aaa" ] && dry_kept=yes || dry_kept=no
+assert_equals "$dry_kept" "yes" \
+  "(58a) dry-run → worktree NOT removed"
+[ -f "$rsw_audit_log" ] && dry_audit=present || dry_audit=absent
+assert_equals "$dry_audit" "absent" \
+  "(58b) dry-run → no audit-log write"
+
+# --- (59) real run → safe worktrees removed + audit lines tagged phase ---
+reset_rsw_layout
+rsw_add_worktree aaa
+rsw_add_worktree bbb
+result=$(run_rsw --agent-id aaa --agent-id bbb | sort)
+assert_equals "$result" "$expected" \
+  "(59) real run → reaped: lines for both worktrees"
+[ -d "$rsw_repo/.claude/worktrees/agent-aaa" ] && real_kept=yes || real_kept=no
+assert_equals "$real_kept" "no" \
+  "(59a) real run → agent-aaa worktree removed"
+line_count=$(wc -l < "$rsw_audit_log" 2>/dev/null | tr -d ' ')
+assert_equals "$line_count" "2" \
+  "(59b) real run → two audit-log lines"
+phase_count=$(grep -c '"phase":"cleanup-session-targeted"' "$rsw_audit_log" 2>/dev/null | tr -d ' ')
+assert_equals "$phase_count" "2" \
+  "(59c) real run → audit lines carry phase cleanup-session-targeted"
+
+# --- (60) nonexistent agent-id (already reaped, #282) → no line, no error ---
+reset_rsw_layout
+rsw_add_worktree aaa
+result=$(run_rsw --agent-id aaa --agent-id ghost)
+exit_code=$?
+assert_equals "$result" "reaped: agent-aaa" \
+  "(60) nonexistent agent-id emits no line (silent skip)"
+assert_exit_code "$exit_code" "0" \
+  "(60a) nonexistent agent-id → exit 0"
+
+# --- (61) flag + stdin sources unioned ---
+reset_rsw_layout
+rsw_add_worktree aaa
+rsw_add_worktree bbb
+result=$(printf 'bbb\n' | SHIPYARD_HOME="$rsw_home" bash "$helper" \
+  reap-session-worktrees --repo-root "$rsw_repo" \
+  --session-id rsw --agent-id aaa 2>/dev/null | sort)
+assert_equals "$result" "$expected" \
+  "(61) flag (aaa) + stdin (bbb) unioned → both reaped"
+
+# --- (62) duplicate agent-id → single status line (dedup) ---
+reset_rsw_layout
+rsw_add_worktree aaa
+result=$(run_rsw --agent-id aaa --agent-id aaa --dry-run)
+assert_equals "$result" "reaped: agent-aaa" \
+  "(62) duplicate agent-id → single line (deduped)"
+
+# --- (63) peer-alive lock (live non-ancestor PID) → deferred, worktree kept ---
+reset_rsw_layout
+rsw_add_worktree peer
+# Spawn a live process that is NOT in our ancestor chain, write its PID into
+# the lock in the canonical harness format. Tracked via sibling_pid so the
+# EXIT trap kills it.
+sleep 300 &
+sibling_pid=$!
+printf 'claude agent agent-peer (pid %s)\n' "$sibling_pid" \
+  > "$rsw_repo/.git/worktrees/agent-peer/locked"
+result=$(run_rsw --agent-id peer)
+assert_equals "$result" "deferred: agent-peer" \
+  "(63) peer-alive lock → deferred line"
+[ -d "$rsw_repo/.claude/worktrees/agent-peer" ] && peer_kept=yes || peer_kept=no
+assert_equals "$peer_kept" "yes" \
+  "(63a) peer-alive → worktree NOT removed"
+deferred_audit=$(grep -c '"action":"deferred"' "$rsw_audit_log" 2>/dev/null | tr -d ' ')
+assert_equals "$deferred_audit" "1" \
+  "(63b) peer-alive → deferred audit line written"
+kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+sibling_pid=""
+
+# --- (64) SHIPYARD_ORCHESTRATOR_PID short-circuit → self-ancestor → reaped ---
+# Same live-non-ancestor PID as (63), but declared as the orchestrator PID:
+# classify-lock short-circuits to self-ancestor, so this session's own
+# worktree is reaped instead of deferred (the load-bearing #138/#263 path
+# that makes targeted cleanup actually remove the orchestrator's own locks).
+reset_rsw_layout
+rsw_add_worktree orch
+sleep 300 &
+sibling_pid=$!
+printf 'claude agent agent-orch (pid %s)\n' "$sibling_pid" \
+  > "$rsw_repo/.git/worktrees/agent-orch/locked"
+result=$(SHIPYARD_HOME="$rsw_home" SHIPYARD_ORCHESTRATOR_PID="$sibling_pid" \
+  bash "$helper" reap-session-worktrees --repo-root "$rsw_repo" \
+  --session-id rsw --agent-id orch 2>/dev/null)
+assert_equals "$result" "reaped: agent-orch" \
+  "(64) declared orchestrator PID → self-ancestor → reaped (not deferred)"
+[ -d "$rsw_repo/.claude/worktrees/agent-orch" ] && orch_kept=yes || orch_kept=no
+assert_equals "$orch_kept" "no" \
+  "(64a) self-ancestor → worktree removed"
+kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+sibling_pid=""
+
+# --- (65) bad usage → exit 64 ---
+reset_rsw_layout
+SHIPYARD_HOME="$rsw_home" bash "$helper" reap-session-worktrees \
+  --session-id x --agent-id a 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(65) missing --repo-root → exit 64"
+SHIPYARD_HOME="$rsw_home" bash "$helper" reap-session-worktrees \
+  --repo-root "$rsw_repo" --agent-id a 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(65a) missing --session-id → exit 64"
+SHIPYARD_HOME="$rsw_home" bash "$helper" reap-session-worktrees \
+  --repo-root "$rsw_repo" --session-id x --bogus 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(65b) unknown flag → exit 64"
+
+# --- (66) no agent-ids supplied → empty output, exit 0 ---
+reset_rsw_layout
+result=$(SHIPYARD_HOME="$rsw_home" bash "$helper" reap-session-worktrees \
+  --repo-root "$rsw_repo" --session-id x </dev/null 2>/dev/null)
+exit_code=$?
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(66) no agent-ids → empty output"
+assert_exit_code "$exit_code" "0" \
+  "(66a) no agent-ids → exit 0"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

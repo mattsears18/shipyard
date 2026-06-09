@@ -134,6 +134,68 @@
 #       0  sweep succeeded (output may be empty)
 #       64 bad usage (missing required flag, unknown flag)
 #
+#   reap-session-worktrees --repo-root <path> --session-id <id>
+#        [--agent-id <id> ...] [--dry-run]
+#     Issue #509 — targeted reap of THIS session's agent worktrees by
+#     explicit agent-id, run as the FIRST pass at end-of-session cleanup
+#     BEFORE the generic `.git/worktrees/agent-*` sweep.
+#
+#     The generic sweep (cleanup-summary.md step 3) iterates every
+#     `.git/worktrees/agent-*` and runs `classify-lock` per worktree. On a
+#     busy checkout with many accumulated cross-session agent worktrees, the
+#     loop can be slow enough that it does NOT complete within the
+#     orchestrator's bash window — reaping a few and stalling before the
+#     post-loop counters print, stranding THIS session's own shipped
+#     worktrees (the ones holding real merged work whose branches are
+#     `[gone]` — the most important to reap). See #509 for the repro
+#     (17 agent worktrees, ~6 reaped, then the loop went quiet).
+#
+#     The orchestrator already knows its OWN session's agent-ids — the union
+#     of `reconciled_agent_ids` and the live `in_flight.<slot>.agent_id`
+#     values — so it can target them directly rather than depending on the
+#     full sweep finishing. Cross-session stragglers are already covered by
+#     the next session's setup-3b sweep, so they need not block this
+#     session's own reap. This subcommand is bounded by the (small,
+#     known) agent-id set, so it always completes regardless of how many
+#     unrelated worktrees the checkout has accumulated.
+#
+#     For each agent-id (passed via repeated `--agent-id` flags AND/OR one
+#     id per line on stdin — both sources are unioned and de-duplicated):
+#       1. Resolve the worktree dir `<repo-root>/.claude/worktrees/agent-<id>`
+#          and its lock file `<repo-root>/.git/worktrees/agent-<id>/locked`.
+#       2. Skip silently when the worktree dir doesn't exist (already reaped
+#          by the steady-state immediate-reap path, #282 — the common case
+#          for `shipped` returns) — emits no line for a non-existent dir.
+#       3. `classify-lock` the lock file. Reap on
+#          `no-lock`/`dead`/`self-ancestor` (routes through the `reap`
+#          transaction so the audit line is written with
+#          `phase: "cleanup-session-targeted"`); defer on `peer-alive`
+#          (a still-running peer — same safety posture as the generic sweep).
+#       4. Emit one status line per acted-upon agent-id:
+#            `reaped: agent-<id>`     (worktree removed)
+#            `deferred: agent-<id>`   (peer-alive — left for a later sweep)
+#
+#     The SHIPYARD_ORCHESTRATOR_PID env var (set by the orchestrator at
+#     session start) flows through to `classify-lock` so the self-ancestor
+#     short-circuit fires for this session's own locks — exactly as the
+#     generic sweep relies on it.
+#
+#     --dry-run mode emits the `reaped:`/`deferred:` lines WITHOUT removing
+#     worktrees or writing audit-log entries.
+#
+#     Env vars:
+#       SHIPYARD_HOME              — audit-log root (defaults to
+#                                    `$HOME/.shipyard`).
+#       SHIPYARD_ORCHESTRATOR_PID  — passed through to classify-lock for the
+#                                    self-ancestor short-circuit.
+#     Stdout:
+#       One `reaped: agent-<id>` / `deferred: agent-<id>` line per
+#       acted-upon agent-id. Empty stdout when no targeted worktree exists
+#       (all already reaped by the steady-state path).
+#     Exit codes:
+#       0  sweep succeeded (output may be empty)
+#       64 bad usage (missing required flag, unknown flag)
+#
 #   reap --action <reaped|deferred|reaped-orphan-orchestrator>
 #        --worktree-path <path> --worktree-name <name>
 #        --session-id <id> [--actor-pid <pid>]
@@ -232,6 +294,9 @@ Usage:
                                              --current-session-id <id>
   worktree-reap.sh reap-orphan-branches --repo-root <path> \
                                         --session-id <id> [--dry-run]
+  worktree-reap.sh reap-session-worktrees --repo-root <path> \
+                                          --session-id <id> \
+                                          [--agent-id <id> ...] [--dry-run]
   worktree-reap.sh reap --action <reaped|deferred|reaped-orphan-orchestrator> \
                         --worktree-path <path> --worktree-name <name> \
                         --session-id <id> [--actor-pid <pid>] \
@@ -265,6 +330,17 @@ reap-orphan-branches    — Issue #326. Deletes every local worktree-agent-*
                           --dry-run emits reaped-branch: lines without
                           deleting or writing the audit log. Idempotent —
                           second pass is a no-op.
+
+reap-session-worktrees  — Issue #509. Targeted reap of THIS session's agent
+                          worktrees by explicit agent-id, run as the FIRST
+                          pass at end-of-session cleanup before the generic
+                          .git/worktrees/agent-* sweep — so a slow generic
+                          sweep on a busy checkout can't strand this
+                          session's own shipped worktrees. Reaps on
+                          no-lock/dead/self-ancestor, defers on peer-alive.
+                          Emits reaped: agent-<id> / deferred: agent-<id>
+                          per acted-upon agent-id. --dry-run skips removes
+                          and audit writes.
 
 reap                    — Performs the worktree-remove (when applicable)
                           and writes one append-only JSONL line to
@@ -1087,6 +1163,174 @@ reap_orphan_branches() {
   return 0
 }
 
+# Issue #509 — targeted reap of THIS session's agent worktrees by explicit
+# agent-id. See the subcommand docstring at the top of the file for the
+# rationale (busy-checkout generic-sweep stall stranding this session's own
+# shipped worktrees).
+#
+# The orchestrator passes its own session's agent-ids (reconciled +
+# in-flight) via repeated --agent-id flags and/or one id per stdin line.
+# We resolve each to its worktree dir + lock file, classify, and reap on
+# the safe classifications — routing the actual remove + audit write through
+# the same reap_action transaction the generic sweep uses, so the audit log
+# stays consistent (with phase: "cleanup-session-targeted" to distinguish
+# this pass).
+reap_session_worktrees() {
+  local repo_root=""
+  local session_id=""
+  local dry_run=0
+  local -a agent_ids=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --session-id)
+        session_id="${2:-}"
+        shift 2
+        ;;
+      --session-id=*)
+        session_id="${1#--session-id=}"
+        shift
+        ;;
+      --agent-id)
+        [ -n "${2:-}" ] && agent_ids+=("$2")
+        shift 2
+        ;;
+      --agent-id=*)
+        local _aid="${1#--agent-id=}"
+        [ -n "$_aid" ] && agent_ids+=("$_aid")
+        shift
+        ;;
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "reap-session-worktrees: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "reap-session-worktrees: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "reap-session-worktrees: --repo-root is required" >&2
+    return 64
+  fi
+  if [ -z "$session_id" ]; then
+    echo "reap-session-worktrees: --session-id is required" >&2
+    return 64
+  fi
+
+  # Anchor cwd to the target repo root. `reap_action` (which we route the
+  # actual `git worktree remove --force` through) runs bare `git worktree
+  # remove`, which is cwd-dependent — it operates on whatever repo the cwd
+  # resolves to. The generic sweep in cleanup-summary.md step 3 `cd`s into
+  # the repo root for the same reason. This helper is a short-lived process
+  # invocation, so changing its own cwd is local and harmless to the caller.
+  if ! cd "$repo_root" 2>/dev/null; then
+    echo "reap-session-worktrees: cannot cd to --repo-root: $repo_root" >&2
+    return 64
+  fi
+
+  # Union stdin-fed agent-ids (one per line) with the --agent-id flags.
+  # Read stdin only when it is not a terminal so an interactive invocation
+  # without piped input doesn't block.
+  if [ ! -t 0 ]; then
+    local _line
+    while IFS= read -r _line; do
+      # Trim surrounding whitespace; skip blank lines.
+      _line="${_line#"${_line%%[![:space:]]*}"}"
+      _line="${_line%"${_line##*[![:space:]]}"}"
+      [ -z "$_line" ] && continue
+      agent_ids+=("$_line")
+    done
+  fi
+
+  # Nothing to do — no agent-ids supplied at all. Empty stdout, exit 0.
+  [ "${#agent_ids[@]}" -eq 0 ] && return 0
+
+  # De-duplicate agent-ids while preserving first-seen order. The
+  # reconciled-set ∪ in-flight-set the orchestrator passes can legitimately
+  # overlap (a slot reconciled then re-counted), and reaping the same path
+  # twice would emit a duplicate status line. `seen_csv` is a sentinel-bounded
+  # membership string so we don't need an inner array loop under `set -u`.
+  local seen_csv="|"
+  local aid
+  for aid in "${agent_ids[@]}"; do
+    case "$seen_csv" in
+      *"|$aid|"*) continue ;;   # already processed
+    esac
+    seen_csv="${seen_csv}${aid}|"
+
+    local name="agent-${aid}"
+    local worktree_path="$repo_root/.claude/worktrees/$name"
+    local lock_file="$repo_root/.git/worktrees/$name/locked"
+
+    # Already reaped (the common case for `shipped` returns — the
+    # steady-state immediate-reap path #282 removed it mid-session). Skip
+    # silently — no line, no error.
+    [ -d "$worktree_path" ] || continue
+
+    local classification
+    classification=$(classify_lock "$lock_file")
+
+    # Extract the lock PID for the audit line (null literal when missing /
+    # unparseable). `extract_lock_pid` already returns a bare numeric PID
+    # or empty string.
+    local lock_pid
+    lock_pid=$(extract_lock_pid "$lock_file")
+    [ -z "$lock_pid" ] && lock_pid="null"
+
+    if [ "$classification" = "peer-alive" ]; then
+      # A still-running peer holds the lock — defer, same posture as the
+      # generic sweep. Left for step B / A.0.5 / next-session setup-3b.
+      printf 'deferred: %s\n' "$name"
+      if [ "$dry_run" -eq 0 ]; then
+        reap_action \
+          --action deferred \
+          --worktree-path "$worktree_path" \
+          --worktree-name "$name" \
+          --session-id "$session_id" \
+          --reason "peer-alive" \
+          --phase "cleanup-session-targeted" \
+          --lock-pid "$lock_pid" \
+          >/dev/null 2>&1 || true
+      fi
+      continue
+    fi
+
+    # no-lock / dead / self-ancestor — safe to reap.
+    printf 'reaped: %s\n' "$name"
+    if [ "$dry_run" -eq 0 ]; then
+      reap_action \
+        --action reaped \
+        --worktree-path "$worktree_path" \
+        --worktree-name "$name" \
+        --session-id "$session_id" \
+        --classification "$classification" \
+        --phase "cleanup-session-targeted" \
+        --lock-pid "$lock_pid" \
+        >/dev/null 2>&1 || true
+    fi
+  done
+
+  return 0
+}
+
 main() {
   local sub="${1:-}"
   case "$sub" in
@@ -1115,6 +1359,14 @@ main() {
       # full algorithm.
       shift
       reap_orphan_branches "$@"
+      ;;
+    reap-session-worktrees)
+      # Issue #509 — targeted reap of THIS session's agent worktrees by
+      # explicit agent-id, run before the generic sweep so a slow generic
+      # sweep can't strand this session's own shipped worktrees. See
+      # reap_session_worktrees for the full algorithm.
+      shift
+      reap_session_worktrees "$@"
       ;;
     reap)
       # Issue #284 — single source of truth for reap-audit log writes.
