@@ -55,6 +55,13 @@ Reserves space for future categories (`blocked:external` for upstream / vendor b
 - `needs-human-review` — a human sign-off gate, decoupled from `needs-refinement`: applied only by the user-feedback classify+rewrite branch of `/shipyard:refine-issues`, the `external-author-gate.yml` workflow, and `issue-worker.md` step 6 for external-author PRs. The resolve-defaults and escalate-to-triage branches do NOT apply it — trusted-author issues that pass through resolve-defaults become dispatch-eligible immediately.
 - `needs-triage` — fall-through label applied by `/shipyard:refine-issues`' escalate-to-triage branch when no refiner rule matches. `/do-work` excludes it from dispatch; `/shipyard:my-turn` surfaces it for human triage.
 
+### Epic-decomposition labels (scope-agent handoff → auto-shard)
+
+A two-label pair drives the epic-decomposition pipeline (`needs-decomposition` is the trigger surface, `tracking` is the post-shard parent marker). Both are in `/do-work`'s dispatch-exclusion set.
+
+- `needs-decomposition` — applied by `do-work/setup.md` step 6's Deferred recording path when a scope agent returns `confirmed-non-shippable-as-single-PR` (#498). It surfaces an epic as a human-handoff: `/do-work` stops re-scoping it every session and `/my-turn` surfaces it. `/shipyard:decompose-epic` (#501) consumes this label — for `Multi-PR sequence:` / `Missing dependency:` evidence classes it auto-shards the epic into dispatch-ready sub-issues (an ordered `Blocked by #<sibling>` chain), then swaps the label to `tracking` on the parent; for non-mechanical classes (`Multi-service coordination:`, `Body cites <artifact>:`) it leaves `needs-decomposition` in place for the human. Idempotency sentinel: `<!-- do-work-decompose-agent -->`.
+- `tracking` — applied by `/shipyard:decompose-epic` to a parent epic once it has been auto-sharded into sub-issues (#501). The parent is no longer a workable leaf — its children carry the dispatchable units — so `tracking` keeps it out of `/do-work` dispatch (enumerated in the step-4 exclusion set alongside `needs-decomposition`). The parent stays OPEN as the tracking umbrella; closing it once all children land is a human's call.
+
 ## Configuration (`shipyard.config.json` + layered overrides)
 
 Shipyard runs against a 4-layer config. Effective config is the deep-merge of all four layers in order — later wins, arrays are replaced (not concatenated), and objects merge key-by-key recursively.
