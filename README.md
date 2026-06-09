@@ -72,6 +72,10 @@ From inside any GitHub-connected repo, try one of these:
 # escalate-to-triage fall-through.
 /refine-issues
 
+# Auto-decompose confirmed epics (needs-decomposition) into dispatch-ready
+# sub-issues so the sub-work re-enters /do-work without a human round-trip.
+/decompose-epic
+
 # See what's blocked on YOU (PRs waiting on review, issues needing triage, etc.)
 # — the human-facing counterpart to /do-work.
 /my-turn
@@ -133,6 +137,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit api` — OpenAPI / GraphQL schema drift, missing pagination, inconsistent auth and error envelopes, breaking-change diffs
 - `/audit all <url>` — every audit in parallel
 - `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through).
+- `/decompose-epic` — auto-decompose confirmed epics (issues carrying `needs-decomposition`) into dispatch-ready GitHub sub-issues. `Multi-PR sequence:` / `Missing dependency:` evidence classes get sharded into an ordered `Blocked by #<sibling>` chain (so `/do-work` sequences them automatically); non-mechanical classes fall through to the existing human handoff. Explicit, human-invoked — mirrors `/refine-issues`' sentinel-keyed shape.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`)
 - `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart.
 - `/shipyard:init` — scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps. See [`CLAUDE.md`'s "Configuration" section](./CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) for the layering model.
@@ -251,6 +256,7 @@ plugins/
       audit.md
       config.md
       cost.md
+      decompose-epic.md
       do-work.md
       do-work/                   # per-phase phase files loaded on demand by do-work.md
       do-work-RATIONALE.md       # design discussion companion
