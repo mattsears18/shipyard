@@ -1195,6 +1195,42 @@ assert_contains "$steady_state_path" \
   'merged-direct-ungated' \
   "steady-state.md step D fires an unconditional refresh for merged-direct-ungated (#457)"
 
+# (28) Defer-labeling ensures-then-labels-then-verifies needs-decomposition,
+#      never a bare --add-label that silently no-ops (issue #508).
+#
+# `gh issue edit … --add-label needs-decomposition` is atomic: if the label
+# does not exist in the repo (step 3a's backgrounded `gh label create … &`
+# group was skipped, raced, or its subshell errored under `2>/dev/null ||
+# true`), the WHOLE edit exits non-zero and the apply silently no-ops — and
+# on a repo where the same defer path also clears the @me self-assign in one
+# combined edit, the --remove-assignee is dropped too. Net effect: the
+# confirmed-non-shippable epic is re-scoped every future session (the waste
+# needs-decomposition exists to prevent) and the issue may be left assigned.
+# Repro: lightwork session do-work-20260609T034015Z-47977 — #1673 and #1769
+# both failed the atomic edit; #1673 also kept its @me assignment.
+#
+# The fix hardens setup.md step 6's Deferred recording path:
+#   - ensure-then-label: an idempotent `gh label create needs-decomposition`
+#     immediately before the --add-label, so the apply never depends on 3a.
+#   - split the mutations: any --remove-assignee runs as its own gh edit, so
+#     a label failure can't drop the unassign.
+#   - verify: read back .labels and warn loudly if the label isn't present.
+assert_contains "$setup_path" \
+  'issues/508' \
+  "setup.md cites issue #508 as the source of the ensure-then-label-then-verify hardening"
+assert_contains "$setup_path" \
+  'gh label create needs-decomposition --repo <owner/repo>' \
+  "setup.md step 6 ensures the needs-decomposition label exists before --add-label (#508)"
+assert_contains "$setup_path" \
+  'ensure-then-label-then-verify' \
+  "setup.md step 6 names the ensure-then-label-then-verify discipline (#508)"
+assert_contains "$setup_path" \
+  'WARNING: #<N> needs-decomposition apply did not land' \
+  "setup.md step 6 reads back .labels and warns loudly on a silent no-op (#508)"
+assert_contains "$setup_path" \
+  'Split the mutations' \
+  "setup.md step 6 requires --remove-assignee as its own gh edit, not combined with --add-label (#508)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
