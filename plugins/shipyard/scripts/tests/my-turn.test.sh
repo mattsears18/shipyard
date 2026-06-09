@@ -158,6 +158,23 @@ if [[ -f "$cmd_path" ]]; then
   # refinement — it's identical across modes.
   assert_contains "$cmd_path" "Nothing on your plate" \
     "command keeps the unchanged empty-state one-liner"
+
+  # Non-clearable blocked:agent-hard surfacing (issue #500). Before #500,
+  # /my-turn only surfaced a blocked:agent-hard issue when it was
+  # *clearable* (every `Blocked by #N` ref closed → P2 housekeeping). A
+  # GENUINE refuse — at least one referenced blocker still open, OR no
+  # `Blocked by` refs at all (a pure security/scope/prompt-injection refuse,
+  # the common case) — never surfaced, so it stacked up out of dispatch with
+  # no human handoff. The fix splits the signal: non-clearable → P1
+  # (decisions, "Claude gave up, a human must look"), clearable stays P2.
+  assert_contains "$cmd_path" "non-clearable" \
+    "command documents the non-clearable hard-block split (#500)"
+  assert_contains "$cmd_path" "clearable" \
+    "command documents the clearable-vs-non-clearable hard-block distinction (#500)"
+  assert_contains "$cmd_path" "Blocked by" \
+    "command keys the hard-block split on Blocked by #N reference state (#500)"
+  assert_contains "$cmd_path" "#500" \
+    "command cites issue #500 for the hard-block surfacing split"
 fi
 
 echo
