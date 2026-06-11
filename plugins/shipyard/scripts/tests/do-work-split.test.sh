@@ -1436,6 +1436,48 @@ assert_contains "$dont_path" \
   'still-in-flight* target' \
   "dont.md carries the sibling-strand variant bullet forbidding a pure silent-skip (#530)"
 
+# ----------------------------------------------------------------------
+# (N+2) external-dependency and human-decision-required defers now apply
+#        needs-human-review and stamp distinct body markers (#536).
+#
+# Before #536, only confirmed-non-shippable-as-single-PR defers applied
+# needs-human-review, so external-dependency and human-decision-required
+# defers re-entered the dispatch queue every session, burned a redundant
+# scope agent, re-derived the same conclusion, and posted an identical
+# diagnosis comment. Repro: lightwork#1557 accumulated 5+ consecutive
+# identical comments; session do-work-20260611T114039Z-43655 burned ~190k
+# tokens re-deriving 7 known defers.
+#
+# The fix extends the recording path in setup.md step 6 to:
+#   (a) apply needs-human-review for external-dependency and
+#       human-decision-required (same ensure-then-label-then-verify
+#       pattern as #508/#519);
+#   (b) stamp distinct body markers (<!-- do-work-external-dependency -->
+#       and <!-- do-work-human-decision-required -->) so the classes are
+#       distinguishable within the shared needs-human-review pool;
+#   (c) enforce comment dedupe before posting (skip post if an existing
+#       comment with the same class marker and matching conclusion exists).
+#
+# CLAUDE.md label-conventions docs are updated to document all three.
+assert_contains "$setup_path" \
+  'issues/536' \
+  "setup.md step 6 cites issue #536 for the external-dependency / human-decision-required defer labelling"
+assert_contains "$setup_path" \
+  'do-work-external-dependency' \
+  "setup.md step 6 recording path stamps <!-- do-work-external-dependency --> on external-dependency defers (#536)"
+assert_contains "$setup_path" \
+  'do-work-human-decision-required' \
+  "setup.md step 6 recording path stamps <!-- do-work-human-decision-required --> on human-decision-required defers (#536)"
+assert_contains "$setup_path" \
+  'defers accumulated 5+ consecutive identical diagnosis comments across sessions because no label was applied to gate re-dispatch' \
+  "setup.md step 6 applies needs-human-review to external-dependency and human-decision-required defers (#536)"
+assert_contains "$setup_path" \
+  'Comment dedupe check' \
+  "setup.md step 6 recording path includes a comment dedupe check before posting (#536)"
+assert_contains "$setup_path" \
+  'skipping duplicate diagnosis comment' \
+  "setup.md step 6 logs a skip message when a duplicate diagnosis comment is detected (#536)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
