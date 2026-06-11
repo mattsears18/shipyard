@@ -62,6 +62,15 @@
 #         - multiple orphans → multiple lines
 #         - bad-usage cases (missing flags, unknown flag, positional arg)
 #         - --flag=value form parity with --flag value form
+#  58-66) issue #509 — reap-session-worktrees targeted this-session reap
+#  67-75) issue #513 — derive-session-id picks the NEWEST orchestrator-*
+#         worktree's stash (not the oldest orphan in listing order):
+#         - empty layout, single-worktree common case
+#         - the repro: live (newest) wins over 5 accumulated older orphans
+#         - recency beats lexical name order
+#         - candidate without/with empty stash skipped for an older valid one
+#         - agent-* worktrees ignored; stash contents whitespace-trimmed
+#         - bad-usage cases (missing flag, unknown flag)
 #
 # Pure bash + `ps`. Run with:
 #   bash plugins/shipyard/scripts/tests/worktree-reap.test.sh
@@ -1340,6 +1349,130 @@ assert_equals "${result:-EMPTY}" "EMPTY" \
   "(66) no agent-ids → empty output"
 assert_exit_code "$exit_code" "0" \
   "(66a) no agent-ids → exit 0"
+
+# --- derive-session-id (issue #513) ---
+#
+# Build a synthetic worktrees layout under $tmpdir and exercise the
+# newest-by-mtime selection. The bug: the old `awk '...; exit'` derive
+# returned the FIRST orchestrator-* worktree in listing order — the oldest
+# orphan when prior crashed sessions accumulate — misattributing every
+# session-state write to a dead orphan's session file.
+
+echo
+echo "derive-session-id tests (issue #513)"
+echo
+
+dsi_repo="$tmpdir/dsi-repo"
+mkdir -p "$dsi_repo/.claude/worktrees"
+
+run_derive() {
+  bash "$helper" derive-session-id --repo-root "$dsi_repo" 2>/dev/null
+}
+
+reset_dsi_layout() {
+  rm -rf "$dsi_repo/.claude/worktrees"/orchestrator-* 2>/dev/null
+  rm -rf "$dsi_repo/.claude/worktrees"/agent-* 2>/dev/null
+}
+
+# Make an orchestrator worktree with a given session id and a controllable
+# mtime. `touch -t <YYYYMMDDhhmm>` sets the dir mtime portably (GNU + BSD).
+make_orch_wt() {
+  local sid="$1" mtime_stamp="$2"
+  local dir="$dsi_repo/.claude/worktrees/orchestrator-$sid"
+  mkdir -p "$dir"
+  printf '%s\n' "$sid" > "$dir/.shipyard-session-id"
+  touch -t "$mtime_stamp" "$dir"
+}
+
+# --- (67) no worktrees dir → empty output, exit 0 ---
+dsi_no_wt="$tmpdir/dsi-no-wt"
+mkdir -p "$dsi_no_wt"
+result=$(bash "$helper" derive-session-id --repo-root "$dsi_no_wt" 2>/dev/null)
+exit_code=$?
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(67) no .claude/worktrees dir → empty output"
+assert_exit_code "$exit_code" "0" \
+  "(67a) no .claude/worktrees dir → exit 0"
+
+# --- (68) single orchestrator worktree → its id (the common case) ---
+reset_dsi_layout
+make_orch_wt "do-work-only-session" "202606101200"
+result=$(run_derive)
+assert_equals "$result" "do-work-only-session" \
+  "(68) single orchestrator worktree → its session id"
+
+# --- (69) THE #513 repro: live session is NEWEST, orphans are older ---
+# 5 older orphans + 1 live session created "now". The old first-in-listing
+# derive returned the oldest orphan; newest-by-mtime must return the live one.
+reset_dsi_layout
+make_orch_wt "do-work-20260604T210804Z-81232" "202606042108"  # oldest orphan
+make_orch_wt "do-work-20260605T100000Z-00001" "202606051000"
+make_orch_wt "do-work-20260607T100000Z-00002" "202606071000"
+make_orch_wt "do-work-20260608T100000Z-00003" "202606081000"
+make_orch_wt "do-work-20260609T100000Z-00004" "202606091000"
+make_orch_wt "do-work-20260610T045915Z-99999" "202606100459"  # live (newest)
+result=$(run_derive)
+assert_equals "$result" "do-work-20260610T045915Z-99999" \
+  "(69) newest-by-mtime wins over 5 accumulated older orphans (the #513 repro)"
+
+# --- (70) reverse mtime ordering — recency, not name, decides ---
+# A lexically-LATER session id with an OLDER mtime must NOT win.
+reset_dsi_layout
+make_orch_wt "zzz-lexically-last-but-old" "202606010000"
+make_orch_wt "aaa-lexically-first-but-new" "202606100000"
+result=$(run_derive)
+assert_equals "$result" "aaa-lexically-first-but-new" \
+  "(70) newest mtime wins regardless of lexical name order"
+
+# --- (71) candidate without a stash is skipped in favor of an older one
+# that has one — correctness (a readable id) beats raw recency. ---
+reset_dsi_layout
+make_orch_wt "has-stash-but-older" "202606090000"
+# A newer worktree with NO stash file (half-set-up or already-cleaned).
+mkdir -p "$dsi_repo/.claude/worktrees/orchestrator-newer-no-stash"
+touch -t "202606100000" "$dsi_repo/.claude/worktrees/orchestrator-newer-no-stash"
+result=$(run_derive)
+assert_equals "$result" "has-stash-but-older" \
+  "(71) newer worktree without a stash is skipped; older one with a stash wins"
+
+# --- (72) empty stash contents are skipped ---
+reset_dsi_layout
+make_orch_wt "good-stash" "202606090000"
+mkdir -p "$dsi_repo/.claude/worktrees/orchestrator-empty-stash"
+: > "$dsi_repo/.claude/worktrees/orchestrator-empty-stash/.shipyard-session-id"
+touch -t "202606100000" "$dsi_repo/.claude/worktrees/orchestrator-empty-stash"
+result=$(run_derive)
+assert_equals "$result" "good-stash" \
+  "(72) empty .shipyard-session-id is skipped in favor of a non-empty one"
+
+# --- (73) agent-* worktrees are ignored (only orchestrator-* considered) ---
+reset_dsi_layout
+make_orch_wt "real-session" "202606090000"
+mkdir -p "$dsi_repo/.claude/worktrees/agent-deadbeef"
+printf '%s\n' "agent-should-not-win" > "$dsi_repo/.claude/worktrees/agent-deadbeef/.shipyard-session-id"
+touch -t "202606100000" "$dsi_repo/.claude/worktrees/agent-deadbeef"
+result=$(run_derive)
+assert_equals "$result" "real-session" \
+  "(73) agent-* worktrees are not candidates (only orchestrator-*)"
+
+# --- (74) stash with surrounding whitespace/newlines is trimmed ---
+reset_dsi_layout
+mkdir -p "$dsi_repo/.claude/worktrees/orchestrator-padded"
+printf '  do-work-padded-session  \n\n' > "$dsi_repo/.claude/worktrees/orchestrator-padded/.shipyard-session-id"
+touch -t "202606100000" "$dsi_repo/.claude/worktrees/orchestrator-padded"
+result=$(run_derive)
+assert_equals "$result" "do-work-padded-session" \
+  "(74) stash contents are whitespace-trimmed"
+
+# --- (75) bad usage: missing --repo-root → exit 64 ---
+bash "$helper" derive-session-id 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(75) derive-session-id without --repo-root → exit 64"
+
+# --- (75a) unknown flag → exit 64 ---
+bash "$helper" derive-session-id --repo-root "$dsi_repo" --bogus 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(75a) derive-session-id unknown flag → exit 64"
 
 echo
 if (( fail > 0 )); then
