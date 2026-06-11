@@ -241,7 +241,7 @@ Workable (remaining after session)               2   #<a>, #<b>   — OR reason 
 blocked:agent-hard label                         3   #A, #B, #C
 blocked:agent-soft label                         1   #S — will auto-clear at next-session backlog fetch
 Blocked (body reference)                         1   #D
-needs-triage / needs-design                      2   #E, #F
+needs-triage / decomposition                     2   #E, #F
 Awaiting refinement                              1   #R
 Awaiting human review                            1   #H
 Discussion                                       1   #G

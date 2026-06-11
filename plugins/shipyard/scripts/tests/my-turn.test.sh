@@ -110,11 +110,14 @@ if [[ -f "$cmd_path" ]]; then
     "command surfaces needs-human-review-labeled issues"
   assert_contains "$cmd_path" "needs-refinement" \
     "command surfaces needs-refinement-labeled issues"
-  # Issue #499: needs-design issues are dispatch-excluded by /do-work, so
+  # Issue #499: design-gated issues are dispatch-excluded by /do-work, so
   # /my-turn must surface them as a human-blocked decision item — otherwise
   # they fall through both loops and stack up with no path to a human.
-  assert_contains "$cmd_path" "needs-design" \
-    "command surfaces needs-design-labeled issues (issue #499)"
+  # Issue #515 folded the standalone needs-design label into needs-human-review;
+  # the design-gate is now surfaced via the needs-human-review bullet (asserted
+  # above), and the command documents the fold so the #499 intent is preserved.
+  assert_contains "$cmd_path" "design" \
+    "command surfaces design-gated issues (issue #499, via needs-human-review per #515)"
   assert_contains "$cmd_path" "draft" \
     "command surfaces stale draft PRs"
 
