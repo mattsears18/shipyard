@@ -145,32 +145,42 @@ if [[ -f "$workflow_path" ]]; then
   assert_contains "$workflow_path" "needs-human-review" \
     "Tier A includes 'needs-human-review' label"
 
-  # (7) Tier B labels (routing-only, alert-only) — at least the ones called
-  # out in the acceptance criteria. Per #300, blocked:agent split into
-  # -hard / -soft / (legacy) — all three are Tier B (the soft/hard split
-  # is a routing signal, not a security boundary).
+  # (7) Tier B labels (routing-only, alert-only) — assert against the actual
+  # `case` classifier pattern line (the one ending in `) ... tier=B`), not the
+  # whole file, since the header comment now mentions removed labels
+  # historically. Per #521 the Tier B set is:
+  #   P0|P1|P2|wontfix|blocked:agent-soft|needs-design|needs-triage|discussion
   #
-  # `needs-refinement` was eliminated in #520, so it must NOT appear in the
-  # Tier B `case` classifier pattern any more. The header comment may still
-  # mention it historically, so we assert against the specific case-pattern
-  # line (the one ending in `tier=B`'s match) rather than the whole file.
-  if grep -E '^\s*P0\|P1\|P2\|wontfix\|.*\)\s*$' "$workflow_path" | grep -q 'needs-refinement'; then
-    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
-      "Tier B case pattern no longer classifies 'needs-refinement' (#520)"
-    fail=$((fail+1))
-  else
-    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
-      "Tier B case pattern no longer classifies 'needs-refinement' (#520)"
-    pass=$((pass+1))
-  fi
+  # `needs-refinement` was eliminated in #520 and `blocked:agent-hard` /
+  # legacy `blocked:agent` in #521, so NONE of them may appear in the case
+  # pattern any more.
+  tierb_pattern=$(grep -E '^\s*P0\|P1\|P2\|wontfix\|.*\)\s*$' "$workflow_path")
+  # Each stale entry is matched as a whole case-alternative — bounded by `|` or
+  # the trailing `)` — so `blocked:agent` (the bare legacy label) does NOT
+  # spuriously match `blocked:agent-soft`, which is a distinct alternative.
+  for stale in 'needs-refinement' 'blocked:agent-hard' 'blocked:agent'; do
+    if printf '%s' "$tierb_pattern" | grep -qE "[|]${stale}[|)]"; then
+      printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+        "Tier B case pattern no longer classifies '$stale' (#520 / #521)"
+      fail=$((fail+1))
+    else
+      printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+        "Tier B case pattern no longer classifies '$stale' (#520 / #521)"
+      pass=$((pass+1))
+    fi
+  done
   assert_contains "$workflow_path" "wontfix" \
     "Tier B includes 'wontfix' label"
-  assert_contains "$workflow_path" "blocked:agent" \
-    "Tier B includes legacy 'blocked:agent' label (pre-#300 migration)"
-  assert_contains "$workflow_path" "blocked:agent-hard" \
-    "Tier B includes 'blocked:agent-hard' label (#300)"
-  assert_contains "$workflow_path" "blocked:agent-soft" \
-    "Tier B includes 'blocked:agent-soft' label (#300)"
+  # blocked:agent-soft remains Tier B (routing signal, unchanged by #521).
+  if printf '%s' "$tierb_pattern" | grep -q 'blocked:agent-soft'; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+      "Tier B case pattern still classifies 'blocked:agent-soft' (#300, unchanged by #521)"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+      "Tier B case pattern still classifies 'blocked:agent-soft' (#300, unchanged by #521)"
+    fail=$((fail+1))
+  fi
 
   # (8) Reverts tier A — must use both `--add-label` (on unlabeled events)
   # and `--remove-label` (on labeled events) to undo the actor's change.

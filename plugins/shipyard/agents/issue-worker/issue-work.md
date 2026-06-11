@@ -151,7 +151,7 @@ if [ "$CHANGED_FILES" = "0" ]; then
 fi
 ```
 
-**Why bail rather than retry.** If you've completed step 4 with no diff, one of three things happened: (a) the issue was already fixed by a prior PR and you didn't catch it during the verification-first read in step 2; (b) your implementation strategy was wrong and you noticed and reverted, leaving the worktree clean; (c) the issue is misclassified (docs-only, spec-clarification, can-be-closed-no-change). In all three cases the right action is to surface the empty state to the orchestrator with a `blocked:` return — the orchestrator's reconcile step will tag the issue `blocked:agent` and a human can route it. Opening an empty PR and letting the merge fire the `Closes #N` keyword corrupts the backlog signal and forces a re-open + investigation.
+**Why bail rather than retry.** If you've completed step 4 with no diff, one of three things happened: (a) the issue was already fixed by a prior PR and you didn't catch it during the verification-first read in step 2; (b) your implementation strategy was wrong and you noticed and reverted, leaving the worktree clean; (c) the issue is misclassified (docs-only, spec-clarification, can-be-closed-no-change). In all three cases the right action is to surface the empty state to the orchestrator with a `blocked:` return — the orchestrator's reconcile step will classify the bail (a refuse-class reason like this one lands `needs-human-review` per [#521](https://github.com/mattsears18/shipyard/issues/521)) and a human can route it. Opening an empty PR and letting the merge fire the `Closes #N` keyword corrupts the backlog signal and forces a re-open + investigation.
 
 **Scope: this check applies to issue-work mode only.** Do not propagate the guard to `fix-checks-only` / `fix-rebase` / `fix-main-ci` / `fix-failing-prs-batch`. Those modes can legitimately produce 0-file diffs — a fix-checks-only retry where the original CI failure resolved itself between dispatch and the agent's first read, a fix-rebase that's already up-to-date with main, etc. The phantom-merge failure mode is specific to issue-work because only issue-work writes `Closes #N` into the PR body; the other modes never auto-close an issue.
 
@@ -392,7 +392,7 @@ When your worktree was reaped mid-run (detected via the pre-write check in `ship
 
 > `reaped: my worktree was reaped while I was running — re-dispatch required (last push: <hash|none>)`
 
-The `reaped:` prefix is load-bearing: the orchestrator's step A reconcile treats it as a **retryable** outcome (re-enqueues the issue, does NOT add `blocked:agent`). Use this string verbatim — do not substitute `blocked:`.
+The `reaped:` prefix is load-bearing: the orchestrator's step A reconcile treats it as a **retryable** outcome (re-enqueues the issue, does NOT apply any block label — whereas a `blocked:` return is classified into `needs-human-review` / `blocked:agent-soft` / no-label per [#521](https://github.com/mattsears18/shipyard/issues/521)). Use this string verbatim — do not substitute `blocked:`.
 
 When blocked → return:
 

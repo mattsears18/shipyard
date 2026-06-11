@@ -1276,6 +1276,86 @@ assert_contains "$dont_path" \
   'issues/507' \
   "dont.md cites issue #507 where it notes a same-section soft-collision conflict is expected, not a worker failure"
 
+# ---------------------------------------------------------------------------
+# (N) blocked:agent-hard elimination (issue #521).
+#
+# #521 eliminates the blocked:agent-hard label, splitting its two populations:
+#   - refuse (no open `Blocked by #N` ref) → needs-human-review label
+#   - dependency-wait (bail names an open `#N`) → NO label; gated by the
+#     `Blocked by #N` body-reference filter (bucket 7 / step 4)
+# and deletes the now-redundant referential sweeps:
+#   - setup.md step 3d.2 sub-sweep a (the blocked:agent-hard referential clear)
+#   - steady-state.md step A.5 (the #245 mid-session referential sweep)
+# The legacy `blocked:agent` migration (sub-sweep b) is re-pointed to the same
+# refuse/dependency discriminator; sub-sweep c (blocked:agent-soft) is kept.
+# The GitHub label objects are NOT deleted — they're just no longer applied.
+my_turn_path="$repo_root/plugins/shipyard/commands/my-turn.md"
+
+# Bail handler routes refuses to needs-human-review and dependency-waits to no
+# label. The case-label table must list both routings.
+assert_contains "$steady_state_path" \
+  'issues/521' \
+  "steady-state.md cites issue #521 for the blocked:agent-hard elimination"
+assert_contains "$steady_state_path" \
+  'no label applied — the' \
+  "steady-state.md bail handler applies NO label for a dependency-wait (#521)"
+assert_contains "$steady_state_path" \
+  'label="needs-human-review"' \
+  "steady-state.md bail handler applies needs-human-review for a refuse (#521)"
+
+# No active `blocked:agent-hard` label op may survive (add OR remove) in the
+# orchestrator-state files — the label is no longer applied or swept. (Prose
+# mentions naming the eliminated label are fine; an actual `gh issue edit
+# ... --(add|remove)-label blocked:agent-hard` invocation is not.)
+assert_not_contains "$steady_state_path" \
+  '--add-label blocked:agent-hard' \
+  "steady-state.md no longer applies the blocked:agent-hard label (#521)"
+assert_not_contains "$steady_state_path" \
+  '--remove-label blocked:agent-hard' \
+  "steady-state.md no longer sweeps the blocked:agent-hard label (#521)"
+assert_not_contains "$setup_path" \
+  '--remove-label blocked:agent-hard' \
+  "setup.md step 3d.2 sub-sweep a (blocked:agent-hard referential clear) is deleted (#521)"
+assert_not_contains "$setup_path" \
+  '--add-label blocked:agent-hard' \
+  "setup.md no longer migrates the legacy label to blocked:agent-hard (#521)"
+
+# The step A.5 mid-session referential sweep is removed (its active heading is
+# replaced by a removal note).
+assert_not_contains "$steady_state_path" \
+  'A.5. Mid-session blocked-issue re-evaluation (fires on' \
+  "steady-state.md step A.5 mid-session referential sweep is removed (#521)"
+assert_contains "$steady_state_path" \
+  'A.5. (removed' \
+  "steady-state.md records the step A.5 removal note (#521)"
+
+# Sub-sweep b is re-pointed: it now applies needs-human-review (not -hard) on
+# the no-open-blocker branch.
+assert_contains "$setup_path" \
+  'migration (re-pointed per' \
+  "setup.md step 3d.2 sub-sweep b is re-pointed per #521"
+assert_contains "$setup_path" \
+  '--add-label needs-human-review' \
+  "setup.md sub-sweep b routes an unclassifiable legacy refuse to needs-human-review (#521)"
+
+# Dispatch-exclusion enumerations (step 4 + step-C re-check + drain fetch) must
+# drop blocked:agent-hard / legacy blocked:agent. We can't whole-file
+# assert_not_contains (prose still names the eliminated labels), so assert the
+# replacement enumeration shape instead: the step-4 dispatch-gate bullet now
+# leads with blocked:ci, not blocked:agent.
+assert_contains "$setup_path" \
+  'were dropped from this set' \
+  "setup.md step 4 documents dropping blocked:agent-hard / legacy blocked:agent from the dispatch-gate set (#521)"
+assert_contains "$drain_path" \
+  'were eliminated per' \
+  "drain.md termination fetch documents dropping blocked:agent-hard / legacy blocked:agent (#521)"
+
+# /my-turn no longer keys on blocked:agent-hard — refuses surface via
+# needs-human-review.
+assert_contains "$my_turn_path" \
+  'issues/521' \
+  "my-turn.md cites issue #521 for the refuse → needs-human-review re-routing"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

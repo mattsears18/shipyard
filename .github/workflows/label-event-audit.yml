@@ -7,7 +7,7 @@ name: Label-event audit
 #
 # Rationale (issue #140): `/shipyard:do-work` uses GitHub labels (`shipyard`,
 # `blocked:ci`, `needs-human-review`, `P0`-`P2`, `wontfix`,
-# `blocked:agent-hard`, `blocked:agent-soft`, etc.) as routing hints, but
+# `blocked:agent-soft`, etc.) as routing hints, but
 # does NOT verify who applied or removed each label. The
 # trusted-author check at dispatch
 # time (do-work.md step 1.7, step 2 bucket 0.5, step 4 client-side filter)
@@ -33,10 +33,13 @@ name: Label-event audit
 #   - Tier A (security-sensitive): `shipyard`, `blocked:ci`,
 #     `needs-human-review` — REVERT the actor's change AND comment.
 #   - Tier B (routing-only): `P0`, `P1`, `P2`, `wontfix`,
-#     `blocked:agent-hard`, `blocked:agent-soft`, legacy `blocked:agent`
-#     (pre-#300), `needs-design`, `needs-triage`, `discussion` — alert-only
-#     (comment), no automatic revert. (`needs-refinement` was removed from
-#     Tier B in #520 — the label was eliminated, so there's nothing to audit.)
+#     `blocked:agent-soft`, `needs-design`, `needs-triage`, `discussion` —
+#     alert-only (comment), no automatic revert. (`needs-refinement` was
+#     removed from Tier B in #520 — the label was eliminated, so there's
+#     nothing to audit. `blocked:agent-hard` and the legacy `blocked:agent`
+#     were removed in #521 — `blocked:agent-hard` no longer exists, and the
+#     legacy `blocked:agent` is no longer applied, so neither warrants an
+#     alert.)
 #   - Out of scope: free-form labels (`bug`, `enhancement`, `documentation`,
 #     `feature-request`, `good first issue`, `help wanted`, `invalid`,
 #     `question`, `user-feedback`) — those are tag-style and don't drive
@@ -238,10 +241,14 @@ jobs:
               tier=A
               ;;
             # Tier B (routing-only) — alert-only, no revert.
-            # blocked:agent-hard / blocked:agent-soft / legacy blocked:agent
-            # all alert; per #300 the soft/hard split is purely a routing
-            # signal so neither warrants a Tier A revert.
-            P0|P1|P2|wontfix|blocked:agent|blocked:agent-hard|blocked:agent-soft|needs-design|needs-triage|discussion)
+            # blocked:agent-soft alerts; per #300 the soft tier is purely a
+            # routing signal so it doesn't warrant a Tier A revert.
+            # blocked:agent-hard and the legacy blocked:agent were dropped in
+            # #521 — blocked:agent-hard no longer exists, and the legacy
+            # blocked:agent is no longer applied (step 3d.2's migration sweep
+            # moves any straggler off it), so neither warrants a label-mutation
+            # alert.
+            P0|P1|P2|wontfix|blocked:agent-soft|needs-design|needs-triage|discussion)
               tier=B
               ;;
             *)
