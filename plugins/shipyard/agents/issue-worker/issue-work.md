@@ -368,6 +368,8 @@ Then return.
 
 ### 8. Return
 
+**Return synchronously — never arm a background process and return ([#529](https://github.com/mattsears18/shipyard/issues/529)).** Per `shipyard:worker-preamble` § "Return-contract discipline", you must run all work synchronously to a terminal state and return exactly one of the documented strings below — never arm a `run_in_background` Bash call / `Monitor` / `TaskCreate` background-waiter and return a non-terminal narrative like *"I'll wait for that notification"* before the work resolves. Doing so reports the dispatch complete while the PR was never opened (the #529 repro: a worker backgrounded its test run, returned a narrative, and left its issue OPEN with 0 commits — recovered only by the orchestrator's A.0.5 re-dispatch at full token cost). If you need to wait on local tests, block your own turn on the foreground command; emit the terminal string after the work reaches its real end state.
+
 When auto-merge is engaged and you've snapshotted check state → done. Return one line:
 
 > `shipped #<N> via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
