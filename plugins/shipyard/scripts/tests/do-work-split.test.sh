@@ -1356,6 +1356,50 @@ assert_contains "$my_turn_path" \
   'issues/521' \
   "my-turn.md cites issue #521 for the refuse → needs-human-review re-routing"
 
+# (N) Never hand a workable issue to the human — attempt-then-escalate (#531).
+#
+# The orchestrator drained with workable, dispatchable self-filed follow-up
+# issues (#529, #530) still open and surfaced them to the human ("left for a
+# fresh run" / "say the word and I'll work them") instead of dispatching
+# workers — forcing the maintainer to manually re-instruct it. Root cause:
+# the termination assertion subtracted judgment-excluded candidates from the
+# "workable" net-new set, so the loop terminated while the MECHANICAL step-4
+# filter still had candidates. The fix lands in two coordinated surfaces:
+#   - dont.md gains a dispatch-loop rule forbidding the hand-off of a
+#     mechanically-workable issue to the human, naming the four invalid
+#     defer rationalizations and tying the legitimate defer set to the five
+#     defer_reason_class values.
+#   - drain.md termination-assertion step 4 specifies the workable count is
+#     MECHANICAL (step-4 client-side filter only, no judgment-exclusion);
+#     mechanical count > 0 forbids termination and requires dispatch.
+assert_contains "$dont_path" \
+  'issues/531' \
+  "dont.md cites issue #531 for the never-hand-workable-issue-to-human rule"
+assert_contains "$dont_path" \
+  "Don't hand a workable issue to the human" \
+  "dont.md carries the attempt-then-escalate dispatch-loop rule (#531)"
+assert_contains "$dont_path" \
+  'match none of the five' \
+  "dont.md ties the invalid defer rationalizations to the five defer_reason_class values (#531)"
+assert_contains "$dont_path" \
+  'Self-filed follow-ups re-enter the backlog like any other issue' \
+  "dont.md states self-filed follow-ups re-enter the backlog (#531)"
+assert_contains "$dont_path" \
+  'soft cap on the per-session count of issues filed by this session' \
+  "dont.md documents the bounded-regress soft-cap guard, not blanket refusal (#531)"
+assert_contains "$drain_path" \
+  'issues/531' \
+  "drain.md termination assertion cites issue #531"
+assert_contains "$drain_path" \
+  'The workable count is MECHANICAL, never discretionary' \
+  "drain.md step 4 specifies the workable count is mechanical, not discretionary (#531)"
+assert_contains "$drain_path" \
+  'MAY NOT judgment-exclude a candidate from this list' \
+  "drain.md step 4 forbids judgment-exclusion from the workable list (#531)"
+assert_contains "$drain_path" \
+  'the loop MUST NOT terminate' \
+  "drain.md step 4: mechanical count > 0 forbids termination and requires dispatch (#531)"
+
 # ----------------------------------------------------------------------
 # (N+1) Phantom-refire sibling-strand variant (issue #530).
 #
