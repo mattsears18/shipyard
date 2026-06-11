@@ -387,6 +387,25 @@ if [ "$is_terminal" = "false" ]; then
       --lock-pid "$lock_pid" \
       --phase "reconcile-A.0.5" 2>/dev/null || true
     git worktree prune 2>/dev/null || true
+
+    # Wasted-dispatch accounting (#529). A crash-like / narrative-non-terminal
+    # return that left NO recoverable work (no committed-but-unpushed branch,
+    # no dirty working tree → recovered_pr unset) is a fully-wasted dispatch:
+    # the worker armed a background waiter / returned a progress narrative and
+    # produced zero output, so this reap fully discards it and step C will
+    # re-dispatch the issue from scratch. Surface its cost in the end-of-session
+    # summary's `Wasted dispatches (#529)` line rather than absorbing it
+    # silently. A return that DID leave recoverable work (recovered_pr set above)
+    # produced shippable output and is NOT counted. Tokens come from the A.0
+    # attribution already computed for this dispatch.
+    if [ -z "${recovered_pr:-}" ]; then
+      # ${A05_DISPATCH_TOKENS} is the `total_tokens` the A.0 attribution
+      # extracted from this dispatch's <usage> block earlier in the turn
+      # (0 if the block was absent — the rarer full-payload-missing case).
+      wasted_narrative_dispatches=$(( ${wasted_narrative_dispatches:-0} + 1 ))
+      wasted_narrative_tokens=$(( ${wasted_narrative_tokens:-0} + ${A05_DISPATCH_TOKENS:-0} ))
+      echo "[reconcile-A.0.5] wasted dispatch (#529): non-terminal narrative, no recoverable work; counted (total now ${wasted_narrative_dispatches})"
+    fi
   fi
 fi
 ```

@@ -91,7 +91,7 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
 
    Synthetic diverts have no `originating_author_trust` field — always arm auto-merge directly; never gate on trust.
 
-8. **Return one line:**
+8. **Return one line** — synchronously, after the work reaches its real end state. Per `shipyard:worker-preamble` § "Return-contract discipline" ([#529](https://github.com/mattsears18/shipyard/issues/529)), do NOT arm a `run_in_background` process / `Monitor` / background-waiter and return a non-terminal narrative (e.g. *"I'll wait for the notification"*) before it resolves — that reports the dispatch complete while the work is stranded. Block your own turn on the foreground command if you must wait, then return exactly one of:
    - `shipped pr-batch-fix via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
    - `noop: pileup already cleared` — count fell below 10 between dispatch and pre-flight.
    - `blocked pr-batch-fix: <reason>` — no common root cause, or the fix is too large for one PR.

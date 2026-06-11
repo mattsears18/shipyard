@@ -334,7 +334,36 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md names the cwd-pinned-to-primary failure mode (issue #486)"
   assert_contains "$skill_path" "This guard runs in every worker mode" \
     "SKILL.md states the cwd fail-fast runs in every worker mode (issue #486)"
+
+  # Issue #529 — "Run all work synchronously — NEVER arm a background process
+  # and return" clause in the Return-contract discipline section. The clause
+  # exists because a worker that arms a run_in_background waiter / Monitor and
+  # returns a non-terminal progress narrative trips the harness into a
+  # `status: completed` while the actual work is stranded (no commit, no PR) —
+  # the orchestrator's A.0.5 re-dispatch recovers it but at full token cost
+  # (the #529 repro burned ~145k tokens for zero output on #522). Removing the
+  # clause regresses the run-synchronously-to-a-terminal-state contract.
+  assert_contains "$skill_path" "NEVER arm a background process and return" \
+    "SKILL.md forbids arming a background process and returning (issue #529)"
+  assert_contains "$skill_path" "run_in_background" \
+    "SKILL.md names run_in_background as a forbidden wait-then-return mechanism (issue #529)"
+  assert_contains "$skill_path" "stranded mid-flight" \
+    "SKILL.md names the stranded-work failure mode for a non-terminal return (issue #529)"
+  assert_contains "$skill_path" "block your own turn on a foreground call" \
+    "SKILL.md prescribes blocking on a foreground call as the correct wait mechanism (issue #529)"
 fi
+
+# (1b) Each per-mode spec's return section must reference the #529
+# synchronous-return clause so a worker reading only its own per-mode file
+# still sees the prohibition.
+for mode_file in issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch; do
+  mode_path="$repo_root/plugins/shipyard/agents/issue-worker/${mode_file}.md"
+  assert_file_exists "$mode_path" "per-mode spec ${mode_file}.md exists"
+  if [[ -f "$mode_path" ]]; then
+    assert_contains "$mode_path" "#529" \
+      "${mode_file}.md return section references the #529 synchronous-return clause"
+  fi
+done
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
 # the issue #154 split) must reference the skill. We count by the canonical
