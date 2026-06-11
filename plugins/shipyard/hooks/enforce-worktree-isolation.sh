@@ -11,17 +11,18 @@
 # omission impossible to ship.
 #
 # Guarded subagents (closes #293 — the original check only matched the
-# `shipyard:issue-worker` name exactly, silently passing through the four
+# `shipyard:issue-worker` name exactly, silently passing through the
 # model-pinned shims `shipyard:fix-checks-worker`, `shipyard:fix-rebase-worker`,
-# `shipyard:fix-main-ci-worker`, `shipyard:fix-pr-batch-worker`, which forward
-# to the same per-mode specs under agents/issue-worker/ and need the same
-# isolation guarantee):
+# `shipyard:fix-main-ci-worker`, `shipyard:fix-pr-batch-worker`,
+# `shipyard:investigate-worker`, which forward to the same per-mode specs
+# under agents/issue-worker/ and need the same isolation guarantee):
 #
 #   shipyard:issue-worker               (mode: issue-work — opus)
 #   shipyard:fix-checks-worker          (mode: fix-checks-only — haiku)
 #   shipyard:fix-rebase-worker          (mode: fix-rebase — haiku)
 #   shipyard:fix-main-ci-worker         (mode: fix-main-ci — sonnet)
 #   shipyard:fix-pr-batch-worker        (mode: fix-failing-prs-batch — sonnet)
+#   shipyard:investigate-worker         (mode: investigate — sonnet)
 #
 # Also guards the colon-namespaced form `shipyard:issue-worker:*` as
 # defense-in-depth in case a future shim ever uses that scheme.
@@ -49,6 +50,7 @@ case "$subagent" in
   shipyard:fix-rebase-worker | \
   shipyard:fix-main-ci-worker | \
   shipyard:fix-pr-batch-worker | \
+  shipyard:investigate-worker | \
   shipyard:issue-worker:* )
     ;;
   *)

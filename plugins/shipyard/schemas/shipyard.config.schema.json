@@ -104,6 +104,27 @@
         "fix_rebase": { "type": "string" },
         "fix_main_ci": { "type": "string" },
         "fix_failing_prs_batch": { "type": "string" },
+        "investigate": { "type": "string" },
+        "_comment": { "type": "string" }
+      }
+    },
+    "triage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls the investigate-then-fix worker mode for untriaged / Sentry-authored issues (issue #514). When the orchestrator dispatches `mode: investigate` against an untriaged issue, the worker investigates the crash, rewrites the body into a real spec, and dispositions into fix / needs-human / auto-close. These knobs cap the worker's auto-close authority and the per-session investigation budget. Phase 1 (#514) ships the static spec + routing + config surface; the orchestrator-side dispatch decision (which untriaged issues route to investigate-mode) is a deferred follow-up.",
+      "properties": {
+        "auto_close": {
+          "type": "string",
+          "enum": ["confident-only", "off", "aggressive"],
+          "default": "confident-only",
+          "description": "How much auto-close authority the investigate worker has for the not-actionable disposition. 'confident-only' (default) = close only certain noise (retry/backoff proven in-code, release rolled back) or exact-fingerprint duplicates; otherwise route to needs-human. 'off' = NEVER auto-close — always route non-actionable issues to needs-human for a person to close. 'aggressive' = also close low-confidence noise and near-duplicates (same root cause, different fingerprint)."
+        },
+        "max_investigations_per_session": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "Soft cap on investigate-mode dispatches per /do-work session. Investigation burns more tokens with lower merge yield than spec'd issue-work (a crash may disposition to needs-human or auto-close with no PR), so this caps the cost exposure. When null (default), no cap. When set, the orchestrator dispatches investigate-mode against at most this many untriaged issues per session and surfaces the rest in the end-of-session summary."
+        },
         "_comment": { "type": "string" }
       }
     },

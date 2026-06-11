@@ -146,7 +146,12 @@ DEFAULTS_JQ='{
     "fix_checks_only": "claude-haiku-4-5",
     "fix_rebase": "claude-haiku-4-5",
     "fix_main_ci": "claude-sonnet-4-6",
-    "fix_failing_prs_batch": "claude-sonnet-4-6"
+    "fix_failing_prs_batch": "claude-sonnet-4-6",
+    "investigate": "claude-sonnet-4-6"
+  },
+  "triage": {
+    "auto_close": "confident-only",
+    "max_investigations_per_session": null
   },
   "cost_tracking": {
     "enabled": true,
