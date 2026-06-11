@@ -162,22 +162,20 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "Nothing on your plate" \
     "command keeps the unchanged empty-state one-liner"
 
-  # Non-clearable blocked:agent-hard surfacing (issue #500). Before #500,
-  # /my-turn only surfaced a blocked:agent-hard issue when it was
-  # *clearable* (every `Blocked by #N` ref closed → P2 housekeeping). A
-  # GENUINE refuse — at least one referenced blocker still open, OR no
-  # `Blocked by` refs at all (a pure security/scope/prompt-injection refuse,
-  # the common case) — never surfaced, so it stacked up out of dispatch with
-  # no human handoff. The fix splits the signal: non-clearable → P1
-  # (decisions, "Claude gave up, a human must look"), clearable stays P2.
-  assert_contains "$cmd_path" "non-clearable" \
-    "command documents the non-clearable hard-block split (#500)"
-  assert_contains "$cmd_path" "clearable" \
-    "command documents the clearable-vs-non-clearable hard-block distinction (#500)"
+  # Agent-refuse surfacing (issues #500 → #521). #500 originally split the
+  # blocked:agent-hard signal by whether it was auto-clearable. #521
+  # eliminated the blocked:agent-hard label entirely: a refuse now carries
+  # needs-human-review (surfaced via the needs-human-review bucket) and a
+  # dependency-wait carries no label (auto-cleared by the `Blocked by #N`
+  # body-reference filter — nothing for /my-turn to surface). So /my-turn
+  # surfaces refuses via needs-human-review and the dedicated clearable /
+  # non-clearable blocked:agent-hard buckets are gone.
+  assert_contains "$cmd_path" "needs-human-review" \
+    "command surfaces agent refuses via the needs-human-review signal (#521)"
   assert_contains "$cmd_path" "Blocked by" \
-    "command keys the hard-block split on Blocked by #N reference state (#500)"
-  assert_contains "$cmd_path" "#500" \
-    "command cites issue #500 for the hard-block surfacing split"
+    "command still references Blocked by #N (the dependency-wait body-ref filter)"
+  assert_contains "$cmd_path" "#521" \
+    "command cites issue #521 for the blocked:agent-hard elimination / refuse re-routing"
 fi
 
 echo

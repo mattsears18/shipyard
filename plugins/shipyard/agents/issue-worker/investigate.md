@@ -180,7 +180,7 @@ One line, matching the disposition. These extend the `issue-work` vocabulary; th
 
 The `auto-merge:` and `checks:` suffix values for the fixable path are categorized exactly as in `issue-work` § 7 / `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" — including the `merged-direct-ungated` refinement. Re-use that categorization; don't invent a new one.
 
-**`reaped:` is retryable; `blocked:` is deterministic; `investigated+*` are terminal successes.** The orchestrator's reconcile re-enqueues on `reaped:`, tags `blocked:agent` on `blocked:`, and on any `investigated+*` treats the untriaged issue as dispositioned (removed from the untriaged queue) — that's how the backlog converges to binary.
+**`reaped:` is retryable; `blocked:` is deterministic; `investigated+*` are terminal successes.** The orchestrator's reconcile re-enqueues on `reaped:`, classifies `blocked:` per [#521](https://github.com/mattsears18/shipyard/issues/521) (refuse → `needs-human-review`, dependency-wait → no label / `Blocked by #N` body-ref filter, subjective → `blocked:agent-soft`), and on any `investigated+*` treats the untriaged issue as dispositioned (removed from the untriaged queue) — that's how the backlog converges to binary.
 
 ## Don't
 
