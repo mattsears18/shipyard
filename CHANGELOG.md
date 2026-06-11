@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.9.5 — 2026-06-11
+
+**Archived the Shipyard Workflow infographic.** The four-phase workflow diagram (Ideate / Build / Harden / Ship, with the build-loop re-run annotation and the idea-to-shipped timeline) is now preserved in the repo so the asset isn't lost. It isn't referenced from any doc yet — this is storage, not adoption.
+
+- **`docs/images/shipyard-workflow.png`** — new asset alongside the existing infographic and marketing images.
+
 ### 1.9.4 — 2026-06-11
 
 **Repo hygiene: local env files are now gitignored.** `.env` and `.env*.local` are excluded from version control so per-user environment values can't be committed by accident, in line with the secrets-stay-out-of-git posture (the config schema already rejects secret-shaped keys; this closes the sibling `.env` path).
