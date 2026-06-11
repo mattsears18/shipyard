@@ -71,6 +71,33 @@
 #     ancestor whose `comm` matches <comm-name> (default `claude`). Empty
 #     stdout if no match. Used to bootstrap SHIPYARD_ORCHESTRATOR_PID.
 #
+#   derive-session-id --repo-root <path>
+#     Issue #513 — recover THIS session's id from disk when the per-call
+#     env var doesn't persist (each Bash tool call is hermetic — see
+#     setup.md step 0.55). Reads `.shipyard-session-id` from the orchestrator
+#     worktree under <repo-root>/.claude/worktrees/orchestrator-*.
+#
+#     The naive `git worktree list --porcelain | awk '...; exit'` derive
+#     picked the FIRST orchestrator-* worktree in listing order, which is
+#     the OLDEST orphan when prior crashed sessions left their
+#     `orchestrator-<dead-id>` worktrees un-reaped. That misattributed every
+#     `session-state.sh` write to a dead orphan's session file (same-repo, so
+#     the --expected-repo guard did not catch it).
+#
+#     This subcommand instead selects the NEWEST `orchestrator-*` worktree by
+#     directory mtime — the live session's worktree was just created in
+#     setup.md step 0.5, so among coexisting orchestrator worktrees it is the
+#     most recently created. Strictly better than first-by-listing-order: it
+#     resolves to the live session even when orphans accumulate.
+#
+#     Stdout: the session id (contents of the chosen worktree's
+#       `.shipyard-session-id`, trailing newline stripped). Empty stdout when
+#       no orchestrator worktree exists or none carries a readable stash.
+#     Exit codes:
+#       0  a session id was printed, OR no candidate was found (empty stdout —
+#          the caller decides what an empty result means)
+#       64 bad usage (missing required flag, unknown flag)
+#
 #   find-orphan-orchestrators --repo-root <path> --current-session-id <id>
 #     Issue #280 — companion to step 1.6's orphan session-file sweep, but
 #     for the orchestrator worktrees themselves. If a prior /do-work
@@ -290,6 +317,7 @@ usage() {
 Usage:
   worktree-reap.sh classify-lock <lock-file-path> [--orchestrator-pid <N>]
   worktree-reap.sh detect-orchestrator-pid [<comm-name>]
+  worktree-reap.sh derive-session-id --repo-root <path>
   worktree-reap.sh find-orphan-orchestrators --repo-root <path> \
                                              --current-session-id <id>
   worktree-reap.sh reap-orphan-branches --repo-root <path> \
@@ -313,6 +341,15 @@ detect-orchestrator-pid — Walks the process-ancestor chain and prints the
                           no match. Useful for bootstrapping
                           SHIPYARD_ORCHESTRATOR_PID in shell snippets that
                           want classify-lock to short-circuit reliably.
+
+derive-session-id       — Issue #513. Prints THIS session's id by reading
+                          `.shipyard-session-id` from the NEWEST-by-mtime
+                          `orchestrator-*` worktree under
+                          <repo-root>/.claude/worktrees. Picking newest (not
+                          first-in-listing-order) resolves to the live session
+                          even when prior crashed sessions left orphan
+                          orchestrator worktrees behind. Empty stdout (exit 0)
+                          when no candidate carries a readable stash.
 
 find-orphan-orchestrators — Emits one path per line for each orphan
                           orchestrator worktree under
@@ -586,6 +623,106 @@ classify_lock() {
   fi
 
   echo "peer-alive"
+  return 0
+}
+
+# Issue #513 — recover THIS session's id from disk by reading the
+# `.shipyard-session-id` stash out of the orchestrator's own worktree.
+#
+# Background: setup.md step 0.55 stashes the session id at
+# `<orch-worktree>/.shipyard-session-id` and re-reads it at the top of every
+# Bash tool call, because the harness's per-call shells are hermetic (an
+# `export SESSION_ID=...` in call N is invisible in call N+1). The original
+# porcelain-derive used `awk '... {print p; exit}'` to find the orchestrator
+# worktree, which returns the FIRST `orchestrator-*` entry in listing order.
+# When prior crashed sessions left their `orchestrator-<dead-id>` worktrees
+# un-reaped, "first in listing order" is the OLDEST orphan — so the derive
+# read a dead orphan's stash and every `session-state.sh` write landed in
+# the orphan's session file (same repo, so `--expected-repo` never tripped).
+#
+# Fix: select the NEWEST `orchestrator-*` worktree by directory mtime. The
+# live session's worktree was created in step 0.5 (this run), so among any
+# set of coexisting orchestrator worktrees it is the most recently created.
+# Newest-by-mtime is a heuristic, but strictly better than first-by-listing-
+# order: it resolves to the live session whenever orphans coexist, and is a
+# no-op (single candidate) in the common case of exactly one orchestrator
+# worktree.
+#
+# We deliberately do NOT use `git worktree list` here — `git rev-parse`/`git
+# worktree list` are cwd-sensitive and the harness can relocate the
+# orchestrator's Bash cwd into a just-returned agent worktree (#477). A
+# direct filesystem glob of `<repo-root>/.claude/worktrees/orchestrator-*`
+# is cwd-independent given the explicit `--repo-root`.
+#
+# Stdout: the session id (stash contents, trailing whitespace stripped), or
+#   empty when no candidate exists or none has a readable stash.
+# Exit: 0 (printed or empty), 64 on bad usage.
+derive_session_id() {
+  local repo_root=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "derive-session-id: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "derive-session-id: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "derive-session-id: --repo-root is required" >&2
+    return 64
+  fi
+
+  local orch_root="$repo_root/.claude/worktrees"
+  # No worktrees dir at all → nothing to derive. Empty stdout, exit 0.
+  [ -d "$orch_root" ] || return 0
+
+  # Walk every orchestrator-* worktree and keep the one with the newest
+  # directory mtime that also carries a readable, non-empty stash. We require
+  # the stash to be present so a candidate without one (a half-set-up or
+  # already-cleaned worktree) never wins over an older worktree that DOES
+  # have the id — correctness beats recency when recency has no id to offer.
+  local entry newest_mtime="" newest_id="" mtime stash id
+  for entry in "$orch_root"/orchestrator-*; do
+    # No-glob-match fallthrough: bash leaves the literal pattern when nothing
+    # matches. Guard with `-d` so we silently skip.
+    [ -d "$entry" ] || continue
+
+    stash="$entry/.shipyard-session-id"
+    [ -f "$stash" ] || continue
+    # Strip surrounding whitespace/newlines from the stash contents.
+    id="$(tr -d '[:space:]' < "$stash" 2>/dev/null)"
+    [ -n "$id" ] || continue
+
+    # Portable mtime: GNU `stat -c %Y` and BSD/macOS `stat -f %m` differ, so
+    # try both. Fall back to 0 (oldest) if neither works, so a stat-less
+    # platform still picks *a* candidate deterministically (the last one
+    # scanned among those tied at 0).
+    mtime="$(stat -c %Y "$entry" 2>/dev/null || stat -f %m "$entry" 2>/dev/null || echo 0)"
+
+    if [ -z "$newest_mtime" ] || [ "$mtime" -ge "$newest_mtime" ] 2>/dev/null; then
+      newest_mtime="$mtime"
+      newest_id="$id"
+    fi
+  done
+
+  [ -n "$newest_id" ] && printf '%s\n' "$newest_id"
   return 0
 }
 
@@ -1345,6 +1482,14 @@ main() {
       # to do with an empty result.
       shift
       detect_orchestrator_pid "${1:-claude}"
+      ;;
+    derive-session-id)
+      # Issue #513 — recover THIS session's id from the newest-by-mtime
+      # orchestrator-* worktree's `.shipyard-session-id` stash, so the
+      # derive resolves to the live session rather than the oldest orphan.
+      # See the derive_session_id function's docstring for the algorithm.
+      shift
+      derive_session_id "$@"
       ;;
     find-orphan-orchestrators)
       # Issue #280 — enumerate orphan `orchestrator-*` worktrees from
