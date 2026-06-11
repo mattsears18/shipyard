@@ -299,7 +299,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 - **[Step 1](#1-resolve-repo--user)** — repo + user metadata (3 `gh` calls).
 - **[Step 2](#2-backlog-overview)** — issue universe (`gh issue list --state open` + `linked:pr` search). **Skipped under `--fast`** — but count refinement candidates (by source-signal scan — `user-feedback` / `## Open questions` / bot author, since the `needs-refinement` label was eliminated in [#520](https://github.com/mattsears18/shipyard/issues/520)), `blocked:ci`, `blocked:agent-soft`, and legacy `blocked:agent` issues first (see step 2's `--fast` note). (`blocked:agent-hard` was eliminated in [#521](https://github.com/mattsears18/shipyard/issues/521) — no count.)
 - **[Step 3d.1](#3-ensure-label-exists--recover-from-prior-session)** — `blocked:ci` PR list. Per-PR `events` + `commits` lookups are a second-tier parallel batch keyed off the first-tier result. **Skipped under `--fast`** (the initial `gh pr list --label blocked:ci --json number --jq 'length'` count still runs for advisory reporting — see step 3d.1's `--fast` note).
-- **[Step 3d.2](#3-ensure-label-exists--recover-from-prior-session)** — two sub-sweeps in sequence: legacy `blocked:agent` migration (re-pointed per [#521](https://github.com/mattsears18/shipyard/issues/521) — dependency-wait → no label, else → `needs-human-review`), `blocked:agent-soft` next-session sweep. (Sub-sweep a, the `blocked:agent-hard` referential clear, was deleted in [#521](https://github.com/mattsears18/shipyard/issues/521).) Per-issue blocker-state lookups (sub-sweep b) read through the [`blocker_state` cache](#08-blocker_state-cache-default-on). **Skipped under `--fast`** (the initial label counts still run for advisory reporting — see step 3d.2's `--fast` note).
+- **[Step 3d.2](#3-ensure-label-exists--recover-from-prior-session)** — five sub-sweeps in sequence: legacy `blocked:agent` migration (re-pointed per [#521](https://github.com/mattsears18/shipyard/issues/521) — dependency-wait → no label, else → `needs-human-review`), `blocked:agent-soft` next-session sweep, and three new legacy-label migration sweeps ([#537](https://github.com/mattsears18/shipyard/issues/537)) for `needs-design` → `needs-human-review`, `needs-decomposition`/`tracking` → `needs-human-review` + decomposition marker, and `blocked:agent-hard` → same refuse/dependency-wait discriminator as sub-sweep b. (Sub-sweep a, the `blocked:agent-hard` referential clear, was deleted in [#521](https://github.com/mattsears18/shipyard/issues/521).) Per-issue blocker-state lookups (sub-sweeps b and f) read through the [`blocker_state` cache](#08-blocker_state-cache-default-on). **Skipped under `--fast`** (the initial label counts still run for advisory reporting — see step 3d.2's `--fast` note).
 - **[Step 4.5a](#45-divert-checks-main-ci--pr-pileup)** — main CI status (`gh run list --branch <default-branch> --limit 60`). **Skipped under `--fast`** — `main_ci.status` left as `"unknown"`.
 - **[Step 4.5b](#45-divert-checks-main-ci--pr-pileup)** — all-authors failing-PR count. **Skipped under `--fast`** — `failing_pr_count_all` left as `0`.
 - **[Step 5](#5-snapshot-failing-prs)** — `@me` failing-PR snapshot.
@@ -946,9 +946,13 @@ When any GH-App aliases were added (one or more `<bot>[bot]` ↔ `app/<bot>` cro
 > gh pr list --repo <owner/repo> --state open --label blocked:ci --json number --jq 'length'
 > gh issue list --repo <owner/repo> --state open --label blocked:agent-soft --json number --jq 'length'
 > gh issue list --repo <owner/repo> --state open --label blocked:agent --json number --jq 'length'  # legacy (pre-#300, migrated by 3d.2 sub-sweep b)
+> gh issue list --repo <owner/repo> --state open --label needs-design --json number --jq 'length'  # legacy pre-#515, migrated by 3d.2 sub-sweep d
+> gh issue list --repo <owner/repo> --state open --label needs-decomposition --json number --jq 'length'  # legacy pre-#519, migrated by 3d.2 sub-sweep e
+> gh issue list --repo <owner/repo> --state open --label tracking --json number --jq 'length'  # legacy pre-#519, migrated by 3d.2 sub-sweep e
+> gh issue list --repo <owner/repo> --state open --label blocked:agent-hard --json number --jq 'length'  # legacy pre-#521, migrated by 3d.2 sub-sweep f
 > ```
 >
-> Save the four counts as `fast_skip_needs_refinement` (refinement candidates deferred), `fast_skip_blocked_ci`, `fast_skip_blocked_agent_soft`, and `fast_skip_blocked_agent_legacy`. Proceed immediately to step 3. (`blocked:agent-hard` was eliminated in [#521](https://github.com/mattsears18/shipyard/issues/521) — no `fast_skip_blocked_agent_hard` count.)
+> Save the counts as `fast_skip_needs_refinement` (refinement candidates deferred), `fast_skip_blocked_ci`, `fast_skip_blocked_agent_soft`, `fast_skip_blocked_agent_legacy`, `fast_skip_legacy_needs_design`, `fast_skip_legacy_needs_decomposition`, `fast_skip_legacy_tracking`, and `fast_skip_legacy_blocked_agent_hard`. Proceed immediately to step 3.
 
 Before any other setup, fetch every open issue and print an upfront summary of what will be worked on, what will be skipped, and why. The user reads this once at the start of the session and uses it to (a) calibrate expectations for how many issues this run will close, and (b) start unblocking the blocked work in parallel while the orchestrator runs. The summary is **informational only** — print it, then continue with step 3. No confirmation needed.
 
@@ -1047,6 +1051,10 @@ Auto-cleared this session:
   blocked:agent-soft → workable: <cleared_blocked_soft> issue(s)  (#S1, #S2, ...)  (next-session sweep — no held bucket)
   legacy blocked:agent → needs-human-review: <migrated_legacy_review> issue(s)  (#L1, ...)  (no open Blocked-by ref)
   legacy blocked:agent → no label (dependency-wait): <migrated_legacy_dep> issue(s)  (#L2, ...)  (open Blocked-by ref; body-ref filter gates)
+  legacy needs-design → needs-human-review: <migrated_needs_design> issue(s)  (#D1, ...)  (pre-#515 fold)
+  legacy needs-decomposition/tracking → needs-human-review + decomposition marker: <migrated_needs_decomp> issue(s)  (#E1, ...)  (pre-#519 fold)
+  legacy blocked:agent-hard → needs-human-review: <migrated_hard_review> issue(s)  (#F1, ...)  (no open Blocked-by ref)
+  legacy blocked:agent-hard → no label (dependency-wait): <migrated_hard_dep> issue(s)  (#F2, ...)  (open Blocked-by ref; body-ref filter gates)
 
 PR-side state:
   blocked:ci PRs: <c> total
@@ -1078,7 +1086,7 @@ Unblock recommendations (work these in parallel while /do-work runs):
 
 The **PR-side state** block prints whenever `<c> > 0`. Numbers come from `cleared_ciblocked` / `held_ciblocked` recorded by [step 3d.1](#3-ensure-label-exists--recover-from-prior-session).
 
-The **Auto-cleared this session** block prints when `cleared_blocked_soft > 0` or `migrated_legacy > 0` (= `migrated_legacy_dep + migrated_legacy_review`). Numbers come from step 3d.2. (The former `blocked:agent-hard` cleared/held counters were removed in [#521](https://github.com/mattsears18/shipyard/issues/521) with sub-sweep a.)
+The **Auto-cleared this session** block prints when `cleared_blocked_soft > 0` or `migrated_legacy > 0` (= `migrated_legacy_dep + migrated_legacy_review`) or any of the new legacy-migration counters `migrated_needs_design`, `migrated_needs_decomp`, `migrated_hard_review`, `migrated_hard_dep` is `> 0`. Numbers come from step 3d.2. Omit rows with a zero count. (The former `blocked:agent-hard` cleared/held counters were removed in [#521](https://github.com/mattsears18/shipyard/issues/521) with sub-sweep a; sub-sweeps d/e/f ([#537](https://github.com/mattsears18/shipyard/issues/537)) add migration lines for the #515/#519/#521 legacy labels.)
 
 Edge cases:
 
@@ -1247,9 +1255,9 @@ Record `cleared_ciblocked` and `held_ciblocked` (plus the matching PR-number arr
 
 **Regression guard.** The `commit_ts > label_ts` comparison enforces "auto-clear fires only when a new commit has landed since the label was applied." If the comparison can't be computed (head branch deleted, events aged out of the ~90-day pagination window, network blip), hold — the safe default is to preserve the block. See [RATIONALE → Step 3d sweeps](../do-work-RATIONALE.md#step-3d--why-the-blockedci--blockedagent-hard-sweeps-have-different-shapes).
 
-**3d.2. Migrate legacy `blocked:agent` + sweep `blocked:agent-soft`.** Two sub-sweeps running in sequence, both before step 4's backlog fetch. Closes [#521](https://github.com/mattsears18/shipyard/issues/521) — the former **sub-sweep a** (the `blocked:agent-hard` referential clear) is **deleted**: refuses no longer carry a block label (they carry `needs-human-review`, never auto-cleared by a sweep — a human clears it), and dependency-waits carry no label at all (the [`Blocked by #N` body-reference filter](#4-fetch--rank-the-backlog) in step 4 gates them and auto-clears the instant the blocker closes, so the label-plus-sweep was pure redundancy — see [steady-state.md's bail handler](./steady-state.md#a1-parse-the-return-string)). The companion [step A.5 mid-session referential sweep](./steady-state.md#a5-removed--521) is removed for the same reason. Sub-sweep b (legacy migration) is **re-pointed** to the #521 routing; sub-sweep c (`blocked:agent-soft`) is unchanged.
+**3d.2. Migrate legacy labels + sweep `blocked:agent-soft`.** Five sub-sweeps running in sequence, all before step 4's backlog fetch. Closes [#521](https://github.com/mattsears18/shipyard/issues/521) — the former **sub-sweep a** (the `blocked:agent-hard` referential clear) is **deleted**: refuses no longer carry a block label (they carry `needs-human-review`, never auto-cleared by a sweep — a human clears it), and dependency-waits carry no label at all (the [`Blocked by #N` body-reference filter](#4-fetch--rank-the-backlog) in step 4 gates them and auto-clears the instant the blocker closes, so the label-plus-sweep was pure redundancy — see [steady-state.md's bail handler](./steady-state.md#a1-parse-the-return-string)). The companion [step A.5 mid-session referential sweep](./steady-state.md#a5-removed--521) is removed for the same reason. Sub-sweep b (legacy migration) is **re-pointed** to the #521 routing; sub-sweep c (`blocked:agent-soft`) is unchanged. Sub-sweeps d/e/f ([#537](https://github.com/mattsears18/shipyard/issues/537)) migrate the remaining legacy gate labels left over from the [#515](https://github.com/mattsears18/shipyard/issues/515)/[#519](https://github.com/mattsears18/shipyard/issues/519)/[#521](https://github.com/mattsears18/shipyard/issues/521) folds: `needs-design` → `needs-human-review`; `needs-decomposition`/`tracking` → `needs-human-review` + `<!-- do-work-needs-decomposition -->` marker comment; `blocked:agent-hard` → same refuse/dependency-wait discriminator as sub-sweep b. All three sweeps are idempotent one-shot-per-issue (the old label is removed, so a second pass finds nothing to migrate).
 
-> **`--fast` skip:** When `--fast` is set, skip both sub-sweeps. The initial `blocked:agent`-family counts (`fast_skip_blocked_agent_soft`, `fast_skip_blocked_agent_legacy`) captured in step 2's `--fast` note are sufficient for the advisory summary — stale labels persist until the next normal session. Set every `cleared_*`, `migrated_*`, and `held_*` counter to 0.
+> **`--fast` skip:** When `--fast` is set, skip all five sub-sweeps. The initial label counts (`fast_skip_blocked_agent_soft`, `fast_skip_blocked_agent_legacy`, `fast_skip_legacy_needs_design`, `fast_skip_legacy_needs_decomposition`, `fast_skip_legacy_tracking`, `fast_skip_legacy_blocked_agent_hard`) captured in step 2's `--fast` note are sufficient for the advisory summary — stale labels persist until the next normal session. Set every `cleared_*`, `migrated_*`, and `held_*` counter to 0.
 
 Fire the initial issue lists (one per label) in the [setup parallelization batch](#07-setup-parallelization-contract-fire-once-batch); per-issue blocker lookups read through the [`blocker_state` cache](#08-blocker_state-cache-default-on). Serial loop shown for readability.
 
@@ -1327,7 +1335,109 @@ done
 
 No "held" bucket for soft labels — every soft-labeled issue is cleared at the start of every session. The re-stamping risk (worker bails for the same reason → soft label re-applied this session) is intentional: subjective bails get exactly one re-dispatch per session, and the in-session re-dispatch gate (orchestrator's `session_blocked_soft` map per [steady-state.md A.1](./steady-state.md#a1-parse-the-return-string)) prevents tight retry loops within the same session. The cost of clearing-then-immediately-re-stamping is one extra `gh issue edit` per issue per session — cheap relative to the cost of permanently hiding workable issues.
 
-**Order matters.** Sub-sweeps b → c run in sequence (sub-sweep a was deleted in [#521](https://github.com/mattsears18/shipyard/issues/521)). c runs after b so the soft sweep operates on the post-migration label set — a legacy `blocked:agent` issue migrated to `blocked:agent-soft` by a maintainer mid-window is swept by c on the same pass.
+**Sub-sweep d — legacy `needs-design` migration ([#537](https://github.com/mattsears18/shipyard/issues/537)).** [#515](https://github.com/mattsears18/shipyard/issues/515) folded `needs-design` into `needs-human-review`. Consumer repos still carrying pre-fold issues with `needs-design` would otherwise pass the step-4 dispatch filter (which only excludes `needs-human-review`, not the former `needs-design`). Simple one-to-one rename: add `needs-human-review`, remove `needs-design`, post one comment. The migration is idempotent — after the first pass no issues carry `needs-design`, so subsequent sessions iterate over an empty list in O(0).
+
+```bash
+# All open issues carrying the legacy `needs-design` label.
+gh issue list --repo <owner/repo> --state open --label needs-design --limit 200 \
+  --json number \
+  > /tmp/do-work-legacy-needs-design.json
+
+migrated_needs_design=0
+declare -a migrated_needs_design_numbers
+for n in $(jq -r '.[].number' /tmp/do-work-legacy-needs-design.json); do
+  # Add the current label first so the issue is never unlabelled mid-transition.
+  gh issue edit "$n" --repo <owner/repo> --add-label needs-human-review 2>/dev/null || true
+  gh issue edit "$n" --repo <owner/repo> --remove-label needs-design 2>/dev/null || true
+  gh issue comment "$n" --repo <owner/repo> --body "Migrated legacy \`needs-design\` → \`needs-human-review\` per [#537](https://github.com/mattsears18/shipyard/issues/537). The \`needs-design\` label was folded into \`needs-human-review\` in [#515](https://github.com/mattsears18/shipyard/issues/515) — \`/do-work\` now excludes \`needs-human-review\` issues from dispatch, so this issue remains gated until a human reviews and removes the label." 2>/dev/null || true
+  migrated_needs_design=$((migrated_needs_design + 1))
+  migrated_needs_design_numbers+=("$n")
+done
+```
+
+**Sub-sweep e — legacy `needs-decomposition` / `tracking` migration ([#537](https://github.com/mattsears18/shipyard/issues/537)).** [#519](https://github.com/mattsears18/shipyard/issues/519) folded the epic-decomposition pair into `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker. Issues still carrying the pre-fold labels would otherwise pass the step-4 filter. For each legacy epic issue: add `needs-human-review`, remove the legacy label, AND post a comment containing the `<!-- do-work-needs-decomposition -->` marker (the discriminator `/decompose-epic` uses to identify epic handoffs in the broader `needs-human-review` pool). The migration is idempotent — the legacy labels are removed on the first pass.
+
+```bash
+# Collect all open issues carrying needs-decomposition OR tracking (but NOT already
+# needs-human-review — already migrated by a prior pass or manually).
+gh issue list --repo <owner/repo> --state open --label needs-decomposition --limit 200 \
+  --json number,labels \
+  --jq '[.[] | select((.labels[].name | IN("needs-human-review")) | not) | {number}]' \
+  > /tmp/do-work-legacy-needs-decomp.json
+
+gh issue list --repo <owner/repo> --state open --label tracking --limit 200 \
+  --json number,labels \
+  --jq '[.[] | select((.labels[].name | IN("needs-human-review")) | not) | {number}]' \
+  >> /tmp/do-work-legacy-needs-decomp.json
+
+# Deduplicate (an issue could carry both labels) and process each once.
+migrated_needs_decomp=0
+declare -a migrated_needs_decomp_numbers
+for n in $(jq -r '.[].number' /tmp/do-work-legacy-needs-decomp.json | sort -un); do
+  gh issue edit "$n" --repo <owner/repo> --add-label needs-human-review 2>/dev/null || true
+  # Remove whichever legacy labels the issue carries (one or both).
+  gh issue edit "$n" --repo <owner/repo> --remove-label needs-decomposition 2>/dev/null || true
+  gh issue edit "$n" --repo <owner/repo> --remove-label tracking 2>/dev/null || true
+  # Post the marker comment. /decompose-epic keys off <!-- do-work-needs-decomposition -->
+  # to distinguish epic handoffs from other needs-human-review issues.
+  gh issue comment "$n" --repo <owner/repo> --body "<!-- do-work-needs-decomposition -->
+Migrated legacy \`needs-decomposition\`/\`tracking\` → \`needs-human-review\` per [#537](https://github.com/mattsears18/shipyard/issues/537). The epic-decomposition pair was folded into \`needs-human-review\` + the \`<!-- do-work-needs-decomposition -->\` marker in [#519](https://github.com/mattsears18/shipyard/issues/519). The marker above lets \`/decompose-epic\` find this issue among the broader \`needs-human-review\` pool and auto-shard it into dispatch-ready sub-issues." 2>/dev/null || true
+  migrated_needs_decomp=$((migrated_needs_decomp + 1))
+  migrated_needs_decomp_numbers+=("$n")
+done
+```
+
+**Sub-sweep f — legacy `blocked:agent-hard` migration ([#537](https://github.com/mattsears18/shipyard/issues/537)).** [#521](https://github.com/mattsears18/shipyard/issues/521) eliminated `blocked:agent-hard`, splitting it into refuses (`needs-human-review`) and dependency-waits (no label, body-ref filter gates). Pre-#521 sessions still carry `blocked:agent-hard` on open issues. Uses the same discriminator as sub-sweep b — presence of an open `Blocked by #N` reference — to route each legacy issue. Reads through the `blocker_state` cache.
+
+```bash
+# All open issues carrying the legacy `blocked:agent-hard` label.
+gh issue list --repo <owner/repo> --state open --label blocked:agent-hard --limit 200 \
+  --json number,body,labels \
+  --jq '[.[] | {number, body}]' \
+  > /tmp/do-work-legacy-hard-issues.json
+
+migrated_hard_dep=0      # → no label (dependency-wait, body-ref filter gates it)
+migrated_hard_review=0   # → needs-human-review (unclassifiable refuse)
+declare -a migrated_hard_dep_numbers
+declare -a migrated_hard_review_numbers
+for n in $(jq -r '.[].number' /tmp/do-work-legacy-hard-issues.json); do
+  body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body' /tmp/do-work-legacy-hard-issues.json)
+
+  # Same `Blocked by #N` extraction as sub-sweep b.
+  blockers=$(printf '%s' "$body" | grep -oiE 'blocked by[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)' \
+    | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
+  has_open_blocker=false
+  for b in $blockers; do
+    state="${blocker_state[$b]:-}"
+    if [ -z "$state" ]; then
+      state=$(gh issue view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null \
+        || gh pr view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null || echo "")
+      [ -z "$state" ] && state="unresolvable"
+      blocker_state[$b]="$state"
+    fi
+    case "$state" in OPEN) has_open_blocker=true; break ;; esac
+  done
+
+  if $has_open_blocker; then
+    # Dependency-wait: drop the legacy label; the body-ref filter gates dispatch.
+    gh issue edit "$n" --repo <owner/repo> --remove-label blocked:agent-hard 2>/dev/null || true
+    gh issue comment "$n" --repo <owner/repo> --body "Removed legacy \`blocked:agent-hard\` per [#537](https://github.com/mattsears18/shipyard/issues/537) / [#521](https://github.com/mattsears18/shipyard/issues/521). This issue carries an open \`Blocked by #N\` reference, so it's gated by the \`Blocked by #N\` body-reference filter (no label needed) and becomes workable automatically when the blocker closes." 2>/dev/null || true
+    migrated_hard_dep=$((migrated_hard_dep + 1))
+    migrated_hard_dep_numbers+=("$n")
+  else
+    # Refuse: route to needs-human-review.
+    gh issue edit "$n" --repo <owner/repo> --add-label needs-human-review 2>/dev/null || true
+    gh issue edit "$n" --repo <owner/repo> --remove-label blocked:agent-hard 2>/dev/null || true
+    gh issue comment "$n" --repo <owner/repo> --body "Migrated legacy \`blocked:agent-hard\` → \`needs-human-review\` per [#537](https://github.com/mattsears18/shipyard/issues/537) / [#521](https://github.com/mattsears18/shipyard/issues/521). The original label predates the refuse/dependency-wait split and carries no open \`Blocked by #N\` reference, so it's treated as a refuse: a human must review before re-dispatch. If the original block was subjective (cannot-reproduce / ambiguous / scope-judgment), swap the label to \`blocked:agent-soft\` to opt into next-session auto-clear." 2>/dev/null || true
+    migrated_hard_review=$((migrated_hard_review + 1))
+    migrated_hard_review_numbers+=("$n")
+  fi
+done
+```
+
+The sub-f migration runs **once per legacy issue** — after the first pass there are no more `blocked:agent-hard`-labeled issues. The label object is left registered (same rationale as `blocked:agent` in sub-sweep b) so a future audit can confirm zero open issues carry it before deletion.
+
+**Order matters.** Sub-sweeps b → c → d → e → f run in sequence (sub-sweep a was deleted in [#521](https://github.com/mattsears18/shipyard/issues/521)). c runs after b so the soft sweep operates on the post-migration label set — a legacy `blocked:agent` issue migrated to `blocked:agent-soft` by a maintainer mid-window is swept by c on the same pass. d/e/f run after c and operate on the post-b-migration state so no issue is processed by two sweeps in the same pass (the old label is always removed before the loop ends, making each sweep idempotent and one-shot-per-issue).
 
 ### 3.5 Refine pending issues
 
