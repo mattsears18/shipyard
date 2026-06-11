@@ -1,7 +1,7 @@
 name: User Feedback
 description: Share feedback from real-world usage (free-form — shipyard will refine it)
 title: "feedback: <one line>"
-labels: ["user-feedback", "needs-refinement", "needs-human-review"]
+labels: ["user-feedback", "needs-human-review"]
 body:
   - type: markdown
     attributes:

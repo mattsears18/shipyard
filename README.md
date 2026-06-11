@@ -154,9 +154,9 @@ Each audit runs in an isolated subagent, files its own issues using the shared `
 
 The loop has four phases, and the orchestrator drives them on every iteration of `/do-work`:
 
-1. **Inputs.** Issues arrive from multiple sources, all unified at the GitHub-issue layer. The `/audit` family files them autonomously — a Lighthouse pass on a live URL, a Chrome DevTools tour, a security sweep, an a11y audit, etc. — each finding becomes a labeled GitHub issue with severity (`P0`/`P1`/`P2`). Your app's feedback form posts raw user reports via a backend proxy that opens issues carrying `user-feedback`. Humans file issues through the [GitHub issue template chooser](.github/ISSUE_TEMPLATE/) (`bug_report`, `feature_request`, `user_feedback`). At intake, the [`intake-refinement-gate.yml`](.github/workflows/intake-refinement-gate.yml) workflow conditionally applies `needs-refinement` — external authors, bodies with unresolved `## Open questions`, bare one-liners, and bot-authored issues all get gated for refinement before any worker is dispatched.
+1. **Inputs.** Issues arrive from multiple sources, all unified at the GitHub-issue layer. The `/audit` family files them autonomously — a Lighthouse pass on a live URL, a Chrome DevTools tour, a security sweep, an a11y audit, etc. — each finding becomes a labeled GitHub issue with severity (`P0`/`P1`/`P2`). Your app's feedback form posts raw user reports via a backend proxy that opens issues carrying `user-feedback`. Humans file issues through the [GitHub issue template chooser](.github/ISSUE_TEMPLATE/) (`bug_report`, `feature_request`, `user_feedback`). There's no intake-time gate label — refinement candidates are detected just-in-time by `/refine-issues`' source-signal scan (external authors, bodies with unresolved `## Open questions`, bare one-liners, and bot-authored issues) as a pre-dispatch pass; the separate `external-author-gate.yml` still gates stranger-authored issues with `needs-human-review` at intake.
 
-2. **Refine.** `/refine-issues` reads each issue carrying the generic `needs-refinement` pipeline gate and branches by source signal: raw user-feedback issues get classified (`already-done` / `decline` / `legitimate`), preserved, and rewritten into engineering tickets with `needs-human-review` set; Claude-filed feature requests with open questions get reasonable defaults committed and become dispatch-eligible immediately; everything else falls through to `needs-triage` for human review. `needs-human-review` is **decoupled** from `needs-refinement` — only the user-feedback branch applies it. No code-modifying agent will touch user-feedback issues until `needs-human-review` is removed.
+2. **Refine.** `/refine-issues` scans every open issue for a refinement source signal — no persisted `needs-refinement` label (eliminated in [#520](https://github.com/mattsears18/shipyard/issues/520); candidacy is recomputed live) — and branches by signal: raw user-feedback issues get classified (`already-done` / `decline` / `legitimate`), preserved, and rewritten into engineering tickets with `needs-human-review` set; Claude-filed feature requests with open questions get reasonable defaults committed and become dispatch-eligible immediately; everything else with no automated path falls through to `needs-human-review` for human review. The resolve-defaults branch does NOT apply `needs-human-review` — only the user-feedback and fall-through branches do. No code-modifying agent will touch user-feedback issues until `needs-human-review` is removed.
 
 3. **Human review.** You scan the refined backlog, drop `needs-human-review` from the ones you want shipped, and run `/do-work`. This is the only required human step. Everything before it (audits filing, feedback refining) and everything after (dispatch, fix-up, merge) is autonomous. Use [`/my-turn`](plugins/shipyard/commands/my-turn.md) for a focused read-only view of what's actually blocked on you across PRs and issues.
 
@@ -166,7 +166,7 @@ The result: you write issues (or let `/audit` write them), you sign off on the u
 
 ### Label conventions
 
-Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent`, `blocked:ci`), and gate labels (`needs-refinement`, `needs-human-review`, `needs-triage`). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
+Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent`, `blocked:ci`), and gate labels (`needs-human-review`, `needs-triage`). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
 
 ### Observability — per-session token cost
 
@@ -231,7 +231,7 @@ The Sentry flow above is illustrative, not a case study — your mileage depends
 ### Caveats
 
 - **Quality of the upstream issue matters.** A clean Sentry stack trace is great; a one-line "something broke" issue is not. The better the auto-filer's report, the better the fix.
-- **User-feedback flows through refinement first.** Customer-support tools that file raw user complaints should label issues with `user-feedback` + `needs-human-review` (the `intake-refinement-gate.yml` workflow handles `needs-refinement` automatically) so `/refine-issues`' classify+rewrite branch cleans them up and a human signs off before shipyard touches them.
+- **User-feedback flows through refinement first.** Customer-support tools that file raw user complaints should label issues with `user-feedback` + `needs-human-review` (the `user-feedback` label is itself the source signal `/refine-issues` scans for) so `/refine-issues`' classify+rewrite branch cleans them up and a human signs off before shipyard touches them.
 - **Not everything is auto-fixable.** Shipyard returns `blocked` on issues it can't repro or for which it can't infer a fix. Those still need humans — but they were going to need humans anyway. The win is on the long tail of "easy fixes that just sat there."
 - **Set sane labels at the auto-filer.** Most integrations let you specify labels at the issue-creation API call. Apply a priority label (`P0`/`P1`/`P2`) so the orchestrator ranks them correctly.
 
@@ -244,7 +244,6 @@ The Sentry flow above is illustrative, not a case study — your mileage depends
   ISSUE_TEMPLATE/                # bug_report, feature_request, user_feedback templates
   PULL_REQUEST_TEMPLATE.md       # shown to anyone opening a PR
   workflows/
-    intake-refinement-gate.yml   # auto-applies `needs-refinement` at issue intake
     label-event-audit.yml        # alerts / reverts unauthorized label changes
     external-author-gate.yml     # gates PRs from external authors
     secret-scan.yml              # blocks committed secrets
@@ -382,7 +381,7 @@ The repo's [issue template chooser](.github/ISSUE_TEMPLATE/) routes filers into 
 - **`feature_request`** — propose new functionality; surfaces an `## Open questions` block that the [`/refine-issues`](plugins/shipyard/commands/refine-issues.md) `resolve-defaults` branch acts on.
 - **`user_feedback`** — raw, unstructured user reports; auto-labeled `user-feedback` and routed through the classify+rewrite refiner branch with `needs-human-review` gating.
 
-The `intake-refinement-gate.yml` workflow applies `needs-refinement` conditionally at intake (see [How it works](#how-it-works) above). Anyone opening a PR will see [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — fill it out so the reviewer has the context they need.
+Refinement candidates are detected just-in-time by `/refine-issues`' source-signal scan rather than a persisted intake gate label (see [How it works](#how-it-works) above; the `needs-refinement` label was eliminated in [#520](https://github.com/mattsears18/shipyard/issues/520)). Anyone opening a PR will see [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — fill it out so the reviewer has the context they need.
 
 ## Contributing
 

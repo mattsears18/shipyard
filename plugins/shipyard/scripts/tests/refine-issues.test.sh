@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Test: the /shipyard:refine-issues command file exists with the three-branch
-# source-branched refiner semantics, the intake-refinement-gate.yml workflow
-# encodes the four trigger conditions, and do-work.md / CLAUDE.md / README.md
-# all reference it with the decoupled needs-human-review semantics.
+# Test: the /shipyard:refine-issues command file detects refinement
+# candidates by a live source-signal scan (no persisted needs-refinement
+# label) with the three-branch source-branched refiner semantics, and
+# do-work.md / setup.md / CLAUDE.md / README.md / my-turn.md all reference
+# the post-#520 elimination consistently.
 #
-# `needs-refinement` is a generic pipeline gate ("this issue isn't ready for
-# /do-work dispatch — a refiner needs to process it first"). The refiner has
-# three source-branched paths: classify+rewrite (user-feedback),
-# resolve-defaults (open questions), and escalate-to-triage (fall-through).
-# `needs-human-review` is decoupled — only the classify+rewrite branch
-# applies it.
+# Binary-backlog phase 2 (#520) eliminated the `needs-refinement` label.
+# `/refine-issues` now scans every open issue for a source signal
+# (`user-feedback` label / `## Open questions` heading / bot author) and
+# branches: classify+rewrite (user-feedback), resolve-defaults (open
+# questions), fall-through (no recognizable pattern → needs-human-review).
+# The intake-refinement-gate.yml workflow was retired. The fall-through
+# home is needs-human-review (interim), NOT needs-triage.
 #
-# This test is the regression guard: if anyone deletes the command, drops a
-# branch from the source-branched refiner, removes the intake gate workflow,
-# or backs out the needs-human-review decoupling, the test fails.
+# This test is the regression guard: if anyone re-introduces the
+# needs-refinement label, restores the intake gate workflow, drops a branch
+# from the source-branched refiner, or routes the fall-through back to
+# needs-triage, the test fails.
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -36,7 +39,8 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 cmd_path="$repo_root/plugins/shipyard/commands/refine-issues.md"
-workflow_path="$repo_root/.github/workflows/intake-refinement-gate.yml"
+intake_workflow_path="$repo_root/.github/workflows/intake-refinement-gate.yml"
+external_gate_path="$repo_root/.github/workflows/external-author-gate.yml"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
 # After the issue #154 split, the do-work spec lives across an entry-router
 # + 5 per-phase files. Refinement-related content (step 2 bucketing, step 3a
@@ -58,6 +62,18 @@ assert_file_exists() {
     pass=$((pass+1))
   else
     printf '  %sFAIL%s  %s (missing: %s)\n' "$RED" "$RESET" "$label" "$path"
+    fail=$((fail+1))
+  fi
+}
+
+assert_file_absent() {
+  local path="$1"
+  local label="$2"
+  if [[ ! -e "$path" ]]; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s (still present: %s)\n' "$RED" "$RESET" "$label" "$path"
     fail=$((fail+1))
   fi
 }
@@ -90,10 +106,10 @@ assert_not_contains() {
   fi
 }
 
-echo "refine-issues / intake-refinement-gate regression tests"
+echo "refine-issues / signal-scan regression tests (#520)"
 echo
 
-# (1) Renamed command file exists with proper frontmatter.
+# (1) Command file exists with proper frontmatter.
 assert_file_exists "$cmd_path" "commands/refine-issues.md exists"
 
 if [[ -f "$cmd_path" ]]; then
@@ -112,21 +128,53 @@ if [[ -f "$cmd_path" ]]; then
     "refine-issues declares the classify+rewrite branch (user-feedback)"
   assert_contains "$cmd_path" "resolve-defaults" \
     "refine-issues declares the resolve-defaults branch (open questions)"
-  assert_contains "$cmd_path" "escalate-to-triage" \
-    "refine-issues declares the escalate-to-triage branch (fall-through)"
+  assert_contains "$cmd_path" "fall-through" \
+    "refine-issues declares the fall-through branch (no recognizable pattern)"
+
+  # #520: candidate detection is by LIVE SOURCE-SIGNAL SCAN, not a label
+  # fetch. The candidate query must NOT issue a `gh issue list ... --label
+  # needs-refinement` fetch. (Negation prose like "no --label
+  # needs-refinement filter" is fine — we check the actual command shape:
+  # a gh issue list invocation that filters on the eliminated label.)
+  assert_contains "$cmd_path" "source signal" \
+    "refine-issues detects candidates by source signal (#520)"
+  if grep -E 'gh issue list' "$cmd_path" | grep -q -- '--label needs-refinement'; then
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+      "refine-issues no longer fetches candidates via gh issue list --label needs-refinement (#520)"
+    fail=$((fail+1))
+  else
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+      "refine-issues no longer fetches candidates via gh issue list --label needs-refinement (#520)"
+    pass=$((pass+1))
+  fi
+
+  # The scan keys on the three live signals.
+  assert_contains "$cmd_path" "Open [qQ]uestions" \
+    "refine-issues scan detects the '## Open questions' heading signal"
+  assert_contains "$cmd_path" "user-feedback" \
+    "refine-issues scan keys on the user-feedback label signal"
+  assert_contains "$cmd_path" 'Bot' \
+    "refine-issues scan keys on the bot-author signal"
+
+  # #520: the fall-through home is needs-human-review, NOT needs-triage.
+  assert_contains "$cmd_path" "needs-human-review" \
+    "fall-through branch lands the no-pattern subset on needs-human-review (#520)"
+  assert_contains "$cmd_path" "escalated-to-human-review" \
+    "fall-through return string is refined: escalated-to-human-review (#520)"
+  # The interim-fall-through reasoning must be present (only the
+  # no-automated-path subset goes to the human queue, never auto-processable
+  # work).
+  assert_contains "$cmd_path" "no-automated-path" \
+    "refine-issues documents that only the no-automated-path subset escalates (#520)"
 
   # Resolve-defaults must NOT apply needs-human-review (the decoupling
-  # invariant from the issue body). Search for the spec line that
-  # explicitly forbids it.
+  # invariant). Search for the spec line that explicitly forbids it.
   assert_contains "$cmd_path" "Do NOT apply" \
     "refine-issues forbids applying needs-human-review from resolve-defaults"
 
-  # Escalate-to-triage must add needs-triage, not invent a new label.
-  assert_contains "$cmd_path" "needs-triage" \
-    "escalate-to-triage branch uses the existing needs-triage label"
-
   # Sentinel discipline — every branch's comments must start with the
-  # idempotency sentinel.
+  # idempotency sentinel (now the primary re-processing guard with no label
+  # to remove).
   assert_contains "$cmd_path" "<!-- do-work-refinement-agent -->" \
     "refine-issues preserves the sentinel comment for idempotency"
 
@@ -138,96 +186,25 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "Don't" \
     "refine-issues has a Don't section to scope non-goals"
 
-  # The needs-refinement description must reflect the generic pipeline
-  # gate semantics (not the legacy 'raw user feedback' phrasing).
-  assert_contains "$cmd_path" "Pipeline gate" \
-    "refine-issues describes needs-refinement as a pipeline gate"
+  # The elimination must be documented with the #520 reference.
+  assert_contains "$cmd_path" "520" \
+    "refine-issues cites #520 as the source of the needs-refinement elimination"
+
+  # The candidate-selection must not create or apply the needs-refinement
+  # label (a historical MENTION of the retired gate is fine).
+  assert_not_contains "$cmd_path" "gh label create needs-refinement" \
+    "refine-issues no longer creates the needs-refinement label (#520)"
+  assert_not_contains "$cmd_path" "--remove-label needs-refinement" \
+    "refine-issues no longer removes the needs-refinement label (no label to remove) (#520)"
 fi
 
-# (2) Intake-refinement-gate.yml workflow.
-assert_file_exists "$workflow_path" ".github/workflows/intake-refinement-gate.yml exists"
+# (2) The intake-refinement-gate.yml workflow must be GONE (#520).
+assert_file_absent "$intake_workflow_path" \
+  ".github/workflows/intake-refinement-gate.yml retired (#520)"
 
-if [[ -f "$workflow_path" ]]; then
-  # Triggers — opened (and reopened, so re-opening a closed issue re-
-  # evaluates the gate).
-  assert_contains "$workflow_path" "issues:" \
-    "intake gate triggers on issues events"
-  assert_contains "$workflow_path" "opened" \
-    "intake gate subscribes to opened event type"
-  assert_contains "$workflow_path" "reopened" \
-    "intake gate subscribes to reopened event type"
-
-  # Permissions — issues: write (to apply the label), contents: read
-  # (to read trusted-authors.txt).
-  assert_contains "$workflow_path" "issues: write" \
-    "intake gate has issues: write permission"
-  assert_contains "$workflow_path" "contents: read" \
-    "intake gate has contents: read permission"
-
-  # Trusted-author allowlist resolution mirrors do-work.md step 1.7 and
-  # label-event-audit.yml — file first, then API, then owner fallback.
-  assert_contains "$workflow_path" ".shipyard/trusted-authors.txt" \
-    "intake gate reads .shipyard/trusted-authors.txt"
-  assert_contains "$workflow_path" "collaborators" \
-    "intake gate falls back to collaborators API"
-  assert_contains "$workflow_path" "tr 'A-Z' 'a-z'" \
-    "intake gate lowercase-normalizes author login"
-
-  # GH App alias expansion (issue #296). Both `<name>[bot]` and `app/<name>`
-  # entries in the allowlist must cross-add the other shape, so a single
-  # file line matches the bot's issue regardless of which GitHub-API shape
-  # appears at comparison time.
-  assert_contains "$workflow_path" "expand_aliases" \
-    "intake gate defines the expand_aliases helper (issue #296)"
-  assert_contains "$workflow_path" 'app/' \
-    "intake gate's alias helper handles the app/ prefix shape"
-  assert_contains "$workflow_path" '[bot]' \
-    "intake gate's alias helper handles the [bot] suffix shape"
-
-  # All four trigger conditions must be encoded.
-  assert_contains "$workflow_path" "Open [qQ]uestions" \
-    "intake gate detects '## Open questions' heading (condition 2)"
-  assert_contains "$workflow_path" "Bot" \
-    "intake gate handles bot-authored issues (condition 4)"
-  assert_contains "$workflow_path" "200" \
-    "intake gate's one-liner length heuristic threshold"
-  assert_contains "$workflow_path" "no headings" \
-    "intake gate's one-liner heuristic mentions the no-headings condition"
-
-  # The label that gets applied — needs-refinement is the gate.
-  assert_contains "$workflow_path" "needs-refinement" \
-    "intake gate applies the needs-refinement label"
-  # And the workflow creates the label idempotently first (matches
-  # do-work.md step 3a + refine-issues.md step 2 convention).
-  assert_contains "$workflow_path" "gh label create needs-refinement" \
-    "intake gate creates needs-refinement label idempotently before applying"
-
-  # Security-injection guards — every event-supplied value must go
-  # through env vars, never interpolated into run: blocks directly.
-  # Mirrors external-author-gate.yml + label-event-audit.yml.
-  assert_contains "$workflow_path" "AUTHOR: \${{ github.event.issue.user.login }}" \
-    "intake gate passes author login through env (not run: interpolation)"
-  assert_contains "$workflow_path" "BODY: \${{ github.event.issue.body }}" \
-    "intake gate passes body through env (not run: interpolation)"
-  assert_contains "$workflow_path" "ISSUE: \${{ github.event.issue.number }}" \
-    "intake gate passes issue number through env"
-
-  # Actions pinned by full SHA (repo convention).
-  if grep -E 'actions/checkout@[0-9a-f]{40}' "$workflow_path" >/dev/null 2>&1; then
-    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
-      "actions/checkout is pinned by full SHA (40 chars)"
-    pass=$((pass+1))
-  else
-    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
-      "actions/checkout is NOT pinned by full SHA"
-    fail=$((fail+1))
-  fi
-
-  # Workflow-injection forbidden patterns — must not echo the body /
-  # title / author directly in run: blocks.
-  assert_not_contains "$workflow_path" "echo \"\${{ github.event.issue.body }}\"" \
-    "intake gate does not echo body directly into run: (injection-safe)"
-fi
+# The separate security gate stays untouched.
+assert_file_exists "$external_gate_path" \
+  ".github/workflows/external-author-gate.yml still present (separate security gate)"
 
 # (3) do-work spec — the entry exists, and the setup phase carries the
 # refinement-related steps (step 2 bucketing, step 3a label setup, step 3.5
@@ -236,43 +213,73 @@ fi
 assert_file_exists "$do_work_path" "commands/do-work.md exists (thin entry)"
 assert_file_exists "$do_work_setup_path" "commands/do-work/setup.md exists (setup phase)"
 if [[ -f "$do_work_setup_path" ]]; then
-  # Step 3.5 must invoke /refine-issues.
+  # Step 3.5 must still invoke /refine-issues.
   assert_contains "$do_work_setup_path" "/refine-issues" \
     "do-work/setup.md step 3.5 invokes /refine-issues"
 
-  # needs-triage label-create must be in step 3a (the escalate-to-triage
-  # branch depends on it existing).
-  assert_contains "$do_work_setup_path" "gh label create needs-triage" \
-    "do-work/setup.md step 3a creates the needs-triage label idempotently"
+  # #520: the step-4 client-side dispatch-gate filter line must no longer
+  # ENUMERATE needs-refinement as an active backtick-quoted gate label. The
+  # line may still MENTION the elimination in prose ("needs-refinement was
+  # eliminated entirely"), so we check the active enumeration form
+  # specifically: the backtick-comma sequence `needs-refinement`, that only
+  # appears inside the comma-separated active label list, never in prose.
+  # shellcheck disable=SC2016  # literal backticks in the grep pattern are intentional (matching markdown)
+  if grep -E 'Drop issues carrying any of the dispatch-gate labels' "$do_work_setup_path" \
+       | grep -qF '`needs-refinement`,'; then
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+      "do-work/setup.md step 4 dispatch-gate list no longer enumerates needs-refinement (#520)"
+    fail=$((fail+1))
+  else
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+      "do-work/setup.md step 4 dispatch-gate list no longer enumerates needs-refinement (#520)"
+    pass=$((pass+1))
+  fi
 
-  # The bucket-5.4 description must reflect the generic-gate semantics.
-  assert_contains "$do_work_setup_path" "generic pipeline gate" \
-    "do-work/setup.md step 2 describes needs-refinement as a generic gate"
+  # The setup label-create block must no longer create needs-refinement.
+  assert_not_contains "$do_work_setup_path" "gh label create needs-refinement" \
+    "do-work/setup.md no longer creates the needs-refinement label (#520)"
+
+  # Step 3.5 prose must reflect the signal-scan, not a label fetch.
+  assert_contains "$do_work_setup_path" "source signal" \
+    "do-work/setup.md step 3.5 describes the source-signal scan (#520)"
+
+  # needs-human-review label-create must still be in the setup block.
+  assert_contains "$do_work_setup_path" "gh label create needs-human-review" \
+    "do-work/setup.md still creates the needs-human-review label"
 fi
 
-# (4) my-turn.md — the needs-refinement bucket references /shipyard:refine-issues.
+# (4) my-turn.md — still references /shipyard:refine-issues, and reframes a
+# stale needs-refinement label as a housekeeping nudge (the label object is
+# left for manual cleanup).
 assert_file_exists "$my_turn_path" "commands/my-turn.md exists"
 if [[ -f "$my_turn_path" ]]; then
   assert_contains "$my_turn_path" "/shipyard:refine-issues" \
     "my-turn.md references /shipyard:refine-issues"
+  assert_contains "$my_turn_path" "520" \
+    "my-turn.md reframes the needs-refinement signal as a stale-label nudge (#520)"
 fi
 
-# (5) CLAUDE.md — describes the generic-gate label semantics.
+# (5) CLAUDE.md — documents the needs-refinement elimination.
 assert_file_exists "$claude_md_path" "CLAUDE.md exists"
 if [[ -f "$claude_md_path" ]]; then
-  assert_contains "$claude_md_path" "generic pipeline gate" \
-    "CLAUDE.md describes needs-refinement as a generic pipeline gate"
-  assert_contains "$claude_md_path" "decoupled" \
-    "CLAUDE.md documents the needs-human-review decoupling"
+  assert_contains "$claude_md_path" "eliminated" \
+    "CLAUDE.md documents the needs-refinement elimination"
+  assert_contains "$claude_md_path" "source-signal scan" \
+    "CLAUDE.md documents the source-signal scan replacement"
+  assert_contains "$claude_md_path" "520" \
+    "CLAUDE.md cites #520 for the elimination"
 fi
 
-# (6) README.md — slash command list mentions /refine-issues.
+# (6) README.md — slash command list mentions /refine-issues, and no longer
+# references an intake gate workflow applying needs-refinement.
 assert_file_exists "$readme_path" "README.md exists"
 if [[ -f "$readme_path" ]]; then
   assert_contains "$readme_path" "/refine-issues" \
     "README.md slash-command list mentions /refine-issues"
   assert_contains "$readme_path" "refine-issues.md" \
     "README.md repo layout lists refine-issues.md"
+  assert_not_contains "$readme_path" "intake-refinement-gate.yml" \
+    "README.md no longer references the retired intake-refinement-gate.yml (#520)"
 fi
 
 echo

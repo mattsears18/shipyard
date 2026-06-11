@@ -65,9 +65,9 @@
     </g>
     <g font-size="12">
       <rect x="120" y="556" width="184" height="24" rx="12" ry="12" fill="#1a2a4a" stroke="#3a5380"/>
-      <text x="212" y="572" fill="#cbd5e8" text-anchor="middle">intake-refinement-gate.yml</text>
+      <text x="212" y="572" fill="#cbd5e8" text-anchor="middle">/refine-issues signal-scan</text>
     </g>
-    <text x="120" y="600" fill="#7a8aaf" font-size="12">applies needs-refinement at intake</text>
+    <text x="120" y="600" fill="#7a8aaf" font-size="12">detects refine candidates pre-dispatch</text>
   </g>
 
   <!-- Stage 2: Refine + Review -->

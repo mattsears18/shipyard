@@ -149,8 +149,20 @@ if [[ -f "$workflow_path" ]]; then
   # out in the acceptance criteria. Per #300, blocked:agent split into
   # -hard / -soft / (legacy) — all three are Tier B (the soft/hard split
   # is a routing signal, not a security boundary).
-  assert_contains "$workflow_path" "needs-refinement" \
-    "Tier B includes 'needs-refinement' label"
+  #
+  # `needs-refinement` was eliminated in #520, so it must NOT appear in the
+  # Tier B `case` classifier pattern any more. The header comment may still
+  # mention it historically, so we assert against the specific case-pattern
+  # line (the one ending in `tier=B`'s match) rather than the whole file.
+  if grep -E '^\s*P0\|P1\|P2\|wontfix\|.*\)\s*$' "$workflow_path" | grep -q 'needs-refinement'; then
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+      "Tier B case pattern no longer classifies 'needs-refinement' (#520)"
+    fail=$((fail+1))
+  else
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+      "Tier B case pattern no longer classifies 'needs-refinement' (#520)"
+    pass=$((pass+1))
+  fi
   assert_contains "$workflow_path" "wontfix" \
     "Tier B includes 'wontfix' label"
   assert_contains "$workflow_path" "blocked:agent" \
