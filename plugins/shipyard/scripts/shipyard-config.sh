@@ -128,7 +128,6 @@ DEFAULTS_JQ='{
     "blocked_hard": "blocked:agent-hard",
     "blocked_soft": "blocked:agent-soft",
     "ci_blocked": "blocked:ci",
-    "needs_refinement": "needs-refinement",
     "needs_human_review": "needs-human-review",
     "needs_triage": "needs-triage",
     "user_feedback": "user-feedback"

@@ -98,7 +98,7 @@ The full label reference lives in [`CLAUDE.md`](./CLAUDE.md#label-conventions). 
 - **Origin labels** ([CLAUDE.md → Origin labels](./CLAUDE.md#origin-labels)) — `user-feedback`, `audit:<dimension>`. Applied at intake, never removed.
 - **Session-stamp label** ([CLAUDE.md → Session-stamp label](./CLAUDE.md#session-stamp-label)) — `shipyard` on every PR `/do-work` produces.
 - **State labels** ([CLAUDE.md → State labels](./CLAUDE.md#state-labels-auto-managed)) — `blocked:agent`, `blocked:ci`. Auto-managed.
-- **Gate labels** ([CLAUDE.md → Gate labels](./CLAUDE.md#gate-labels-intake--human-review)) — `needs-refinement`, `needs-human-review`, `needs-triage`. Gate issues through refinement and human review before any code-modifying agent runs.
+- **Gate labels** ([CLAUDE.md → Gate labels](./CLAUDE.md#gate-labels-intake--human-review)) — `needs-human-review`, `needs-triage`. Gate issues through human review before any code-modifying agent runs. (Refinement is now a just-in-time source-signal scan rather than a persisted `needs-refinement` gate label — eliminated in [#520](https://github.com/mattsears18/shipyard/issues/520).)
 - **Priority labels** — `P0` / `P1` / `P2`. Severity buckets per [`audit-rubrics`](./plugins/shipyard/skills/audit-rubrics/SKILL.md).
 
 If you're adding a new origin / state / gate label, document it in `CLAUDE.md` alongside the existing class — that's the source of truth.

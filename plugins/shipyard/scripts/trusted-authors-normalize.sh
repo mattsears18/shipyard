@@ -116,8 +116,10 @@ else
 fi
 
 # Strip comments, strip whitespace, drop blanks, lowercase. The pipeline
-# mirrors the convention setup.md step 1.7, intake-refinement-gate.yml,
-# and label-event-audit.yml all use to canonicalize an allowlist file.
+# mirrors the convention setup.md step 1.7, external-author-gate.yml, and
+# label-event-audit.yml all use to canonicalize an allowlist file.
+# (intake-refinement-gate.yml was retired in #520 — it used the same
+# pipeline before the refinement gate was eliminated.)
 normalized=$(printf '%s\n' "$raw" \
   | sed -e 's/#.*$//' -e 's/[[:space:]]//g' \
   | grep -v '^$' \

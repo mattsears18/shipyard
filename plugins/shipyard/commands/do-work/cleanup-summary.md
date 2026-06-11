@@ -296,7 +296,7 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 
 ⚠️  --fast was used this session — skipped:
   - Backlog overview UI (step 2)
-  - /refine-issues (step 3.5): <fast_skip_needs_refinement> issue(s) still carry needs-refinement
+  - /refine-issues (step 3.5): <fast_skip_needs_refinement> issue(s) match a refinement source signal (unrefined this session)
   - blocked:ci sweep (step 3d.1): <fast_skip_blocked_ci> PR(s) may have recoverable CI
   - blocked:agent-hard sweep (step 3d.2 sub-sweep a): <fast_skip_blocked_agent_hard> issue(s) may have all blockers closed
   - blocked:agent-soft sweep (step 3d.2 sub-sweep c): <fast_skip_blocked_agent_soft> issue(s) would auto-clear under normal session
