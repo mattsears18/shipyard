@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.9.4 — 2026-06-11
+
+**Repo hygiene: local env files are now gitignored.** `.env` and `.env*.local` are excluded from version control so per-user environment values can't be committed by accident, in line with the secrets-stay-out-of-git posture (the config schema already rejects secret-shaped keys; this closes the sibling `.env` path).
+
+- **`.gitignore`** — new "local env files" section ignoring `.env` and `.env*.local`.
+
 ### 1.9.3 — 2026-06-11
 
 **The dispatch loop may no longer hand a *mechanically-workable* issue to the human — attempt-then-escalate, never escalate-without-attempting** (#531, PR #532). A `/do-work` session terminated with two workable, dispatchable self-filed follow-up issues (#529, #530) still open and surfaced them to the maintainer as "left for a fresh run" / "say the word and I'll work them" — forcing an explicit re-instruction to finish work the orchestrator had itself filed and was capable of doing. Root cause: the termination assertion subtracts `deferred_issues` from the live backlog before checking net-new, and the orchestrator *judgment-excluded* its own just-filed issues from the "workable" set (rationalizing "they're meta-issues about the orchestrator" / "#530 rewrites the reconcile path I'm running" / "avoid infinite-regress"), so the loop declared termination while the mechanical step-4 filter still had candidates. None of those rationalizations matches any of the five `defer_reason_class` values, so the defer was off-book. The fix makes the bypass impossible to construct: `drain.md`'s termination-assertion step 4 now specifies the workable net-new count is computed by the **mechanical** step-4 client-side filter alone — the orchestrator may not judgment-exclude candidates — and a mechanical count > 0 forbids termination and requires dispatch. `dont.md` gains the load-bearing dispatch-loop rule, naming the four invalid rationalizations, tying the legitimate defer set to the five `defer_reason_class` values, affirming self-filed follow-ups re-enter the backlog like any other issue, and noting the correct bounded-regress guard is a soft per-session cap on self-filed-this-session issues — never a blanket refusal to work them.

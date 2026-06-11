@@ -6,3 +6,7 @@ docs/superpowers/
 .claude/hooks/*
 !.claude/hooks/stop-shellcheck.sh
 .shipyard/
+
+# local env files
+.env
+.env*.local
