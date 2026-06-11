@@ -38,7 +38,7 @@ Bail with `blocked` if any of:
 
 - Issue state is `CLOSED`.
 - Issue has an assignee that isn't the authenticated `gh` user (someone else picked it up).
-- Issue carries `blocked` / `wontfix` / `needs-design` / `needs-human` labels (a prior investigate dispatch already dispositioned it to the human queue — don't re-investigate). **`needs-triage` is NOT a bail label in this mode** — it's the *entry* condition. That's the whole point: investigate-mode is the one mode that works `needs-triage` issues.
+- Issue carries `blocked` / `wontfix` / `needs-human` / `needs-human-review` labels (a prior investigate dispatch already dispositioned it to the human queue — don't re-investigate; `needs-human` is investigate-mode's own human-queue disposition label per [#514](https://github.com/mattsears18/shipyard/issues/514), and `needs-human-review` subsumes the former `needs-design` design-gate per [#515](https://github.com/mattsears18/shipyard/issues/515)). **`needs-triage` is NOT a bail label in this mode** — it's the *entry* condition. That's the whole point: investigate-mode is the one mode that works `needs-triage` issues.
 - **Any open PR references this issue with a closing keyword** — return `blocked: PR #<M> already open for this issue`.
 
 ### 1. Self-assign (soft lock)
