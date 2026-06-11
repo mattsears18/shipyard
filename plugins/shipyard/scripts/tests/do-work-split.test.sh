@@ -1303,10 +1303,11 @@ assert_contains "$steady_state_path" \
   'label="needs-human-review"' \
   "steady-state.md bail handler applies needs-human-review for a refuse (#521)"
 
-# No active `blocked:agent-hard` label op may survive (add OR remove) in the
-# orchestrator-state files — the label is no longer applied or swept. (Prose
-# mentions naming the eliminated label are fine; an actual `gh issue edit
-# ... --(add|remove)-label blocked:agent-hard` invocation is not.)
+# The blocked:agent-hard label is never APPLIED in any orchestrator-state file —
+# it was eliminated in #521. However, setup.md step 3d.2 sub-sweep f (#537)
+# legitimately REMOVES the legacy label for migration purposes (same pattern as
+# sub-sweep b for `blocked:agent`), so --remove-label is allowed in setup.md only.
+# steady-state.md still must not add or remove it at all.
 assert_not_contains "$steady_state_path" \
   '--add-label blocked:agent-hard' \
   "steady-state.md no longer applies the blocked:agent-hard label (#521)"
@@ -1314,11 +1315,14 @@ assert_not_contains "$steady_state_path" \
   '--remove-label blocked:agent-hard' \
   "steady-state.md no longer sweeps the blocked:agent-hard label (#521)"
 assert_not_contains "$setup_path" \
-  '--remove-label blocked:agent-hard' \
-  "setup.md step 3d.2 sub-sweep a (blocked:agent-hard referential clear) is deleted (#521)"
-assert_not_contains "$setup_path" \
   '--add-label blocked:agent-hard' \
   "setup.md no longer migrates the legacy label to blocked:agent-hard (#521)"
+# sub-sweep f (added in #537) does use --remove-label blocked:agent-hard for
+# migration purposes; assert it is present and paired with --add-label needs-human-review
+# (i.e., the migration sweep exists and routes refuses correctly).
+assert_contains "$setup_path" \
+  '--remove-label blocked:agent-hard' \
+  "setup.md step 3d.2 sub-sweep f removes legacy blocked:agent-hard for migration (#537)"
 
 # The step A.5 mid-session referential sweep is removed (its active heading is
 # replaced by a removal note).
