@@ -68,6 +68,36 @@ The timestamp value is informational (it lets a debug pass tell when the agent w
 
 **Failure mode — incoming notification has no parseable `task-id`.** If the wake event genuinely lacks an extractable id (the harness changed shape, the payload is malformed), the safe fallback is to **proceed with A.0** as a real reconcile — phantom-mis-recognition (treating a real return as a phantom) is much more damaging than phantom-as-real (one extra bump-tokens + one extra reconcile attempt against a no-op return). Log `[phantom-notification] could not extract task-id from wake event; treating as real reconcile` and continue.
 
+**Variant — a phantom that carries a *different, still-in-flight* sibling's terminal outcome (MANDATORY pre-skip check — [#530](https://github.com/mattsears18/shipyard/issues/530)).** The pure silent-`return` above is correct only for a **genuine wind-down phantom** — one whose body asserts nothing reconcilable (`"Done."`, `"Acknowledged."`) or names only the already-reconciled target. But the harness has been observed to **cross-wire a still-in-flight sibling worker's only completion notification onto a reaped worker's `task-id`**: the phantom's `task-id` is already in `reconciled_agent_ids`, yet its *body* asserts a terminal outcome (`shipped #<N> via PR #<M>`, `green #<M>`, etc.) for a **different** target that maps to a slot still live in `.in_flight`. Pure-skip there would **strand the in-flight sibling** — its real completion arrived only as this phantom, so the slot would hang unreconciled until end-of-session with no other notification ever coming.
+
+Repro ([#530](https://github.com/mattsears18/shipyard/issues/530), session `do-work-20260611T031912Z-98402`): worker `a20c26426fb3f620a` (#522) returned non-terminal and was reconciled + reaped, landing in `reconciled_agent_ids`. Two later notifications re-fired under that **same** reaped id — but their bodies were the retry's outcome (*"shipped #522 via PR #527"*) and the #523 worker's outcome (*"PR #528 for /my-turn deep links"*). Neither the retry nor the #523 worker ever sent its own notification; their results arrived **only** cross-wired onto `a20c…`. A literal pure-skip would have hung both in-flight slots.
+
+**The pre-skip check.** Before the silent `return`, parse the phantom's body for a terminal return string naming a PR/issue. If it names a target tied to a **currently in-flight** slot (`.in_flight.<slot>` whose `issue` / `pr` matches), do NOT silent-skip — run the [trust-but-verify probe](#dispatch-rules-used-by-step-7-and-step-c) (issue `state` + PR `mergeStateStatus`) for that slot's target, and if ground truth confirms the asserted outcome, **reconcile the in-flight sibling from verified state** (fall through to A.0/A.1 against the in-flight slot's `agent_id`, not the phantom's reaped id) — then write the *sibling's* id into `reconciled_agent_ids`. Only fall through to the silent `return` when the body is a genuine wind-down (asserts nothing reconcilable, or names only the already-reconciled target, or names a target whose ground-truth probe does NOT confirm a terminal outcome):
+
+```bash
+if [[ -n "${reconciled_agent_ids[$incoming_task_id]:-}" ]]; then
+  # #530: a reconciled task-id can still carry a *sibling's* cross-wired
+  # completion. Inspect the body before silently skipping.
+  sibling_slot="$(slot_in_flight_matching_phantom_body "$phantom_body")"   # PR/issue named in body ∩ .in_flight target
+  if [[ -n "$sibling_slot" ]]; then
+    # Trust-but-verify the in-flight sibling's target against GitHub ground truth.
+    if ground_truth_confirms_terminal "$sibling_slot"; then
+      echo "[phantom-notification] task-id=$incoming_task_id reconciled, but body asserts a terminal outcome for in-flight slot=$sibling_slot; verifying ground truth and reconciling the sibling from verified state (#530)"
+      # Reconcile the IN-FLIGHT sibling (its agent_id), NOT the phantom's reaped id:
+      # fall through to A.0/A.1 keyed on .in_flight.$sibling_slot.agent_id,
+      # then reconciled_agent_ids[<sibling agent_id>]=<ts> at the end of A.1.
+      reconcile_in_flight_slot_from_ground_truth "$sibling_slot"
+      return   # the sibling's A.0→A.1→B→C→D ran; this turn is no longer a no-op
+    fi
+    # Ground truth did NOT confirm — treat as a genuine wind-down phantom, skip.
+  fi
+  echo "[phantom-notification] task-id=$incoming_task_id already reconciled; skipping A.0/A.1/B/C/D this turn (#317)"
+  return
+fi
+```
+
+The verification gate is what keeps this safe: the phantom's *narrative* is untrusted (it's harness-cross-wired text, not a return the orchestrator dispatched), so it only **triggers** a ground-truth probe — it never reconciles on the body's word alone. A phantom whose body names an in-flight target but whose GitHub state does NOT confirm the asserted outcome falls back to the silent skip (the sibling is genuinely still working; its real notification will arrive later). This preserves [#317](https://github.com/mattsears18/shipyard/issues/317)'s double-reconcile protection (the phantom's *own* reaped id is never re-reconciled) while closing the strand-the-sibling hole.
+
 #### A.0. Attribute the dispatch's token usage (MANDATORY — before any return-string parsing)
 
 **This step is not optional.** Before parsing the agent's return string, before any of the per-mode handling below, **attribute the dispatch's token usage to the session ledger**. Without this call, the per-session `.tokens` block, the per-issue / per-PR attribution buckets, the durable PR cost-comment, and the cross-session ledger at `~/.shipyard/cost-history.jsonl` all stay empty — and the perf umbrella ([#152](https://github.com/mattsears18/shipyard/issues/152)) becomes unmeasurable. See [issue #197](https://github.com/mattsears18/shipyard/issues/197) for the regression that prompted this becoming step A.0 instead of a buried mention in the write-through table.
