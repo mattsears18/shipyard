@@ -1482,6 +1482,40 @@ assert_contains "$setup_path" \
   'skipping duplicate diagnosis comment' \
   "setup.md step 6 logs a skip message when a duplicate diagnosis comment is detected (#536)"
 
+# ----------------------------------------------------------------------
+# (N+3) Follow-up PRs in the same dispatch must also cut a release (#544).
+#
+# The per-PR release rule (bump manifest + add CHANGELOG entry in the same
+# PR) was documented in issue-work.md step 4 for the *primary* PR only.
+# When a worker opens a second PR in the same dispatch (e.g. a post-merge
+# CI hotfix after the primary PR landed as merged-direct-ungated), that
+# follow-up PR also merged with no version bump and no CHANGELOG entry,
+# making the fix invisible in the release record.
+#
+# Repro: session do-work-20260611T220126Z-96473 — primary PR #541
+# (release 1.9.7) shipped #537; follow-up PR #542 (test-only CI fix)
+# merged in the same dispatch with no version bump and no CHANGELOG mention.
+#
+# Fix: issue-work.md step 4 gains a new paragraph (cross-ref #544) that
+# extends the per-PR release rule to any additional PR the worker opens in
+# the same dispatch, and specifies that the follow-up must compute its own
+# version slot by reading origin/<default-branch> after the primary bump
+# has landed (the orchestrator-supplied version covers only the primary PR).
+issue_work_path544="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+
+assert_contains "$issue_work_path544" \
+  'issues/544' \
+  "issue-work.md step 4 cites issue #544 for the follow-up-PR release rule"
+assert_contains "$issue_work_path544" \
+  'Follow-up PRs within the same dispatch must also cut a release' \
+  "issue-work.md step 4 establishes the follow-up-PR release rule heading (#544)"
+assert_contains "$issue_work_path544" \
+  'covers **only the primary PR** for that dispatch' \
+  "issue-work.md step 4 notes the orchestrator-supplied version covers only the primary PR (#544)"
+assert_contains "$issue_work_path544" \
+  'compute the next free version slot by reading the current manifest from' \
+  "issue-work.md step 4 specifies follow-up version computation from origin/<default-branch> (#544)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
