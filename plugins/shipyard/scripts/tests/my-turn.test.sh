@@ -176,6 +176,31 @@ if [[ -f "$cmd_path" ]]; then
     "command still references Blocked by #N (the dependency-wait body-ref filter)"
   assert_contains "$cmd_path" "#521" \
     "command cites issue #521 for the blocked:agent-hard elimination / refuse re-routing"
+
+  # Third-party console deep links (issue #523): when a surfaced action's next
+  # step lives in a provider console (Meta / Firebase / Vercel / App Store
+  # Connect / Apple Developer / Play Console / GCP / GitHub settings), the
+  # rendered directive must include a clickable deep link to the most-specific
+  # reachable page, derived from identifiers already in hand, with a
+  # top-level-console fallback when the specific page isn't derivable. The
+  # information is already present; the feature turns it into a clickable link
+  # so the user skips a manual provider-UI navigation.
+  assert_contains "$cmd_path" "Third-party console deep links" \
+    "command documents the third-party console deep-link section (#523)"
+  assert_contains "$cmd_path" "most specific reachable page" \
+    "deep-link section targets the most-specific reachable page (#523)"
+  assert_contains "$cmd_path" "developers.facebook.com/apps/" \
+    "deep-link table encodes the Meta App Dashboard template (#523)"
+  assert_contains "$cmd_path" "console.firebase.google.com/project/" \
+    "deep-link table encodes the Firebase Console template (#523)"
+  assert_contains "$cmd_path" "appstoreconnect.apple.com/apps" \
+    "deep-link table encodes the App Store Connect template (#523)"
+  assert_contains "$cmd_path" "settings/secrets/actions" \
+    "deep-link table encodes the GitHub repo Actions-secrets template (#523)"
+  assert_contains "$cmd_path" "top-level" \
+    "deep-link section defines a top-level-console fallback (#523)"
+  assert_contains "$cmd_path" "#523" \
+    "command cites issue #523 for the third-party console deep-link feature"
 fi
 
 echo
