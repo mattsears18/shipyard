@@ -160,10 +160,19 @@ When neither `--all` nor `--limit N > 1` is given, print **only the #1-ranked it
 5 more items — rerun with --all to see the full list
 ```
 
+When the action's next step lives in a **third-party console**, append the provider deep link on its own indented line below the GitHub artifact URL (see [Third-party console deep links](#third-party-console-deep-links)):
+
+```
+→ Next: create a Test User on the test Meta app 982594884358918 (#74)
+  https://github.com/owner/repo/issues/74
+  https://developers.facebook.com/apps/982594884358918/roles/test-users/
+```
+
 Rules for the single-action render:
 
 - **`→ Next:` line.** The `→ Next: ` prefix, then the **imperative action** (verb-first, sentence-case, same shape as the list-mode action — see [Rendering rules](#rendering-rules)), then the artifact ref `(#<num>)` in parentheses at the end. This is the one mandatory line.
-- **URL line.** The clickable URL on its own indented line directly below.
+- **URL line.** The clickable GitHub artifact URL on its own indented line directly below.
+- **Third-party console deep link (when applicable).** When the action's actual work happens in a provider console (Meta / Firebase / Vercel / App Store Connect / Apple Developer / Play Console / GCP / GitHub settings), append the most-specific-reachable provider deep link on its own indented line below the artifact URL, derived per [Third-party console deep links](#third-party-console-deep-links). Falls back to the provider's top-level console when the specific page isn't derivable; omit only when no third-party console is involved.
 - **Dependency / unblocks context (optional).** If the top item *unblocks* other tracked work (e.g. a CI-secret fix that gates a release PR, an issue whose closure is referenced by `Blocked by #<N>` on another open item), append one indented parenthetical line naming what it unblocks: `(then <downstream> can go out)` / `(unblocks #<N>)`. This is part of "what to do next" — it tells the user *why* this is the next step. Derive it from the same signals the ranking uses (the dependency edges in Pass A/B); if there's no downstream dependency, omit the line.
 - **Remainder footer (optional).** If the survey produced more than one item, append a single blank line then `<K> more item<s> — rerun with --all to see the full list` where `K` is the count of remaining items. If the top item was the only one, omit this footer. The structural footer from list mode (`main: red` / `<N> blocked:ci PRs`) still applies *in addition* when relevant — render it on its own line below the remainder footer.
 - **Release-please / version-bump PR as the top item.** A discretionary release PR (per [Ranking → Release-please / version-bump PRs](#release-please--version-bump-prs-discretionary)) must **never** render as the sole `→ Next:` directive unless a concrete downstream dependency is blocked on the release shipping (the same exception that lets it rank up). The bottom-of-P2 ranking already keeps it out of the top slot whenever any other human-blocked item exists; this rule covers the case where it is the *only* item. Instead of a false-urgency directive, render the discretionary phrasing — the same shape as the [empty state](#empty-state), because there's no action *blocked on you*, just an open option:
@@ -200,6 +209,7 @@ Per item — **one line by default**:
 - **Imperative action** — verb-first, sentence-case, no trailing period. This is the only mandatory content. Examples: `review and approve or request changes`, `investigate failing check, fix or escalate`, `reply to question or close`, `make the design call (see thread) or break into spike + impl`, `enable Email/Password in Firebase Console for <project>`, `set real values for placeholder secrets via firebase functions:secrets:set --project test`, `review the refuse reason in the comment; clear, re-scope, or close` (agent-refuse `needs-human-review`, per [#521](https://github.com/mattsears18/shipyard/issues/521)).
 - **Stale suffix** (optional) — append `(<N>d stale)` only when the item's age crosses a threshold worth flagging: **≥7d** for any item, or **≥1d** for `awaiting your review` (the highest-leverage block). Default: no age string. The point is a flag, not a metric.
 - **URL** — clickable `<https://...>` at end of line so terminals render it as a hyperlink. Two spaces before the URL for visual separation.
+- **Third-party console deep link** (optional) — when the item's action's next step lives in a provider console (Meta / Firebase / Vercel / App Store Connect / Apple Developer / Play Console / GCP / GitHub settings), append the most-specific-reachable provider deep link `<https://...>` after the GitHub artifact URL (two spaces before it), derived per [Third-party console deep links](#third-party-console-deep-links). Falls back to the provider's top-level console when the specific page isn't derivable. Omit when no third-party console is involved. Example: `6. #74 create a Test User on the test Meta app 982594884358918  <https://github.com/owner/repo/issues/74>  <https://developers.facebook.com/apps/982594884358918/roles/test-users/>`.
 
 **Drop by default:**
 
@@ -211,6 +221,46 @@ Per item — **one line by default**:
 **Multi-line items.** Only when the next action genuinely doesn't fit on one line *and* breaking it loses information. Follow-up lines are indented and still action-shaped (continuation of the verb), never framing or restatement.
 
 **Optional footer line** — one line, terse, at the bottom of the list. Surface only if at least one is true: red main with no `fix-main-ci` PR open (`main: red`), open `blocked:ci` PRs (`<N> blocked:ci PRs`), or a clean state worth noting (`main: green`). Skip entirely if there's nothing structural worth flagging. Never a paragraph; never a recap of items already in the list.
+
+### Third-party console deep links
+
+When the next action's actual work happens in a **third-party provider console** ([#523](https://github.com/mattsears18/shipyard/issues/523)) — the user has to create a test user in the Meta App Dashboard, enable an auth provider in the Firebase Console, paste a secret into a GitHub repo's Actions settings, submit a build in App Store Connect, etc. — the rendered action **MUST** append a clickable deep link to the **most specific reachable page**, derived from identifiers already in hand (app ID, project ID, bundle ID, team/owner slug, etc.). The information needed to build the link is almost always already present in the issue/PR body, a comment, or the repo's config — turning it into a URL costs the user one navigation they'd otherwise do by hand, across a provider UI with many nested pages.
+
+This applies to **both** render modes: the single-action `→ Next:` directive (the deep link goes on the indented URL line, *in addition to* the GitHub artifact URL — see [Single-action mode](#single-action-mode-default)) and the list-mode rows (the deep link is appended after the GitHub artifact URL — see [Rendering rules](#rendering-rules)).
+
+**Provider URL templates.** Substitute the bracketed identifiers from the action's context. Extend this table as new providers/actions surface — it's a starting set, not a closed list:
+
+| Provider | Action | URL template |
+|---|---|---|
+| Meta App Dashboard | Test Users | `https://developers.facebook.com/apps/<APP_ID>/roles/test-users/` |
+| Meta App Dashboard | App settings / basic | `https://developers.facebook.com/apps/<APP_ID>/settings/basic/` |
+| Firebase Console | Auth users | `https://console.firebase.google.com/project/<PROJECT_ID>/authentication/users` |
+| Firebase Console | Auth providers | `https://console.firebase.google.com/project/<PROJECT_ID>/authentication/providers` |
+| Vercel | Project | `https://vercel.com/<TEAM>/<PROJECT>` |
+| App Store Connect | App | `https://appstoreconnect.apple.com/apps/<APP_ID>` |
+| Apple Developer | Identifiers | `https://developer.apple.com/account/resources/identifiers/list` |
+| Play Console | App dashboard | `https://play.google.com/console/u/0/developers/<DEV_ID>/app/<APP_ID>/app-dashboard` |
+| GCP Console | Project | `https://console.cloud.google.com/home/dashboard?project=<PROJECT_ID>` |
+| GitHub | Repo Actions secrets | `https://github.com/<owner>/<repo>/settings/secrets/actions` |
+
+**Fallback when the specific page isn't derivable.** If a required identifier is missing (you know it's a Firebase auth task but the body never names the `<PROJECT_ID>`), link the provider's **top-level console** rather than no link at all — a one-hop landing page still beats prose-only navigation:
+
+| Provider | Top-level fallback |
+|---|---|
+| Meta App Dashboard | `https://developers.facebook.com/apps/` |
+| Firebase Console | `https://console.firebase.google.com/` |
+| Vercel | `https://vercel.com/dashboard` |
+| App Store Connect | `https://appstoreconnect.apple.com/apps` |
+| Apple Developer | `https://developer.apple.com/account/` |
+| Play Console | `https://play.google.com/console/` |
+| GCP Console | `https://console.cloud.google.com/` |
+| GitHub | `https://github.com/<owner>/<repo>` |
+
+**Derivation rules:**
+
+- **Use identifiers already in hand — never fabricate one to fill a template.** Pull `<APP_ID>` / `<PROJECT_ID>` / `<owner>`/`<repo>` from the action's context (the issue or PR body that produced the item, a comment, the resolved repo). If you can only partially fill a template (e.g. the provider and a project ID but not the exact sub-page), link the deepest page you *can* fully construct, then fall back up the hierarchy — most-specific-reachable wins, but a guessed identifier is worse than the fallback (a wrong deep link sends the user to someone else's app).
+- **Read-only constraint still holds.** Deriving the link is pure string construction from data already surveyed; it adds no `gh` mutation and no new API round-trip. Do **not** call out to a provider API to *discover* a missing identifier — that's scope creep and may require credentials the command doesn't have. Missing identifier ⇒ top-level fallback, full stop.
+- **One deep link per action.** If an action plausibly touches two consoles, link the one where the *next* step happens; don't stack multiple provider links on one directive.
 
 ### Internal fields (used for ranking, not rendered)
 
