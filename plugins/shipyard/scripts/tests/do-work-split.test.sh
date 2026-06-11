@@ -1356,6 +1356,42 @@ assert_contains "$my_turn_path" \
   'issues/521' \
   "my-turn.md cites issue #521 for the refuse → needs-human-review re-routing"
 
+# ----------------------------------------------------------------------
+# (N+1) Phantom-refire sibling-strand variant (issue #530).
+#
+# #317's reconcile-once gate silently skips any task-notification whose
+# task-id is already in reconciled_agent_ids. #530 documents a variant the
+# pure silent-skip mishandles: the harness can cross-wire a still-in-flight
+# *sibling* worker's only completion notification onto a reaped worker's
+# task-id. The phantom's task-id is reconciled, but its body asserts a
+# terminal outcome (shipped/green) for a DIFFERENT target tied to a live
+# .in_flight slot. A pure skip strands that in-flight sibling.
+#
+# The fix: before the silent return, parse the phantom body; if it names an
+# in-flight slot's target, run the trust-but-verify probe and reconcile the
+# in-flight sibling from ground truth (keyed on the sibling's agent_id, not
+# the reaped phantom id). The silent skip is preserved for genuine wind-down
+# phantoms (body asserts nothing reconcilable / names only the reconciled
+# target / ground truth doesn't confirm).
+assert_contains "$steady_state_path" \
+  'issues/530' \
+  "steady-state.md cites issue #530 for the phantom sibling-strand variant"
+assert_contains "$steady_state_path" \
+  'still-in-flight* sibling' \
+  "steady-state.md A.−1 documents the still-in-flight sibling cross-wire variant (#530)"
+assert_contains "$steady_state_path" \
+  'pre-skip check' \
+  "steady-state.md A.−1 documents the pre-skip body-inspection check before the silent return (#530)"
+assert_contains "$steady_state_path" \
+  'reconcile the in-flight sibling from verified state' \
+  "steady-state.md A.−1 reconciles the in-flight sibling from ground-truth-verified state (#530)"
+assert_contains "$steady_state_path" \
+  'genuine wind-down' \
+  "steady-state.md A.−1 preserves the silent-skip for genuine wind-down phantoms (#530)"
+assert_contains "$dont_path" \
+  'still-in-flight* target' \
+  "dont.md carries the sibling-strand variant bullet forbidding a pure silent-skip (#530)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
