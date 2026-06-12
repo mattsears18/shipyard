@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.9.18 — 2026-06-12
+
+**Fix investigate-mode auto-close commands to use `--reason "not planned"` for noise and duplicate dispositions** (#557, PR #558). Previously the `gh issue close` commands in `investigate.md` §4c used the default state-reason `COMPLETED`, which is semantically wrong for both the noise and duplicate dispositions — nothing was fixed, so GitHub's "not planned" reason is the correct signal. Downstream consumers (issue queries filtering `reason:completed`, the GitHub UI's purple-vs-gray closed-issue icon, roadmap tooling) read `COMPLETED` as "done/fixed" rather than "acknowledged and not actionable." The fix adds `--reason "not planned"` to both auto-close commands in §4c.
+
+- **`plugins/shipyard/agents/issue-worker/investigate.md`** — §4c noise close: added `--reason "not planned"` to the `gh issue close` command; §4c duplicate close: added `--reason "not planned"` to the `gh issue close` command.
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bumped `1.9.15` → `1.9.18`.
+
 ### 1.9.15 — 2026-06-12
 
 **Wire investigate-mode dispatch into orchestrator queues, prompt templates, reconcile parser, and worktree-isolation guard** (#556, PR #TBD). The `shipyard:investigate-worker` shim and `agents/issue-worker/investigate.md` per-mode spec shipped with #514, but the orchestrator's command specs never called them: trusted-author `needs-triage` issues were silently dropped at setup.md step 4's client-side filter, the routing table omitted the `investigate` mode row, the dispatch decision tree had no `investigate_candidates` queue step, and step A.1 had no handlers for the `investigated+*` return string family. This PR wires all four missing pieces:
