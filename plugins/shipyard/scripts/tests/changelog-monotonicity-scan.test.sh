@@ -207,7 +207,7 @@ else
 fi
 
 # Verify the error output names the missing heading.
-err_output=$(cd "$fix_b" && CHANGELOG_PATH="CHANGELOG.md" bash "$scanner" "HEAD~1" 2>&1 || true)
+err_output=$(cd "$fix_b" && CHANGELOG_PATH="CHANGELOG.md" bash "$scanner" "HEAD~1" 2>&1) || true
 if echo "$err_output" | grep -qF "1.0.1"; then
   ok "(4b) deletion: error output names the missing heading"
 else
@@ -311,7 +311,7 @@ C kept.
 '
 # 1.0.0, 1.0.1, 1.0.2 were all deleted.
 # Redirect stderr to stdout to capture the error output.
-err_multi=$(cd "$fix_e" && CHANGELOG_PATH="CHANGELOG.md" bash "$scanner" "HEAD~1" 2>&1 || true)
+err_multi=$(cd "$fix_e" && CHANGELOG_PATH="CHANGELOG.md" bash "$scanner" "HEAD~1" 2>&1) || true
 missing_count=$(echo "$err_multi" | grep -c "^  ### " || true)
 if [[ "$missing_count" -eq 3 ]]; then
   ok "(4e) multi-deletion: all three missing headings reported"
