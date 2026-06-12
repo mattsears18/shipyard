@@ -654,6 +654,53 @@ assert_equals "$("$helper" get ci.skip_drain_rebase)" "false" "local layer overr
 assert_equals "$("$helper" get ci.skip_drain_rebase --with-source | cut -f2)" "local" "source reflects local layer after override"
 
 # --------------------------------------------------------------------------
+echo "== scope.diagnosis_reuse_hours (issue #563)"
+repo=$(mktmprepo)
+home=$(mktmprepo)
+export SHIPYARD_REPO_ROOT="$repo"
+export SHIPYARD_HOME="$home"
+
+# Built-in default is 72
+assert_equals "$("$helper" get scope.diagnosis_reuse_hours)" "72" "scope.diagnosis_reuse_hours default is 72"
+
+# Can be overridden at the repo layer
+"$helper" set scope.diagnosis_reuse_hours 24 --repo
+assert_equals "$("$helper" get scope.diagnosis_reuse_hours)" "24" "scope.diagnosis_reuse_hours can be set to 24 at repo layer"
+assert_equals "$("$helper" get scope.diagnosis_reuse_hours --with-source | cut -f2)" "repo" "source is repo after set"
+
+# Can be disabled (set to 0)
+"$helper" set scope.diagnosis_reuse_hours 0 --repo
+assert_equals "$("$helper" get scope.diagnosis_reuse_hours)" "0" "scope.diagnosis_reuse_hours can be set to 0 (disable caching)"
+
+# Schema validation rejects a negative value
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "diagnosis_reuse_hours": -1 } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "scope.diagnosis_reuse_hours rejects negative integer (#563)"
+
+# Schema validation rejects a non-integer value
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "diagnosis_reuse_hours": "72h" } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "scope.diagnosis_reuse_hours rejects non-integer string (#563)"
+
+# Schema validation rejects unknown scope fields (additionalProperties: false)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "cache_everything": true } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "scope rejects unknown fields (#563)"
+
+# Local override takes precedence over repo value
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard"
+"$helper" set scope.diagnosis_reuse_hours 48 --repo
+"$helper" set scope.diagnosis_reuse_hours 168 --local
+assert_equals "$("$helper" get scope.diagnosis_reuse_hours)" "168" "local layer overrides repo for scope.diagnosis_reuse_hours"
+assert_equals "$("$helper" get scope.diagnosis_reuse_hours --with-source | cut -f2)" "local" "source reflects local layer for scope.diagnosis_reuse_hours"
+
+# --------------------------------------------------------------------------
 echo
 total=$((pass + fail))
 if [[ $fail -eq 0 ]]; then

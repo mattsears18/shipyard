@@ -1887,6 +1887,53 @@ The `provenance: "orchestrator-judgment"` rationale, handling steps, and cross-r
 
 **Cross-references for re-validation paths.** [Drain.md 5.a's re-validation](./drain.md#5a--re-validate-orchestrator-judgment-entries) dispatches a fresh scope agent for `orchestrator-judgment` defers and [5.b's re-validation](./drain.md#5b--re-validate-scope-agent-entries) does the same for `scope-agent` defers. Both paths re-run the **same per-candidate pre-scope detector batch** documented in this section before firing the scope agent — a re-validation that re-detects any of the detector triggers (workflow-path mention, Claude-Code self-modification path mention, future detectors) synthesizes the defer again without dispatching the agent, just as the initial pass did. This keeps the synthesizer behavior load-bearing across both the initial pre-flight and every re-validation point; a body that proposes a change to any path the detector batch guards can never slip past into a worker dispatch by being re-scoped.
 
+#### Scope-result freshness check (skip dispatch when a fresh diagnosis comment exists)
+
+**After the pre-scope detector batch, before dispatching a scope agent, check whether a reusable fresh diagnosis already exists on the issue ([#563](https://github.com/mattsears18/shipyard/issues/563)).** This avoids re-dispatching scope agents whose conclusions are already documented as marker-tagged comments on the issue — the repro that motivated this: a maintainer bulk-cleared `needs-human-review` labels while the diagnosis comments (under 1–4 days old, still accurate) remained on the issues, causing 7 fresh scope agents to return nearly verbatim re-derivations of the existing comments (~330k wasted tokens).
+
+**The freshness window** is `scope.diagnosis_reuse_hours` (config knob, default 72h). Set to `0` to disable the cache entirely and always dispatch a fresh scope agent.
+
+**Check applies to each candidate** after the detector batch (which runs first — a detector match short-circuits into an `orchestrator-judgment` defer regardless of any cached comment):
+
+1. **Fetch the issue's recent comments.** Use the `comments` field from the step 0 issue-view projection (already in context), or re-fetch with `gh issue view <N> --repo <owner/repo> --json comments`. Look for the **newest comment** whose body opens with one of the class-specific body markers listed in the [Deferred entries → Recording path](#handling-each-returned-entry-fires-as-each-background-agent-completes) table (`<!-- do-work-needs-decomposition -->`, `<!-- do-work-external-dependency -->`, `<!-- do-work-human-decision-required -->`). The `<!-- do-work-needs-decomposition -->` marker maps to `confirmed-non-shippable-as-single-PR`; the other two map directly to their class.
+
+   Comments without a recognized marker (plain text, `<!-- shipyard-worker-progress -->`, or other markers) are skipped — they are not scope-preflight diagnosis records.
+
+   If **no** marker-tagged diagnosis comment exists → no cache hit; fall through to normal scope-agent dispatch.
+
+2. **Check freshness: is the newest marker-tagged comment within the reuse window?** Compute `now_utc - comment.createdAt` in hours. If the result is ≥ `scope.diagnosis_reuse_hours` (or if `diagnosis_reuse_hours == 0`) → stale; fall through to normal scope-agent dispatch. Log: `[scope-preflight] #<N> freshness check skipped — newest diagnosis comment is <age>h old (window: <window>h)`.
+
+3. **Check that the issue body hasn't changed since the comment.** Fetch `gh issue view <N> --repo <owner/repo> --json updatedAt -q .updatedAt`. If `updatedAt > comment.createdAt` → the body was amended after the comment was posted; the diagnosis may be stale; fall through to normal scope-agent dispatch. Log: `[scope-preflight] #<N> freshness check skipped — issue body updated at <updatedAt> after diagnosis comment at <comment.createdAt>`.
+
+4. **Re-validate the cached evidence mechanically.** Parse the `defer_reason_class` from the marker (see step 1's marker-to-class mapping). Extract the `evidence_pointer` from the comment body — the line immediately following the marker line starts with `Scope-preflight diagnosis ...` and the evidence pointer was embedded in the original comment per the recording-path template. For `confirmed-blocker-still-open` entries, re-run the blocker-state probe (all `#N` references must still be OPEN). For other classes, run the per-class shape check only. If re-validation fails → fall through to normal scope-agent dispatch. Log: `[scope-preflight] #<N> freshness check — cached evidence re-validation failed (<reason>); dispatching scope agent`.
+
+5. **Record a `cached-diagnosis` defer.** All four checks passed — the existing comment accurately documents the defer and re-dispatching a scope agent would produce the same result at cost. Synthesize the defer entry directly:
+
+   ```
+   {
+     issue: N,
+     reason: "<first non-marker paragraph of the cached comment, verbatim>",
+     defer_reason_class: "<class inferred from the marker>",
+     evidence_pointer: "<re-extracted from the cached comment>",
+     provenance: "cached-diagnosis",
+     deferred_at: "<current ISO-8601 UTC timestamp>",
+     would_be_dispatchable_as_phase_1_if?: "<from the cached comment if present>"
+   }
+   ```
+
+   Apply the same recording steps as a regular deferred entry (comment dedupe check, `needs-human-review` label application for the three labelled classes) — but **skip posting a new comment** (the existing comment is the record; posting again adds noise). Log: `[scope-preflight] #<N> freshness check hit — reusing diagnosis comment from <comment.createdAt> (class=<defer_reason_class>, evidence=<evidence_pointer>); scope-agent dispatch skipped`.
+
+   **Do NOT dispatch a scope agent for this candidate.** Increment `defers_this_turn` by 1 (same as a scope-agent defer — feeds the step E invariant line and the pre-drain audit). Remove the issue from `raw_backlog`.
+
+**When NOT to apply the freshness check.** The check is skipped when:
+- `scope.diagnosis_reuse_hours == 0` (disabled by config).
+- No marker-tagged comment exists on the issue.
+- The comment is older than the window.
+- The issue body was amended after the comment.
+- The cached evidence fails mechanical re-validation.
+
+In all skip cases, fall through to normal scope-agent dispatch. The check is purely additive — it never promotes a cached defer to `ready`; that path is the scope agent's exclusive domain.
+
 Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel with `run_in_background: true` (one message, multiple background `Agent` tool calls). Each returns **one of two shapes**:
 
 **Ready shape** (default — the candidate is shippable as a single-worker dispatch, possibly as a phase-1 slice with explicit out-of-scope items):
