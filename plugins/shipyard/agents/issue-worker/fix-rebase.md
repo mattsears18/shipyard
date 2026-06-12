@@ -139,6 +139,27 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
 
    The original poison-the-main incident was caught only because a *later* manual rebase inherited the markers; the green CI run that merged the corrupted CHANGELOG had no gate that greps for markers. This assertion + the CI gate close that hole from both ends.
 
+5.6. **Assert no released CHANGELOG headings were deleted by the resolution — bail if any are missing (issue [#555](https://github.com/mattsears18/shipyard/issues/555)).** The conflict-marker assertion in step 5.5 catches *unresolved* markers; it cannot catch a *resolved-wrong* merge that silently deletes whole `### <version>` heading blocks. This is the failure mode from issue #555: PR #552 and #553 resolved their CHANGELOG conflicts correctly (no markers survived) yet both dropped released entries (`### 1.9.10` and `### 1.9.9`) from main. The loss was only noticed when a human eyeballed the file during a later manual rebase.
+
+   Before the force-push, run the monotonicity scan to confirm every `### <version>` heading that existed on the rebase base (`origin/$DEFAULT_BRANCH`) is still present in the resolved CHANGELOG:
+
+   ```bash
+   # Re-derive CLAUDE_PLUGIN_ROOT (variables don't survive across Bash tool calls).
+   CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+   scanner="${CLAUDE_PLUGIN_ROOT}/scripts/changelog-monotonicity-scan.sh"
+   if [[ -f "$scanner" ]]; then
+     if ! bash "$scanner" "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+       git rebase --abort 2>/dev/null || true
+       echo "blocked rebase #<M>: deleted released CHANGELOG heading(s) after conflict resolution — needs manual rebase (https://github.com/mattsears18/shipyard/issues/555)"
+       exit 0
+     fi
+   fi
+   ```
+
+   This assertion is the worker-side half of issue #555's two-layer defense — the CI gate (`changelog-monotonicity-scan.sh` run against the PR head in `tests.yml`) is the repo-side catch-net for any path that bypasses this assertion. Together they mirror the #436 two-layer pattern: this assertion stops a fix-rebase dispatch from being the thing that silently drops entries; the CI gate catches anything that slips through.
+
+   A CHANGELOG with a `changelog-monotonicity-scan: allow` directive opts out of the scan (useful for test fixtures that construct synthetic CHANGELOGs). If the scanner binary isn't present (non-shipyard repo, older plugin installation), skip silently — the CI gate is the load-bearing layer.
+
 6. **Push the rebased branch.** This is a fast-forward-incompatible operation (rebase rewrites commit SHAs), so a force push with lease is required:
    ```bash
    git push --force-with-lease origin "$HEAD_REF"

@@ -121,6 +121,24 @@ This rule **composes with** the coordination-managed-paths contract above: the p
 
 **Follow-up PRs within the same dispatch must also cut a release ([#544](https://github.com/mattsears18/shipyard/issues/544)).** The per-PR release rule applies to *every* PR that merges — including additional PRs a worker opens within the same dispatch (e.g. a post-merge CI hotfix after the primary PR landed as `merged-direct-ungated`). The orchestrator-supplied `next_available_version` covers **only the primary PR** for that dispatch; a follow-up PR is not pre-allocated a version. If you open a second PR in the same dispatch, compute the next free version slot by reading the current manifest from `origin/<default-branch>` — after the primary PR has merged its bump, `origin/main`'s version has advanced — and applying a patch bump to get the follow-up's slot. Bump the manifest, add a CHANGELOG entry, and include both in the follow-up PR's diff, the same as any other PR under the per-PR release rule. The repro: session `do-work-20260611T220126Z-96473` — a worker shipped the primary issue (#537) as PR #541 (release 1.9.7), then shipped a follow-up test-only CI fix as PR #542 with no version bump and no CHANGELOG entry; PR #542 merged invisibly and the fix was unreachable from the release record until a subsequent sibling PR's entry acknowledged it retroactively.
 
+**CHANGELOG entry write — never delete an existing `### <version>` heading ([#555](https://github.com/mattsears18/shipyard/issues/555)).** When you write the CHANGELOG entry for your release, you are inserting a new `### <version>` block at the top of the file. Never overwrite, reorder, or delete any existing `### <version>` heading that was already present on the base branch. The failure mode from issue #555 was silent: PRs #552 and #553 both resolved their CHANGELOG conflicts correctly (no conflict markers survived) but dropped `### 1.9.10` and `### 1.9.9` from main in the process — the loss was only noticed when a human eyeballed the file during a later manual rebase.
+
+Before committing a CHANGELOG edit, run the monotonicity scan to confirm no released heading was lost:
+
+```bash
+# Re-derive CLAUDE_PLUGIN_ROOT (variables don't survive across Bash tool calls).
+CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+scanner="${CLAUDE_PLUGIN_ROOT}/scripts/changelog-monotonicity-scan.sh"
+if [[ -f "$scanner" ]]; then
+  if ! bash "$scanner" "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+    echo "blocked: deleted released CHANGELOG heading(s) during CHANGELOG entry write — restore them before committing (https://github.com/mattsears18/shipyard/issues/555)"
+    exit 0
+  fi
+fi
+```
+
+If the scan reports a deletion, restore the missing heading(s) before committing. If the scanner binary isn't present (older plugin installation), skip the check — the CI gate (`changelog-monotonicity-scan.sh` in `tests.yml`) is the load-bearing layer and will catch the issue on push. This worker-side check is defense-in-depth so you catch the error before a push rather than after.
+
 ### 4.5 Pre-PR-create diff sanity check
 
 Closes [#356](https://github.com/mattsears18/shipyard/issues/356) — the **phantom-merge** failure mode. A worker can reach the end of step 4 with `git status` clean (no working-tree edits, no staged changes) yet still proceed to step 5 and open a PR whose body claims substantial scope (new files, modified files, acceptance criteria checked). The PR merges, the body's `Closes #N` keyword closes the linked issue, and the backlog claims work shipped — but nothing landed. Repro: [`mattsears18/lightwork#1169`](https://github.com/mattsears18/lightwork/pull/1169) merged on 2026-05-25 with a 0-file diff against its parent, auto-closing [`mattsears18/lightwork#1160`](https://github.com/mattsears18/lightwork/issues/1160) which then sat as CLOSED for the rest of the day until a follow-up session noticed the missing code.
