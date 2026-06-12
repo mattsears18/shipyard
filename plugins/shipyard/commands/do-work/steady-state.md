@@ -1352,7 +1352,12 @@ When filling a slot, walk this decision tree:
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
-   # Check every agent-* worktree whose branch matches do-work/issue-<N>
+   # Check every agent-* worktree whose branch matches do-work/issue-<N>.
+   # Use find (not a bare agent-* glob) — under zsh's default nomatch option
+   # a glob that expands to zero entries raises a fatal error and aborts the
+   # whole bash block, dropping the self-assign that follows. Same class as
+   # issues/335 (which fixed setup.md's 3b loop); see issues/546 for this
+   # guard's repro.
    peer_locked=false
    # Declare our orchestrator PID so classify-lock distinguishes our own
    # session's locks (self-ancestor) from genuine peer-session locks
@@ -1361,8 +1366,7 @@ When filling a slot, walk this decision tree:
    # intermediate harness layer returns empty PPID, blocking dispatch
    # against issues we're actively working.
    export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
-   for wt_dir in "$(git rev-parse --show-toplevel)/.git/worktrees"/agent-*; do
-     [ -d "$wt_dir" ] || continue
+   for wt_dir in $(find "$(git rev-parse --show-toplevel)/.git/worktrees" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
      # Read the branch ref from the worktree metadata
      branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')
      [ "$branch_ref" = "do-work/issue-<N>" ] || continue
