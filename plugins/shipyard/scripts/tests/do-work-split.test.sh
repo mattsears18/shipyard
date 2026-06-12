@@ -1551,6 +1551,61 @@ assert_contains "$steady_state_path" \
   "find \"\$(git rev-parse --show-toplevel)/.git/worktrees\" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null" \
   "steady-state.md concurrent-session guard uses the find-based loop to avoid zsh nomatch (#546)"
 
+# (N+5) Invalid defer_reason_class tokens are normalized before recording
+#        (issue #547).
+#
+# Observed in session do-work-20260611T231002Z-91471: 3 of 7 scope agents
+# returned a defer_reason_class outside the five-value enum despite the
+# dispatch prompt enumerating the enum verbatim ("media_production",
+# "external_console_dependency", "Umbrella / Epic requiring human discretion").
+# The recording path only handled the *missing* case (default to
+# confirmed-non-shippable-as-single-PR); it said nothing about a
+# *present-but-invalid* class, so the orchestrator had to improvise on each
+# occurrence — risking inconsistent deferred_issues records.
+#
+# The fix adds:
+# 1. An explicit normalization branch in setup.md step 6's recording path
+#    (step 3): missing → default; present-but-invalid → infer from
+#    evidence_pointer shape; valid → use as-is.
+# 2. A tightened scope-agent prompt instruction demanding the EXACT LITERAL
+#    TOKEN with the five valid values named, concrete bad examples cited,
+#    and a statement that invalid tokens cost an extra reshaping pass.
+
+# The issue citation must be present in setup.md.
+assert_contains "$setup_path" \
+  'issues/547' \
+  "setup.md cites issue #547 as the source of the invalid-class normalization branch"
+
+# The normalization heading must be present.
+assert_contains "$setup_path" \
+  "Normalize \`defer_reason_class\` before recording" \
+  "setup.md step 6 recording path carries the invalid-class normalization heading (#547)"
+
+# The three-branch enumeration must be present (missing / present-but-invalid / valid).
+assert_contains "$setup_path" \
+  'Present but not one of the five valid tokens' \
+  "setup.md recording path enumerates the present-but-invalid branch (#547)"
+
+# The inference rules must cite the evidence_pointer shape for normalization.
+assert_contains "$setup_path" \
+  'evidence_pointer shape match' \
+  "setup.md normalization log line references evidence_pointer shape match (#547)"
+
+# The scope-agent prompt instruction must demand the literal token.
+assert_contains "$setup_path" \
+  'EXACT LITERAL TOKEN' \
+  "setup.md scope-agent prompt instruction demands the EXACT LITERAL TOKEN for defer_reason_class (#547)"
+
+# The prompt instruction must enumerate the five valid tokens inline.
+assert_contains "$setup_path" \
+  'confirmed-blocker-still-open' \
+  "setup.md scope-agent prompt instruction names confirmed-blocker-still-open as a valid token (#547)"
+
+# The prompt instruction must cite the concrete bad examples from the repro session.
+assert_contains "$setup_path" \
+  'media_production' \
+  "setup.md scope-agent prompt instruction cites media_production as an invalid example (#547)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
