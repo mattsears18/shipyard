@@ -115,16 +115,46 @@ Extract the `usage` payload from the Agent tool result — the harness emits it 
 </usage>
 ```
 
+#### A.0 required preamble — cwd-independent session-id derive (MANDATORY — closes [#548](https://github.com/mattsears18/shipyard/issues/548))
+
+**Every A.0 bash call MUST be preceded by this preamble in the same Bash tool call.** The reconcile turn is precisely the turn where the #477 cwd-leak fires (the harness relocates the orchestrator's cwd into the just-returned agent's `agent-*` worktree immediately after the agent completes). A bare `cat .shipyard-session-id` at that point reads from the agent worktree, which has no `.shipyard-session-id` file — the `cat` returns empty, every downstream `session-state.sh` call is invoked with an empty `--session-id` and exits 64 (`--session-id is required`), and the turn silently loses token attribution, the `session_prs` append, and the cost comment (the exact blast-radius documented in [#548](https://github.com/mattsears18/shipyard/issues/548)'s repro from session `do-work-20260612T035752Z-44019`).
+
+The A.0.5 and A.1 reap blocks already carry the `STABLE_DIR` cwd-anchor idiom from [#497](https://github.com/mattsears18/shipyard/issues/497) — but those blocks anchor the **filesystem path** to avoid deleting a cwd that's inside the doomed worktree. This preamble solves the **different problem** of reading the session-id file from the correct (orchestrator) worktree regardless of where the Bash cwd currently is. The two defenses compose: the reap blocks need both (cwd anchor so `git worktree remove` doesn't corrupt the shell, and session-id derive so `worktree-reap.sh reap --session-id` gets the right value); A.0's `bump-tokens` calls need only the session-id derive (no worktree removal involved).
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+# Derive the session id from the NEWEST orchestrator-* worktree's stash.
+# cwd-independent given the explicit --repo-root (immune to the #477 cwd-leak
+# that fires on reconcile turns). See setup.md §0.55 for the full rationale.
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+  --repo-root "$REPO_ROOT" 2>/dev/null)
+[ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+# Loud abort when both derive paths return empty — cascading exit-64s from
+# empty --session-id are silently mis-read as success; a loud log line + skip
+# makes the cwd-leak immediately visible in the turn transcript (#548).
+if [ -z "$SESSION_ID" ]; then
+  echo "[session-id-derive] empty — aborting A.0 turn writes; check for #477 cwd-leak (orchestrator cwd may be inside an agent-* worktree)"
+  # Leave tokens_attributed=false; set A05_DISPATCH_TOKENS=0 so A.0.5's
+  # wasted-dispatch accounting sees 0 tokens rather than an unbound variable.
+  A05_DISPATCH_TOKENS=0
+fi
+```
+
+Run this preamble block **once per Bash tool call** that contains an A.0 `bump-tokens` invocation — Bash tool calls are hermetic (variables from call N do not survive to call N+1), so each call that needs `SESSION_ID` must re-derive it.
+
 #### Strict path — full input/output/cache breakdown (preferred)
 
 **Pass all four token counts through to `bump-tokens` separately** — never collapse them into `--input <total_tokens>`. Output tokens are priced at 5× input on every Anthropic model the pricing table covers, and `cache_read_input_tokens` are priced at 10% of input. Collapsing the breakdown understates real session cost by 20-50% and makes prompt-cache hit-rate invisible. See [#225](https://github.com/mattsears18/shipyard/issues/225) for the regression that prompted this requirement (the previous spec allowed a "`total_tokens` alone is enough for first-pass attribution" fallback that callers took universally, leaving every per-invocation record with `output: 0` and `cache_*: 0`).
 
-Invoke:
+Invoke (after the A.0 required preamble above — `SESSION_ID` is already set):
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+# Guard: skip if preamble failed to derive SESSION_ID (loud log already emitted above).
+if [ -n "$SESSION_ID" ]; then
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
-  --session-id "<session-id>" \
+  --session-id "$SESSION_ID" \
   --issue <N>            `# present for issue-work and fix-checks-only on issue-anchored PRs` \
   --pr <M>               `# present for fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch (and issue-work after it shipped)` \
   --input <input_tokens> \
@@ -133,6 +163,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
   --cache-creation <cache_creation_input_tokens> \
   --mode <mode> --model <model-id> \
   --allow-degraded-init --degraded-init-repo "<owner/repo>"
+fi
 ```
 
 All four `--input` / `--output` / `--cache-read` / `--cache-creation` flags are **required** on the strict path — pass `0` explicitly if the harness reports the field as missing or zero (rare), don't omit the flag. Both `--issue` and `--pr` are optional from the helper's perspective — pass whichever the dispatch surfaced. `bump-tokens` will route the attribution into `.tokens.totals` always, into `.tokens.per_issue[<N>]` if `--issue` is present, and into `.tokens.per_pr[<M>]` if `--pr` is present.
@@ -145,13 +176,16 @@ When the `<usage>` block has `total_tokens` but no breakdown, fall back to the *
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+# Guard: skip if preamble failed to derive SESSION_ID (loud log already emitted above).
+if [ -n "$SESSION_ID" ]; then
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
-  --session-id "<session-id>" \
+  --session-id "$SESSION_ID" \
   --issue <N> --pr <M> \
   --input <total_tokens>          `# total_tokens lands in --input; other token flags MUST be omitted` \
   --mode <mode> --model <model-id> \
   --allow-degraded-init --degraded-init-repo "<owner/repo>" \
   --degraded-total-only
+fi
 ```
 
 `--degraded-total-only` is mutually exclusive with non-zero `--output` / `--cache-read` / `--cache-creation` — passing those alongside is rejected with exit 64. It also requires `--input <total_tokens>` to be **non-zero** ([#320](https://github.com/mattsears18/shipyard/issues/320)): `--input 0` is the orchestrator copy-paste trap (pasting the breakdown-fields default into the degraded path and silently recording $0 across every dispatch in the session), and the helper rejects it with exit 64. The bump lands in `.tokens.totals.input` (and the per-issue / per-PR buckets if scoped); the per-invocation entry is stamped `degraded: true`, and `.tokens.degraded_attribution_count` increments by 1 so the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) can surface a banner.
@@ -371,6 +405,17 @@ if [ "$is_terminal" = "false" ]; then
     [ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
       | awk '/^worktree /{print substr($0,10); exit}')
     cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
+    # Derive the session id cwd-independently after anchoring to STABLE_DIR.
+    # The A.0 preamble may not have run yet in this Bash tool call (A.0.5
+    # fires before A.1), so derive fresh here rather than assuming SESSION_ID
+    # was set earlier. Closes #548: the reap's --session-id must come from the
+    # orchestrator worktree stash, not from a bare `cat .shipyard-session-id`
+    # that reads from the (possibly leaked-to-agent) cwd.
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+    SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+      --repo-root "$REPO_ROOT" 2>/dev/null)
+    [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+    [ -z "$SESSION_ID" ] && echo "[session-id-derive] empty — A.0.5 reap audit-log entry will lack session-id; check for #477 cwd-leak (#548)"
 
     # Crash-aware reap: unlike step B's `peer-alive → defer` branch, A.0.5
     # reaps on every classification including peer-alive. The agent is
@@ -382,7 +427,7 @@ if [ "$is_terminal" = "false" ]; then
       --action reaped \
       --worktree-path "$worktree_path" \
       --worktree-name "agent-${completed_agent_id}" \
-      --session-id "<session-id>" \
+      --session-id "${SESSION_ID:-unknown}" \
       --classification "$classification" \
       --lock-pid "$lock_pid" \
       --phase "reconcile-A.0.5" 2>/dev/null || true
@@ -413,6 +458,8 @@ fi
 **Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race (the worktree was already reaped by a concurrent path, the lock file is gone, etc.) cannot abort the reconcile turn. If the reap silently fails, step B's per-completion sweep is the next safety net and end-of-session cleanup is the ultimate one. The same discipline applies to the pre-reap recovery steps — a failed push or PR-create is logged but never blocks the reconcile turn.
 
 **cwd-anchor-before-reap invariant (issue [#497](https://github.com/mattsears18/shipyard/issues/497)).** Every reap block in this file — A.0.5 here, the [A.1 `shipped`-immediate reap (#282)](#a1-parse-the-return-string), [step B's per-completion reap (#334)](#b-release-the-slot), and [step C 2d's pre-dispatch reap (#368)](#c-dispatch-a-replacement-if-work-remains--mandatory-action) — opens with a `cd "${STABLE_DIR:-/}"` that anchors the shell to a stable directory **before** any `git worktree remove --force` / `git worktree prune` runs. The hazard it closes: the harness can leak the orchestrator's Bash-tool cwd into the very `agent-*` worktree the block is about to remove (the same `isolation: "worktree"` cwd-leak class as [#452](https://github.com/mattsears18/shipyard/issues/452) / [#477](https://github.com/mattsears18/shipyard/issues/477)). Once `git worktree remove --force` deletes that directory, **every** subsequent bare git command in the same block — the `prune`, any follow-up `fetch`/`log` — dies with `fatal: Unable to read current working directory`, silently half-failing the reap (and, on the reconcile turn, skipping the post-merge CI watch — exactly the `merged-direct-ungated` path where that watch matters most). The anchor must be derived **cwd-independently** via the #477 porcelain idiom (`git worktree list --porcelain`'s `orchestrator-*` entry, falling back to the first `worktree ` entry = the primary), and it must run **while cwd is still valid** — i.e., before the remove, not after. Note that `git rev-parse --show-toplevel` can NOT be used to recover a block whose cwd is *already* deleted (git resolves its own cwd before reading anything, so it fails first); the `cd` therefore has to pre-empt the deletion rather than react to it. `cd /` is the last-resort floor — any extant directory works, since the reap itself operates on absolute paths.
+
+**Session-id derive in reap blocks (issue [#548](https://github.com/mattsears18/shipyard/issues/548)).** Each reap block additionally derives `SESSION_ID` cwd-independently *after* the `STABLE_DIR` cd anchor. This is a **separate** concern from the filesystem anchor: the cwd anchor prevents `git worktree remove` from corrupting the shell's cwd; the session-id derive prevents the reap's `--session-id` from coming up empty when cwd leaked to an agent worktree (which has no `.shipyard-session-id` stash). The reap blocks pass `--session-id "${SESSION_ID:-unknown}"` so the audit-log entry still lands (with the `unknown` sentinel visible in the log) even when the derive fails, rather than cascading an exit-64 that reads as silent success.
 
 **Interaction with step B.** Step B still fires on every completion path — A.0.5 does NOT replace it. The duplicate-reap is harmless: the `reap` helper's `git worktree remove --force` against a path A.0.5 already removed is a silent no-op. The point of A.0.5 is to take the reap action *earlier in the turn* on crash-like returns (closing the window where step B's `peer-alive` defer leaks the worktree), not to remove the per-completion sweep.
 
@@ -495,9 +542,18 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+  # Derive the session id cwd-independently (immune to the #477 cwd-leak that
+  # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+    --repo-root "$REPO_ROOT" 2>/dev/null)
+  [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+  if [ -z "$SESSION_ID" ]; then
+    echo "[session-id-derive] empty — skipping A.1 cost-comment post; check for #477 cwd-leak (#548)"
+  else
   # 1. Read the cost summary as a Markdown comment body.
   BODY=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
-    --session-id "<session-id>" --pr <M> --format comment)
+    --session-id "$SESSION_ID" --pr <M> --format comment)
 
   # 2. Look up the existing sentinel comment (if any) so we can edit
   # in-place instead of posting duplicates each time the cost grows
@@ -515,6 +571,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
       -f body="$BODY" >/dev/null
   else
     gh pr comment <M> --repo <owner/repo> --body "$BODY" >/dev/null
+  fi
   fi
   ```
 
@@ -544,6 +601,16 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   [ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
     | awk '/^worktree /{print substr($0,10); exit}')
   cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
+  # Derive the session id cwd-independently while STABLE_DIR is still valid.
+  # After `cd "${STABLE_DIR:-/}"` the cwd is either the orchestrator worktree
+  # or the primary checkout — both are safe anchors for the derive helper.
+  # This closes #548: the reap's --session-id must not read from the (possibly
+  # leaked-to-agent) cwd; it must read from the orchestrator worktree stash.
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+    --repo-root "$REPO_ROOT" 2>/dev/null)
+  [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+  [ -z "$SESSION_ID" ] && echo "[session-id-derive] empty — reap audit-log entries will lack session-id; check for #477 cwd-leak (#548)"
   # PRIMARY is the first `worktree ` entry — the .git/worktrees walk below
   # needs the primary's path (linked worktrees share the common .git dir).
   PRIMARY_CHECKOUT=$(git worktree list --porcelain 2>/dev/null \
@@ -586,7 +653,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
         --action deferred \
         --worktree-path "$worktree_path" \
         --worktree-name "$name" \
-        --session-id "<session-id>" \
+        --session-id "${SESSION_ID:-unknown}" \
         --reason "peer-alive" \
         --lock-pid "$lock_pid" \
         --phase "steady-state-A1-shipped" 2>/dev/null || true
@@ -600,7 +667,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
       --action reaped \
       --worktree-path "$worktree_path" \
       --worktree-name "$name" \
-      --session-id "<session-id>" \
+      --session-id "${SESSION_ID:-unknown}" \
       --classification "$classification" \
       --lock-pid "$lock_pid" \
       --phase "steady-state-A1-shipped" 2>/dev/null || true
@@ -735,10 +802,19 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+  # Derive the session id cwd-independently (immune to the #477 cwd-leak that
+  # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+    --repo-root "$REPO_ROOT" 2>/dev/null)
+  [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+  if [ -z "$SESSION_ID" ]; then
+    echo "[session-id-derive] empty — skipping A.1 cost-comment refresh; check for #477 cwd-leak (#548)"
+  else
   # 1. Read the cost summary as a Markdown comment body (now includes the
   # cumulative total across the original ship + every fix-checks follow-up).
   BODY=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
-    --session-id "<session-id>" --pr <M> --format comment)
+    --session-id "$SESSION_ID" --pr <M> --format comment)
 
   # 2. Edit the existing sentinel comment in place if one exists; otherwise
   # create one. The PATCH path is the hot path here — a green return on a
@@ -756,6 +832,7 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
       -f body="$BODY" >/dev/null
   else
     gh pr comment <M> --repo <owner/repo> --body "$BODY" >/dev/null
+  fi
   fi
   ```
 

@@ -1606,6 +1606,41 @@ assert_contains "$setup_path" \
   'media_production' \
   "setup.md scope-agent prompt instruction cites media_production as an invalid example (#547)"
 
+# (N+6) A.0/A.1 reconcile-turn templates must derive SESSION_ID
+#       cwd-independently to prevent silent token attribution loss (#548).
+#
+# The reconcile turn is where the #477 cwd-leak fires (harness relocates
+# orchestrator cwd into the just-returned agent's `agent-*` worktree).
+# A bare `cat .shipyard-session-id` at that point reads from the agent
+# worktree (no stash there) and returns empty, making every downstream
+# `session-state.sh` call exit 64 silently.
+#
+# Repro: session do-work-20260612T035752Z-44019 — 169k tokens unattributed,
+# PR #1925 missing from session_prs, cost comment failed with
+# "Body cannot be blank", agent worktree not immediately reaped.
+#
+# Fix: steady-state.md A.0 gains a new "A.0 required preamble" subsection
+# documenting the mandatory derive-session-id block; A.0 strict/degraded
+# and A.1 shipped/green cost-comment bash blocks use "$SESSION_ID" with
+# the preamble's guard; all reap blocks derive SESSION_ID after STABLE_DIR
+# and pass "${SESSION_ID:-unknown}"; the spec emits a loud
+# "[session-id-derive] empty" advisory when both derive paths fail.
+assert_contains "$steady_state_path" \
+  'issues/548' \
+  "steady-state.md cites issue #548 for the A.0 required session-id derive preamble"
+assert_contains "$steady_state_path" \
+  'A.0 required preamble' \
+  "steady-state.md A.0 has the required preamble subsection for cwd-independent session-id derive (#548)"
+assert_contains "$steady_state_path" \
+  'derive-session-id' \
+  "steady-state.md A.0 preamble uses worktree-reap.sh derive-session-id (#548)"
+assert_contains "$steady_state_path" \
+  '[session-id-derive] empty' \
+  "steady-state.md A.0/A.1 blocks emit a loud advisory when session-id derive returns empty (#548)"
+assert_contains "$steady_state_path" \
+  'SESSION_ID:-unknown' \
+  "steady-state.md reap blocks pass \${SESSION_ID:-unknown} to worktree-reap.sh reap (#548)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
