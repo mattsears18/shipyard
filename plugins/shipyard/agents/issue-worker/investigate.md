@@ -152,13 +152,13 @@ When the policy permits the close:
 
 ```bash
 # Noise:
-gh issue close <N> --repo <owner/repo> --comment "$(cat <<'EOF'
+gh issue close <N> --repo <owner/repo> --reason "not planned" --comment "$(cat <<'EOF'
 Auto-closed by shipyard as non-actionable noise: <one-line reason — e.g. "transient timeout; the call path already retries with backoff (lib/net.ts:42), so this cannot recur">. Reopen if it resurfaces.
 EOF
 )"
 
 # Duplicate:
-gh issue close <N> --repo <owner/repo> --comment "Auto-closed by shipyard as a duplicate of #<K> (same Sentry fingerprint / root cause). Tracking the fix there."
+gh issue close <N> --repo <owner/repo> --reason "not planned" --comment "Auto-closed by shipyard as a duplicate of #<K> (same Sentry fingerprint / root cause). Tracking the fix there."
 ```
 
 When the policy is `off` (or you are not confident enough for the policy tier you're under), do NOT close — fall through to **4b** (`needs-human-review`) instead. Auto-close is the maintainer's explicitly-requested behavior for *confident* noise only; an uncertain close silently drops a real bug, which is strictly worse than a human-queue hand-off.
