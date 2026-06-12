@@ -253,6 +253,20 @@
         "_comment": { "type": "string" }
       }
     },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls scope-preflight caching behavior (issue #563). The freshness window lets the orchestrator skip redundant scope-agent dispatches when a matching marker-tagged diagnosis comment already exists on the issue and is younger than `diagnosis_reuse_hours`.",
+      "properties": {
+        "diagnosis_reuse_hours": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 72,
+          "description": "How many hours a marker-tagged scope-preflight diagnosis comment is considered fresh enough to reuse without re-dispatching a scope agent. When the newest such comment on an issue is younger than this window AND its mechanical evidence still re-validates cheaply (cited blockers still open, body unchanged), the orchestrator records the defer with provenance 'cached-diagnosis' instead of dispatching a new scope agent. Set to 0 to disable caching entirely (always re-dispatch). Default 72h."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "flake_registry": {
       "type": "object",
       "additionalProperties": false,

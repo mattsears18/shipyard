@@ -188,6 +188,9 @@ DEFAULTS_JQ='{
     "rerun_threshold": 3,
     "distinct_prs_threshold": 2,
     "actions": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"]
+  },
+  "scope": {
+    "diagnosis_reuse_hours": 72
   }
 }'
 

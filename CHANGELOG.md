@@ -4,6 +4,18 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.9.22 — 2026-06-12
+
+**Scope-result freshness window eliminates redundant scope-agent re-dispatches when fresh marker-tagged diagnosis comments already exist on issues** (#563, PR #564). Previously, the orchestrator re-dispatched scope agents every session even when prior sessions had already documented their conclusions as marker-tagged comments (`<!-- do-work-external-dependency -->`, `<!-- do-work-human-decision-required -->`, `<!-- do-work-needs-decomposition -->`) on the issues. The repro: a maintainer bulk-cleared `needs-human-review` labels from 19 open issues; the orchestrator launched 7 scope agents (~330k tokens) that returned nearly verbatim re-derivations of 1–4 day-old comments. The fix introduces `scope.diagnosis_reuse_hours` (config knob, default 72h): before dispatching a scope agent, the orchestrator reads the issue's newest marker-tagged diagnosis comment; if it is within the window AND its mechanical evidence re-validates cheaply (cited blockers still open, body unchanged since the comment), it records the defer with provenance `cached-diagnosis` and skips the agent dispatch. Drain.md 5.b is extended to cover two tiers: the existing same-session carve-out (Tier 1, #549) and a new cross-session tier (Tier 2, #563) that re-validates `cached-diagnosis` entries within the configured window before dispatching a fresh scope agent.
+
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bumped `1.9.21` → `1.9.22`.
+- **`plugins/shipyard/schemas/shipyard.config.schema.json`** — new `scope` object with `diagnosis_reuse_hours` (integer ≥ 0, default 72).
+- **`plugins/shipyard/scripts/shipyard-config.sh`** — built-in default `scope.diagnosis_reuse_hours = 72`.
+- **`plugins/shipyard/commands/do-work.md`** — added `cached-diagnosis` to valid `provenance` values in the `deferred_issues` state struct.
+- **`plugins/shipyard/commands/do-work/setup.md`** — new "Scope-result freshness check" section (after the pre-scope detector batch, before scope-agent dispatch) with the 5-step check + `cached-diagnosis` recording path.
+- **`plugins/shipyard/commands/do-work/drain.md`** — 5.b extended to also cover `cached-diagnosis` entries; Tier-1 (same-session, #549) and Tier-2 (cross-session `cached-diagnosis` within window, #563) carve-outs documented; pre-drain audit banner updated to include `cached-diagnosis` reuse counts.
+- **`plugins/shipyard/scripts/tests/shipyard-config.test.sh`** — 8 new assertions for `scope.diagnosis_reuse_hours`: default value, repo-layer set, 0-disables-caching, schema rejects negative/non-integer/unknown-field, local-overrides-repo.
+
 ### 1.9.21 — 2026-06-12
 
 **Repair release: restored 11 released CHANGELOG entries silently deleted by PR #561's drain-phase rebase, and fixed the two SC2015 shellcheck findings that turned main's Tests / Shell-scripts gates red.** The fix-rebase force-push behind PR #561 (`82578f4`) dropped every entry between 1.9.18 and 1.9.3 while re-numbering its own entry — the exact failure mode #555's monotonicity gate (which landed one PR earlier, in 1.9.19) exists to catch; the gate fired on the PR but auto-merge did not wait for it because the repo has no required status checks. Entries restored from the last-good tree (`fa6a5f3`). Separately, `changelog-monotonicity-scan.test.sh` shipped with two `$(cd ... && cmd || true)` capture sites that shellcheck flags as SC2015; the `|| true` now sits outside the command substitution (behavior unchanged), unbreaking the CI gates.
