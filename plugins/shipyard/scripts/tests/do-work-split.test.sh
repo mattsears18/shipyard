@@ -1516,6 +1516,41 @@ assert_contains "$issue_work_path544" \
   'compute the next free version slot by reading the current manifest from' \
   "issue-work.md step 4 specifies follow-up version computation from origin/<default-branch> (#544)"
 
+# ----------------------------------------------------------------------
+# (N+4) Concurrent-session guard survives zsh's nomatch option when no
+#        agent-* worktrees exist (issue #546).
+#
+# The concurrent-session guard (step C, per-dispatch before self-assign)
+# historically used a bare glob:
+#   for wt_dir in "$(git rev-parse --show-toplevel)/.git/worktrees"/agent-*; do
+# Under zsh's default `nomatch` option, a glob that matches no entries
+# raises a fatal error — aborting the entire bash block with exit 1.
+# In the observed repro (session do-work-20260611T231002Z-91471,
+# mattsears18/lightwork, ~23:25Z 2026-06-11) this silently dropped the
+# self-assign (`gh issue edit <N> --add-assignee @me`) that followed the
+# guard in the same block.
+#
+# Same class as #335 (which fixed setup.md's 3b loop); the fix replaces
+# the bare glob with the #335 `find` idiom that exits 0 on no matches
+# so the loop body simply doesn't iterate. The `[ -d "$wt_dir" ] || continue`
+# guard that accompanied the old glob is no longer needed (find only emits
+# matching directories by construction) and was removed.
+assert_contains "$steady_state_path" \
+  'issues/546' \
+  "steady-state.md cites issue #546 as the source of the concurrent-session-guard zsh-nomatch fix"
+# The bare-glob form must be gone from the concurrent-session-guard block.
+# The exact shape that tripped the nomatch abort — note the distinctive
+# $(git rev-parse --show-toplevel) prefix that identifies the guard vs
+# the A.1 shipped-path (which uses ${PRIMARY_CHECKOUT}).
+assert_not_contains "$steady_state_path" \
+  'rev-parse --show-toplevel)/.git/worktrees"/agent-*' \
+  "steady-state.md concurrent-session guard no longer uses the bare agent-* glob (zsh nomatch hazard, #546)"
+# The hardened find-based replacement must be present in the concurrent-
+# session guard.
+assert_contains "$steady_state_path" \
+  "find \"\$(git rev-parse --show-toplevel)/.git/worktrees\" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null" \
+  "steady-state.md concurrent-session guard uses the find-based loop to avoid zsh nomatch (#546)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
