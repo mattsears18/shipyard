@@ -1641,6 +1641,59 @@ assert_contains "$steady_state_path" \
   'SESSION_ID:-unknown' \
   "steady-state.md reap blocks pass \${SESSION_ID:-unknown} to worktree-reap.sh reap (#548)"
 
+# (N+7) Scoping agents under-claim shared regression-test files for fix-class
+#        issues — worker edits outside claimed_paths defeat collision tracking
+#        and cause drain-phase rebase bails (issue #554).
+#
+# Repro (session do-work-20260612T115814Z-28614, C=2):
+#   - Scope agent for #548 returned files: [steady-state.md, plugin.json,
+#     CHANGELOG.md] — did NOT claim do-work-split.test.sh.
+#   - The #548 issue-worker (PR #551) edited do-work-split.test.sh anyway
+#     (repo convention: every fix adds a block to the shared suite).
+#   - Scope agent for #546 (PR #550) DID claim that file; its PR merged first.
+#   - The drain-phase fix-rebase for PR #551 bailed:
+#     "blocked rebase #551: merge conflict extends beyond coordinated
+#     manifest+CHANGELOG rows (plugins/shipyard/scripts/tests/do-work-split.test.sh)"
+#   - Manual rebase required (highest-cost outcome short of lost work).
+#
+# Phase-1 fix (this PR): add an instruction to the scoping-agent prompt in
+# setup.md step 6 requiring that for fix-class issues in repos with a shared
+# regression-test accumulator file, the agent MUST include that file in
+# `files` even when the issue body does not name it. This mirrors the
+# coordination-managed-paths mechanism (plugin.json + CHANGELOG.md) and
+# converts the unclaimed-edit drain-phase conflict into a dispatch-time park.
+#
+# Phase-2 fix (deferred): config-driven always_claimed_paths surface
+# (scope_preflight.always_claimed_paths or similar) that the orchestrator
+# unions into every ready entry's claimed_paths before the collision check,
+# providing a config-driven guarantee rather than relying on agent judgment.
+
+# The issue citation must be present in setup.md.
+assert_contains "$setup_path" \
+  'issues/554' \
+  "setup.md step 6 cites issue #554 as the source of the shared-regression-test inclusion rule"
+
+# The augmentation paragraph heading must be present.
+# Note: use double-quotes with escaped backtick to avoid SC2016.
+assert_contains "$setup_path" \
+  "shared regression-test suite inclusion" \
+  "setup.md step 6 carries the shared-regression-test files augmentation paragraph (#554)"
+
+# The rule must identify fix-class issues by label.
+assert_contains "$setup_path" \
+  'fix-class issues' \
+  "setup.md step 6 files augmentation uses the fix-class terminology (#554)"
+
+# The rule must name the do-work-split.test.sh file as the concrete repro example.
+assert_contains "$setup_path" \
+  'do-work-split.test.sh' \
+  "setup.md step 6 files augmentation cites do-work-split.test.sh as the concrete repro example (#554)"
+
+# The rule must explain the failure mode (drain-phase rebase bail, not dispatch-time park).
+assert_contains "$setup_path" \
+  'dispatch-time park' \
+  "setup.md step 6 files augmentation explains the park-vs-rebase-bail tradeoff (#554)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
