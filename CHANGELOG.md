@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.9.21 — 2026-06-12
+
+**Repair release: restored 11 released CHANGELOG entries silently deleted by PR #561's drain-phase rebase, and fixed the two SC2015 shellcheck findings that turned main's Tests / Shell-scripts gates red.** The fix-rebase force-push behind PR #561 (`82578f4`) dropped every entry between 1.9.18 and 1.9.3 while re-numbering its own entry — the exact failure mode #555's monotonicity gate (which landed one PR earlier, in 1.9.19) exists to catch; the gate fired on the PR but auto-merge did not wait for it because the repo has no required status checks. Entries restored from the last-good tree (`fa6a5f3`). Separately, `changelog-monotonicity-scan.test.sh` shipped with two `$(cd ... && cmd || true)` capture sites that shellcheck flags as SC2015; the `|| true` now sits outside the command substitution (behavior unchanged), unbreaking the CI gates.
+
+- **`CHANGELOG.md`** — entries 1.9.15 through 1.9.4 restored verbatim from `fa6a5f3`; 1.9.20 entry preserved on top.
+- **`plugins/shipyard/scripts/tests/changelog-monotonicity-scan.test.sh`** — `|| true` moved outside the two command substitutions (lines flagged at 210 / 314).
+- **`plugins/shipyard/.claude-plugin/plugin.json`** — version bumped `1.9.20` → `1.9.21`.
+
 ### 1.9.20 — 2026-06-12
 
 **Scoping agents now MUST include shared regression-test suite files in `files` for fix-class issues, preventing drain-phase rebase bails caused by unclaimed same-file edits** (#554, PR #561). When two sibling PRs edit the same shared test accumulator file (`do-work-split.test.sh` in this repo), the one whose scope agent omitted the file from `claimed_paths` causes the orchestrator's hard-collision check to miss the overlap. The conflict only surfaces at drain-phase rebase time, costing a wasted `fix-rebase` dispatch plus a manual rebase — the most expensive outcome short of lost work. Root cause: scope-agent variance (the #546 and #548 scope agents in the same session diverged on whether to claim `do-work-split.test.sh`, despite receiving the same prompt). The fix adds an explicit `files` augmentation rule to the scoping-agent prompt instruction in `setup.md` step 6: for fix-class issues (identified by `bug`/`P0`/`P1`/`P2` labels or `fix(`/`fix:`/`bug:` title prefix) in repos with a shared regression-test accumulator file (detected by a `*.test.sh` file touched by 10+ distinct commits, or named in `CLAUDE.md`), the agent MUST include that file in `files` even when the issue body does not name it. Mirrors the coordination-managed-paths contract (`plugin.json` + `CHANGELOG.md`) that was already implicit in worker behavior but not agent-prompt-visible. Config-driven `always_claimed_paths` surface deferred to phase 2 (requires schema + orchestrator coordination changes).
