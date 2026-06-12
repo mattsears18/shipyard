@@ -898,6 +898,20 @@ For **fix-failing-prs-batch work** (`shipped` / `noop` / `blocked`):
 - **noop: pileup already cleared** — the count dropped below 10 between dispatch and pre-flight (other PRs got merged or fixed). Record. Step D re-evaluates.
 - **blocked pr-batch-fix: <reason>** — log to summary, back off, surface in status line. No auto-retry.
 
+For **investigate work** (`investigated+fixed` / `investigated+needs-human-review` / `investigated+closed-noise` / `investigated+duplicate` / `blocked` / `reaped`):
+
+- **investigated+fixed #<N> via PR #<M>** — the worker diagnosed a real bug and opened a fixing PR. Record. **Append `<M>` to `session_prs`.** Apply the standard `shipped` cost-tracking comment and worktree-reap path (same as issue-work `shipped` — cost comment on PR, immediate worktree reap for `do-work/issue-<N>`). Remove the `needs-triage` label from the issue: `gh issue edit <N> --repo <owner/repo> --remove-label needs-triage 2>/dev/null || true`. The issue auto-closes when PR `<M>` merges (the worker's PR body includes `Closes #<N>`).
+
+- **investigated+needs-human-review #<N> (label applied)** — the worker reviewed the issue and determined it requires human judgment (ambiguous reproducer, architectural decision, security-sensitive, etc.). The worker already applied the `needs-human-review` label. Record. Remove `needs-triage`: `gh issue edit <N> --repo <owner/repo> --remove-label needs-triage 2>/dev/null || true`. No auto-retry — `/my-turn` will surface it. Reap the agent's worktree via step B.
+
+- **investigated+closed-noise #<N>** — the worker determined the issue is noise (spam, test artifact, auto-filed bot issue with no actionable signal). The worker already closed the issue. Record. Log: `[investigate-reconcile] #<N> closed as noise.` Reap the agent's worktree via step B.
+
+- **investigated+duplicate #<N> of #<K>** — the worker determined the issue duplicates `#<K>`. The worker already closed `#<N>` as a duplicate. Record. Log: `[investigate-reconcile] #<N> closed as duplicate of #<K>.` Reap the agent's worktree via step B.
+
+- **reaped:** (from investigate mode) — same handling as issue-work `reaped:` above: re-enqueue `<N>` into `investigate_candidates` (deduped), remove `@me` assignee, log the event. The worker's worktree is already gone; no reap needed.
+
+- **blocked #<N>** (from investigate mode) — apply the same `blocked` classification logic as issue-work above (dependency-wait → no label, body-ref filter; refuse → `needs-human-review`; soft → `blocked:agent-soft`). Additionally remove `needs-triage` only on the refuse path (the issue is no longer a triage candidate once a human-review gate has been applied): `gh issue edit <N> --repo <owner/repo> --remove-label needs-triage --add-label needs-human-review 2>/dev/null || true`. Reap the agent's worktree via step B.
+
 `session_prs` is the set of PR numbers this orchestrator session opened (issue-worker shipped, fix-main-ci shipped, fix-failing-prs-batch shipped) plus any pre-existing `@me` PRs that fix-checks touched. It is read by the end-of-session drain to decide what to watch and when to exit. A PR enters `session_prs` exactly once — re-touches don't re-add. Started empty at step 7's initial pool fill.
 
 #### A.5. (removed — [#521](https://github.com/mattsears18/shipyard/issues/521))
@@ -1169,10 +1183,11 @@ The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight
 | `fix-rebase`             | `shipyard:fix-rebase-worker`     | `haiku`             | Git mechanics — fetch + rebase + force-with-lease.                |
 | `fix-main-ci`            | `shipyard:fix-main-ci-worker`    | `sonnet`            | No PR context to anchor; broader investigation than fix-checks.   |
 | `fix-failing-prs-batch`  | `shipyard:fix-pr-batch-worker`   | `sonnet`            | Cross-PR pattern-spotting across ≤5 representative failures.      |
+| `investigate`            | `shipyard:investigate-worker`    | `sonnet`            | Investigate untriaged/bot-authored crash reports; disposition into binary backlog. |
 
 Every shim agent forwards to the same per-mode spec under [`agents/issue-worker/<mode>.md`](../../agents/issue-worker/) — the model pin is the only behavioral difference between dispatching via the shim vs the original `shipyard:issue-worker` entry router (which still handles every mode for forward-compat, just on Opus). When in doubt about a mode's behavioral contract, read the per-mode file, not the shim.
 
-**Every dispatch in the table above MUST set `isolation: "worktree"` on the `Agent` tool call**, regardless of which shim is being invoked. The Claude Code agent-definition frontmatter format doesn't support an `isolation:` default, so the requirement falls on the caller. The [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) `PreToolUse` hook hard-fails dispatches of any guarded shim that omit the parameter (#293 — the original hook only matched `shipyard:issue-worker` exactly, silently passing through the four model-pinned shims). When adding a new worker shim to this table, update the hook's guarded-set in lockstep.
+**Every dispatch in the table above MUST set `isolation: "worktree"` on the `Agent` tool call**, regardless of which shim is being invoked. The Claude Code agent-definition frontmatter format doesn't support an `isolation:` default, so the requirement falls on the caller. The [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) `PreToolUse` hook hard-fails dispatches of any guarded shim that omit the parameter (#293 — the original hook only matched `shipyard:issue-worker` exactly, silently passing through the five model-pinned shims; `shipyard:investigate-worker` was added to the guarded set when the shim shipped with #514 — no hook change needed here). When adding a new worker shim to this table, update the hook's guarded-set in lockstep.
 
 When filling a slot, walk this decision tree:
 
@@ -1189,6 +1204,23 @@ When filling a slot, walk this decision tree:
    > **`mode: fix-failing-prs-batch`** — Investigate the failing-PR pileup on `<owner/repo>`. <failing_pr_count_all> open PRs across all authors currently failing: <failing_pr_numbers>. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/fix-failing-prs-batch.md`.** Branch: `do-work/fix-pr-pileup-<short-timestamp>`. Synthetic divert — no `Closes #N` line.
    >
    > Return values: `shipped pr-batch-fix via PR #<M>`, `noop: pileup already cleared`, or `blocked pr-batch-fix: no common root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)`.
+
+1.5. **`investigate_candidates` non-empty?** → pop the front entry. Only dispatch when `concurrency` slots remain after servicing any divert-queue items — investigation is lower priority than CI repair and synthetic diverts but higher than parking. Path-collision rules do NOT apply (each candidate gets its own fresh `do-work/issue-<N>` branch and touches no currently-claimed paths).
+
+   Compute `originating_author_trust` exactly as in step 3 (look up `author.login` against `trusted_authors`; default `"trusted"` — these issues were already gated to `trusted_authors` at setup-step-4 routing time, so this is belt-and-suspenders). Read `triage.auto_close` from the merged config:
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+   triage_auto_close=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.auto_close 2>/dev/null || echo "confident-only")
+   ```
+
+   **For `investigate` dispatches** — `subagent_type: "shipyard:investigate-worker"` (Sonnet-pinned). Prompt template:
+
+   > **`mode: investigate`** — Work untriaged issue #<N> in `<owner/repo>` end-to-end. You are already self-assigned. The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating on the fixable-disposition path. `triage.auto_close` policy: **`<triage_auto_close>`**. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/investigate.md`.** Branch: `do-work/issue-<N>`.
+   >
+   > Return values: `investigated+fixed #<N> via PR #<M> (auto-merge: ..., checks: ...)`, `investigated+needs-human-review #<N> (label applied)`, `investigated+closed-noise #<N>`, `investigated+duplicate #<N> of #<K>`, or `blocked: <reason>`.
+
+   Self-assign the issue before dispatching (`gh issue edit <N> --add-assignee @me --add-label shipyard`) — same soft-lock as issue-work mode.
 
 2. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim).
 
