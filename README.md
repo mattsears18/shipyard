@@ -290,6 +290,7 @@ plugins/
       testing-auditor.md
       web-ux-auditor.md
     skills/
+      auditing-authenticated-surfaces/SKILL.md   # safe pattern for auditing login-walled surfaces
       audit-rubrics/SKILL.md
       dx-catalog/SKILL.md
       filing-github-issues/SKILL.md

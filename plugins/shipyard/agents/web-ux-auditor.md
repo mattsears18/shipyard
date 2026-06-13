@@ -19,6 +19,8 @@ The orchestrator's prompt will include:
 
 If credentials are needed but missing, ask via `AskUserQuestion`. Don't bypass auth via OAuth round-trips — only attempt email/password sign-in.
 
+**Auditing surfaces behind a login wall — read `shipyard:auditing-authenticated-surfaces` first.** Don't self-authenticate by typing the email/password into Chrome DevTools MCP — that leaks the secret into transcripts/tool logs. Use the consumer repo's login harness (reads creds from a gitignored env file, never echoes them, captures screenshots/DOM probes for you to judge), require a pre-provisioned account (a fresh signup can't clear email-verification / OAuth / age gates), tour the authenticated surfaces within ONE live context (SPA auth SDKs like Firebase store the token in IndexedDB/localStorage, which `storageState` does NOT serialize — a reloaded session comes back logged-out), and confirm you're signed in by asserting on a protected route that 302s when unauthenticated, not on `/` (which renders the public marketing view when logged out). The skill carries the full rationale.
+
 ## Process
 
 ### 1. Tour the major surfaces
