@@ -221,6 +221,25 @@ if [[ -f "$cmd_path" ]]; then
     "command sinks auto-undecomposable epics to lowest leverage (#565)"
   assert_contains "$cmd_path" "#565" \
     "command cites issue #565 for the leverage-score within-tier sort"
+
+  # Decision-gated handoff offer (issue #566): when the top → Next: item is a
+  # decision-gated needs-human-review issue (answerable blocking decisions
+  # present), /my-turn appends a READ-ONLY opt-in offer to hand off to the
+  # mutating sibling /resolve-decisions. The mutation (walkthrough + record +
+  # gate removal) lives entirely in that sibling — /my-turn only prints the
+  # offer and stays read-only. These assertions guard that the offer exists,
+  # names the sibling command, and is explicitly read-only (so a future reader
+  # doesn't mistake it for a mutation exception carved into /my-turn).
+  assert_contains "$cmd_path" "Decision-gated handoff offer" \
+    "command documents the decision-gated handoff offer subsection (#566)"
+  assert_contains "$cmd_path" "/shipyard:resolve-decisions" \
+    "offer hands off to the sibling /shipyard:resolve-decisions command (#566)"
+  assert_contains "$cmd_path" "resolve-decisions.md" \
+    "command links the resolve-decisions sibling command file (#566)"
+  assert_contains "$cmd_path" "Offer only, never execute" \
+    "offer is read-only — print-an-offer, never walk/mutate from /my-turn (#566)"
+  assert_contains "$cmd_path" "#566" \
+    "command cites issue #566 for the decision-gated handoff offer"
 fi
 
 echo
