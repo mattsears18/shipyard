@@ -5,7 +5,7 @@ argument-hint: [--repo owner/repo] [--all] [--limit N]
 
 # /my-turn
 
-Answer *"what do you need from me right now?"* with **the single next action** — by default, the one highest-leverage thing currently blocked on the user, rendered as a focused `→ Next:` directive. Behind that #1 item sits the same ranked survey of everything blocked on a human: the PRs that need the user's review, the issues blocked on a human decision, the failing checks that exhausted the orchestrator's fix-loop, the unresolved review comments tagging the user. The full ranked list renders only on `--all` (or an explicit `--limit N > 1`). **Read-only / advisory-only for v1.** No mutations, no dispatch — execution stays in `/shipyard:do-work` and other dedicated commands. The user reads the output, picks an item, and acts on it manually.
+Answer *"what do you need from me right now?"* with **the single next action** — by default, the one highest-leverage thing currently blocked on the user, rendered as a focused `→ Next:` directive. Behind that #1 item sits the same ranked survey of everything blocked on a human: the PRs that need the user's review, the issues blocked on a human decision, the failing checks that exhausted the orchestrator's fix-loop, the unresolved review comments tagging the user. The full ranked list renders only on `--all` (or an explicit `--limit N > 1`). **Read-only / advisory-only for v1.** No mutations, no dispatch — execution stays in `/shipyard:do-work` and other dedicated commands. The user reads the output, picks an item, and acts on it manually. When the top item is a [decision-gated issue](#decision-gated-handoff-offer), the command additionally *offers* (read-only — it prints an offer, it does not execute) to hand off to the mutating sibling [`/shipyard:resolve-decisions`](./resolve-decisions.md), which walks the blocking decisions one-by-one and records the answers ([#566](https://github.com/mattsears18/shipyard/issues/566)).
 
 Pairs with [`/shipyard:do-work`](./do-work.md) — that one is the agent-driven loop (Claude works the backlog autonomously); this one is the human-driven counterpart (the user reads what the loop *couldn't* resolve and decides what to do).
 
@@ -197,6 +197,24 @@ Rules for the single-action render:
 
 When the survey returns exactly one item, single-action mode renders just the `→ Next:` directive (plus its URL and any dependency line) with no remainder footer — the one item IS the whole list. (The lone-release-PR case above is the exception: it renders the discretionary phrasing instead of a `→ Next:` directive.)
 
+#### Decision-gated handoff offer
+
+When the top `→ Next:` item is a **decision-gated** issue — a `needs-human-review` issue that scores leverage **4** as a *pure-decision item* because its body (or a scope-preflight comment) enumerates **answerable** blocking decisions (a numbered "Blocking decisions before any code can be written" list, an `## Open questions` / `## Open product/schema questions` heading, a `<!-- do-work-human-decision-required -->` marker, or a `design`-gated set of questions) — append a single **opt-in offer** line below the directive, after any dependency/console line:
+
+```
+→ Next: answer the 7 product/schema decisions blocking the orgs feature (#1816)
+  https://github.com/owner/repo/issues/1816
+  Want me to walk you through them one at a time (with a recommendation for each)? Run /shipyard:resolve-decisions --issue 1816
+```
+
+The offer is a **hand-off to the sibling [`/shipyard:resolve-decisions`](./resolve-decisions.md) command**, which runs the interactive one-by-one walkthrough (restate → options → **recommendation+reasoning** → lock → room to clarify) and then performs the **mutation** (post a structured decisions comment + remove the gating label so `/do-work` can pick the issue up). The walkthrough and mutation live **entirely in that command** — `/my-turn` stays read-only and only *offers* the hand-off ([#566](https://github.com/mattsears18/shipyard/issues/566)). This preserves the [single-action contract](#single-action-mode-default): the `→ Next:` directive is unchanged; the offer is one extra advisory line, not a second action or an auto-launch.
+
+Rules for the offer line:
+
+- **Only for a genuinely decision-gated item.** Apply it only when the top item is a leverage-score-4 pure-decision `needs-human-review` issue with answerable decisions present. Do **NOT** append it to an epic-decomposition handoff (`<!-- do-work-needs-decomposition -->` — that's `/shipyard:decompose-epic`'s job, score 1), an `external-dependency` defer (`<!-- do-work-external-dependency -->`), or an external-author trust gate — those carry `needs-human-review` but enumerate no answerable decisions, so there's nothing to walk.
+- **Offer only, never execute.** `/my-turn` does not walk the decisions, post any comment, or remove any label — it prints the offer and stops. Running the walkthrough is the user's explicit next step (`/shipyard:resolve-decisions`). This is the read-only boundary; do not cross it.
+- **List mode.** In `--all` / `--limit N > 1` list mode, the offer is not rendered per-row (it would be noise across a long list); the decision-gated item still renders its normal action row. The hand-off offer is a single-action-mode affordance only.
+
 ### List mode (`--all`, or `--limit N > 1`)
 
 Print the full ranked list. Lead with the verb; same terse, framing-free shape as before. Format:
@@ -315,7 +333,7 @@ If a backlog blows the budget, `--limit` already provides a knob; otherwise file
 
 ## Don't
 
-- **Don't mutate any state.** No `gh pr edit`, no `gh issue close`, no comments posted, no labels changed. The command is advisory; mutation lives in `/shipyard:do-work` and other dedicated commands. A future v2 may offer one-keystroke handoff into `/do-work` for items the orchestrator could auto-resolve, but that's out of scope for v1.
+- **Don't mutate any state.** No `gh pr edit`, no `gh issue close`, no comments posted, no labels changed. The command is advisory; mutation lives in `/shipyard:do-work` and other dedicated commands. The [decision-gated handoff offer](#decision-gated-handoff-offer) is **not** an exception — it *prints an offer* to run `/shipyard:resolve-decisions` and stops; the walkthrough and its record-and-unblock mutation (post decisions comment + remove gate label) happen entirely inside that sibling command when the user runs it, never inside `/my-turn`. Offering a hand-off is read-only; executing it is the sibling command's job ([#566](https://github.com/mattsears18/shipyard/issues/566)). A future v2 may offer one-keystroke handoff into `/do-work` for items the orchestrator could auto-resolve, but that's out of scope for v1.
 - **Don't dispatch any agents.** The user wants a quick survey, not a 20-minute autonomous session. If the user wants Claude to *work* the items, they'll run `/shipyard:do-work` separately.
 - **Don't scan other repos.** Current repo only. Cross-repo digest is a future v2; for v1 the user can re-run with `--repo` in different cwds.
 - **Don't write a report file.** v1 is terminal-only. If the user wants persistence, they can pipe via shell redirection from outside the slash-command UI; that's their concern, not the command's. Add `--output <path>` later if useful.

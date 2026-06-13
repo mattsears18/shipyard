@@ -80,6 +80,11 @@ From inside any GitHub-connected repo, try one of these:
 # See what's blocked on YOU (PRs waiting on review, issues needing triage, etc.)
 # — the human-facing counterpart to /do-work.
 /my-turn
+
+# Walk a decision-gated issue's blocking decisions one-by-one (with a
+# recommendation for each), record the answers, and clear the gate so
+# /do-work can pick it up — the mutating sibling of /my-turn.
+/resolve-decisions --issue 1816
 ```
 
 ### 3. Watch the loop
@@ -140,7 +145,8 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through).
 - `/decompose-epic` — auto-decompose confirmed epics (issues carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker) into dispatch-ready GitHub sub-issues. `Multi-PR sequence:` / `Missing dependency:` evidence classes get sharded into an ordered `Blocked by #<sibling>` chain (so `/do-work` sequences them automatically); non-mechanical classes fall through to the existing human handoff. Explicit, human-invoked — mirrors `/refine-issues`' sentinel-keyed shape.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`)
-- `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart.
+- `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart. When the top item is decision-gated, it *offers* (read-only) to hand off to `/resolve-decisions`.
+- `/resolve-decisions` — interactively walk a decision-gated `needs-human-review` issue's blocking decisions one at a time (each with context, options, and a concrete recommendation+reasoning), then record the answers as a structured issue comment and remove the gating label so `/do-work` can pick it up. The mutating sibling of the read-only `/my-turn`.
 - `/shipyard:init` — scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps. See [`CLAUDE.md`'s "Configuration" section](./CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) for the layering model.
 - `/shipyard:config show|get|set|edit|validate` — inspect or update the effective merged config across the four layers (built-in defaults, user-global, repo, personal override).
 - `/shipyard:cost report` — query the persistent cost-history ledger at `~/.shipyard/cost-history.jsonl`; filter by repo, mode, model, or issue. See [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl).
@@ -263,6 +269,7 @@ plugins/
       init.md
       my-turn.md
       refine-issues.md
+      resolve-decisions.md
       status.md
     agents/
       a11y-auditor.md
