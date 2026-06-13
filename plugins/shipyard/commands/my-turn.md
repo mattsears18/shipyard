@@ -102,7 +102,7 @@ If the most recent completed run on default branch is `failure` / `cancelled` / 
 
 ## Ranking
 
-Merge the candidates from passes A–D into a single ranked list. Each item carries a priority tier and a stable secondary sort key (age, oldest first within a tier).
+Merge the candidates from passes A–D into a single ranked list. Each item carries a priority tier and, within its tier, a **leverage score** (highest-leverage first) with `createdAt` ascending (oldest first) as the final tie-breaker — see [Secondary sort](#secondary-sort). The leverage score, not raw age, is what determines the single `→ Next:` directive in single-action mode (issue [#565](https://github.com/mattsears18/shipyard/issues/565)).
 
 ### Priority tiers
 
@@ -126,9 +126,22 @@ Merge the candidates from passes A–D into a single ranked list. Each item carr
   - (The former **clearable** `blocked:agent-hard` housekeeping entry was removed in [#521](https://github.com/mattsears18/shipyard/issues/521) — a dependency-wait carries no label and auto-clears via the `Blocked by #<M>` body-reference filter when its blocker closes, so there's no leftover label for a human to remove.)
   - `CHANGES_REQUESTED` on `$ME`'s open PRs (the user owes the reviewer a response)
 
-### Secondary sort
+### Secondary sort — leverage score, then age (issue [#565](https://github.com/mattsears18/shipyard/issues/565))
 
-Within each tier, sort by `createdAt` ascending (oldest first). Surface a single age string per item — `<N>d` for ≥1 day, `<N>h` for ≥1 hour, else `<N>m`.
+Within each tier, sort by a **leverage score descending** (highest-leverage first), and break ties by `createdAt` ascending (oldest first). **Leverage is the primary within-tier key; age is only the tie-breaker.** This is the fix for [#565](https://github.com/mattsears18/shipyard/issues/565): the old flat `createdAt`-ascending secondary sort made the *stalest* item the sole `→ Next:` directive in single-action mode, which on a P0 tier dominated by long-lived `needs-human-review` issues regularly surfaced an auto-undecomposable epic — the *least* actionable item — directly contradicting the command's "single highest-leverage thing blocked on you" promise. Oldest-first is a reasonable *tie-breaker*, but it is not a *leverage* signal, and in single-action mode the secondary sort alone determines the one rendered item.
+
+**The leverage score is derived entirely from signals the survey passes A–D already collect** — no new `gh` calls, no new round-trips. Higher score = higher leverage = a human action that unblocks the most downstream work for the least effort. Rank within a tier by this order (4 = highest leverage, 1 = lowest):
+
+1. **Score 4 — pure-decision item.** The human action is a single decision that flips the item to dispatch-eligible / mergeable: a `needs-human-review` issue whose body enumerates product / schema / design questions with **no** external-console, on-device, or external-dependency requirement; a PR awaiting `$ME`'s review; an issue where the last comment is a direct question or `@$ME` ping awaiting a one-line answer. One human call converts the item to workable-by-`/do-work` (or merges it) — the highest leverage per unit of effort, so these float to the top of their tier.
+2. **Score 3 — quick external action.** The next step is a fast, mechanical action in a third-party console or repo settings: paste a CI secret, toggle a Firebase auth provider, delete a stale branch, flip a GitHub setting. Recognized by the [third-party console deep-link](#third-party-console-deep-links) signals (a derivable provider deep link) and by `external-dependency` / secret-paste phrasing. Slower than a pure decision (a context-switch into a provider UI) but still bounded and unblocking.
+3. **Score 2 — on-device / multi-party verification.** The action needs a device, a build, or coordination with another party (run a build through TestFlight, verify an on-device flow, get a second person to confirm). Higher effort and higher latency than a console toggle.
+4. **Score 1 — auto-undecomposable epic / parking-lot umbrella.** A `needs-human-review` issue carrying the `<!-- do-work-needs-decomposition -->` body marker **and** a `couldn't auto-decompose:` sentinel comment (`/decompose-epic` already determined it can't be mechanically sharded). A by-hand decomposition is *real work*, not a "next step" — these are low-leverage **as a single human action** by definition, so they **sink** to the bottom of their tier rather than floating to the top on age alone. This is the exact item the [#565](https://github.com/mattsears18/shipyard/issues/565) repro surfaced as a false `→ Next:` (the 4-week-stale `epic(aso)` #540).
+
+Items that match none of the above (e.g. a stale draft PR, a `CHANGES_REQUESTED` PR, a `mergeStateStatus: DIRTY` PR) take a **neutral middle score (2)** so the leverage ordering only *re-orders* the clear high/low-leverage cases and otherwise falls back to the age tie-breaker — it never invents urgency for a housekeeping item. The score is a within-tier ordering signal only; it never moves an item across tiers (a P2 pure-decision item does not outrank a P0 epic).
+
+**Worked example (the [#565](https://github.com/mattsears18/shipyard/issues/565) repro).** A P0 tier with 19 `needs-human-review` issues: under the old oldest-first sort, the 4-week-stale auto-undecomposable `epic(aso)` #540 ranked #1 and became the sole `→ Next:`. Under leverage-then-age, #540 scores 1 (auto-undecomposable epic) and sinks; a pure-decision issue like "feature blocked on 7 product/schema decisions the user can answer in minutes" scores 4 and floats to the top of P0 — so the `→ Next:` directive now points at the genuinely highest-leverage human action, restoring the headline promise.
+
+Surface a single age string per item regardless of leverage score — `<N>d` for ≥1 day, `<N>h` for ≥1 hour, else `<N>m`.
 
 ### Dedup
 
@@ -267,8 +280,9 @@ This applies to **both** render modes: the single-action `→ Next:` directive (
 The ranking step still needs the underlying signals to produce the order — they just don't appear in the rendered output. The internal projection per item carries:
 
 - **Tier** — P0 / P1 / P2 (see [Ranking](#ranking)).
+- **Leverage score** — 4 / 3 / 2 / 1 (see [Secondary sort](#secondary-sort--leverage-score-then-age-issue-565)), derived from the same survey signals. The **primary** within-tier sort key (descending); not rendered. Issue [#565](https://github.com/mattsears18/shipyard/issues/565).
 - **Why-on-user** — the signal name that fired (`awaiting your review`, `blocked:ci`, `needs-human-review`, etc.). Used by the ranking + dedup logic; not rendered unless multiple signals merged into one row produced a non-obvious action verb, in which case a single inline `(also: <signal>)` suffix is permitted.
-- **Age** — `createdAt` for new items, `updatedAt` for label-change items (v1 heuristic: use the older of the two; under-counts but never over-counts). Used to trigger the stale suffix.
+- **Age** — `createdAt` for new items, `updatedAt` for label-change items (v1 heuristic: use the older of the two; under-counts but never over-counts). The **tie-breaker** within a leverage score (oldest first); also triggers the stale suffix.
 - **URL** — surfaces unmodified.
 
 ### Empty state
@@ -311,4 +325,5 @@ If a backlog blows the budget, `--limit` already provides a knob; otherwise file
 - **Don't deep-dive on team membership for review requests.** v1 matches `$ME` directly against `reviewRequests`; team-via-membership lookups would add an extra `gh api` round-trip per PR and are out of scope. Users on teams will still see direct review requests in v1; team-level requests roll up via the GitHub UI's notification stream, which the user has anyway.
 - **Don't repeat work `/shipyard:do-work`'s upfront summary already does.** `/do-work`'s step 2 prints a buckets table with workable / skipped / blocked counts. That's a *backlog snapshot*; `/my-turn` is a *human-actions list*. They share inputs but have different shapes — don't try to merge them.
 - **Don't add framing back to the output.** No tier headers (`P0 — blocking other work`), no opening banner (`HUMAN ACTIONS NEEDED — …`), no closing prose paragraph (`Main CI on main is green, two PRs are still draining…`), no per-item title restatements, no per-item signal-label lines, no per-item age lines (except the stale suffix described in [Rendering rules](#rendering-rules)). The user asked for "what do I need to do" in imperative voice — every line of framing pushes the verb further down the screen. When in doubt: would removing this line lose any *action* information? If no, remove it.
+- **Don't sort the within-tier order by age alone.** The within-tier secondary sort is **leverage score first, age only as the tie-breaker** (see [Secondary sort](#secondary-sort--leverage-score-then-age-issue-565)). A flat `createdAt`-ascending sort makes the *stalest* item the sole `→ Next:` in single-action mode — which on a `needs-human-review`-dominated P0 tier regularly surfaces an auto-undecomposable epic (the least actionable item), contradicting the command's "highest-leverage" promise (issue [#565](https://github.com/mattsears18/shipyard/issues/565)). Oldest-first is the tie-breaker, not the ranking signal.
 - **Don't dump the full ranked list by default.** The default render is [single-action mode](#single-action-mode-default) — just the #1 item as a `→ Next:` directive. A 20-line backlog reintroduces the prioritization burden the command exists to remove and reads as an issue dump rather than "your next step." The full list is opt-in via `--all` (or `--limit N > 1`). The only exception is the [empty state](#empty-state), which is identical across modes.
