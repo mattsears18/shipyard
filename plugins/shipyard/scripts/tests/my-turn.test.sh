@@ -201,6 +201,26 @@ if [[ -f "$cmd_path" ]]; then
     "deep-link section defines a top-level-console fallback (#523)"
   assert_contains "$cmd_path" "#523" \
     "command cites issue #523 for the third-party console deep-link feature"
+
+  # Leverage-score within-tier sort (issue #565): the old flat
+  # createdAt-ascending secondary sort surfaced the *stalest* item as the sole
+  # → Next: directive in single-action mode, which on a needs-human-review-
+  # dominated P0 tier regularly floated an auto-undecomposable epic (the least
+  # actionable item) to the top — contradicting the "highest-leverage" promise.
+  # The fix sorts within each tier by a leverage score first, breaking ties by
+  # age (oldest first). These assertions guard the new contract: leverage is
+  # the primary within-tier key, age is the tie-breaker, and the
+  # auto-undecomposable epic sinks rather than floats.
+  assert_contains "$cmd_path" "leverage score" \
+    "command sorts within-tier by a leverage score (#565)"
+  assert_contains "$cmd_path" "tie-breaker" \
+    "command keeps createdAt/age only as the within-tier tie-breaker (#565)"
+  assert_contains "$cmd_path" "pure-decision" \
+    "command scores pure-decision items as highest-leverage (#565)"
+  assert_contains "$cmd_path" "couldn't auto-decompose:" \
+    "command sinks auto-undecomposable epics to lowest leverage (#565)"
+  assert_contains "$cmd_path" "#565" \
+    "command cites issue #565 for the leverage-score within-tier sort"
 fi
 
 echo
