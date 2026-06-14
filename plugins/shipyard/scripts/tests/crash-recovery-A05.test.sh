@@ -276,6 +276,90 @@ assert_contains "$steady_state_path" \
   "#495" \
   "A.0.5 fire-and-forget or recovery prose references #495"
 
+# ── New assertions for issue #575 (version-coordination bump during recovery) ──
+
+echo ""
+echo "Test: version-coordination bump during A.0.5 recovery (#575)"
+echo ""
+
+# 24) Issue #575 is referenced inline — traceability requirement.
+assert_contains "$steady_state_path" \
+  "[#575]" \
+  "A.0.5 names issue #575 inline"
+
+# 25) The version-coordination bump section header is present.
+assert_contains "$steady_state_path" \
+  "Version-coordination bump during recovery" \
+  "A.0.5 contains version-coordination bump section header"
+
+# 26) The version-coordination bump is gated on version_coordination.enabled —
+#     non-coordinated repos must be unaffected.
+assert_contains "$steady_state_path" \
+  "version_coordination.enabled" \
+  "A.0.5 version-bump gated on version_coordination.enabled config key"
+assert_contains "$steady_state_path" \
+  "version_coordination.manifest_path" \
+  "A.0.5 version-bump reads version_coordination.manifest_path config key"
+
+# 27) The bump compares the worktree manifest version against origin/<default>
+#     to detect whether the worker never reached its bump step.
+assert_contains "$steady_state_path" \
+  "wt_version" \
+  "A.0.5 version-bump reads worktree manifest version"
+assert_contains "$steady_state_path" \
+  "origin_version" \
+  "A.0.5 version-bump reads origin manifest version"
+# shellcheck disable=SC2016
+# Literal grep needle — $wt_version and $origin_version are matched verbatim in the spec.
+assert_contains "$steady_state_path" \
+  '"$wt_version" != "$origin_version"' \
+  "A.0.5 version-bump skips when worktree version differs from origin (worker already bumped)"
+
+# 28) The bump applies to both the dirty-worktree and committed-but-unpushed
+#     recovery paths — the helper function is called in both branches.
+assert_contains "$steady_state_path" \
+  "a05_version_bump" \
+  "A.0.5 defines a05_version_bump helper function"
+
+# 29) The committed-but-unpushed path adds the bump as a dedicated commit
+#     before the push, not after.
+assert_section_ordering "$steady_state_path" \
+  "Step 1.5: version-coordination bump (#575). The committed work may" \
+  "Step 2: push the branch. Pre-commit hooks already passed" \
+  "committed-path version-bump fires before push"
+
+# 30) The dirty-worktree path applies the bump BEFORE git add -A so it folds
+#     into the auto-commit (not as a separate commit).
+assert_section_ordering "$steady_state_path" \
+  "Step 1.5: version-coordination bump (#575). Apply the bump to the" \
+  "git -C \"\$worktree_path\" add -A" \
+  "dirty-worktree version-bump fires before git add -A"
+
+# 31) The WARNING log message is present for the can't-compute case.
+assert_contains "$steady_state_path" \
+  "WARNING: recovered PR has no version bump — manual release bump required" \
+  "A.0.5 version-bump logs loud WARNING when bump can't be computed"
+
+# 32) The CHANGELOG stub is prepended when changelog_path is configured.
+assert_contains "$steady_state_path" \
+  "vc_changelog" \
+  "A.0.5 version-bump reads version_coordination.changelog_path"
+assert_contains "$steady_state_path" \
+  "Crash-recovered by orchestrator A.0.5" \
+  "A.0.5 CHANGELOG stub includes crash-recovered marker"
+
+# 33) The bump is fire-and-forget — a failed bump must not abort the push.
+#     The prose explicitly states this per the issue acceptance criteria.
+assert_contains "$steady_state_path" \
+  "Fire-and-forget: failure logs an advisory" \
+  "A.0.5 version-bump is explicitly fire-and-forget in prose"
+
+# 34) The non-coordinated-repo path is called out — repos without
+#     version_coordination configured must be unaffected.
+assert_contains "$steady_state_path" \
+  "Non-version-coordinated repos are unaffected" \
+  "A.0.5 version-bump documents that non-coordinated repos are unaffected"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 if (( fail > 0 )); then
