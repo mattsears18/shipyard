@@ -21,6 +21,27 @@ gh label list --repo <owner/repo> --limit 100
 
 Apply whichever of these actually exist: `bug`, `enhancement`, `documentation`, `design`, `a11y`, `performance`, `security`, `web`, `ios`, `android`, `ci`. If a useful label doesn't exist, *don't* create it autonomously — that's a repo-config decision. Use the closest existing label and note the missing label in your end-of-run summary so the user can decide.
 
+## `shipyard` provenance label (REQUIRED on every filing)
+
+Every issue filed through any shipyard creation path — auditors, `/shipyard:file-issue`, `/decompose-epic` sub-issues, `/refine-issues`-spawned issues, and worker follow-up issues — MUST carry the `shipyard` label. This is the provenance/session stamp that hooks, the orphan-triage sweep, the failing-PR scan, and the end-of-session summary all key off. The `audit:<dimension>` origin labels and `shipyard` are orthogonal — auditor-filed issues carry both.
+
+Use the **ensure-then-label** pattern: create the label idempotently first (in case the target repo hasn't been bootstrapped with `/shipyard:init`), then include it on every `gh issue create`:
+
+```bash
+# Once at the start of the run — idempotent, never errors if already present.
+gh label create shipyard --repo <owner/repo> \
+  --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
+```
+
+Then pass `--label shipyard` on every `gh issue create` you do.
+
+**Verify it landed** after the first filing of the run by reading back the labels on the created issue:
+
+```bash
+gh issue view <N> --repo <owner/repo> --json labels --jq '[.labels[].name] | index("shipyard") != null'
+# Should print "true". If "false", the ensure step failed — re-run the label create and re-add.
+```
+
 ## Agent-identifying label (REQUIRED)
 
 Every issue you file MUST also carry an `audit:<dimension>` label identifying which audit agent filed it. Your agent's system prompt tells you which one to apply.
@@ -40,14 +61,14 @@ Every issue you file MUST also carry an `audit:<dimension>` label identifying wh
 | `testing-auditor` | `audit:testing` | `c5def5` |
 | `dx-auditor` | `audit:dx` | `c5def5` |
 
-**Auto-create your audit:* label if it doesn't exist** — this is the one exception to the "don't auto-create labels" rule, because the label is the agent's own metadata, not a repo-config decision. Do this once at the start of the run:
+**Auto-create your audit:* label if it doesn't exist** — because the label is the agent's own metadata, not a repo-config decision. Do this once at the start of the run (alongside the `shipyard` ensure above):
 
 ```bash
 gh label list --repo <owner/repo> --limit 100 | grep -q "^audit:<dimension>" || \
   gh label create "audit:<dimension>" --repo <owner/repo> --color c5def5 --description "Created by shipyard:<agent-name>"
 ```
 
-Then pass `--label "audit:<dimension>"` on every `gh issue create` you do.
+Then pass `--label "audit:<dimension>"` on every `gh issue create` you do — alongside `--label shipyard`.
 
 ## `needs-triage` label (when the finding needs refinement before work)
 
@@ -231,8 +252,11 @@ Only reference issue numbers you verified this session via `gh issue view N` or 
 
 ## Filing command (HEREDOC pattern)
 
+Always include `--label shipyard` (the provenance stamp — see "shipyard provenance label" above) alongside your other labels:
+
 ```bash
 gh issue create --repo <owner/repo> \
+  --label shipyard \
   --label <label1> --label <label2> \
   --title "<conventional-commit title>" \
   --body "$(cat <<'EOF'
@@ -249,6 +273,7 @@ HEREDOC with quoted `'EOF'` preserves backticks, dollar signs, and special chars
 
 ```bash
 issue_url=$(gh issue create --repo <owner/repo> \
+  --label shipyard \
   --label <label1> --label <label2> \
   --title "<conventional-commit title>" \
   --body "$(cat <<'EOF'

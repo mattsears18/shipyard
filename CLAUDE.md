@@ -38,7 +38,7 @@ We intentionally don't prefix `user-feedback` with `origin:` for naming consiste
 
 ### Session-stamp label
 
-- `shipyard` — the orchestrator session stamp on every PR it produces. Hooks, the orphan-triage sweep, the failing-PR scan, and the end-of-session summary all key off it. Don't remove it.
+- `shipyard` — the provenance/session stamp applied to **every issue AND PR** shipyard creates, across all creation paths: `/do-work` orchestrator PRs, worker-filed follow-up issues, `/shipyard:file-issue`, all `audit:*` auditors, `/refine-issues`, `/decompose-epic`. Hooks, the orphan-triage sweep, the failing-PR scan, and the end-of-session summary all key off it. Don't remove it. Each creation path must **ensure the label exists first** (idempotent `gh label create shipyard --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true`) before applying it — a missing label is created rather than silently dropped. The `audit:<dimension>` origin labels and the `shipyard` session-stamp label are orthogonal: auditor-filed issues carry both. See issue [#573](https://github.com/mattsears18/shipyard/issues/573).
 
 ### State labels (auto-managed)
 

@@ -129,7 +129,11 @@ For each remaining candidate, dispatch a **decomposition worker** in parallel �
 >
 > Create the sub-issues in dependency order (parents of the chain first, so the `Blocked by #<sibling>` references resolve to real numbers). For each:
 >
-> 1. Create the issue: `gh issue create --repo <owner/repo> --title "<title>" --body "<body>"`. The body MUST include, on their own lines:
+> 1. Before creating sub-issues, ensure the `shipyard` provenance label exists in the target repo (idempotent):
+>    ```bash
+>    gh label create shipyard --repo <owner/repo> --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
+>    ```
+>    Create the issue: `gh issue create --repo <owner/repo> --label shipyard --title "<title>" --body "<body>"`. The `shipyard` label is the provenance stamp applied to every shipyard-created artifact (issues AND PRs) — sub-issues are no exception. The body MUST include, on their own lines:
 >    - A `Blocked by #<prev>` line for every sub-task it depends on (this is what `/do-work`'s bucket-7 blocker-state gating reads to sequence them — an issue whose `Blocked by #M` target is still OPEN is held out of dispatch until M lands). The FIRST sub-task in the chain has no `Blocked by` line.
 >    - A `Part of #<N>` line linking back to the parent epic (provenance; not a closing keyword).
 >    - The sentinel `<!-- do-work-decompose-agent -->` is NOT required in sub-issue *bodies* (it's a comment sentinel) — but DO inherit the parent's priority label (`P0`/`P1`/`P2`) via `--label` so the children rank the same as the epic did.
