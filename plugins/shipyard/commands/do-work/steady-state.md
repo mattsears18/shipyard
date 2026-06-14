@@ -690,6 +690,63 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   If either `gh` call errors (rate limit, permission denied), log `[cost-comment] PR #<M> post failed: <reason>; continuing` and proceed. Cost-tracking is observational — never block dispatch on a comment-post failure.
 
+  **Then backfill `PR #TBD` in the CHANGELOG entry on the default branch (issue [#581](https://github.com/mattsears18/shipyard/issues/581)).** The worker writes the CHANGELOG entry before its PR exists, using a `PR #TBD` placeholder. At `shipped` reconcile time the orchestrator knows both the PR number `<M>` AND the committed CHANGELOG entry — but the worker can no longer update `main` (on direct-merge repos its branch was deleted on merge before it could push a follow-up). The orchestrator applies the one-line backfill as a small direct commit to the default branch (pre-authorized trivial-docs action):
+
+  ```bash
+  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
+
+  # Only runs when version_coordination is enabled and a changelog_path is configured.
+  vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
+  vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
+
+  if [ "$vc_enabled" = "true" ] && [ -n "$vc_changelog" ]; then
+    DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
+
+    # Read the CHANGELOG from the default branch (not the worktree — the PR may
+    # have already merged and the worker's branch is gone). Fire-and-forget: any
+    # failure just skips the backfill rather than blocking reconcile.
+    changelog_on_main=$(gh api "repos/<owner/repo>/contents/${vc_changelog}?ref=${DEFAULT_BRANCH}" \
+      --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+
+    if [ -n "$changelog_on_main" ] && echo "$changelog_on_main" | grep -qF "PR #TBD"; then
+      # Replace only the FIRST occurrence — there should be at most one #TBD per
+      # reconcile (the worker writes exactly one entry). sed -i is avoided for
+      # portability; use a temp-file approach via the GitHub API.
+      updated=$(echo "$changelog_on_main" | sed "s/PR #TBD/PR #<M>/")
+
+      if [ "$updated" != "$changelog_on_main" ]; then
+        # Get the current file SHA (required by the GitHub contents PATCH endpoint).
+        file_sha=$(gh api "repos/<owner/repo>/contents/${vc_changelog}?ref=${DEFAULT_BRANCH}" \
+          --jq '.sha' 2>/dev/null || echo "")
+
+        if [ -n "$file_sha" ]; then
+          encoded=$(printf '%s' "$updated" | base64 | tr -d '\n')
+          gh api -X PUT "repos/<owner/repo>/contents/${vc_changelog}" \
+            -f message="docs: backfill CHANGELOG PR #TBD → PR #<M> for issue #<N> (#581)" \
+            -f content="$encoded" \
+            -f sha="$file_sha" \
+            -f branch="$DEFAULT_BRANCH" \
+            >/dev/null 2>&1 \
+            && echo "[changelog-backfill] PR #<M>: replaced 'PR #TBD' with 'PR #<M>' in ${vc_changelog} on ${DEFAULT_BRANCH} (#581)" \
+            || echo "[changelog-backfill] PR #<M>: backfill PUT failed; 'PR #TBD' stays in ${vc_changelog} — manual fix may be needed (#581)"
+        else
+          echo "[changelog-backfill] PR #<M>: could not read ${vc_changelog} SHA from ${DEFAULT_BRANCH}; skipping (#581)"
+        fi
+      fi
+    fi
+    # No 'PR #TBD' on main — the entry already has a real PR number (possible
+    # when the worker self-backfilled before merging, or the entry template was
+    # updated to drop the token). This is a no-op; no log line needed.
+  fi
+  ```
+
+  **Scope and conditions:**
+  - Fires **only** when `version_coordination.enabled == "true"` AND `changelog_path` is configured — these are the repos where the worker writes CHANGELOG entries. On repos with no version coordination (no CHANGELOG convention, no `changelog_path`) the backfill is a no-op.
+  - Fires on every `shipped` reconcile (issue-work, fix-main-ci, fix-failing-prs-batch). Synthetic-divert returns (`shipped main-ci-fix`, `shipped pr-batch-fix`) also produce CHANGELOG entries on the default branch, so the backfill applies to them too.
+  - **Idempotent** — if `PR #TBD` is already gone (worker self-backfilled, or another reconcile beat this one), the `grep -qF "PR #TBD"` check is false and the step is a no-op. This means it's safe to double-fire on phantom re-fires (though the reconcile-once gate in A.−1 should prevent that).
+  - **Fire-and-forget** — every error path logs an advisory and continues. The CHANGELOG backfill is cosmetic (the fix for #581's symptom); the reconcile loop must never block on it.
+  - **One `sed` replacement per run** — the `sed "s/PR #TBD/PR #<M>/"` replaces only the FIRST occurrence. The worker writes exactly one `PR #TBD` entry per dispatch, so one replacement is correct. Historical `#TBD` entries from previous sessions on the same branch are NOT mass-rewritten — the forward fix is the priority per issue #581.
+
   **Then reap the agent's worktree immediately — don't wait for end-of-session cleanup.** Closes [#282](https://github.com/mattsears18/shipyard/issues/282): the worker's local branch `do-work/issue-<N>` and worktree directory lingering until end-of-session cleanup is what locks subsequent same-session fix-rebase dispatches out of `git switch <head>` (git enforces one-worktree-per-branch). Reaping immediately on `shipped` frees the PR's head branch right when the merge train might next want to rebase it. The worker has already returned (this is what `shipped` IS), so its worktree is no-longer-live by definition — the classify-lock pass still runs as defensive belt-and-suspenders, but the expected classification is `dead` (process gone) or `self-ancestor` (lock held the orchestrator's PID per the harness convention).
 
   **Force-reap even on `peer-alive` here.** This is a critical difference from step B's general-purpose reap (which defers on `peer-alive` as a conservative safety measure for unknown returns). A `shipped` return is the worker's terminal contract: the agent subprocess has exited, the PR is on the remote, the worktree has no further purpose. The `peer-alive` classification at this call site means the lock PID is some process that the orchestrator's SHIPYARD_ORCHESTRATOR_PID bootstrap (above) did not short-circuit to `self-ancestor` — most likely a transient harness subprocess that was still alive milliseconds after the agent returned. Deferring on `peer-alive` here causes the very drain-phase `blocked: branch locked in another worktree` failures documented in [#576](https://github.com/mattsears18/shipyard/issues/576): the A.1 defer leaves the worktree locked, the drain's pre-dispatch reap checks the same classification and also defers, and the fix-checks / fix-rebase worker bails. Force-reap closes the window by applying the same posture A.0.5 uses for crash returns (see [§A.0.5](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1)): when the terminal return string is in hand, the agent is non-recoverable by definition, and the `peer-alive` classification does not justify keeping the head branch locked. Audit the reap with `--classification peer-alive-force` so the override is visible in `~/.shipyard/reap-audit.jsonl`.
