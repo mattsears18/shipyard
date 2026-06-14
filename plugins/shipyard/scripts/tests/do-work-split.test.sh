@@ -1756,6 +1756,42 @@ assert_contains "$claude_md_path" \
   'Decision-resolved sentinel' \
   "CLAUDE.md has a 'Decision-resolved sentinel' heading entry (#569)"
 
+# (issue #581) CHANGELOG PR #TBD backfill at shipped reconcile.
+#
+# The worker writes the CHANGELOG entry before its PR exists, using a
+# 'PR #TBD' placeholder. On direct-merge repos (admin + no required checks)
+# the PR merges before the worker can push a follow-up self-backfill. The
+# orchestrator's A.1 `shipped` reconcile now applies the backfill as a small
+# direct commit to the default branch.
+#
+# Five assertions pin the contract:
+#   - steady-state.md carries the backfill step in the A.1 `shipped` block.
+#   - The backfill step is guarded by version_coordination.enabled so it
+#     only runs on repos with a configured changelog_path.
+#   - The step uses the GitHub Contents API (PUT) to write the commit — NOT
+#     a local `git commit`, which would require the orchestrator's cwd to be
+#     on the default branch.
+#   - The step replaces only the FIRST occurrence of 'PR #TBD' (sed without
+#     the `g` flag) so historical entries from prior sessions are not
+#     mass-rewritten.
+#   - The step is fire-and-forget: any failure logs an advisory and continues
+#     rather than blocking reconcile.
+assert_contains "$steady_state_path" \
+  'PR #TBD' \
+  "steady-state.md A.1 shipped block carries the CHANGELOG PR #TBD backfill step (#581)"
+assert_contains "$steady_state_path" \
+  'version_coordination.enabled' \
+  "steady-state.md CHANGELOG backfill is guarded by version_coordination.enabled (#581)"
+assert_contains "$steady_state_path" \
+  'repos/<owner/repo>/contents/' \
+  "steady-state.md CHANGELOG backfill uses the GitHub Contents API to write the commit (#581)"
+assert_not_contains "$steady_state_path" \
+  'sed "s/PR #TBD/PR #<M>/g"' \
+  "steady-state.md backfill uses sed without the g flag — replaces only the first occurrence (#581)"
+assert_contains "$steady_state_path" \
+  'changelog-backfill' \
+  "steady-state.md backfill logs with a [changelog-backfill] advisory prefix (#581)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
