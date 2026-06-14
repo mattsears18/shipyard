@@ -96,10 +96,15 @@ gh issue list --repo "$REPO" --state open --search '<key terms from title>' --js
 
 ### 6. File the issue
 
-Use the HEREDOC pattern from the filing skill:
+Ensure the `shipyard` provenance label exists first (idempotent — never errors if already present), then file using the HEREDOC pattern from the filing skill with `--label shipyard` included:
 
 ```bash
-gh issue create --repo "$REPO" \
+# Ensure the shipyard provenance label exists before filing.
+gh label create shipyard --repo "$REPO" \
+  --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
+
+issue_url=$(gh issue create --repo "$REPO" \
+  --label shipyard \
   --label "<P0|P1|P2>" \
   --label "<other applicable labels from gh label list>" \
   --title "<conventional-commit title>" \
@@ -120,7 +125,7 @@ gh issue create --repo "$REPO" \
 
 - [ ] <verifiable outcome>
 EOF
-)"
+)")
 ```
 
 ### 7. Return the issue URL
@@ -157,4 +162,4 @@ Do NOT prompt the user to enter values interactively for these failure modes —
 - **Don't add an `audit-key` HTML comment.** That contract is for autonomous re-runs of the audit family — human-filed issues from this command shouldn't claim audit-key fingerprints.
 - **Don't prompt for missing args interactively.** If `$ARGUMENTS` is empty or the preconditions fail, return a clear error and exit. The command is a one-shot.
 - **Don't file the issue without running the duplicate search first.** The skill mandates it; this command must respect it. If a strong duplicate is found, surface it and let the user decide.
-- **Don't apply the `shipyard` label.** That label is the orchestrator's session stamp on PRs it produces — it belongs on `/do-work`-opened PRs, not on issues filed via this command.
+- **Do apply the `shipyard` label** — it is the provenance stamp on every artifact shipyard creates (issues AND PRs, per [#573](https://github.com/mattsears18/shipyard/issues/573)). Use the ensure-then-label pattern: run `gh label create shipyard --repo "$REPO" --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true` before the `gh issue create` call, then pass `--label shipyard` on the create. See the `shipyard:filing-github-issues` skill's "shipyard provenance label" section for the full pattern including the verify step.
