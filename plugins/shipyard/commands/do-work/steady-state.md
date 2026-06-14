@@ -240,9 +240,13 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 
 **Pre-reap recovery check — save committed and uncommitted work before discarding the worktree ([#493](https://github.com/mattsears18/shipyard/issues/493), [#495](https://github.com/mattsears18/shipyard/issues/495)).** Before reaping a crashed worker's worktree, check whether the worker left any work that hasn't reached `origin` yet. Two cases apply: (a) the worker committed locally but hadn't pushed yet, and (b) the worker's working tree is dirty (edits staged or unstaged, never committed). Either way the worker completed expensive work that a full redo would duplicate. The recovery converts a mid-run stall or watchdog kill from "lose N edits + redo from scratch" into "salvage + push + open PR for the work already done."
 
+**Version-coordination bump during recovery ([#575](https://github.com/mattsears18/shipyard/issues/575)).** When `version_coordination.enabled` is true and a `manifest_path` is configured, the crashed worker may not have reached its own release-bump step (the worker crashes mid-implementation, before adding the manifest version bump + CHANGELOG entry). The recovery path checks whether the manifest version row in the worktree is unchanged from `origin/<default>` — if so, the recovery computes `next_available_version` and folds the bump + a minimal CHANGELOG stub into the auto-commit (dirty-worktree path) or as an additional commit (committed-but-unpushed path) before pushing. This guarantees the recovered PR carries the release bump the crashed worker never reached. The bump is **best-effort / fire-and-forget**: if the computation fails (manifest read fails, `jq` missing, coordination disabled), the recovery still pushes the PR as-is and logs a loud `[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required` advisory so the operator can patch it before merge. **Non-version-coordinated repos are unaffected** — when `version_coordination.enabled` is false or `manifest_path` is empty, the helper is a no-op and the recovery proceeds exactly as before.
+
 **Recovery semantics, in order:**
 
-1. `git -C <worktree_path> rev-list --count origin/<default>..HEAD` — if the count is **> 0**, the worker committed work that hasn't been pushed; jump to step 2 (push path). If the count is **0**, no commit landed yet — check whether the working tree is dirty (`git -C <worktree_path> status --porcelain` non-empty). If the working tree is dirty and the branch is `do-work/issue-<N>`, auto-commit all changes with `--no-verify` (the pre-commit gate may be exactly what hung the worker; CI is the real gate) and then push normally (step 2). Log the commit SHA and a `[reconcile-A.0.5-recovery] dirty-worktree auto-commit` prefix. If both `rev-list --count == 0` AND `status --porcelain` is empty, there is no work to recover; proceed directly to the reap.
+1. `git -C <worktree_path> rev-list --count origin/<default>..HEAD` — if the count is **> 0**, the worker committed work that hasn't been pushed; jump to step 1.5. If the count is **0**, no commit landed yet — check whether the working tree is dirty (`git -C <worktree_path> status --porcelain` non-empty). If the working tree is dirty and the branch is `do-work/issue-<N>`, run the version-coordination bump check (step 1.5) to inject the bump into the working tree before staging, then auto-commit all changes with `--no-verify` (the pre-commit gate may be exactly what hung the worker; CI is the real gate) and then push normally (step 2). Log the commit SHA and a `[reconcile-A.0.5-recovery] dirty-worktree auto-commit` prefix. If both `rev-list --count == 0` AND `status --porcelain` is empty, there is no work to recover; proceed directly to the reap.
+
+1.5. **Version-coordination bump check** (fires in both the committed-but-unpushed and dirty-worktree recovery paths, before any push): when `version_coordination.enabled` and a `manifest_path` are configured, compare the manifest version in the worktree's HEAD (or working tree, for the dirty path) against `origin/<default>`'s version. If they match (the worker never reached the bump step), compute the next available version and apply the bump: write the new version into the manifest file using `manifest_version_jq`, then prepend a `### <version> — <YYYY-MM-DD>` stub entry to `changelog_path` (when configured) referencing the recovered issue + PR. For the dirty-worktree path, apply these file edits before `git add -A` so they fold into the auto-commit. For the committed-but-unpushed path, apply these file edits and create an additional bump commit on top of the existing commits before pushing. When the bump can't be computed (manifest read fails, jq absent, version_coordination disabled), skip the bump and log the advisory; recovery continues as before.
 2. If count **> 0** (or a dirty-worktree auto-commit just landed), the worker committed at least one commit before crashing. Reaching a commit means either pre-commit hooks passed (the commit is hook-validated) or the recovery committed with `--no-verify` (CI is the safety net). Attempt to push the branch to origin:
    ```bash
    git -C "$worktree_path" push origin "do-work/issue-<N>" 2>&1
@@ -312,10 +316,108 @@ if [ "$is_terminal" = "false" ]; then
       git -C "$worktree_path" fetch origin "$DEFAULT_BRANCH" 2>/dev/null || true
       ahead_count=$(git -C "$worktree_path" rev-list --count "origin/${DEFAULT_BRANCH}..HEAD" 2>/dev/null || echo "0")
 
+      # ── Version-coordination bump helper (#575) ───────────────────────────
+      # Shared logic called by both recovery branches below. Applies the manifest
+      # version bump + CHANGELOG stub directly into the worktree's working tree
+      # (file edits only — does NOT commit). The caller is responsible for staging
+      # and committing (dirty-worktree path folds it into the auto-commit;
+      # committed-but-unpushed path adds a dedicated bump commit).
+      #
+      # Usage: call a05_version_bump "$worktree_path" "$DEFAULT_BRANCH" "$slot_issue"
+      # Sets: a05_bump_applied=true|false, a05_bump_version (when applied).
+      a05_version_bump() {
+        local wt="$1" defbr="$2" issue_num="$3"
+        a05_bump_applied=false
+        a05_bump_version=""
+
+        # Read coordination config. Fire-and-forget: any failure → skip.
+        vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
+        [ "$vc_enabled" != "true" ] && return 0
+
+        vc_manifest=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
+        [ -z "$vc_manifest" ] && return 0
+
+        vc_version_jq=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")
+        vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
+
+        # Read the manifest version from origin/<default> (the floor).
+        origin_version=$(gh api "repos/<owner/repo>/contents/${vc_manifest}?ref=${defbr}" \
+          --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | jq -r "$vc_version_jq" 2>/dev/null || echo "")
+        if [ -z "$origin_version" ]; then
+          echo "[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required (could not read origin manifest version for ${vc_manifest})"
+          return 0
+        fi
+
+        # Read the manifest version from the worktree (HEAD for committed path,
+        # working tree file for dirty path — reading the file directly covers both).
+        wt_version=$(jq -r "$vc_version_jq" "${wt}/${vc_manifest}" 2>/dev/null || echo "")
+        if [ -z "$wt_version" ]; then
+          echo "[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required (could not read worktree manifest version for ${vc_manifest})"
+          return 0
+        fi
+
+        # Only bump when the worktree version equals the origin version —
+        # i.e., the worker never reached its own bump step. If they differ,
+        # the worker already bumped (or partially bumped); don't overwrite.
+        if [ "$wt_version" != "$origin_version" ]; then
+          echo "[reconcile-A.0.5-recovery] version-bump: worktree already at ${wt_version} (origin=${origin_version}); skipping bump"
+          return 0
+        fi
+
+        # Compute next_available_version = patch bump of origin_version.
+        IFS='.' read -r vc_maj vc_min vc_pat <<< "$origin_version"
+        next_ver="${vc_maj}.${vc_min}.$((vc_pat + 1))"
+
+        # Apply the version bump to the manifest file in the worktree.
+        # Use jq to rewrite the file in-place (temp-file dance for safety).
+        jq_script="$(printf '%s = "%s"' "$vc_version_jq" "$next_ver")"
+        tmp_manifest="$(mktemp)"
+        if jq "$jq_script" "${wt}/${vc_manifest}" > "$tmp_manifest" 2>/dev/null && [ -s "$tmp_manifest" ]; then
+          mv "$tmp_manifest" "${wt}/${vc_manifest}" 2>/dev/null || rm -f "$tmp_manifest"
+        else
+          rm -f "$tmp_manifest"
+          echo "[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required (jq write failed for ${vc_manifest})"
+          return 0
+        fi
+
+        # Prepend a minimal CHANGELOG stub (when changelog_path is configured).
+        if [ -n "$vc_changelog" ] && [ -f "${wt}/${vc_changelog}" ]; then
+          today=$(date -u +%Y-%m-%d)
+          stub="### ${next_ver} — ${today}
+
+Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing release bump for issue #${issue_num}. Verify acceptance criteria are met.
+
+"
+          # Prepend the stub to the CHANGELOG file (tmp-file dance).
+          tmp_cl="$(mktemp)"
+          { printf '%s' "$stub"; cat "${wt}/${vc_changelog}"; } > "$tmp_cl" 2>/dev/null \
+            && mv "$tmp_cl" "${wt}/${vc_changelog}" 2>/dev/null \
+            || rm -f "$tmp_cl"
+        fi
+
+        a05_bump_applied=true
+        a05_bump_version="$next_ver"
+        echo "[reconcile-A.0.5-recovery] version-bump: applied ${origin_version} → ${next_ver} to ${vc_manifest}${vc_changelog:+ and ${vc_changelog}}"
+      }
+      # ─────────────────────────────────────────────────────────────────────
+
       if [ "$ahead_count" -gt 0 ] 2>/dev/null; then
         echo "[reconcile-A.0.5-recovery] slot=<slot-id> issue=#${slot_issue} has ${ahead_count} committed-but-unpushed commit(s); attempting pre-reap recovery (#493)"
 
-        # Step 1: push the branch. Pre-commit hooks already passed (the commit
+        # Step 1.5: version-coordination bump (#575). The committed work may
+        # not include the manifest bump (worker crashed before reaching it).
+        # Apply the bump as an additional commit on top of the existing
+        # commits, before pushing. Fire-and-forget: failure logs an advisory
+        # and we push the PR anyway so the worker's real work isn't lost.
+        a05_version_bump "$worktree_path" "$DEFAULT_BRANCH" "$slot_issue"
+        if [ "$a05_bump_applied" = "true" ]; then
+          git -C "$worktree_path" add "$vc_manifest" ${vc_changelog:+"$vc_changelog"} 2>/dev/null || true
+          git -C "$worktree_path" commit --no-verify \
+            -m "chore: release bump ${a05_bump_version} for issue #${slot_issue} (orchestrator A.0.5 recovery #575)" \
+            2>/dev/null || true
+        fi
+
+        # Step 2: push the branch. Pre-commit hooks already passed (the commit
         # succeeded); this is an orchestrator-side recovery push on a dead
         # agent's branch.
         push_out=$(git -C "$worktree_path" push origin "do-work/issue-${slot_issue}" 2>&1) && push_ok=true || push_ok=false
@@ -329,9 +431,16 @@ if [ "$is_terminal" = "false" ]; then
         # This mirrors the #493 committed-but-unpushed path: auto-commit first,
         # then fall through to the shared push+PR-create+auto-merge block below.
         echo "[reconcile-A.0.5-recovery] slot=<slot-id> issue=#${slot_issue} has dirty working tree but no commits; attempting dirty-worktree auto-commit recovery (#495)"
+
+        # Step 1.5: version-coordination bump (#575). Apply the bump to the
+        # working tree files before staging so it folds into the auto-commit.
+        # Fire-and-forget: failure logs an advisory; the auto-commit proceeds
+        # with whatever working-tree files the worker left.
+        a05_version_bump "$worktree_path" "$DEFAULT_BRANCH" "$slot_issue"
+
         git -C "$worktree_path" add -A 2>/dev/null || true
         autocommit_out=$(git -C "$worktree_path" commit --no-verify \
-          -m "fix: crash-recovery auto-commit for issue #${slot_issue} (orchestrator A.0.5 #495)" \
+          -m "fix: crash-recovery auto-commit for issue #${slot_issue} (orchestrator A.0.5 #495${a05_bump_applied:+, release bump ${a05_bump_version} #575})" \
           2>&1) && autocommit_ok=true || autocommit_ok=false
         autocommit_sha=$(git -C "$worktree_path" rev-parse --short HEAD 2>/dev/null || echo "unknown")
         echo "[reconcile-A.0.5-recovery] dirty-worktree auto-commit: ok=${autocommit_ok} sha=${autocommit_sha} (${autocommit_out:0:120})"
