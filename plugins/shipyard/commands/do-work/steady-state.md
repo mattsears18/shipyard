@@ -690,7 +690,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   If either `gh` call errors (rate limit, permission denied), log `[cost-comment] PR #<M> post failed: <reason>; continuing` and proceed. Cost-tracking is observational — never block dispatch on a comment-post failure.
 
-  **Then backfill `PR #TBD` in the CHANGELOG entry on the default branch (issue [#581](https://github.com/mattsears18/shipyard/issues/581)).** The worker writes the CHANGELOG entry before its PR exists, using a `PR #TBD` placeholder. At `shipped` reconcile time the orchestrator knows both the PR number `<M>` AND the committed CHANGELOG entry — but the worker can no longer update `main` (on direct-merge repos its branch was deleted on merge before it could push a follow-up). The orchestrator applies the one-line backfill as a small direct commit to the default branch (pre-authorized trivial-docs action):
+  **Then backfill `PR #TBD` in the CHANGELOG entry on the default branch (issue [#581](https://github.com/mattsears18/shipyard/issues/581)).** The worker writes the CHANGELOG entry before its PR exists, using a `PR #TBD` placeholder. At `shipped` reconcile time the orchestrator knows both the PR number `<M>` AND the committed CHANGELOG entry — but the worker can no longer update `main` (on direct-merge repos its branch was deleted on merge before it could push a follow-up). The orchestrator applies the one-line backfill using the write path appropriate for the repo's branch protection shape — direct Contents API commit when the default branch allows it, auto-merged PR when a `pull_request` ruleset blocks direct writes (issue [#583](https://github.com/mattsears18/shipyard/issues/583)):
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else M=$(ls -d "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard 2>/dev/null | head -1); echo "${M:-$R/plugins/shipyard}"; fi)}"
@@ -721,14 +721,90 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
         if [ -n "$file_sha" ]; then
           encoded=$(printf '%s' "$updated" | base64 | tr -d '\n')
-          gh api -X PUT "repos/<owner/repo>/contents/${vc_changelog}" \
-            -f message="docs: backfill CHANGELOG PR #TBD → PR #<M> for issue #<N> (#581)" \
-            -f content="$encoded" \
-            -f sha="$file_sha" \
-            -f branch="$DEFAULT_BRANCH" \
-            >/dev/null 2>&1 \
-            && echo "[changelog-backfill] PR #<M>: replaced 'PR #TBD' with 'PR #<M>' in ${vc_changelog} on ${DEFAULT_BRANCH} (#581)" \
-            || echo "[changelog-backfill] PR #<M>: backfill PUT failed; 'PR #TBD' stays in ${vc_changelog} — manual fix may be needed (#581)"
+
+          # Probe the default branch's ruleset BEFORE attempting the write so the
+          # write-path decision is explicit rather than discovered via failure.
+          # A `pull_request` rule (type "pull_request") blocks direct commits /
+          # Contents API PUTs to the branch — the rule requires all changes to
+          # arrive via a merged PR. Without this probe the backfill silently
+          # no-ops on the most common production repo shape (issue #583).
+          has_pr_rule=$(gh api "repos/<owner/repo>/rules/branches/${DEFAULT_BRANCH}" \
+            --jq '[.[].type] | contains(["pull_request"]) | tostring' 2>/dev/null || echo "false")
+
+          # Attempt the direct Contents API write first. This succeeds when the
+          # default branch has no pull_request ruleset, or when the ruleset has
+          # a bypass actor configured for the authenticated user.
+          put_ok=false
+          if gh api -X PUT "repos/<owner/repo>/contents/${vc_changelog}" \
+               -f message="docs: backfill CHANGELOG PR #TBD → PR #<M> for issue #<N> (#581)" \
+               -f content="$encoded" \
+               -f sha="$file_sha" \
+               -f branch="$DEFAULT_BRANCH" \
+               >/dev/null 2>&1; then
+            put_ok=true
+            echo "[changelog-backfill] PR #<M>: replaced 'PR #TBD' with 'PR #<M>' in ${vc_changelog} on ${DEFAULT_BRANCH} via direct Contents API commit (#581)"
+          fi
+
+          if [ "$put_ok" = "false" ]; then
+            # Direct write failed. Check whether the branch has a pull_request rule —
+            # if so, fall back to an auto-merged PR so the backfill still lands.
+            # If not (some other failure), emit a visible advisory and continue.
+            if [ "$has_pr_rule" = "true" ]; then
+              # Create a minimal backfill branch + PR, arm auto-merge.
+              # This is the same gh pr create --label shipyard && gh pr merge --auto
+              # path the workers use successfully on this repo. The branch name is
+              # deterministic and short-lived — it is deleted by --delete-branch on merge.
+              backfill_branch="do-work/changelog-backfill-<M>"
+              backfill_ok=false
+
+              # Create the branch off the default branch head SHA.
+              branch_sha=$(gh api "repos/<owner/repo>/git/ref/heads/${DEFAULT_BRANCH}" \
+                --jq '.object.sha' 2>/dev/null || echo "")
+              if [ -n "$branch_sha" ] && gh api -X POST "repos/<owner/repo>/git/refs" \
+                   -f ref="refs/heads/${backfill_branch}" \
+                   -f sha="$branch_sha" \
+                   >/dev/null 2>&1; then
+                # Write the updated CHANGELOG onto the backfill branch.
+                bf_file_sha=$(gh api "repos/<owner/repo>/contents/${vc_changelog}?ref=${DEFAULT_BRANCH}" \
+                  --jq '.sha' 2>/dev/null || echo "")
+                if [ -n "$bf_file_sha" ] && gh api -X PUT "repos/<owner/repo>/contents/${vc_changelog}" \
+                     -f message="docs: backfill CHANGELOG PR #TBD → PR #<M> for issue #<N> (#581)" \
+                     -f content="$encoded" \
+                     -f sha="$bf_file_sha" \
+                     -f branch="$backfill_branch" \
+                     >/dev/null 2>&1; then
+                  # Open a minimal PR for the backfill, arm auto-merge.
+                  backfill_pr=$(gh pr create \
+                    --repo <owner/repo> \
+                    --head "$backfill_branch" \
+                    --base "$DEFAULT_BRANCH" \
+                    --label shipyard \
+                    --title "docs: backfill CHANGELOG PR #TBD → PR #<M> (#583)" \
+                    --body "Backfill the \`PR #TBD\` placeholder left by the shipyard worker in the ${vc_changelog} entry for PR #<M> / issue #<N>. The default branch has a \`pull_request\` ruleset that blocked the usual direct Contents API write (#583); this tiny PR is the fallback path." \
+                    2>/dev/null || echo "")
+                  if [ -n "$backfill_pr" ]; then
+                    backfill_pr_num=$(echo "$backfill_pr" | grep -oE '[0-9]+$')
+                    gh pr merge "$backfill_pr_num" --repo <owner/repo> --auto --merge --delete-branch >/dev/null 2>&1 || true
+                    backfill_ok=true
+                    echo "[changelog-backfill] PR #<M>: direct Contents API write blocked by pull_request ruleset; opened backfill PR #${backfill_pr_num} with auto-merge armed (#583)"
+                  fi
+                fi
+                # Clean up the backfill branch if PR creation failed (don't leave orphan branches).
+                if [ "$backfill_ok" = "false" ]; then
+                  gh api -X DELETE "repos/<owner/repo>/git/refs/heads/${backfill_branch}" >/dev/null 2>&1 || true
+                fi
+              fi
+
+              if [ "$backfill_ok" = "false" ]; then
+                # Both paths failed — emit a VISIBLE advisory so the operator
+                # knows the placeholder was not resolved. Never a silent no-op (#583).
+                echo "[changelog-backfill] WARNING PR #<M>: could not backfill 'PR #TBD' in ${vc_changelog} — direct Contents API write rejected and PR-based fallback also failed. The placeholder stays in ${vc_changelog} on ${DEFAULT_BRANCH}. Manual fix: edit ${vc_changelog} and replace 'PR #TBD' with 'PR #<M>' (#583)"
+              fi
+            else
+              # Non-pull_request-rule failure — emit a visible advisory.
+              echo "[changelog-backfill] WARNING PR #<M>: backfill Contents API PUT failed for an unknown reason; 'PR #TBD' stays in ${vc_changelog} on ${DEFAULT_BRANCH}. Manual fix may be needed (#581)"
+            fi
+          fi
         else
           echo "[changelog-backfill] PR #<M>: could not read ${vc_changelog} SHA from ${DEFAULT_BRANCH}; skipping (#581)"
         fi
@@ -745,6 +821,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   - Fires on every `shipped` reconcile (issue-work, fix-main-ci, fix-failing-prs-batch). Synthetic-divert returns (`shipped main-ci-fix`, `shipped pr-batch-fix`) also produce CHANGELOG entries on the default branch, so the backfill applies to them too.
   - **Idempotent** — if `PR #TBD` is already gone (worker self-backfilled, or another reconcile beat this one), the `grep -qF "PR #TBD"` check is false and the step is a no-op. This means it's safe to double-fire on phantom re-fires (though the reconcile-once gate in A.−1 should prevent that).
   - **Fire-and-forget** — every error path logs an advisory and continues. The CHANGELOG backfill is cosmetic (the fix for #581's symptom); the reconcile loop must never block on it.
+  - **Write-path selection** — the backfill probes the default branch's ruleset first (via `gh api repos/{repo}/rules/branches/{branch}`), then attempts a direct Contents API write. If the write fails AND the branch has a `pull_request` rule, it falls back to an auto-merged PR on a short-lived `do-work/changelog-backfill-<M>` branch. If both paths fail, it emits a **visible** `WARNING` advisory — never a silent no-op (issue [#583](https://github.com/mattsears18/shipyard/issues/583)).
   - **One `sed` replacement per run** — the `sed "s/PR #TBD/PR #<M>/"` replaces only the FIRST occurrence. The worker writes exactly one `PR #TBD` entry per dispatch, so one replacement is correct. Historical `#TBD` entries from previous sessions on the same branch are NOT mass-rewritten — the forward fix is the priority per issue #581.
 
   **Then reap the agent's worktree immediately — don't wait for end-of-session cleanup.** Closes [#282](https://github.com/mattsears18/shipyard/issues/282): the worker's local branch `do-work/issue-<N>` and worktree directory lingering until end-of-session cleanup is what locks subsequent same-session fix-rebase dispatches out of `git switch <head>` (git enforces one-worktree-per-branch). Reaping immediately on `shipped` frees the PR's head branch right when the merge train might next want to rebase it. The worker has already returned (this is what `shipped` IS), so its worktree is no-longer-live by definition — the classify-lock pass still runs as defensive belt-and-suspenders, but the expected classification is `dead` (process gone) or `self-ancestor` (lock held the orchestrator's PID per the harness convention).
