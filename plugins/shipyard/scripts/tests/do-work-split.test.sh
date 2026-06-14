@@ -1694,6 +1694,68 @@ assert_contains "$setup_path" \
   'dispatch-time park' \
   "setup.md step 6 files augmentation explains the park-vs-rebase-bail tradeoff (#554)"
 
+# ── Regression: scope-preflight re-gates human-cleared issues (#569) ──────────
+#
+# Fix 1: freshness check must honor a human gate-clear (label timeline) and a
+#   <!-- do-work-decision-resolved --> sentinel as skip signals.
+# Fix 2: scope-agent prompt must instruct the agent to read the comment thread
+#   and recognize maintainer decision comments before judging actionability.
+
+# Fix 1a — gate-clear check must be present as a numbered step in the
+#   freshness check sequence and reference issue #569.
+assert_contains "$setup_path" \
+  'human gate-clear' \
+  "setup.md freshness check documents the human gate-clear skip signal (#569)"
+
+assert_contains "$setup_path" \
+  '#569' \
+  "setup.md freshness check references issue #569"
+
+# Fix 1a — the timeline-event API call must be documented.
+assert_contains "$setup_path" \
+  'unlabeled' \
+  "setup.md freshness check documents the unlabeled timeline event check (#569)"
+
+assert_contains "$setup_path" \
+  'needs-human-review' \
+  "setup.md freshness check names needs-human-review as the label to watch (#569)"
+
+# Fix 1b — the decision-resolved sentinel must appear as Signal B in the
+#   freshness check.
+assert_contains "$setup_path" \
+  '<!-- do-work-decision-resolved -->' \
+  "setup.md freshness check documents the do-work-decision-resolved sentinel (#569)"
+
+assert_contains "$setup_path" \
+  'Signal B' \
+  "setup.md freshness check names the sentinel check as Signal B (#569)"
+
+# The when-not-to-apply list must include both new skip triggers.
+assert_contains "$setup_path" \
+  'Signal A' \
+  "setup.md when-not-to-apply list mentions Signal A (label removal) (#569)"
+
+# Fix 2 — scope-agent prompt must instruct the agent to read the comment
+#   thread before judging actionability.
+assert_contains "$setup_path" \
+  'read the issue' \
+  "setup.md scope-agent prompt instructs agent to read comment thread (#569)"
+
+assert_contains "$setup_path" \
+  'do-work-decision-resolved' \
+  "setup.md scope-agent prompt mentions do-work-decision-resolved sentinel (#569)"
+
+# CLAUDE.md must document the decision-resolved sentinel convention so
+#   /my-turn and human maintainers know to stamp it.
+claude_md_path="$repo_root/CLAUDE.md"
+assert_contains "$claude_md_path" \
+  '<!-- do-work-decision-resolved -->' \
+  "CLAUDE.md documents the do-work-decision-resolved sentinel convention (#569)"
+
+assert_contains "$claude_md_path" \
+  'Decision-resolved sentinel' \
+  "CLAUDE.md has a 'Decision-resolved sentinel' heading entry (#569)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
