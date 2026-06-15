@@ -294,6 +294,39 @@ echo '{"version":1}' > "$repo/shipyard.config.json"
 assert_exit_code "$?" 0 "valid minimal config passes validation"
 
 # --------------------------------------------------------------------------
+echo "== main_ci.max_fix_attempts — fix-main-ci flake circuit breaker (#589)"
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
+# Built-in default is 3 (the fix-main-ci analogue of the blocked:ci 3-attempt cap).
+assert_equals "$("$helper" get main_ci.max_fix_attempts)" "3" "default main_ci.max_fix_attempts is 3"
+assert_equals "$("$helper" get main_ci.max_fix_attempts --with-source | cut -f2)" "defaults" "default comes from the built-in layer"
+
+# Repo-level override is honored and validates.
+out=$("$helper" set main_ci.max_fix_attempts 2 --repo 2>&1)
+assert_contains "$out" "wrote main_ci.max_fix_attempts" "set --repo writes main_ci.max_fix_attempts"
+assert_equals "$("$helper" get main_ci.max_fix_attempts)" "2" "repo override returns 2"
+assert_equals "$("$helper" get main_ci.max_fix_attempts --with-source | cut -f2)" "repo" "override source is repo"
+# Sibling main_ci keys untouched by the override (deep merge).
+assert_equals "$("$helper" get main_ci.aggregation_mode)" "branch-protection" "aggregation_mode still falls through to default"
+
+# Schema rejects a non-integer.
+echo '{"version":1,"main_ci":{"max_fix_attempts":"three"}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "main_ci.max_fix_attempts rejects non-integer"
+
+# Schema rejects below the minimum (1).
+echo '{"version":1,"main_ci":{"max_fix_attempts":0}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "main_ci.max_fix_attempts rejects 0 (below minimum)"
+
+# A valid override validates.
+echo '{"version":1,"main_ci":{"max_fix_attempts":5}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "main_ci.max_fix_attempts accepts a valid integer >= 1"
+
+# Reset to valid
+echo '{"version":1}' > "$repo/shipyard.config.json"
+
+# --------------------------------------------------------------------------
 echo "== load (not just validate) surfaces schema failures non-silently (issue #367)"
 # The orchestrator's step 0.4 captures `load`'s exit code AND stderr to warn
 # loudly when a present-but-invalid shipyard.config.json would otherwise make

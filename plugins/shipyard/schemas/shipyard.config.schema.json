@@ -171,6 +171,11 @@
           "items": { "type": "string" },
           "description": "Explicit list of workflow names that gate main_ci.status red. Highest priority — when non-empty, overrides `aggregation_mode` and the branch-protection probe. Match is case-sensitive against `workflowName` from `gh run list`. Empty array (the default) defers to `aggregation_mode`."
         },
+        "max_fix_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Attempt cap for the fix-main-ci divert per failing-workflow signature within a session (issue #589). After this many consecutive fix-main-ci PRs that each went green on their own PR run but left main's merge-commit red on the SAME workflow, the orchestrator stops auto-dispatching the divert and surfaces a structured flake escalation (recommend quarantine + tracking issue, or human CI-side investigation) instead of burning another CI suite. The fix-main-ci analogue of the blocked:ci 3-attempt cap for fix-checks. Default 3."
+        },
         "_comment": { "type": "string" }
       }
     },
