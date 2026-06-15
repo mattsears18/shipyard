@@ -1,11 +1,13 @@
 ---
 description: Survey open PRs, the issue backlog, and recent comments to surface the single next action currently blocked on the user (not on Claude). Read-only — pairs with /shipyard:do-work as the human-driven counterpart.
-argument-hint: [--repo owner/repo] [--all] [--limit N]
+argument-hint: [--repo owner/repo] [--all] [--limit N] [--chrome-prompt]
 ---
 
 # /my-turn
 
 Answer *"what do you need from me right now?"* with **the single next action** — by default, the one highest-leverage thing currently blocked on the user, rendered as a focused `→ Next:` directive. Behind that #1 item sits the same ranked survey of everything blocked on a human: the PRs that need the user's review, the issues blocked on a human decision, the failing checks that exhausted the orchestrator's fix-loop, the unresolved review comments tagging the user. The full ranked list renders only on `--all` (or an explicit `--limit N > 1`). **Read-only / advisory-only for v1.** No mutations, no dispatch — execution stays in `/shipyard:do-work` and other dedicated commands. The user reads the output, picks an item, and acts on it manually. When the top item is a [decision-gated issue](#decision-gated-handoff-offer), the command additionally *offers* (read-only — it prints an offer, it does not execute) to hand off to the mutating sibling [`/shipyard:resolve-decisions`](./resolve-decisions.md), which walks the blocking decisions one-by-one and records the answers ([#566](https://github.com/mattsears18/shipyard/issues/566)).
+
+Pass `--chrome-prompt` to switch into **chrome-prompt mode**: the entire visible output is a single copy-paste-ready prompt block for the [Claude for Chrome browser extension](https://chrome.google.com/webstore/detail/claude-for-chrome), with unmistakable copy dividers and nothing else above or below it (no `→ Next:` chrome, no ranked list). The user highlights the block, pastes it into the extension, and the extension acts. This is text-emission only — no MCP, no Claude Code execution; the deliverable is the prompt itself. (Distinct from [#585](https://github.com/mattsears18/shipyard/issues/585), which drives Chrome directly via `chrome-devtools-mcp`.)
 
 Pairs with [`/shipyard:do-work`](./do-work.md) — that one is the agent-driven loop (Claude works the backlog autonomously); this one is the human-driven counterpart (the user reads what the loop *couldn't* resolve and decides what to do). For an execution counterpart that drives the browser action after surfacing the top item, see [`/shipyard:my-turn-and-do`](./my-turn-and-do.md) ([#585](https://github.com/mattsears18/shipyard/issues/585)).
 
@@ -14,15 +16,17 @@ Pairs with [`/shipyard:do-work`](./do-work.md) — that one is the agent-driven 
 `$ARGUMENTS` may include:
 
 - **--repo owner/repo** (optional, default: cwd's repo via `gh repo view --json nameWithOwner -q .nameWithOwner`). If not in a repo, ask via `AskUserQuestion`.
-- **--all** (optional, default off): render the **full ranked list** instead of just the single next action. Without this flag (and without an explicit `--limit N > 1`), the command prints only the #1-ranked item as a focused `→ Next:` directive — see [Output](#output). Use `--all` when you want the whole backlog of human-blocked items, not just the next step.
-- **--limit N** (optional, default `25` *when the list renders*): cap the printed list at N items. Only meaningful in list mode — i.e. when `--all` is passed, or when `--limit N` is given with `N > 1` (which itself opts into list mode). `--limit 1` is equivalent to the default single-action mode. Items beyond the cap are summarized as `… and <K> more (rerun with --limit <K+N> to see all)`.
+- **--all** (optional, default off): render the **full ranked list** instead of just the single next action. Without this flag (and without an explicit `--limit N > 1`), the command prints only the #1-ranked item as a focused `→ Next:` directive — see [Output](#output). Use `--all` when you want the whole backlog of human-blocked items, not just the next step. In `--chrome-prompt` mode, mirrors this same single-vs-all behavior: without `--all`, the prompt covers only the #1 action; with `--all`, the prompt covers all human-blocked actions batched into a single extension prompt.
+- **--limit N** (optional, default `25` *when the list renders*): cap the printed list at N items. Only meaningful in list mode — i.e. when `--all` is passed, or when `--limit N` is given with `N > 1` (which itself opts into list mode). `--limit 1` is equivalent to the default single-action mode. Items beyond the cap are summarized as `… and <K> more (rerun with --limit <K+N> to see all)`. In `--chrome-prompt` mode, `--limit` caps the number of actions included in the batched prompt when combined with `--all`.
+- **--chrome-prompt** (optional, default off): switch into **chrome-prompt mode** — the entire visible output is a single copy-paste-ready prompt block suitable for the Claude for Chrome browser extension. The output is prompt-only: no `→ Next:` chrome, no ranked list, no preamble. The copy region is marked with unmistakable dividers. After the prompt block, a clearly-separated section lists anything that cannot be done by the extension or by Claude (manual/external steps, things needing maintainer auth, judgment calls the user must make personally); this section is omitted entirely when empty. See [Chrome-prompt mode](#chrome-prompt-mode) for the full render spec. **Composes with `--all`**: without `--all`, the prompt is built from the #1-ranked action only; with `--all`, all human-blocked actions are batched into one prompt.
 
-**Mode resolution.** The command runs in one of two render modes:
+**Mode resolution.** The command runs in one of three render modes:
 
-- **Single-action mode (default)** — no `--all`, and no `--limit N` with `N > 1`. Print only the top-ranked item as a `→ Next:` directive. This is the default because the command's promise is *focus*: the one thing to do next, not a backlog to re-prioritize.
-- **List mode** — `--all` is present, OR `--limit N` is given with `N > 1`. Print the full ranked list (capped at `--limit`, default `25`). `--all` with no `--limit` shows every item.
+- **Single-action mode (default)** — no `--all`, no `--limit N` with `N > 1`, and no `--chrome-prompt`. Print only the top-ranked item as a `→ Next:` directive. This is the default because the command's promise is *focus*: the one thing to do next, not a backlog to re-prioritize.
+- **List mode** — `--all` is present, OR `--limit N` is given with `N > 1`, AND `--chrome-prompt` is NOT present. Print the full ranked list (capped at `--limit`, default `25`). `--all` with no `--limit` shows every item.
+- **Chrome-prompt mode** — `--chrome-prompt` is present. The entire output is a single copy-paste-ready prompt block (see [Chrome-prompt mode](#chrome-prompt-mode)). `--all` and `--limit` still govern how many actions are included in the prompt, but the outer render is always prompt-only.
 
-Both flags compose: `--all --limit 10` renders the list capped at 10. The mode is purely a rendering choice — every survey pass and the full ranking run identically regardless of mode; only the **render** differs (top item only vs. the capped list).
+`--all` and `--limit` compose within all three modes: `--chrome-prompt --all --limit 10` builds a batched chrome-prompt covering the top 10 human-blocked actions. In single-action mode and chrome-prompt-without-`--all` mode, `--limit` has no effect (only one item is surfaced).
 
 ## Setup
 
@@ -229,6 +233,59 @@ Print the full ranked list. Lead with the verb; same terse, framing-free shape a
 main: green · 1 blocked:ci PR
 ```
 
+### Chrome-prompt mode (`--chrome-prompt`)
+
+When `--chrome-prompt` is present, the **entire visible output** is a single copy-paste-ready prompt block. Nothing appears above the opening divider line and nothing appears below the closing divider line except the optional "can't be automated" section. The user highlights from the first divider line to the last, pastes the whole thing into the Claude for Chrome browser extension, and the extension acts — no further reading or interpretation required.
+
+**Survey and ranking run identically.** The same passes A–D run, the same priority tiers and leverage scores apply, and `--all` / `--limit` govern which actions are included (top-1 without `--all`; all ranked items with `--all`, capped at `--limit`). The only difference is the render.
+
+**Prompt construction.** The body of the pasted prompt is self-contained instructions telling the extension what to do — concrete enough that the extension can act without re-deriving anything:
+
+- For each included action: the imperative action sentence (verb-first, sentence-case), the GitHub artifact URL, and — when applicable — the third-party console deep link (same derivation as the standard render). The extension can navigate to URLs; include them literally.
+- Enough context to identify each item unambiguously: PR or issue number, what to click, what to decide, what text to type (e.g. for a review: whether to approve or request changes).
+- When covering multiple actions (`--all`), present them as a numbered list inside the prompt body, ordered by the same ranking used by the standard render.
+
+**Layout.** Print exactly this structure, with no other content outside the dividers and the trailing section:
+
+```
+                                               (one blank line)
+──────────────── COPY THE PROMPT BELOW ────────────────
+                                               (one blank line)
+<the full pasteable prompt for the Claude Chrome extension>
+                                               (one blank line)
+──────────────── COPY THE PROMPT ABOVE ────────────────
+                                               (one blank line)
+
+⚠️  Can't be automated (do these yourself):
+- <item>
+```
+
+Rules for each layout element:
+
+- **Divider lines.** Use exactly `──────────────── COPY THE PROMPT BELOW ────────────────` and `──────────────── COPY THE PROMPT ABOVE ────────────────` (em-dashes `─`, U+2500, repeated). The labels are capitalised; the dashes form a full-width visual rule. One blank line on each interior side of the dividers.
+- **Prompt body.** Self-contained, complete instructions. No meta-commentary ("here is what you should do"), no output-format instructions to the reader — write to the extension as if it were receiving the instructions directly. Use the present-tense imperative ("Go to ...", "Open ...", "Click ...", "Review ..."). Include all URLs. For decision-gated items, enumerate the specific decisions to make and any context the extension needs to recommend or resolve them.
+- **"Can't be automated" section.** Appears after the closing divider, separated by one blank line. The `⚠️  Can't be automated (do these yourself):` header is followed by a bullet list of items that are out of reach for the browser extension: actions requiring physical device access, external-service credentials the extension doesn't have, real-world coordination with a third party, or judgment calls explicitly flagged as needing the user's personal decision. **Omit the section entirely** (header and all) when there are no such items — do not emit an empty section or a "none" bullet. The classification heuristic: an action is browser-doable if it consists of navigation + clicking + typing in a browser tab using the user's session; it is NOT browser-doable if it requires out-of-browser credentials, a native device (TestFlight, on-device build), a third party's manual action, or a purely personal judgment the user must own.
+- **Empty state in chrome-prompt mode.** When passes A–D return zero items, emit the same empty-state text as normal mode but wrap it in the dividers so the output shape is consistent:
+
+  ```
+                                                 (one blank line)
+  ──────────────── COPY THE PROMPT BELOW ────────────────
+                                                 (one blank line)
+  Nothing on your plate — backlog is clean. No actions for the Chrome extension right now.
+                                                 (one blank line)
+  ──────────────── COPY THE PROMPT ABOVE ────────────────
+  ```
+
+**What chrome-prompt mode does NOT emit:**
+
+- No `→ Next:` prefix or directive.
+- No ranked numbered list above or outside the dividers.
+- No tier headers, signal labels, or remainder footer.
+- No decision-gated handoff offer (the `/shipyard:resolve-decisions` offer is a terminal-output affordance; the chrome-prompt output goes to the extension, not to the terminal reader's action queue).
+- No structural footer line (`main: green · ...`).
+
+**Distinction from #585.** The `--chrome-prompt` flag is text-emission only: Claude emits a prompt string and stops. No `chrome-devtools-mcp` calls, no browser automation, no MCP connection. The Claude for Chrome extension is a separate agent that receives the text and operates independently. Issue [#585](https://github.com/mattsears18/shipyard/issues/585) covers the complementary mode where Claude Code itself drives the browser via MCP — do not conflate the two.
+
 ### Rendering rules
 
 These apply to the **list-mode** items and to the action sentence inside the single-action `→ Next:` directive.
@@ -257,7 +314,7 @@ Per item — **one line by default**:
 
 When the next action's actual work happens in a **third-party provider console** ([#523](https://github.com/mattsears18/shipyard/issues/523)) — the user has to create a test user in the Meta App Dashboard, enable an auth provider in the Firebase Console, paste a secret into a GitHub repo's Actions settings, submit a build in App Store Connect, etc. — the rendered action **MUST** append a clickable deep link to the **most specific reachable page**, derived from identifiers already in hand (app ID, project ID, bundle ID, team/owner slug, etc.). The information needed to build the link is almost always already present in the issue/PR body, a comment, or the repo's config — turning it into a URL costs the user one navigation they'd otherwise do by hand, across a provider UI with many nested pages.
 
-This applies to **both** render modes: the single-action `→ Next:` directive (the deep link goes on the indented URL line, *in addition to* the GitHub artifact URL — see [Single-action mode](#single-action-mode-default)) and the list-mode rows (the deep link is appended after the GitHub artifact URL — see [Rendering rules](#rendering-rules)).
+This applies to **all three render modes**: the single-action `→ Next:` directive (the deep link goes on the indented URL line, *in addition to* the GitHub artifact URL — see [Single-action mode](#single-action-mode-default)), the list-mode rows (the deep link is appended after the GitHub artifact URL — see [Rendering rules](#rendering-rules)), and the chrome-prompt body (include the URL literally in the prompt text so the extension can navigate directly — see [Chrome-prompt mode](#chrome-prompt-mode)).
 
 **Provider URL templates.** Substitute the bracketed identifiers from the action's context. Extend this table as new providers/actions surface — it's a starting set, not a closed list:
 
@@ -345,3 +402,6 @@ If a backlog blows the budget, `--limit` already provides a knob; otherwise file
 - **Don't add framing back to the output.** No tier headers (`P0 — blocking other work`), no opening banner (`HUMAN ACTIONS NEEDED — …`), no closing prose paragraph (`Main CI on main is green, two PRs are still draining…`), no per-item title restatements, no per-item signal-label lines, no per-item age lines (except the stale suffix described in [Rendering rules](#rendering-rules)). The user asked for "what do I need to do" in imperative voice — every line of framing pushes the verb further down the screen. When in doubt: would removing this line lose any *action* information? If no, remove it.
 - **Don't sort the within-tier order by age alone.** The within-tier secondary sort is **leverage score first, age only as the tie-breaker** (see [Secondary sort](#secondary-sort--leverage-score-then-age-issue-565)). A flat `createdAt`-ascending sort makes the *stalest* item the sole `→ Next:` in single-action mode — which on a `needs-human-review`-dominated P0 tier regularly surfaces an auto-undecomposable epic (the least actionable item), contradicting the command's "highest-leverage" promise (issue [#565](https://github.com/mattsears18/shipyard/issues/565)). Oldest-first is the tie-breaker, not the ranking signal.
 - **Don't dump the full ranked list by default.** The default render is [single-action mode](#single-action-mode-default) — just the #1 item as a `→ Next:` directive. A 20-line backlog reintroduces the prioritization burden the command exists to remove and reads as an issue dump rather than "your next step." The full list is opt-in via `--all` (or `--limit N > 1`). The only exception is the [empty state](#empty-state), which is identical across modes.
+- **In `--chrome-prompt` mode, don't emit anything outside the dividers except the "can't be automated" section.** The entire output must be highlightable as one clean copy region. Any preamble, status line, `→ Next:` directive, or trailing prose outside the defined layout breaks the copy flow and defeats the mode's purpose. The "can't be automated" section is intentionally after the closing divider — it is for the human's eyes, not for the extension to execute, and it must not be inside the prompt body.
+- **In `--chrome-prompt` mode, don't emit the extension-handoff offer from [Decision-gated handoff offer](#decision-gated-handoff-offer).** That offer (`Want me to walk you through them one at a time? Run /shipyard:resolve-decisions ...`) is a terminal-output affordance for the human reading the terminal — it has no place in a prompt destined for the browser extension. Chrome-prompt mode is exclusively for extension consumption; terminal-only affordances are suppressed.
+- **Don't call any MCP browser tools or attempt to drive the browser from `--chrome-prompt` mode.** The flag emits a text prompt and stops. Browser execution (if desired) is the Claude for Chrome extension's job, triggered when the user pastes the prompt. Driving the browser directly is [#585](https://github.com/mattsears18/shipyard/issues/585)'s scope, not this flag's.
