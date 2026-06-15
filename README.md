@@ -146,6 +146,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/decompose-epic` — auto-decompose confirmed epics (issues carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker) into dispatch-ready GitHub sub-issues. `Multi-PR sequence:` / `Missing dependency:` evidence classes get sharded into an ordered `Blocked by #<sibling>` chain (so `/do-work` sequences them automatically); non-mechanical classes fall through to the existing human handoff. Explicit, human-invoked — mirrors `/refine-issues`' sentinel-keyed shape.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`)
 - `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart. When the top item is decision-gated, it *offers* (read-only) to hand off to `/resolve-decisions`.
+- `/my-turn-and-do` — action-taking sibling of `/my-turn`. Runs the same ranked survey, then drives the #1 action in the user's real, logged-in Chrome via `chrome-devtools-mcp` (requires Chrome 144+ with `--autoConnect`). Confirms before any irreversible or outward-facing action; `--dry-run` for survey+plan only; `--yes` to pre-approve this run's planned mutations. Judgment-call items (PR review, nuanced replies) are teed up in the browser and handed back — never rubber-stamped.
 - `/resolve-decisions` — interactively walk a decision-gated `needs-human-review` issue's blocking decisions one at a time (each with context, options, and a concrete recommendation+reasoning), then record the answers as a structured issue comment and remove the gating label so `/do-work` can pick it up. The mutating sibling of the read-only `/my-turn`.
 - `/shipyard:init` — scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps. See [`CLAUDE.md`'s "Configuration" section](./CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) for the layering model.
 - `/shipyard:config show|get|set|edit|validate` — inspect or update the effective merged config across the four layers (built-in defaults, user-global, repo, personal override).
@@ -268,6 +269,7 @@ plugins/
       do-work-RATIONALE.md       # design discussion companion
       init.md
       my-turn.md
+      my-turn-and-do.md
       refine-issues.md
       resolve-decisions.md
       status.md
