@@ -164,7 +164,8 @@ DEFAULTS_JQ='{
   },
   "main_ci": {
     "aggregation_mode": "branch-protection",
-    "required_workflows": []
+    "required_workflows": [],
+    "max_fix_attempts": 3
   },
   "version_coordination": {
     "enabled": false,

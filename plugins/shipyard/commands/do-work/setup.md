@@ -1651,8 +1651,10 @@ Cache `{ status, earliest_red_run_id, earliest_red_run_url, earliest_red_sha, ea
 - `non_required_red_workflow_names` — sorted list of red workflow names that are NOT in the required set. Surfaced in the status line and banner so the user still sees infra failures even though they don't divert. Empty when the source was `all-workflows`.
 - `non_required_red_workflow_count` — `non_required_red_workflow_names.length`.
 
-- If `main_ci.status == "green"` → clear any `fix-main-ci` entry from `divert_queue`.
-- If `main_ci.status == "red"` → enqueue `{ kind: "fix-main-ci", target: "main", earliest_red_run_id, earliest_red_run_url, earliest_red_sha, earliest_red_workflow_name, red_workflow_names, red_workflow_count }` into `divert_queue` — unless an entry is already in `divert_queue` OR an `in_flight` slot is already working `kind: "fix-main-ci"` (don't double-dispatch the diversion).
+- If `main_ci.status == "green"` → clear any `fix-main-ci` entry from `divert_queue`. **Also reset the attempt counter** ([#589](https://github.com/mattsears18/shipyard/issues/589)): for every signature in `main_ci_fix_attempts` whose workflow is *not* currently in `red_workflow_names`, delete the entry (the fix worked — main is green on that workflow, so the next time it reds it starts a fresh attempt cycle). A signature still in `red_workflow_names` keeps its counter.
+- If `main_ci.status == "red"` → **before enqueueing, check the per-signature attempt cap** ([#589](https://github.com/mattsears18/shipyard/issues/589)). Read `main_ci.max_fix_attempts` from the merged config (default 3). Let `sig = earliest_red_workflow_name` and `att = main_ci_fix_attempts[sig].attempts // 0`:
+  - If `att >= max_fix_attempts` (or `main_ci_fix_attempts[sig].escalated == true`) → **do NOT enqueue a `fix-main-ci` divert** for this signature. Set `main_ci_fix_attempts[sig].escalated = true`. This is the circuit breaker: the same workflow has been "fixed" `max_fix_attempts` times and each fix passed on its own PR run but left main's merge-commit red — the strong signal of a flaky CI-only test (a deterministic regression would fail the PR run too). Fire the **flake-escalation banner** (see [steady-state.md step 6.5's banner spec](./steady-state.md#state-change-banners--make-divert-events-impossible-to-miss)) once per signature on the transition into `escalated`, and surface `main:🔴 (<workflow-summary>, run <id>) · flake-escalated: <sig> (<att> fix attempts, each green-on-PR/red-on-merge)` in the status line. The escalation recommends quarantine (`test.fixme` / skip) + a tracking issue, or human CI-side investigation. Do NOT auto-retry — a human must intervene (same posture as a `blocked main-ci-fix` return).
+  - Else (`att < max_fix_attempts`) → enqueue `{ kind: "fix-main-ci", target: "main", earliest_red_run_id, earliest_red_run_url, earliest_red_sha, earliest_red_workflow_name, red_workflow_names, red_workflow_count }` into `divert_queue` — unless an entry is already in `divert_queue` OR an `in_flight` slot is already working `kind: "fix-main-ci"` (don't double-dispatch the diversion).
 - If `main_ci.status == "pending"` → don't enqueue; the next step-D refresh re-evaluates once a run completes.
 - If `main_ci.status == "unknown"` → don't enqueue.
 
@@ -2137,6 +2139,7 @@ Fields:
 - **failing PRs:** — the all-authors count from `failing_pr_count_all`. The `(@me: <k>)` parenthetical comes from `failed_prs.length + in_flight fix-checks count`. Append ` ⚠️` to the count when it's ≥ 10 (matches the divert threshold).
 - **soft-suffix** — when one or more soft-collision paths are claimed by in-flight workers, append ` · [soft: <path>×<n>, <path>×<n>, ...]` listing each distinct claimed soft path and how many in-flight workers are holding it. Order by claim count desc, then alphabetical. Bracket and brackets are part of the surface (visually similar to the in-flight labels). Append ` ⚠️` to any path whose count equals `--soft-collision-concurrency` (the cap — next claimer on that path will park). Omit the suffix entirely when no soft-collision claims are active.
 - **divert-suffix** — when a divert is enqueued but not yet in flight, append ` · diverting: <kind>`. When already in flight, the `[ ]` labels already make that visible, no suffix needed.
+- **flake-escalated-suffix** ([#589](https://github.com/mattsears18/shipyard/issues/589)) — when any signature in `main_ci_fix_attempts` has `escalated == true`, append ` · flake-escalated: <sig> (<attempts> fix attempts, each green-on-PR/red-on-merge)`. This is the fix-main-ci attempt-cap circuit breaker firing: main is still red on `<sig>` but the orchestrator has stopped auto-diverting because each of `<attempts>` fix PRs passed on its own PR run and re-reddened the merge commit (a flaky-CI signature). When more than one signature is escalated, list each (comma-separated). The suffix persists until a human gets main green on `<sig>` (which clears the counter). Distinct from `· diverting:` — an escalated signature is explicitly NOT being diverted.
 
 Examples:
 
@@ -2147,6 +2150,7 @@ Examples:
 /do-work · mattsears18/lightwork · main:🔴 (3 workflows: Deploy to Play Store, Lighthouse CI, +1 more, run 18234567) · in-flight: 1/2 [⚠️ fix-main-ci] · failing PRs: 0 (@me: 0)
 /do-work · mattsears18/lightwork · main:🟢 (infra: Android Release Notes) · in-flight: 2/2 [#769, #768] · failing PRs: 3 (@me: 1)
 /do-work · mattsears18/lightwork · main:⏳ · in-flight: 0/2 [ ] · failing PRs: 0 (@me: 0)
+/do-work · mattsears18/lightwork · main:🔴 (Web E2E Tests, run 18234567) · in-flight: 1/2 [#769] · failing PRs: 0 (@me: 0) · flake-escalated: Web E2E Tests (3 fix attempts, each green-on-PR/red-on-merge)
 ```
 
 The soft-suffix is the human's signal that merge conflicts may surface at PR-land time on those paths. When a count hits the cap (` ⚠️`), the orchestrator is also one step away from parking — and the user can decide whether to bump `--soft-collision-concurrency` mid-session (next-session-only, the cap isn't hot-reloadable today) or let dispatch park.
@@ -2206,6 +2210,23 @@ Trigger this notification banner only on the 0 → ≥1 transition (not every re
 🔧  DISPATCHED fix-main-ci on slot <id> — agent investigating <earliest_red_run_id>
 
 ```
+
+**fix-main-ci attempt-cap hit → flake escalation, NOT diverting** ([#589](https://github.com/mattsears18/shipyard/issues/589)). Fired once per signature on the transition into `main_ci_fix_attempts[<sig>].escalated == true` (when `attempts >= main_ci.max_fix_attempts` and the red branch of [step 4.5a's enqueue rule](#45-divert-checks-main-ci--pr-pileup) declines to enqueue):
+
+```
+
+🚩  FIX-MAIN-CI CAP HIT — likely flaky test, NOT diverting again
+   Workflow: <earliest_red_workflow_name>
+   Fix attempts this session: <attempts> (each green on its own PR run, red on the merge commit)
+   Latest fix PR: #<last_pr> · earliest red run: <earliest_red_run_url>
+   This pass-on-PR/fail-on-merge pattern is a strong flaky-CI signal (a deterministic
+   regression would fail the PR run too). Recommended: quarantine the test (test.fixme /
+   skip) + file a tracking issue, OR investigate CI-side. No further auto-dispatch for this
+   workflow until a human gets main green on it.
+
+```
+
+The cap is the fix-main-ci analogue of the `blocked:ci` 3-attempt circuit breaker for fix-checks. After the banner fires, the status line carries `· flake-escalated: <sig> (<attempts> fix attempts, each green-on-PR/red-on-merge)` until a human resolves it (main goes green on `<sig>`, which clears the counter at the next green refresh).
 
 **Main flipped back to green (red → green transition):**
 

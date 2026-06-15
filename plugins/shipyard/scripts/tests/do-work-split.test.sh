@@ -414,7 +414,7 @@ assert_contains "$steady_state_path" \
 # Five assertions pin the post-#317 contract:
 #   - The struct list grew a 12th entry `reconciled_agent_ids` (named in
 #     do-work.md alongside the #317 cross-ref).
-#   - The opening sentence reflects the new struct count ("thirteen" post-#323, was "twelve" post-#317).
+#   - The opening sentence reflects the new struct count ("sixteen" post-#589, was "fifteen" post-#437).
 #   - steady-state.md gained the new A.−1 step (the gate body lives there).
 #   - The advisory log line shape is documented exactly (so a future
 #     regression that drops the gate without renaming everything else
@@ -425,8 +425,8 @@ assert_contains "$do_work_path" \
   'reconciled_agent_ids' \
   "do-work.md struct list names reconciled_agent_ids (#317)"
 assert_contains "$do_work_path" \
-  'fifteen mental data structures' \
-  "do-work.md opening sentence reflects post-#437 struct count (fifteen)"
+  'sixteen mental data structures' \
+  "do-work.md opening sentence reflects post-#589 struct count (sixteen)"
 assert_contains "$steady_state_path" \
   'A.−1. Reconcile-once gate' \
   "steady-state.md carries the A.−1 reconcile-once gate (#317)"
