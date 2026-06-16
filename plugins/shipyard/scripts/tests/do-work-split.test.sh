@@ -1012,6 +1012,62 @@ assert_contains "$rationale_path348" \
   'issues/348' \
   "RATIONALE cites issue #348 as the source of Detector 2"
 
+# (23b) Detector 2 extension — config-driven path set, .claude/hooks/ coverage,
+#       deliverable-vs-mention false-positive guard (issue #591).
+#
+# #591 extended Detector 2 along three axes after a mksolutionsky.com session
+# burned two ~100k-token dispatches (#69/#70) on agent-config deliverables:
+#   - The matched path set became config-driven via scope.self_modification_paths
+#     (default includes .claude/hooks/, the gap #591 closed for hook-script files).
+#   - A deliverable-vs-mention guard prevents false-positives on meta-issues that
+#     merely discuss these paths in prose (issue #591 itself is the canonical case).
+#   - The class stays human-decision-required, deliberately declining #591's
+#     suggested confirmed-non-shippable-as-single-PR (single-PR config edit blocked
+#     by a policy, not an un-decomposable epic).
+setup_path591="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+drain_path591="$repo_root/plugins/shipyard/commands/do-work/drain.md"
+rationale_path591="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+config_sh591="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
+schema591="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
+
+assert_contains "$setup_path591" \
+  'scope.self_modification_paths' \
+  "setup.md Detector 2 is config-driven via scope.self_modification_paths (#591)"
+assert_contains "$setup_path591" \
+  '.claude/hooks/' \
+  "setup.md Detector 2 covers .claude/hooks/ (#591)"
+assert_contains "$setup_path591" \
+  'Deliverable-vs-mention guard' \
+  "setup.md Detector 2 has the deliverable-vs-mention false-positive guard (#591)"
+assert_contains "$setup_path591" \
+  'declining the issue'"'"'s suggested class' \
+  "setup.md Detector 2 documents declining the suggested confirmed-non-shippable class (#591)"
+assert_contains "$setup_path591" \
+  'confirmed-non-shippable-as-single-PR' \
+  "setup.md Detector 2 names confirmed-non-shippable-as-single-PR as the declined class (#591)"
+assert_contains "$setup_path591" \
+  'Proposes .claude/hooks/' \
+  "setup.md validator's human-decision-required rule accepts Proposes .claude/hooks/ prefix (#591)"
+assert_contains "$setup_path591" \
+  'issues/591' \
+  "setup.md cites issue #591 as the source of the Detector 2 extension"
+assert_contains "$drain_path591" \
+  '.claude/hooks/' \
+  "drain.md re-validation cross-reference mentions .claude/hooks/ (#591)"
+assert_contains "$rationale_path591" \
+  'config-driven paths' \
+  "RATIONALE has a Detector 2 extension section (#591)"
+assert_contains "$rationale_path591" \
+  'issues/591' \
+  "RATIONALE cites issue #591 as the source of the Detector 2 extension"
+# Config default + schema carry the new knob
+assert_contains "$config_sh591" \
+  'self_modification_paths' \
+  "shipyard-config.sh default config carries scope.self_modification_paths (#591)"
+assert_contains "$schema591" \
+  'self_modification_paths' \
+  "schema defines scope.self_modification_paths (#591)"
+
 # (24) Batch-dispatch version pre-allocation via a session-local version_cursor
 #      (issue #437).
 #
