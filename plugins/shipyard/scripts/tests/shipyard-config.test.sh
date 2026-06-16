@@ -734,6 +734,53 @@ assert_equals "$("$helper" get scope.diagnosis_reuse_hours)" "168" "local layer 
 assert_equals "$("$helper" get scope.diagnosis_reuse_hours --with-source | cut -f2)" "local" "source reflects local layer for scope.diagnosis_reuse_hours"
 
 # --------------------------------------------------------------------------
+echo "== scope.self_modification_paths (issue #591)"
+repo=$(mktmprepo)
+home=$(mktmprepo)
+export SHIPYARD_REPO_ROOT="$repo"
+export SHIPYARD_HOME="$home"
+
+# Built-in default is the four-path Auto-Mode-denied agent-config set, including .claude/hooks/
+default_smp="$("$helper" get scope.self_modification_paths)"
+assert_equals "$default_smp" \
+  '[".claude/settings.json",".claude/settings.local.json",".mcp.json",".claude/hooks/"]' \
+  "scope.self_modification_paths default is the four-path set (#591)"
+# .claude/hooks/ coverage is in the default (the gap #591 closed)
+case "$default_smp" in
+  *'.claude/hooks/'*) assert_equals "yes" "yes" "scope.self_modification_paths default includes .claude/hooks/ (#591)" ;;
+  *) assert_equals "no" "yes" "scope.self_modification_paths default includes .claude/hooks/ (#591)" ;;
+esac
+
+# Can be emptied to disable Detector 2 (users not running under Auto Mode)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "self_modification_paths": [] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 0 "scope.self_modification_paths accepts an empty array (disable Detector 2) (#591)"
+assert_equals "$("$helper" get scope.self_modification_paths)" "[]" "scope.self_modification_paths can be emptied to [] (#591)"
+
+# Can be customized (repo layer)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "self_modification_paths": [".claude/settings.json", ".claude/hooks/", ".vscode/settings.json"] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 0 "scope.self_modification_paths accepts a custom string array (#591)"
+
+# Schema validation rejects a non-array value
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "self_modification_paths": ".claude/settings.json" } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "scope.self_modification_paths rejects a non-array value (#591)"
+
+# Schema validation rejects non-string array items
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "self_modification_paths": [42] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "scope.self_modification_paths rejects non-string array items (#591)"
+
+# --------------------------------------------------------------------------
 echo
 total=$((pass + fail))
 if [[ $fail -eq 0 ]]; then

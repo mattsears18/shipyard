@@ -191,7 +191,8 @@ DEFAULTS_JQ='{
     "actions": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"]
   },
   "scope": {
-    "diagnosis_reuse_hours": 72
+    "diagnosis_reuse_hours": 72,
+    "self_modification_paths": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"]
   }
 }'
 

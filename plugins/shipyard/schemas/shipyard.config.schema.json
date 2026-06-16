@@ -261,13 +261,19 @@
     "scope": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Controls scope-preflight caching behavior (issue #563). The freshness window lets the orchestrator skip redundant scope-agent dispatches when a matching marker-tagged diagnosis comment already exists on the issue and is younger than `diagnosis_reuse_hours`.",
+      "description": "Controls scope-preflight caching and pre-scope detector behavior (issues #563, #591). The freshness window lets the orchestrator skip redundant scope-agent dispatches when a matching marker-tagged diagnosis comment already exists on the issue and is younger than `diagnosis_reuse_hours`. The self-modification path set drives the Detector 2 pre-defer for issues whose deliverable is an Auto-Mode-denied Claude-Code agent-config file.",
       "properties": {
         "diagnosis_reuse_hours": {
           "type": "integer",
           "minimum": 0,
           "default": 72,
           "description": "How many hours a marker-tagged scope-preflight diagnosis comment is considered fresh enough to reuse without re-dispatching a scope agent. When the newest such comment on an issue is younger than this window AND its mechanical evidence still re-validates cheaply (cited blockers still open, body unchanged), the orchestrator records the defer with provenance 'cached-diagnosis' instead of dispatching a new scope agent. Set to 0 to disable caching entirely (always re-dispatch). Default 72h."
+        },
+        "self_modification_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"],
+          "description": "Path fragments that Detector 2 (setup.md step 6 pre-scope detector batch, issue #591) treats as Claude-Code self-modification targets. When an issue's DELIVERABLE is editing one of these paths, the Claude Code auto-mode classifier applies a HARD BLOCK not cleared by user intent, so a worker dispatch can never ship the change — the orchestrator synthesizes a `human-decision-required` defer instead of burning a ~100k-token worker dispatch. Trailing-slash entries (e.g. `.claude/hooks/`) match any path under that directory. Set to an EMPTY array (`[]`) to disable Detector 2 entirely — appropriate for users NOT running under Auto Mode, where edits to these paths succeed normally and the pre-defer would be a false positive that strands shippable work in the human-review queue. Default covers the four known Auto-Mode-denied agent-config surfaces."
         },
         "_comment": { "type": "string" }
       }
