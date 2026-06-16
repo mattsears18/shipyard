@@ -61,7 +61,9 @@ From inside any GitHub-connected repo, try one of these:
 
 ```sh
 # Burn down the backlog — pick up open issues and ship PRs in parallel.
-/do-work --concurrency 4
+# Start at --concurrency 1 for your first run (see the warning box above);
+# scale up once you've watched a session and your billing dashboard.
+/do-work --concurrency 1
 
 # Find work — audit a live URL for performance, SEO, a11y, and best-practices,
 # and autonomously file an issue per finding.
@@ -153,7 +155,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/shipyard:cost report` — query the persistent cost-history ledger at `~/.shipyard/cost-history.jsonl`; filter by repo, mode, model, or issue. See [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl).
 - `/shipyard:status` — live dashboard of in-flight `/shipyard:do-work` workers (mode, target, elapsed, tokens, stale detection).
 - `/shipyard:update` — one-keystroke shipyard update; prompts you to run `/reload-plugins` once the refresh lands. See the [Updating section](#updating) above.
-- `/shipyard:file-issue <description>` — discoverable one-keystroke entry point for filing a well-formed issue against the current repo. Loads the [`filing-github-issues`](plugins/shipyard/skills/filing-github-issues/SKILL.md) skill (Conventional Commits title, label discovery, duplicate search, body template) and the [`audit-rubrics`](plugins/shipyard/skills/audit-rubrics/SKILL.md) severity rules (P0/P1/P2), drafts the issue, files via `gh issue create`, returns the URL. For the human-in-the-loop case — auditors and `/do-work` workers file via the skill directly.
+- `/shipyard:file-issue [--quick] <description>` — discoverable entry point for filing a **dispatch-ready** issue against the current repo. Searches for duplicates, **researches the codebase** so the issue cites real file paths, **refines it to dispatch-readiness** (concrete acceptance criteria, no gate label by default), and files via `gh issue create` — using the [`filing-github-issues`](plugins/shipyard/skills/filing-github-issues/SKILL.md) skill (Conventional Commits title, label discovery, body template) and the [`audit-rubrics`](plugins/shipyard/skills/audit-rubrics/SKILL.md) severity rules (P0/P1/P2). **Files only — it never starts the work** (no branch, no PR, no edits). Pass `--quick` to skip the research + refinement passes and file a thin issue straight from the description. For the human-in-the-loop case — auditors and `/do-work` workers file via the skill directly.
 
 Each audit runs in an isolated subagent, files its own issues using the shared `filing-github-issues` skill (Conventional Commits titles, label discovery, duplicate search), and respects the severity rules in `audit-rubrics` (P0–P2). Fully autonomous — no per-step approval gates.
 
@@ -173,7 +175,7 @@ The result: you write issues (or let `/audit` write them), you sign off on the u
 
 ### Label conventions
 
-Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent`, `blocked:ci`), and gate labels (`needs-human-review`, `needs-triage`). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
+Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent-soft`, `blocked:ci`), and gate labels (`needs-human-review`, `needs-triage`). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
 
 ### Observability — per-session token cost
 
@@ -202,6 +204,11 @@ A non-exhaustive list of safety properties the orchestrator and workers carry to
 - Workers are forbidden from `git commit --no-verify` and equivalent hook bypasses, enforced both at the prompt and at the `Bash` permission layer in `plugin.json` ([#26](https://github.com/mattsears18/shipyard/issues/26)).
 - The orchestrator re-checks the backlog before every dispatch — issues filed mid-session don't have to wait for a periodic refresh to be picked up ([#29](https://github.com/mattsears18/shipyard/issues/29)).
 - Issue-worker dispatches are pinned to `isolation: "worktree"` via a `PreToolUse` hook. Workers operate in a dedicated worktree and never touch the user's primary checkout's HEAD ([#34](https://github.com/mattsears18/shipyard/issues/34)).
+- The orphan-triage sweep liveness-checks a worktree's lock-holding PID before reaping it, so a still-running worker's worktree isn't pulled out from under it ([#253](https://github.com/mattsears18/shipyard/issues/253)).
+- Termination is decided on a fresh backlog fetch, not a stale snapshot — the loop can't declare "zero matching issues remain" while workable issues actually exist ([#195](https://github.com/mattsears18/shipyard/issues/195)).
+- Token attribution is mandatory — every dispatch's usage is recorded to the per-session ledger so cost is always traceable ([#197](https://github.com/mattsears18/shipyard/issues/197)).
+- Label changes are audited by a workflow that alerts on (and can revert) unauthorized label mutations ([#140](https://github.com/mattsears18/shipyard/issues/140)).
+- Every worker runs a rolling pre-flight before it starts, so each dispatch re-confirms the issue is still workable rather than trusting the orchestrator's pick ([#233](https://github.com/mattsears18/shipyard/issues/233)).
 
 ## See it in action
 
@@ -244,144 +251,32 @@ The Sentry flow above is illustrative, not a case study — your mileage depends
 
 ## Layout
 
+The plugin lives under `plugins/shipyard/`, with the top-level repo carrying CI, issue/PR templates, and the docs:
+
 ```
-.claude-plugin/marketplace.json
-.github/
-  CODEOWNERS                     # maintainer-review gate (e.g. .shipyard/trusted-authors.txt)
-  ISSUE_TEMPLATE/                # bug_report, feature_request, user_feedback templates
-  PULL_REQUEST_TEMPLATE.md       # shown to anyone opening a PR
-  workflows/
-    label-event-audit.yml        # alerts / reverts unauthorized label changes
-    external-author-gate.yml     # gates PRs from external authors
-    secret-scan.yml              # blocks committed secrets
-    shellcheck.yml               # lint for bash scripts
-    tests.yml                    # bash unit tests
-plugins/
-  shipyard/
-    .claude-plugin/plugin.json
-    commands/
-      audit.md
-      config.md
-      cost.md
-      decompose-epic.md
-      do-work.md
-      do-work/                   # per-phase phase files loaded on demand by do-work.md
-      do-work-RATIONALE.md       # design discussion companion
-      init.md
-      my-turn.md
-      my-turn-and-do.md
-      refine-issues.md
-      resolve-decisions.md
-      status.md
-    agents/
-      a11y-auditor.md
-      api-auditor.md
-      docs-auditor.md
-      dx-auditor.md
-      issue-worker.md            # thin entry router; per-mode files under issue-worker/
-      issue-worker/              # one file per mode (issue-work, fix-checks-only, fix-rebase, ...)
-      lighthouse-auditor.md
-      mobile-ux-auditor.md
-      observability-auditor.md
-      privacy-auditor.md
-      pwa-auditor.md
-      release-readiness-auditor.md
-      security-auditor.md
-      seo-auditor.md
-      tech-debt-auditor.md
-      testing-auditor.md
-      web-ux-auditor.md
-    skills/
-      auditing-authenticated-surfaces/SKILL.md   # safe pattern for auditing login-walled surfaces
-      audit-rubrics/SKILL.md
-      dx-catalog/SKILL.md
-      filing-github-issues/SKILL.md
-      worker-preamble/SKILL.md   # shared dispatch contract for every /do-work worker
-    hooks/
-      hooks.json
-      enforce-worktree-isolation.sh
-      report-plugin-error.sh
-    scripts/
-      report-plugin-error.sh
-      session-state.sh
-      worktree-reap.sh
-      tests/
-CLAUDE.md                        # repo-scoped rules (load-bearing for Claude sessions)
-CONTRIBUTING.md                  # navigable index of contribution conventions
-LICENSE                          # MIT
-CHANGELOG.md                     # per-version changelog (plugin version bumps)
+plugins/shipyard/
+  .claude-plugin/plugin.json   # version surface (the marketplace reads this)
+  commands/                    # slash commands (do-work, audit, refine-issues, …)
+                               #   do-work/ holds per-phase files loaded on demand
+  agents/                      # auditors + the issue-worker (thin router → issue-worker/ per-mode files)
+  skills/                      # shared, reusable specs (worker-preamble, filing-github-issues, …)
+  hooks/                       # PreToolUse/PostToolUse guards (worktree isolation, edit scope, no-bypass, …)
+  scripts/                     # supporting bash (session-state, worktree-reap, …) + scripts/tests/
+.github/                       # CODEOWNERS, ISSUE_TEMPLATE/, PULL_REQUEST_TEMPLATE.md, workflows/ (CI)
+CLAUDE.md                      # repo-scoped rules (load-bearing for Claude sessions)
+CONTRIBUTING.md                # navigable index of contribution conventions
+CHANGELOG.md  ·  LICENSE       # per-version changelog (plugin bumps) · MIT
 ```
+
+Browse the [repo tree](https://github.com/mattsears18/shipyard/tree/main/plugins/shipyard) for the full per-file breakdown — each command / agent / skill / hook is self-describing.
 
 ## Optional: auto-file issues on skill/agent failure
 
-The `shipyard` plugin can automatically file a GitHub issue against `mattsears18/shipyard` whenever one of its own skills or agents appears to have failed during your session. The point: real failures become structured bug reports without anyone having to type one up.
+The plugin can automatically file (or de-dup-comment) a GitHub issue whenever one of its own `shipyard:*` skills or agents appears to have failed during your session — real failures become structured bug reports without anyone typing one up. It is **opt-in**: nothing is filed unless you `export SHIPYARD_AUTOREPORT=1`. Once enabled, `PostToolUse` / `SubagentStop` hooks run [`plugins/shipyard/scripts/report-plugin-error.sh`](plugins/shipyard/scripts/report-plugin-error.sh) detached in the background; it detects failure signals, scrubs secret-shaped tokens, de-dups by signature against open `auto-reported` issues, and always exits 0 so it can't break your session.
 
-It is **opt-in** — nothing is filed unless you set:
+> ⚠️ **Privacy:** scrubbing removes *secret-shaped tokens* (API keys, PATs, JWTs, PEM blocks, credentialed URLs, etc.) — **not** general prose. Each report carries the invoking prompt, error output, and the last ~80 transcript lines, so on a **private codebase** filenames / code snippets / issue text can land in a public issue. Preview with `SHIPYARD_AUTOREPORT_DRY=1` before enabling live, or point `SHIPYARD_AUTOREPORT_REPO` at a private repo you control.
 
-```sh
-export SHIPYARD_AUTOREPORT=1
-```
-
-Once enabled, hooks (`PostToolUse` on `Task|Agent` and `SubagentStop`) invoke `plugins/shipyard/scripts/report-plugin-error.sh`. That script:
-
-1. **Detects** failure signals — `is_error: true`, `error:` / `stderr:` fields, or `blocked:` / `Error:` / `Traceback (...)` / `Fatal:` markers in the agent output. Only acts on subagents/skills whose name starts with `shipyard:`.
-2. **Scrubs secrets** — GitHub PATs (`ghp_…`, `github_pat_…`), Anthropic / OpenAI keys (`sk-ant-…`, `sk-…`), Stripe keys (`sk_live_…`, `sk_test_…`), Google API keys (`AIza…`), AWS access keys (`AKIA…`), Slack tokens (`xoxb-`/`xoxp-`/…), GitLab PATs (`glpat-…`), npm tokens (`npm_…`), JWTs (three-segment base64url), SSH/RSA/EC private-key PEM blocks, database connection URLs that embed credentials (`postgres://user:pass@…`), `Authorization:` / `Bearer …` headers, email addresses, `$HOME` paths, and any 40+ char hex blob.
-3. **Builds a signature** from the skill/agent name + a digit-normalized error excerpt, then **searches open `auto-reported` issues** for a match. If found → adds a comment with the new occurrence. If not → files a fresh issue with `auto-reported` and `bug` labels.
-4. **Never breaks your session** — the helper traps errors and always exits 0. The hook runs the helper detached in the background so reports don't block the foreground.
-
-### What is transmitted
-
-Scrubbing covers **secret-shaped patterns** (the list in step 2 above) — it does not redact general prose. Each auto-report includes the following fields drawn from the live session, and any non-secret content in them is filed as-is:
-
-- **Invocation prompt** — the agent's task description, up to 1000 chars. For a `shipyard:issue-worker` dispatch this is the full task string (e.g. `work issue 42 in <owner>/<repo>`), which may include the target repo name and issue identifiers.
-- **Error details** — up to ~2000 chars of the failure output.
-- **Transcript excerpt** — the last 80 lines (up to 3000 chars) of the agent's session transcript. This is the raw record of the session and can include filenames, file contents read via the `Read` tool, `gh issue view` output, git diff output, and bash command output from the working session.
-- **Environment** — OS, shell, Claude Code version, model.
-
-If the failing session was operating on a **private codebase or private issue tracker**, those excerpts may carry filenames, code snippets, or issue text from that codebase into a public GitHub issue on the target auto-report repo. The scrubber has no way to distinguish "private project context" from "debug noise" — only secret-shaped tokens are removed.
-
-**Preview before opting in.** Use the dry-run mode (`SHIPYARD_AUTOREPORT_DRY=1`, documented below) to see exactly what *would* be filed without actually filing it. If you work with sensitive codebases, either preview reports this way before enabling live mode, or set `SHIPYARD_AUTOREPORT_REPO` to a private repo you control so the reports never become public.
-
-### Configuration
-
-| Env var | Default | Effect |
-|---|---|---|
-| `SHIPYARD_AUTOREPORT` | unset | Must be `1` to enable. |
-| `SHIPYARD_AUTOREPORT_REPO` | `mattsears18/shipyard` | Target repo for auto-reports. |
-| `SHIPYARD_AUTOREPORT_DRY` | unset | When `1`, the helper prints the would-be issue as JSON to stdout instead of calling `gh`. Used by the test suite and useful for local previews. |
-
-### Issue shape
-
-Every auto-report has these sections:
-
-- `## What happened` — short failure summary.
-- `## Skill/Agent` — name, hook event, tool.
-- `## Reproduction` — invoking prompt + description (scrubbed).
-- `## Error details` — first ~2000 chars of the failure output (scrubbed).
-- `## Environment` — OS, shell, Claude Code version, model.
-- `## Transcript excerpt` — last 80 lines of the agent transcript, scrubbed.
-- `## Recommendations for improvement` — pattern-level suggestions for maintainers.
-- An HTML-comment de-dup signature: `<!-- autoreport-key=<skill>::<normalized-error> -->`.
-
-### Try it out (dry run)
-
-```sh
-echo '{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:issue-worker","prompt":"work issue 1"},"tool_response":{"is_error":true,"error":"Error: gh api 404"}}' \
-  | SHIPYARD_AUTOREPORT=1 SHIPYARD_AUTOREPORT_DRY=1 \
-    bash plugins/shipyard/scripts/report-plugin-error.sh
-```
-
-You'll get a JSON blob with the `title`, `body`, `labels`, `signature`, and `who` that *would* have been filed.
-
-### Test suite
-
-```sh
-bash plugins/shipyard/scripts/tests/report-plugin-error.test.sh
-```
-
-### Follow-ups
-
-- v1 ships with `auto-reported` and `bug` labels only. Per-skill / per-agent labels (e.g. `skill:filing-github-issues`, `agent:issue-worker`) are deferred to keep label cardinality controlled until we see what categories actually show up in practice.
+Env vars: `SHIPYARD_AUTOREPORT` (must be `1` to enable), `SHIPYARD_AUTOREPORT_REPO` (default `mattsears18/shipyard`), `SHIPYARD_AUTOREPORT_DRY` (`1` → print the would-be issue JSON instead of filing). The script's [header](plugins/shipyard/scripts/report-plugin-error.sh) documents the full scrub list, issue shape, and a dry-run example; the [test suite](plugins/shipyard/scripts/tests/report-plugin-error.test.sh) exercises it.
 
 ## Filing issues
 
