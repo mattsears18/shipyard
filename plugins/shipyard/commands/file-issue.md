@@ -1,38 +1,47 @@
 ---
-description: File a well-formed GitHub issue against the current repo using shipyard's filing conventions (Conventional Commits title, P0/P1/P2 severity, label discovery, duplicate search). Thin entry point — loads the `shipyard:filing-github-issues` skill and asks Claude to draft + file.
-argument-hint: <free-form issue description>
+description: Research, refine, and file a dispatch-ready GitHub issue against the current repo using shipyard's filing conventions (Conventional Commits title, P0/P1/P2 severity, label discovery, duplicate search). Inspects the codebase so the issue lands ready for /do-work — never starts the work. Pass --quick to skip research and file a thin issue.
+argument-hint: [--quick] <free-form issue description>
 ---
 
 # /shipyard:file-issue
 
-One-keystroke entry point for filing a well-formed issue against the current repo. Takes a free-form description, hands off to the [`shipyard:filing-github-issues`](../skills/filing-github-issues/SKILL.md) skill (for title-prefix conventions, label discovery, duplicate search, and the body template) plus [`shipyard:audit-rubrics`](../skills/audit-rubrics/SKILL.md) (for the P0/P1/P2 severity assignment), and files the issue with `gh issue create`.
+The named entry point for filing a well-formed, **dispatch-ready** issue against the current repo. Takes a free-form description, searches for related/duplicate issues, **researches the codebase** so the issue is concrete, **refines it to dispatch-readiness** (so the next `/shipyard:do-work` session can pick it up as-is), and files it with `gh issue create` — handing off to the [`shipyard:filing-github-issues`](../skills/filing-github-issues/SKILL.md) skill (for title-prefix conventions, label discovery, duplicate search, and the body template) and [`shipyard:audit-rubrics`](../skills/audit-rubrics/SKILL.md) (for the P0/P1/P2 severity assignment).
 
-This command is purely a **UX convenience for the human-in-the-loop case** — auditors already invoke the filing skill directly, and `/shipyard:do-work` workers file follow-up issues from inside their own dispatches. The point here is to give interactive users a discoverable, named action that always routes through the filing conventions instead of relying on Claude to opportunistically notice "file an issue about X" and pick up the skill.
+This is the codified version of the interactive **"file an issue — <description>"** workflow: search → research → refine → file, stopping short of any implementation. It gives interactive users a discoverable, named action that always routes through the filing conventions *and* produces an issue `/do-work` can act on, instead of relying on Claude to opportunistically notice "file an issue about X" and reproduce the routine by hand. Auditors already invoke the filing skill directly, and `/shipyard:do-work` workers file follow-up issues from inside their own dispatches — this command is for the human-in-the-loop case.
+
+**This command files only. It never starts the work** — no branch, no PR, no code edits. Producing a dispatch-ready issue is the deliverable; implementing it is a separate `/shipyard:do-work` session.
+
+Pass **`--quick`** to skip the research + refinement passes and file a thin issue straight from the description (the original fast-path behavior) — useful when you just want to dump a thought into the tracker and let `/do-work`'s own scope-preflight refine it later.
 
 ## When to use
 
 - You want to file an issue without remembering the shipyard label conventions, the Conventional Commits title prefix rules, or the body template.
 - You'd otherwise type "file an issue about X" and hope Claude picks up the skill — this command makes the routing explicit.
-- You're already at the terminal with a thought and want to dump it into the tracker without context-switching to the GitHub UI.
+- You want the issue to land **ready for `/do-work`** — researched against the actual codebase, with concrete acceptance criteria — rather than a vague stub a human has to refine later.
+- You're already at the terminal with a thought and want to dump it into the tracker without context-switching to the GitHub UI (use `--quick` if you don't want the research pass).
 
 Not the right surface when:
 
 - An auditor or `/shipyard:do-work` worker is filing the issue — those agents invoke the filing skill directly inside their own dispatches.
 - You need the audit-key idempotency contract (HTML-comment fingerprint for re-run dedup). That contract is for autonomous audits; the human-driven case here can skip the fingerprint when the description doesn't naturally fit one of the audit dimensions.
+- You want the work *done*, not just filed. This command stops at a dispatch-ready issue — run `/shipyard:do-work` to implement it.
 
 ## Args
 
-`$ARGUMENTS` is the free-form issue topic — a one-liner, a paragraph, or a multi-line description. Everything after `/shipyard:file-issue` is the description; there are no flags.
+`$ARGUMENTS` is the free-form issue topic — a one-liner, a paragraph, or a multi-line description — optionally preceded by the `--quick` flag.
+
+- **`--quick`** (optional, leading flag): skip the codebase research pass and the dispatch-readiness refinement; draft and file a thin issue straight from the description. Strip the flag from `$ARGUMENTS` before treating the rest as the description.
+- Everything else after `/shipyard:file-issue` (and after `--quick`, if present) is the description.
 
 ```bash
 /shipyard:file-issue make /do-work faster when there are no open issues
 /shipyard:file-issue /audit security keeps re-filing the same Firebase Storage finding even after the existing issue is closed
-/shipyard:file-issue the cost report's --by-issue grouping silently drops issues that were touched in multiple modes
+/shipyard:file-issue --quick the cost report's --by-issue grouping silently drops issues that were touched in multiple modes
 ```
 
 ## Implementation (what the assistant does when this command runs)
 
-The command is a thin entry point. The assistant's job is to load the filing-github-issues skill and draft + file an issue using its conventions. Concretely:
+The assistant's job: search for duplicates, **research the codebase**, **refine the issue to dispatch-readiness**, and file it via the filing-github-issues conventions — without starting any implementation. Concretely:
 
 ### 1. Resolve the target repo
 
@@ -53,6 +62,8 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || {
   exit 1
 }
 ```
+
+Also parse a leading **`--quick`** flag off `$ARGUMENTS`: if the first token is `--quick`, set quick-mode and strip it, treating the remainder as the description. In quick mode, skip steps 5 (research) and 7 (refine to dispatch-ready) and file a thin issue straight from the description.
 
 ### 2. Load the filing-github-issues skill
 
@@ -76,25 +87,44 @@ The skill at [`plugins/shipyard/skills/audit-rubrics/SKILL.md`](../skills/audit-
 
 Pick the appropriate severity based on the user's description and apply the matching label (the labels `P0`, `P1`, `P2` already exist in `mattsears18/shipyard` and in other shipyard-using repos that have run `/shipyard:init`). When in doubt, default to **P2** — the user can re-label after the fact, and over-flagging a tracker as P0 erodes the priority signal.
 
-### 4. Draft the title and body
+### 4. Search for related / duplicate issues
 
-From the user's free-form description:
+Before investing in research or drafting, run the duplicate-search pass the filing skill describes — look for open issues whose title or body materially overlaps with the user's description. If a strong match exists, surface it to the user with the URL and ask whether to file anyway or skip. Don't auto-skip — the human is the final judge of "is this the same thing?" since their description may carry context the existing issue doesn't.
+
+```bash
+# Adapt the search terms from the user's description
+gh issue list --repo "$REPO" --state open --search '<key terms>' --json number,title,url --limit 10
+```
+
+### 5. Research the codebase (skip in `--quick` mode)
+
+This is what makes the filed issue **dispatch-ready** rather than a vague stub. Before drafting, investigate the actual code/config the description touches so the issue cites ground truth, not assumptions:
+
+- **Locate the relevant surface** — grep/read the files, commands, scripts, or config the description implicates. Name them by path.
+- **Confirm current behavior** — read the code well enough to describe what actually happens today (the bug's mechanism, the missing feature's absence), and verify the premise of the request still holds. Freshly read every artifact you'll cite — per the filing skill's "Verify before you file" gate, don't file claims you didn't confirm this session.
+- **Sketch a plausible implementation path** — identify which file(s) would change and roughly how, enough to make the issue actionable. You are NOT implementing — just scoping.
+- **Note constraints** — adjacent behavior that must not regress, related issues/PRs (reference only issue numbers you verified this session), config or release implications.
+
+Keep this proportionate to the issue's size — a one-line config fix needs a quick grep; a cross-cutting change needs more. The goal is an issue a `/do-work` worker can pick up without a human refinement round-trip.
+
+### 6. Draft the title and body
+
+Fold the research findings into the draft:
 
 - **Title**: pick the right Conventional Commits prefix + scope from the filing-github-issues skill's table, then describe the defect or ask concretely. The title should read as something an end user could understand — these titles often become public release notes via release-please.
-- **Body**: use the filing-github-issues body template. The `## Finding` section quotes / paraphrases the user's description; `## Why it matters` is one sentence on the impact; `## Suggested approach` is included only if the user's description named one or the implementation path is obvious; `## Acceptance criteria` is a verifiable checklist.
+- **Body**: use the filing-github-issues body template. `## Finding` states the problem with the **concrete evidence from step 5** (file paths, current behavior) — not just a paraphrase of the description; `## Why it matters` is one sentence on the impact; `## Suggested approach` names the implementation path the research surfaced (which files, roughly how); `## Acceptance criteria` is a verifiable checklist (see step 7). In `--quick` mode there's no research to fold in — `## Finding` paraphrases the description and `## Suggested approach` is included only if the description named one.
 
 **Skip the `<!-- audit-key=... -->` HTML comment** for this command's filings. The audit-key contract exists to give autonomous re-runs idempotent dedup behavior — humans filing one-off issues via this command don't benefit from it, and inventing audit-keys for human-filed issues would dilute the namespace audit re-runs depend on.
 
-### 5. Run the duplicate search
+### 7. Refine to dispatch-readiness (skip in `--quick` mode)
 
-Before filing, run the duplicate-search pass the filing skill describes — look for open issues whose title or body materially overlaps with the proposed filing. If a strong match exists, surface it to the user with the URL and ask whether to file anyway or skip. Don't auto-skip — the human is the final judge of "is this the same finding?" since their description may carry context the existing issue doesn't.
+The default goal is an issue `/shipyard:do-work` can pick up **as-is**. Before filing, check:
 
-```bash
-# Adapt the search terms from the proposed title
-gh issue list --repo "$REPO" --state open --search '<key terms from title>' --json number,title,url --limit 10
-```
+- **Concrete, verifiable acceptance criteria** — each box is something a worker can objectively check off (and, where relevant, a regression guard for adjacent behavior the research flagged). Vague criteria ("make it better") mean the issue isn't ready.
+- **No gate label by default.** A dispatch-ready issue must NOT carry `needs-triage` or `needs-human-review` — those labels exclude it from `/do-work`'s dispatch fetch. Do not apply them when the research produced a concrete, actionable issue.
+- **Gate only when genuinely not ready.** If — after the research pass — the work truly can't be made dispatch-ready (it hinges on a product/design decision, depends on an external party, or is epic-sized and needs decomposition), then apply the appropriate gate label and **state the reason in the issue body and your return summary**. This is the exception, not the default; prefer resolving the ambiguity during research over punting it to a gate label. See the repo's label conventions (`needs-human-review` for human-decision/epic/external-dependency; `needs-triage` as the transitional parking label) before choosing.
 
-### 6. File the issue
+### 8. File the issue
 
 Ensure the `shipyard` provenance label exists first (idempotent — never errors if already present), then file using the HEREDOC pattern from the filing skill with `--label shipyard` included:
 
@@ -103,6 +133,9 @@ Ensure the `shipyard` provenance label exists first (idempotent — never errors
 gh label create shipyard --repo "$REPO" \
   --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
 
+Include any gate label from step 7 (`--label needs-human-review` / `--label needs-triage`) **only** in the exception case where the research showed the issue can't be made dispatch-ready — otherwise omit gate labels so the issue stays dispatchable:
+
+```bash
 issue_url=$(gh issue create --repo "$REPO" \
   --label shipyard \
   --label "<P0|P1|P2>" \
@@ -111,7 +144,7 @@ issue_url=$(gh issue create --repo "$REPO" \
   --body "$(cat <<'EOF'
 ## Finding
 
-<paraphrase / quote of the user's description>
+<the problem, with concrete evidence from the research pass — file paths, current behavior>
 
 ## Why it matters
 
@@ -119,18 +152,19 @@ issue_url=$(gh issue create --repo "$REPO" \
 
 ## Suggested approach
 
-<optional — only if the user named one or it's obvious>
+<the implementation path the research surfaced — which file(s), roughly how>
 
 ## Acceptance criteria
 
 - [ ] <verifiable outcome>
+- [ ] <regression guard for adjacent behavior, if the research flagged any>
 EOF
 )")
 ```
 
-### 7. Return the issue URL
+### 9. Return the issue URL
 
-`gh issue create` prints the URL of the newly-filed issue on success. Print it back to the user as the last line of the response, prefixed with nothing — just the URL on its own line, so terminals render it as a clickable hyperlink:
+`gh issue create` prints the URL of the newly-filed issue on success. Print it back to the user as the last line of the response, prefixed with nothing — just the URL on its own line, so terminals render it as a clickable hyperlink. If a gate label was applied (the exception case), say so and why:
 
 ```
 Filed as <P1>: <conventional-commit title>
@@ -162,4 +196,7 @@ Do NOT prompt the user to enter values interactively for these failure modes —
 - **Don't add an `audit-key` HTML comment.** That contract is for autonomous re-runs of the audit family — human-filed issues from this command shouldn't claim audit-key fingerprints.
 - **Don't prompt for missing args interactively.** If `$ARGUMENTS` is empty or the preconditions fail, return a clear error and exit. The command is a one-shot.
 - **Don't file the issue without running the duplicate search first.** The skill mandates it; this command must respect it. If a strong duplicate is found, surface it and let the user decide.
+- **Don't start the work.** This command files only — no branch, no PR, no code edits, no implementation. Producing a dispatch-ready issue is the entire deliverable; `/shipyard:do-work` does the implementation.
+- **Don't apply a gate label by default.** A researched, dispatch-ready issue must not carry `needs-triage` or `needs-human-review` — those exclude it from `/do-work`. Apply a gate label only in the exception case where the research showed the work genuinely can't be made ready, and state the reason. Prefer resolving ambiguity during the research pass over punting it to a gate.
+- **Don't skip the research pass** unless the user passed `--quick`. The dispatch-ready outcome depends on the issue citing real codebase ground truth — file claims you freshly confirmed this session, never assumptions.
 - **Do apply the `shipyard` label** — it is the provenance stamp on every artifact shipyard creates (issues AND PRs, per [#573](https://github.com/mattsears18/shipyard/issues/573)). Use the ensure-then-label pattern: run `gh label create shipyard --repo "$REPO" --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true` before the `gh issue create` call, then pass `--label shipyard` on the create. See the `shipyard:filing-github-issues` skill's "shipyard provenance label" section for the full pattern including the verify step.
