@@ -1,13 +1,15 @@
 ---
-description: Action-taking sibling of /my-turn — surveys with the same ranking, then drives the #1 action in the user's real, logged-in Chrome. Backend-agnostic: prefers the claude-in-chrome extension, falls back to chrome-devtools-mcp, then to read-only /my-turn.
-argument-hint: [--repo owner/repo] [--setup] [--all] [--dry-run] [--yes] [--record]
+description: Action-taking sibling of /my-turn — surveys with the same ranking, then drives the #1 action in the user's real, logged-in Chrome. Invoking the command is standing authorization to perform any browser-completable action. Backend-agnostic: prefers the claude-in-chrome extension, falls back to chrome-devtools-mcp, then to read-only /my-turn.
+argument-hint: [--repo owner/repo] [--setup] [--all] [--dry-run] [--record]
 ---
 
 # /my-turn-and-do
 
 The **action-taking sibling** of [`/shipyard:my-turn`](./my-turn.md). `/my-turn` is read-only — it surfaces the single next item blocked on the user and stops. `/my-turn-and-do` keeps going: it runs the same ranked survey, prints the #1 action, then **executes it in the user's real, logged-in Chrome**.
 
-The survey and ranking are identical to `/my-turn` — this command reuses `/my-turn`'s ranking directly and does not re-derive it. The difference is the execution step: `/my-turn-and-do` drives the browser to the artifact, reads the context, and performs the action (or hands back for judgment calls).
+**Invoking this command is itself the authorization.** Running `/my-turn-and-do` grants standing consent, for the duration of that run, to perform **anything completable by manipulating the browser** — navigate, click, fill, type, submit, comment, close, merge — without stopping for a fresh in-chat "say 'close it' to proceed" confirmation per action. The user is watching their own logged-in browser; the act of invoking the command is the go-ahead. The command still **prints a plan** before it touches the browser (transparency is preserved — see [Plan step](#plan-step--print-before-touching-the-browser)), but it then proceeds through that plan and **does** the action, reporting what it did, rather than blocking on a per-action yes/no. ([#608](https://github.com/mattsears18/shipyard/issues/608).)
+
+The survey and ranking are identical to `/my-turn` — this command reuses `/my-turn`'s ranking directly and does not re-derive it. The difference is the execution step: `/my-turn-and-do` drives the browser to the artifact, reads the context, and performs the action (or hands back for genuine judgment calls — see [Judgment-call tee-up](#judgment-call-tee-up-not-rubber-stamp)).
 
 Pairs with [`/shipyard:my-turn`](./my-turn.md) (read-only survey) and [`/shipyard:do-work`](./do-work.md) (agent-driven code loop).
 
@@ -17,9 +19,10 @@ Pairs with [`/shipyard:my-turn`](./my-turn.md) (read-only survey) and [`/shipyar
 
 - **--repo owner/repo** (optional, default: cwd's repo via `gh repo view --json nameWithOwner -q .nameWithOwner`). If not in a repo, ask via `AskUserQuestion`.
 - **--setup** (optional): run the [preflight](#preflight--detect-gaps-and-guided-setup) checks and guided setup **only**, then stop — no survey, no browser action. Use it for first-run onboarding or to re-verify the setup after a Chrome / extension / machine change. (The inline preflight runs on every invocation regardless; `--setup` is the standalone "just configure me" mode.)
-- **--dry-run** (optional): survey + plan only. Print the #1 action and the browser steps that would be taken, then stop — **no browser action, no mutations**. Useful to confirm the intended action before executing.
-- **--yes** (optional): pre-approve *this run's* planned mutations. Skips the "about to do X — confirm?" prompt for the planned action. Does NOT blanket-approve all future runs, and does NOT bypass the hard confirmation gate for destructive or outward-facing actions (see [Guardrails](#guardrails)).
-- **--all** (optional): run the full ranked list through the execution loop, not just the top item. Each item is individually confirmed (or pre-approved via `--yes`) before the browser is driven. Use sparingly — the command is designed for focused one-item execution.
+- **--dry-run** (optional): survey + plan only. Print the #1 action and the browser steps that would be taken, then stop — **no browser action, no mutations**. This is the "preview, do nothing" escape hatch — the way to see the intended action *without* the standing authorization taking effect.
+- **--all** (optional): run the full ranked list through the execution loop, not just the top item. Each item's plan is printed, then executed under the same standing authorization as the top item (no per-item yes/no). Use sparingly — the command is designed for focused one-item execution, and running the whole list autonomously is a larger commitment.
+
+> **`--yes` is gone (no-op if passed).** Under the standing-authorization model the invocation *is* the consent, so there's no routine soft-confirm left for `--yes` to skip. A stray `--yes` in `$ARGUMENTS` is accepted and ignored (it does not error) for backwards-compatibility, but it has no effect — the command already proceeds without per-action confirmation. To preview without acting, use `--dry-run`.
 - **--record** (optional): record the browser action as a GIF for later review (extension backend only). Off by default — recording is token- and file-cost-heavy, so it's opt-in. See [Recording](#recording---record).
 
 ## Browser backend — selection and detection
@@ -158,14 +161,14 @@ After ranking, before any browser action, print the plan for the top item. The p
 
 1. **The action.** Same format as `/my-turn`'s `→ Next:` directive — imperative verb, artifact ref, URL.
 2. **The browser steps.** A numbered list of the concrete browser actions that will be taken: which URL to navigate to, what to read or click, what to fill in, what to submit. This is not prose description — it is the exact sequence (in backend-neutral terms).
-3. **The gate classification.** One line classifying the planned action as either:
-   - `Read-only (navigation + reading)` — free to execute without confirmation.
-   - `Mutation — confirm before executing: <what will be mutated>` — requires explicit confirmation (or `--yes`).
-   - `Judgment call — will tee up, then hand back` — the action is too context-dependent to auto-execute (e.g., "review PR #42"); the browser will be driven to the artifact and the context surfaced, but the final decision stays with the user.
+3. **The action classification.** One line classifying the planned action as one of:
+   - `Read-only (navigation + reading)` — pure navigation/reading; executed directly.
+   - `Mutation — will execute: <what will be mutated>` — a browser-completable mutation (click, fill, submit, comment, close, merge). Executed directly under the standing authorization the invocation granted; the plan line announces it, then the command does it. No per-action yes/no.
+   - `Judgment call — will tee up, then hand back` — the action is too context-dependent for the command to *decide* on the user's behalf (e.g., "review PR #42 and approve/request-changes"); the browser is driven to the artifact and the context surfaced, but the final decision stays with the user. This is the one class the standing authorization does NOT cover — see [Judgment-call tee-up](#judgment-call-tee-up-not-rubber-stamp). It's distinct from a *mutation*: a mutation is a mechanical action the ranking already determined ("close superseded duplicate PR #1994"); a judgment call needs a human's evaluation, not just their go-ahead.
 
 The plan also prints which backend was selected (e.g., `Backend: claude-in-chrome`) so the user knows whether they're acting in their real logged-in profile.
 
-If `--dry-run` is set, stop here. Print the plan and exit. Do not touch the browser.
+The plan is **always printed** — it is the transparency record of what the command is about to do, and it is not optional even though the command no longer blocks on a per-action confirmation. If `--dry-run` is set, stop here: print the plan and exit, do not touch the browser. Otherwise, proceed through the plan and execute it.
 
 ## Execution step
 
@@ -179,30 +182,25 @@ The default way to confirm a page loaded and to extract context is to **read the
 
 ### Efficiency — batch deterministic sequences
 
-On the extension backend, bundle deterministic multi-step sequences (navigate → wait → read) into a single `browser_batch` call to cut round-trips. On the fallback backend, run the steps sequentially. Never batch across a confirmation gate — a mutation step is always issued only after its confirmation.
+On the extension backend, bundle deterministic multi-step sequences (navigate → wait → read → act) into a single `browser_batch` call to cut round-trips. On the fallback backend, run the steps sequentially. Because there is no per-action confirmation gate to break the sequence (see below), a navigate → read → mutate run can batch end-to-end on the extension backend.
 
-### Confirmation gate (non-dry-run, non-judgment)
+### Execution under standing authorization (non-dry-run, non-judgment)
 
-For any planned action classified as a **mutation**, confirm before executing — unless `--yes` was passed for this run:
+For any planned action classified as a **mutation** (`Mutation — will execute: …` in the plan), **just do it** — the invocation already granted standing authorization for browser-completable actions. Announce the action on a single line, then perform it, then report the result. Do NOT stop and wait for an in-chat "y/n" / "close it" / "merge it":
 
 ```
-About to: <one-line description of the mutation>
+Executing: <one-line description of the mutation>
   URL: <target URL>
-
-Proceed? (y/n)
+[performs the browser action]
+Done: <one-line description of what happened — e.g. "Closed PR #1994.">
 ```
 
-Wait for the user's response. A `y` / `yes` / `Y` response proceeds. Anything else aborts the execution step and prints the plan summary with a "Skipped — run with --yes to pre-approve" note.
+This covers the full set of browser-completable mutations — clicking a button, filling and submitting a form, posting a comment, closing or merging a PR — when they are the **mechanical action the ranking already surfaced**. The standing authorization is the user's pre-given consent for exactly these. Two boundaries still apply:
 
-**Destructive and outward-facing actions always prompt, regardless of `--yes`.** `--yes` pre-approves the *planned* mutation for *this run*; it never silently bypasses:
+- **Judgment calls are not mutations.** An action that needs the user's *evaluation* (not just their go-ahead) — a PR review where a reasonable maintainer might approve or request changes, a nuanced question that needs a drafted-then-human-vetted reply — is teed up and handed back, never decided autonomously. See [Judgment-call tee-up](#judgment-call-tee-up-not-rubber-stamp). The dividing line is *decision*, not *reversibility*: closing a clearly-superseded duplicate PR is mechanical (execute it); deciding *whether* to approve a substantive PR is a judgment call (tee it up).
+- **`--dry-run` is the no-op preview.** When the user wants to see the plan *without* the standing authorization taking effect, that's exactly what `--dry-run` is for — it stops at the plan and touches nothing.
 
-- Closing or merging a PR.
-- Deleting a branch, comment, or artifact.
-- Posting a public comment or review.
-- Submitting a form that sends a message, triggers a build, or processes a payment.
-- Approving a review (as distinct from submitting a review that requests changes).
-
-For these, even `--yes` produces a final "you're about to close/merge/post/submit — confirm?" prompt. The rationale: these are outward-facing or irreversible; the user's intent from a previous command invocation should not carry over to a new context where the target might have changed.
+The rationale for collapsing the old per-action prompt: the user is physically watching their own logged-in browser, and they invoked a command whose entire stated purpose is "do the thing in my browser." Re-asking "are you sure?" for each mechanical action the ranking already chose is the friction [#608](https://github.com/mattsears18/shipyard/issues/608) removes — it read as the agent refusing to act.
 
 ### Navigation and execution playbooks
 
@@ -226,7 +224,7 @@ Drive Chrome via the selected backend (mapped through the [tool table](#backend-
 1. Navigate to the provider deep link (derived the same way as `/my-turn`'s [third-party console deep-link](#third-party-console-deep-links) derivation).
 2. Confirm the page loaded and the user is logged in — here a **screenshot is warranted** (logged-in state is visual and the deep link targets a real account).
 3. If NOT logged in: print "Navigated to <URL> but the page appears logged out — action requires manual login." Hand back.
-4. If logged in: if the action is mechanical and reversible (toggle a switch, fill a form with known values), execute it after the confirmation gate above.
+4. If logged in: if the action is mechanical (toggle a switch, fill a form with known values), execute it directly under the standing authorization (announce it, do it, report). If the action needs a value only the user holds (paste a real secret from their password manager), tee up the page and hand back — that's not browser-completable from the command's side.
 
 **Reply to a question or @mention on an issue/PR:**
 1. Navigate to the issue or PR (reuse an open tab if present).
@@ -265,16 +263,16 @@ If the **chrome-devtools-mcp** fallback backend appears to be a logged-out isola
 
 ## Guardrails
 
-### Hard confirmation for irreversible / outward-facing actions
+### Standing authorization satisfies the gate for browser-completable actions
 
-Even with `--yes`, the following always prompt before execution:
+This command used to **hard-confirm** every irreversible / outward-facing browser action (close, merge, comment, submit, delete) with a fresh in-chat prompt, even mid-run. That gate is now **satisfied by the command invocation itself** for anything completable by manipulating the browser ([#608](https://github.com/mattsears18/shipyard/issues/608)). Running `/my-turn-and-do` is the user's standing, up-front consent to perform the browser-completable action the ranking surfaced — closing a PR, merging a PR, posting a comment, submitting a form, deleting an artifact — without a per-action "are you sure?". The user is watching their own logged-in browser; the invocation is the go-ahead, and re-asking per action is the exact friction this command exists to remove.
 
-- Closing or merging a PR (`gh pr merge`, clicking a Merge button).
-- Posting a public comment, review, or form submission.
-- Deleting any artifact (branch, comment, file).
-- Any action that sends a message or triggers an external service.
+What the standing authorization does **not** override:
 
-The `--yes` flag is a "skip the routine soft-confirm"; it is NOT a "bypass all gates." The routine soft-confirm covers read-only navigation confirmation and mechanical-action confirms for reversible operations.
+- **Judgment calls.** Standing authorization is consent to *do the mechanical action the ranking chose*, not consent to *make a decision on the user's behalf*. PR reviews, nuanced question replies, and "should this even be done?" calls are still teed up and handed back (see [Judgment-call tee-up](#judgment-call-tee-up-not-rubber-stamp)). The dividing line is *decision*, not *reversibility*.
+- **Things that aren't completable in the browser.** The authorization is scoped to browser actions. It is not consent to run arbitrary shell commands, push code, or act outside the browser the command is driving.
+- **The plan step.** Transparency is preserved — the [plan](#plan-step--print-before-touching-the-browser) is always printed before the browser is touched, so the user sees what is about to happen. The command proceeds *through* the plan; it does not block *on* it.
+- **`--dry-run`.** Always available as the "preview, do nothing" path for when the user wants the plan without the action.
 
 ### Judgment-call tee-up, not rubber-stamp
 
@@ -321,40 +319,44 @@ When navigating to a third-party provider console, derive the URL using the same
 
 ### Single-item mode (default)
 
+A mechanical mutation the ranking surfaced — closing a clearly-superseded duplicate PR. Under standing authorization the command announces it, then does it, then reports; no per-action yes/no:
+
 ```
-→ Next: re-paste the empty EXPO_ASC_* + ANDROID_SERVICE_ACCOUNT_JSON CI secrets (#1382)
-  https://github.com/owner/repo/issues/1382
+→ Next: close superseded duplicate PR #1994 (replaced by #2001)
+  https://github.com/owner/repo/pull/1994
 
 Backend: claude-in-chrome
 
 Plan:
-  1. Navigate to https://github.com/owner/repo/settings/secrets/actions
-  2. Click "New repository secret"
-  3. Hand back — post real secret values from your password manager
+  1. Navigate to https://github.com/owner/repo/pull/1994 (reuse open tab if present)
+  2. Read the page to confirm it loaded and is still open
+  3. Click "Close pull request"
 
-Gate: Mutation — confirm before executing: add repository secret(s)
+Action: Mutation — will execute: close PR #1994
 
-Executing...
-[read page — GitHub Actions Secrets page, logged in as mattsears18]
-About to navigate to the repo secrets page. Proceed? (y/n) y
-Navigated to https://github.com/owner/repo/settings/secrets/actions
-Teed up — the secrets page is open. Add the values from your password manager.
+Executing: close PR #1994
+  URL: https://github.com/owner/repo/pull/1994
+[read page — PR #1994, open, logged in as mattsears18]
+[click "Close pull request"]
+Done: Closed PR #1994.
 ```
 
 ### Dry-run mode
 
+Same survey + plan, but `--dry-run` stops before the browser is touched — the standing authorization does not take effect:
+
 ```
-→ Next: re-paste the empty EXPO_ASC_* + ANDROID_SERVICE_ACCOUNT_JSON CI secrets (#1382)
-  https://github.com/owner/repo/issues/1382
+→ Next: close superseded duplicate PR #1994 (replaced by #2001)
+  https://github.com/owner/repo/pull/1994
 
 Backend: claude-in-chrome
 
 Plan:
-  1. Navigate to https://github.com/owner/repo/settings/secrets/actions
-  2. Click "New repository secret"
-  3. Hand back — post real secret values from your password manager
+  1. Navigate to https://github.com/owner/repo/pull/1994 (reuse open tab if present)
+  2. Read the page to confirm it loaded and is still open
+  3. Click "Close pull request"
 
-Gate: Mutation — confirm before executing: add repository secret(s)
+Action: Mutation — will execute: close PR #1994
 
 [dry-run — no browser action taken]
 ```
@@ -387,9 +389,10 @@ Setup complete — re-run /my-turn-and-do (without --setup) to survey and act.
 - **Don't act in a logged-out isolated Chrome.** This only arises on the chrome-devtools-mcp fallback (`--remote-debugging-port` launches a non-profile Chrome). If that backend appears logged out, detect it and print setup instructions rather than proceeding. The extension backend always runs in the real profile.
 - **Don't treat `Permission denied by user` as authoritative on the extension backend without first recovering the tab group.** A stale or closed MCP tab group produces the *same* error string as a genuine site-grant decline ([#607](https://github.com/mattsears18/shipyard/issues/607)). On that error, call `tabs_context_mcp` (and `tabs_context_mcp({createIfEmpty:true})` if it reports `No MCP tab groups found` / an empty context) to recreate the group/tab, then retry the navigate once — per the recover-then-retry steps in [Error handling](#error-handling). Only if the *retry* still denies is it a real permission decline that warrants the grant-instructions branch. Never bail to read-only / `gh` on a closed tab — that fallback is reserved for a genuinely unreachable backend ([Absence detection](#absence-detection)).
 - **Don't reflexively screenshot.** Read the page for perception; screenshot only when visual state genuinely matters (logged-in confirmation, layout-dependent actions).
-- **Don't rubber-stamp judgment calls.** PR review, nuanced question responses, issue closure decisions — tee them up in the browser and hand back. Do NOT submit a review, post a comment, or close an issue without the user's explicit confirmation.
-- **Don't bypass the hard confirmation gate with --yes.** `--yes` skips the routine soft-confirm. Merges, comment posts, deletes, and form submissions with external effects always prompt once more.
-- **Don't expand scope.** If the #1 action leads to a discovery that suggests 5 follow-up actions, surface them as follow-up items (print the list) and hand back — don't chain into an autonomous multi-action loop. The command is one-item focused by design; expansion is always opt-in via `--all`.
+- **Don't rubber-stamp judgment calls.** Standing authorization covers the *mechanical* browser action the ranking surfaced (e.g. close a clearly-superseded duplicate PR), NOT decisions that need the user's evaluation. PR reviews where a reasonable maintainer might approve or request changes, nuanced question responses, and "should this be done at all?" calls — tee them up in the browser and hand back. Do NOT submit a substantive review or post a drafted reply autonomously; the dividing line is *decision* (hand back), not *reversibility* (execute under standing authorization).
+- **Don't re-ask for per-action confirmation.** Under the standing-authorization model ([#608](https://github.com/mattsears18/shipyard/issues/608)), invoking the command IS the consent for browser-completable actions — close, merge, comment, submit, delete. Do NOT stop mid-run and wait for an in-chat "say 'close it' to proceed" / "merge it" / "y/n"; that round-trip reads as the agent refusing to act. Announce the action in the plan, then do it, then report. The only "preview without acting" path is `--dry-run`.
+- **Don't expand scope.** If the #1 action leads to a discovery that suggests 5 follow-up actions, surface them as follow-up items (print the list) and hand back — don't chain into an autonomous multi-action loop. The command is one-item focused by design; expansion is always opt-in via `--all`. Standing authorization is consent to do the *surfaced* action, not license to invent and execute new ones.
+- **Don't act outside the browser.** The standing authorization is scoped to browser-completable actions. It is not consent to run arbitrary shell commands, push code, or take actions outside the Chrome the command is driving.
 - **Don't scan other repos.** Current repo only unless `--repo` overrides it. Cross-repo execution is out of scope.
-- **Don't skip the plan step.** Always print the plan before touching the browser. The user must see what is about to happen before it happens — the plan is not optional even with `--yes`.
+- **Don't skip the plan step.** Always print the plan before touching the browser. The user must see what is about to happen before it happens — the plan is the transparency record and is not optional, even though the command proceeds through it without a per-action confirmation.
 - **Don't post progress comments or mutation-summaries to public GitHub artifacts** (issue or PR comments) as the result of the command's browser actions without the user's explicit direction. The command drives the browser on the user's behalf; it does not self-narrate its own actions into the public comment thread.
