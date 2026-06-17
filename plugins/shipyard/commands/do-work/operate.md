@@ -8,7 +8,7 @@ It owns the browser-driving machinery formerly in `commands/my-turn-and-do.md` (
 
 ## How it fits the loop
 
-- **Preflight runs once** at session start (right after [setup step 1.7](./setup.md#17-resolve-trusted-author-allowlist), before the first dispatch) when `--operate` is set. It selects + connects a browser backend and front-loads site permissions. See [Preflight](#preflight--detect-gaps-and-guided-setup).
+- **Preflight runs once** at session start (right after [setup step 1.7](./setup/01-repo-recovery.md#17-resolve-trusted-author-allowlist), before the first dispatch) when `--operate` is set. It selects + connects a browser backend and front-loads site permissions. See [Preflight](#preflight--detect-gaps-and-guided-setup).
 - **The code loop is unchanged.** Issue-workers still dispatch into worktrees and parallelize per `--concurrency`. `--operate` does not change how code work is dispatched, ranked, or reconciled.
 - **Browser actions serialize on the main orchestrator thread.** The user's real Chrome is a singleton — only one driver at a time — so the orchestrator drains `operator_queue` items itself (never via a subagent), one at a time, in the **idle gaps**: while waiting for a code worker to return, and at each [step-D refresh tick](./steady-state.md#d-periodic-refresh). Code churns in parallel worktrees while the orchestrator operates the browser in between.
 - **Termination includes the operator queue.** The loop does not end until the code backlog, the in-flight set, **and** `operator_queue` are all empty (plus the usual main-green drain). See [drain.md termination](./drain.md#termination-assertion).
@@ -26,7 +26,7 @@ The [`operator_queue`](../do-work.md#orchestrator-state) holds browser-completab
 When a worker reconcile names a browser-completable action, [steady-state.md step A.1](./steady-state.md#a1-parse-the-return-string) enqueues an `operator_queue` item instead of only stamping a defer label:
 
 - A worker `blocked:` / `deferred:` bail whose reason is a browser action (e.g. "PR can't merge until the Vercel preview deployment is approved", "needs the `EXPO_ASC_*` secret pasted in repo settings").
-- A scope-agent `external-dependency` defer (the action lives in a provider console). Under `--operate`, the [setup step-6 recording path](./setup.md#6-initial-scope-pre-flight) still applies the `needs-operator` label (the durable signal) **and** enqueues the operator item (the in-session working copy).
+- A scope-agent `external-dependency` defer (the action lives in a provider console). Under `--operate`, the [setup step-6 recording path](./setup/06-scope-preflight.md#6-initial-scope-pre-flight) still applies the `needs-operator` label (the durable signal) **and** enqueues the operator item (the in-session working copy).
 
 ### Proactive feeder (steady-state step D)
 

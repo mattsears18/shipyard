@@ -158,7 +158,7 @@ A fourth trap — added after [#262](https://github.com/mattsears18/shipyard/iss
 
 ## Step 5 — why the `-label:blocked:ci` filter is still correct
 
-[Step 3d's auto-clear sweep](./do-work/setup.md#3-ensure-label-exists--recover-from-prior-session) already ran by the time the step-5 query fires — it stripped `blocked:ci` from every PR whose head-commit timestamp is newer than the label-application timestamp. So the PRs that still carry the label at this point are the genuinely-stuck ones (no new commits since shipyard gave up), and they should keep being skipped per the original "human needs to look" rule. The filter doesn't hide refreshed PRs anymore — those are unlabeled by step 3d and flow through normally.
+[Step 3d's auto-clear sweep](./do-work/setup/01-repo-recovery.md#3-ensure-label-exists--recover-from-prior-session) already ran by the time the step-5 query fires — it stripped `blocked:ci` from every PR whose head-commit timestamp is newer than the label-application timestamp. So the PRs that still carry the label at this point are the genuinely-stuck ones (no new commits since shipyard gave up), and they should keep being skipped per the original "human needs to look" rule. The filter doesn't hide refreshed PRs anymore — those are unlabeled by step 3d and flow through normally.
 
 ## Step 6 — why scope pre-flight has a deferred shape
 

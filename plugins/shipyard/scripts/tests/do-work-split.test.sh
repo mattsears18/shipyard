@@ -40,7 +40,19 @@ fi
 
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
 rationale_path="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
-setup_path="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+# The setup phase was split into a thin router + step-cluster sub-files under
+# do-work/setup/ (issue #611 — the monolithic setup.md crossed the 256KB
+# single-file Read limit). `setup_router_path` is the thin entry; `setup_path`
+# is a concatenation of the router + every sub-file, so the many
+# `assert_contains "$setup_path" …` content assertions below keep finding the
+# step content regardless of which sub-file it now lives in. A dedicated
+# `*.size.test.sh` (added by #611) enforces the per-file size cap; this test
+# only cares that the setup-phase *content* survived the split.
+setup_router_path="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+setup_dir="$repo_root/plugins/shipyard/commands/do-work/setup"
+setup_path="$(mktemp -t do-work-setup-concat.XXXXXX)"
+cat "$setup_router_path" "$setup_dir"/*.md > "$setup_path" 2>/dev/null
+trap 'rm -f "$setup_path"' EXIT
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 cleanup_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
@@ -159,7 +171,7 @@ echo
 # (1) Every spec file exists — entry + RATIONALE + 5 per-phase files.
 assert_file_exists "$do_work_path" "commands/do-work.md exists (thin entry)"
 assert_file_exists "$rationale_path" "commands/do-work-RATIONALE.md exists"
-assert_file_exists "$setup_path" "commands/do-work/setup.md exists"
+assert_file_exists "$setup_router_path" "commands/do-work/setup.md exists (thin router)"
 assert_file_exists "$steady_state_path" "commands/do-work/steady-state.md exists"
 assert_file_exists "$drain_path" "commands/do-work/drain.md exists"
 assert_file_exists "$cleanup_path" "commands/do-work/cleanup-summary.md exists"
@@ -974,7 +986,7 @@ assert_contains "$inline_trivial_path340" \
 #   - RATIONALE gains a "Step 6 — Detector 2" section documenting the
 #     failure mode, the narrow-path-set rationale (excluding CLAUDE.md),
 #     and the why-same-class rationale.
-setup_path348="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+setup_path348="$setup_path"  # concat of router + setup/ sub-files (#611)
 drain_path348="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 rationale_path348="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
 
@@ -1024,7 +1036,7 @@ assert_contains "$rationale_path348" \
 #   - The class stays human-decision-required, deliberately declining #591's
 #     suggested confirmed-non-shippable-as-single-PR (single-PR config edit blocked
 #     by a policy, not an un-decomposable epic).
-setup_path591="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+setup_path591="$setup_path"  # concat of router + setup/ sub-files (#611)
 drain_path591="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 rationale_path591="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
 config_sh591="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"

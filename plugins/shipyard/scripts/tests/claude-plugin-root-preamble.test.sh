@@ -105,9 +105,11 @@ for f in "${FILES[@]}"; do
   fi
 done
 
-# (2) The canonical preamble is documented in setup.md step 0.3, so any
+# (2) The canonical preamble is documented in setup step 0.3, so any
 # reader of the spec can find the rationale for the pattern in one place.
-SETUP_MD="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+# Since #611 split setup.md into a thin router + step-cluster sub-files,
+# step 0.3 lives in do-work/setup/00-config-worktree.md.
+SETUP_MD="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
 if [[ -f "$SETUP_MD" ]]; then
   if grep -qF "### 0.3 \`CLAUDE_PLUGIN_ROOT\` re-export preamble" "$SETUP_MD"; then
     assert_pass "setup.md documents step 0.3 (preamble rationale)"
