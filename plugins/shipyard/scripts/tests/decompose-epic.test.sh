@@ -46,7 +46,15 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 cmd_path="$repo_root/plugins/shipyard/commands/decompose-epic.md"
-do_work_setup_path="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+# #611 split setup.md into a thin router + step-cluster sub-files under
+# do-work/setup/. The step-6 content this test greps now lives in the
+# sub-files, so point do_work_setup_path at a concatenation of the router +
+# every sub-file (the assert_file_exists below still checks the router exists).
+do_work_setup_router="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+do_work_setup_dir="$repo_root/plugins/shipyard/commands/do-work/setup"
+do_work_setup_path="$(mktemp -t decompose-epic-setup-concat.XXXXXX)"
+cat "$do_work_setup_router" "$do_work_setup_dir"/*.md > "$do_work_setup_path" 2>/dev/null
+trap 'rm -f "$do_work_setup_path"' EXIT
 my_turn_path="$repo_root/plugins/shipyard/commands/my-turn.md"
 claude_md_path="$repo_root/CLAUDE.md"
 readme_path="$repo_root/README.md"
@@ -149,7 +157,7 @@ fi
 # (2) do-work/setup.md — step 6's Deferred recording path applies
 # needs-human-review + stamps the trigger marker (the #519 re-key), and the
 # epic-handoff is excluded from dispatch via needs-human-review.
-assert_file_exists "$do_work_setup_path" "commands/do-work/setup.md exists"
+assert_file_exists "$do_work_setup_router" "commands/do-work/setup.md exists (thin router)"
 if [[ -f "$do_work_setup_path" ]]; then
   # Step 6 applies the class-keyed gate label; the confirmed-non-shippable
   # epic handoff routes to needs-human-review via the GATE_LABEL default

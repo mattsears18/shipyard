@@ -17,7 +17,7 @@ The pattern this command formalizes came out of a real session ([`lightwork#1816
 
 A **decision-gated** issue is a `needs-human-review` issue whose body (or a `/do-work` scope-preflight comment) **enumerates explicit blocking decisions** a human must answer before any code can be written. The signals already present in this repo's issues:
 
-- A `<!-- do-work-human-decision-required -->` body marker (stamped on a scope-agent diagnosis comment by [`do-work/setup.md` step 6](./do-work/setup.md#6-initial-scope-pre-flight) for the `human-decision-required` defer class — per [#536](https://github.com/mattsears18/shipyard/issues/536)).
+- A `<!-- do-work-human-decision-required -->` body marker (stamped on a scope-agent diagnosis comment by [`do-work/setup.md` step 6](./do-work/setup/06-scope-preflight.md#6-initial-scope-pre-flight) for the `human-decision-required` defer class — per [#536](https://github.com/mattsears18/shipyard/issues/536)).
 - A numbered **"Blocking decisions before any code can be written"** list, or a **"## Open questions"** / **"## Open product/schema questions"** heading, in the issue body.
 - A `design` label, or the design-gate phrasing folded into `needs-human-review` per [#515](https://github.com/mattsears18/shipyard/issues/515).
 

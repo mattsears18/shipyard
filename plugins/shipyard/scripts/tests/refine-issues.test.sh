@@ -45,7 +45,15 @@ do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
 # After the issue #154 split, the do-work spec lives across an entry-router
 # + 5 per-phase files. Refinement-related content (step 2 bucketing, step 3a
 # label setup, step 3.5 refine invocation) lives in the setup phase file.
-do_work_setup_path="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+# #611 split setup.md into a thin router + step-cluster sub-files under
+# do-work/setup/, so the step-3/3.5/4 content this test greps now lives in
+# the sub-files. Point do_work_setup_path at a concatenation of the router +
+# every sub-file (the assert_file_exists below still checks the router).
+do_work_setup_router="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+do_work_setup_dir="$repo_root/plugins/shipyard/commands/do-work/setup"
+do_work_setup_path="$(mktemp -t refine-issues-setup-concat.XXXXXX)"
+cat "$do_work_setup_router" "$do_work_setup_dir"/*.md > "$do_work_setup_path" 2>/dev/null
+trap 'rm -f "$do_work_setup_path"' EXIT
 my_turn_path="$repo_root/plugins/shipyard/commands/my-turn.md"
 claude_md_path="$repo_root/CLAUDE.md"
 readme_path="$repo_root/README.md"
@@ -211,7 +219,7 @@ assert_file_exists "$external_gate_path" \
 # refine invocation). These steps live in commands/do-work/setup.md rather
 # than in the thin entry.
 assert_file_exists "$do_work_path" "commands/do-work.md exists (thin entry)"
-assert_file_exists "$do_work_setup_path" "commands/do-work/setup.md exists (setup phase)"
+assert_file_exists "$do_work_setup_router" "commands/do-work/setup.md exists (thin router)"
 if [[ -f "$do_work_setup_path" ]]; then
   # Step 3.5 must still invoke /refine-issues.
   assert_contains "$do_work_setup_path" "/refine-issues" \

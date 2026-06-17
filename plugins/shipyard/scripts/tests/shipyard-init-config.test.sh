@@ -182,8 +182,9 @@ echo "== do-work setup phase opt-in gate (step 0.4)"
 
 # After the issue #154 split, setup-phase content lives in
 # commands/do-work/setup.md rather than the entry. The opt-in gate (step 0.4)
-# is a setup-phase step.
-do_work_setup_md="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+# is a setup-phase step. Since #611 split setup.md into a thin router +
+# step-cluster sub-files, step 0.4 lives in setup/00-config-worktree.md.
+do_work_setup_md="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
 assert_file_contains "$do_work_setup_md" '0.4 Check the repo-level opt-in' "do-work/setup.md contains step 0.4"
 assert_file_contains "$do_work_setup_md" 'shipyard-config.sh' "do-work/setup.md references shipyard-config.sh"
 assert_file_contains "$do_work_setup_md" 'shipyard.config.json' "do-work/setup.md references the committed config file"

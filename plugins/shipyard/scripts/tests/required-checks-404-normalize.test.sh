@@ -63,7 +63,9 @@ if [[ "$repo_root" == "/" ]]; then
   exit 1
 fi
 
-SETUP_MD="$repo_root/plugins/shipyard/commands/do-work/setup.md"
+# #611 split setup.md into a thin router + step-cluster sub-files; step 1.3
+# (the #465 admin-direct-merge detector) lives in setup/01-repo-recovery.md.
+SETUP_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01-repo-recovery.md"
 
 pass=0
 fail=0
