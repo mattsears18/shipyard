@@ -66,7 +66,40 @@ For issue-work mode the PR body MUST include a **closing keyword** — `Closes #
 
 After `gh pr create` returns:
 
-1. Arm auto-merge:
+0.5. **First, decide whether this PR is on the ungated admin-direct-merge path — and if so, wait for the PR's own checks before merging instead of merging ungated ([#598](https://github.com/mattsears18/shipyard/issues/598)).** The `merged-direct-ungated` advisory in step 1.5 (from [#457](https://github.com/mattsears18/shipyard/issues/457)) is a *post-hoc* signal: by the time you can read `state: MERGED`, the merge has already fired and an ungated red has potentially already reached the default branch. On the repos shipyard is dogfooded against (`mattsears18/shipyard`, `mattsears18/mattsears18.com` — admin dispatcher + `allow_auto_merge: false` + no required status checks) that post-hoc path is the *common* case, not the edge case, so a pre-merge wait recovers a gate that already exists (the PR's own CI) instead of fixing `main` forward after the fact. The #598 repro: PR #596 (a README refresh) admin-direct-merged ungated, dropped the `decompose-epic.md` substring that `decompose-epic.test.sh` asserts, reddened `main`, and cost a whole second PR (#597) + a ~9-minute red-`main` window to fix forward — a regression the PR's *own* checks (which completed ~53s after merge) would have gated for free.
+
+   Detect the ungated configuration **before** arming auto-merge. It holds when all three are true:
+
+   ```bash
+   # (a) repo-level auto-merge is OFF (so gh would fall through to a direct merge), and
+   #     NOTE: the allow-auto-merge flag is NOT exposed by `gh repo view --json`
+   #     (there is no autoMergeAllowed field there) — read it from the REST repo
+   #     object as `.allow_auto_merge`.
+   ALLOW_AUTO_MERGE=$(gh api "repos/<owner/repo>" --jq '.allow_auto_merge')
+   # (b) the dispatching user has admin/maintain on the repo (so the direct merge is permitted), and
+   VIEWER_PERM=$(gh repo view <owner/repo> --json viewerPermission --jq '.viewerPermission')
+   # (c) the PR's base branch has NO required status checks (so a direct merge fires before CI completes).
+   #     On an UNPROTECTED branch this endpoint 404s — the `2>/dev/null` drops the
+   #     error body and the integer guard normalizes any non-numeric result to 0.
+   DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef --jq '.defaultBranchRef.name')
+   REQUIRED_CHECKS=$(gh api "repos/<owner/repo>/branches/${DEFAULT_BRANCH}/protection/required_status_checks/contexts" \
+     --jq 'length' 2>/dev/null)
+   case "${REQUIRED_CHECKS}" in (*[!0-9]*|'') REQUIRED_CHECKS=0;; esac
+   ```
+
+   When `ALLOW_AUTO_MERGE == false` AND `VIEWER_PERM` is `ADMIN` or `MAINTAIN` AND `REQUIRED_CHECKS == 0` — this is the ungated admin-direct path. Do NOT fire `gh pr merge --auto --merge` (it would direct-merge immediately, ungated). Instead **block on the PR's own checks to settle, then merge only when green** — this is the one issue-work case where you DO `--watch`, because the merge gate the repo lacks must be re-created by the worker:
+
+   ```bash
+   # Block until the PR's checks settle (self-heartbeats on every interval tick — watchdog-safe).
+   gh pr checks <pr-num> --repo <owner/repo> --watch --interval 30
+   ```
+
+   - If the checks settle **green**, merge now (the PR is gated by its own CI even though the repo's ruleset isn't): `gh pr merge <pr-num> --repo <owner/repo> --squash --delete-branch` (use the repo's configured merge method — `--merge`/`--squash`/`--rebase`; default to `--squash` only if the repo doesn't constrain it).
+   - If the checks settle **red**, this is exactly the case the fix-checks loop exists for: do NOT merge a red PR. Hand it back via the mode's normal return (`shipped #<N> via PR #<M> (auto-merge: unavailable — needs manual merge, checks: failing)` for issue-work) so the orchestrator's reconcile dispatches a fresh fix-checks-only worker against it. Do NOT run the fix-loop inline — that's mode-switching, which the per-mode files forbid.
+
+   When any of (a)/(b)/(c) is false — the repo allows auto-merge, the dispatcher lacks admin, or required checks ARE configured — skip this wait entirely and arm auto-merge normally (step 1 below). In those configurations `gh pr merge --auto` is genuinely gated: required checks block gh's direct merge until they pass, and an actual auto-merge queue (`autoMergeRequest != null`) waits for green by design. The proactive wait only fires on the ungated path it's meant to close.
+
+1. Arm auto-merge (when the step-0.5 ungated-path check did NOT fire):
    ```bash
    gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
    ```
@@ -90,7 +123,7 @@ After `gh pr create` returns:
 
      **Split `merged-direct` by the check rollup you snapshot in step 2:**
      - `merged-direct` AND step-2 rollup categorizes as `checks: green` → keep **`auto-merge: merged-direct`** (CI had completed and was green at merge time — the merge was effectively gated, whether by required checks or by happening to land after CI finished). Informational only.
-     - `merged-direct` AND step-2 rollup categorizes as `checks: pending` or `checks: failing` → emit **`auto-merge: merged-direct-ungated`** instead (the PR landed before CI completed; nothing gated it). This is a *loud advisory*: the merge commit is already on the default branch and its build may yet flip `main` red. The orchestrator's reconcile treats `merged-direct-ungated` as a signal to refresh its main-CI watch (the existing [step 4.5a main-CI divert](../../commands/do-work/setup.md#45-divert-checks-main-ci--pr-pileup) machinery), so a post-merge red is caught by a `fix-main-ci` divert rather than going unnoticed.
+     - `merged-direct` AND step-2 rollup categorizes as `checks: pending` or `checks: failing` → emit **`auto-merge: merged-direct-ungated`** instead (the PR landed before CI completed; nothing gated it). This is a *loud advisory*: the merge commit is already on the default branch and its build may yet flip `main` red. The orchestrator's reconcile treats `merged-direct-ungated` as a signal to refresh its main-CI watch (the existing [step 4.5a main-CI divert](../../commands/do-work/setup.md#45-divert-checks-main-ci--pr-pileup) machinery), so a post-merge red is caught by a `fix-main-ci` divert rather than going unnoticed. **With the step-0.5 proactive wait ([#598](https://github.com/mattsears18/shipyard/issues/598)) in place, `merged-direct-ungated` should now be rare** — step 0.5 catches the ungated admin-direct configuration *before* the merge fires and holds for the PR's checks, so a PR only lands ungated when step 0.5's detection couldn't apply (e.g. the merge raced a config change, or `gh` direct-merged despite a non-admin/required-checks reading). This refinement remains the **defense-in-depth backstop** for exactly those residual cases the pre-merge wait can't cover — do NOT remove it on the assumption step 0.5 handles everything.
 
    The `merged-direct` distinction is informational; the `merged-direct-ungated` distinction is the one piece of *behavioral* signal in this suffix — it tells the orchestrator a PR landed ungated so it can watch main CI for the fallout. Both still ride the `shipped #<N> via PR #<M> (auto-merge: ..., checks: ...)` return shape; neither blocks the worker. A `merged-direct`/`merged-direct-ungated` PR must never be surfaced to the user as "needs manual merge" friction — it's already landed.
 
@@ -116,7 +149,7 @@ After `gh pr create` returns:
 
 3. Return one line in the mode-specific format the dispatching prompt specifies.
 
-**Exception — fix-checks-only mode.** That mode is the one place you DO block on `gh pr checks <M> --watch --interval 30`, because resolving a known-failing PR is the agent's entire job. See `agents/issue-worker/fix-checks-only.md` for the full fix-loop semantics. Returning `green #<M>` from fix-checks-only mode is a load-bearing claim — the rollup must be fully `SUCCESS` at the moment of return, not "pushed and queued."
+**Exception — fix-checks-only mode (and the issue-work step-0.5 ungated-merge wait).** fix-checks-only is the primary place you DO block on `gh pr checks <M> --watch --interval 30`, because resolving a known-failing PR is the agent's entire job. See `agents/issue-worker/fix-checks-only.md` for the full fix-loop semantics. Returning `green #<M>` from fix-checks-only mode is a load-bearing claim — the rollup must be fully `SUCCESS` at the moment of return, not "pushed and queued." The **issue-work step-0.5 ungated-merge wait** ([#598](https://github.com/mattsears18/shipyard/issues/598)) is the one *other* place a `--watch` block is correct: on the admin + `allow_auto_merge: false` + no-required-checks path the worker must re-create the missing merge gate by waiting for the PR's own checks to settle before merging. Both are watchdog-safe — `gh pr checks --watch --interval 30` emits a status table on every tick, so it self-heartbeats (see the heartbeat-emission section). Outside those two cases the no-`--watch` rule stands: don't block on CI just to report it.
 
 ## Return-contract discipline
 
