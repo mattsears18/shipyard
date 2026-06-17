@@ -1,6 +1,6 @@
 ---
 description: Action-taking sibling of /my-turn — surveys with the same ranking, then drives the #1 action in the user's real, logged-in Chrome. Backend-agnostic: prefers the claude-in-chrome extension, falls back to chrome-devtools-mcp, then to read-only /my-turn.
-argument-hint: [--repo owner/repo] [--all] [--dry-run] [--yes] [--record]
+argument-hint: [--repo owner/repo] [--setup] [--all] [--dry-run] [--yes] [--record]
 ---
 
 # /my-turn-and-do
@@ -16,6 +16,7 @@ Pairs with [`/shipyard:my-turn`](./my-turn.md) (read-only survey) and [`/shipyar
 `$ARGUMENTS` may include:
 
 - **--repo owner/repo** (optional, default: cwd's repo via `gh repo view --json nameWithOwner -q .nameWithOwner`). If not in a repo, ask via `AskUserQuestion`.
+- **--setup** (optional): run the [preflight](#preflight--detect-gaps-and-guided-setup) checks and guided setup **only**, then stop — no survey, no browser action. Use it for first-run onboarding or to re-verify the setup after a Chrome / extension / machine change. (The inline preflight runs on every invocation regardless; `--setup` is the standalone "just configure me" mode.)
 - **--dry-run** (optional): survey + plan only. Print the #1 action and the browser steps that would be taken, then stop — **no browser action, no mutations**. Useful to confirm the intended action before executing.
 - **--yes** (optional): pre-approve *this run's* planned mutations. Skips the "about to do X — confirm?" prompt for the planned action. Does NOT blanket-approve all future runs, and does NOT bypass the hard confirmation gate for destructive or outward-facing actions (see [Guardrails](#guardrails)).
 - **--all** (optional): run the full ranked list through the execution loop, not just the top item. Each item is individually confirmed (or pre-approved via `--yes`) before the browser is driven. Use sparingly — the command is designed for focused one-item execution.
@@ -73,6 +74,54 @@ If **neither** backend is reachable, the command:
 
 If a backend is *selected* but its connection later errors mid-run, treat it as a prereq failure for the remainder of the run and hand back (see [Error handling](#error-handling)).
 
+## Preflight — detect gaps and guided setup
+
+Before the survey (and before any browser action), `/my-turn-and-do` runs a **preflight** that verifies every prerequisite and, on any gap, **alerts the user and walks them through the fix interactively** rather than failing opaquely. Preflight is **silent on success** — when everything is already configured it prints a single one-line [summary](#preflight-summary) and proceeds with zero friction.
+
+With **`--setup`**, preflight runs **standalone**: it performs the checks and guided fixes, prints the summary, then **stops** — no survey, no browser action.
+
+### Self-heal loop (applied to each failing check)
+
+For each prerequisite that fails, the command:
+
+1. **Alerts** — names the specific gap in plain language.
+2. **Instructs** — prints the exact steps to fix it (commands to run, UI toggles to flip).
+3. **Waits** — asks via `AskUserQuestion` with options scaled to the gap, e.g. `["Done — re-check", "Use fallback backend", "Skip to read-only"]`.
+4. **Re-checks** — on "Done", re-runs that check's detection. On success, advances to the next check.
+5. **Caps retries** — after **2** failed re-checks for the same gap, stop looping and either fall back (if a degraded path exists) or drop to read-only `/my-turn`.
+
+Never spin silently, and never proceed past an unmet **hard blocker** (gh auth, or no backend at all).
+
+### Checks (in order)
+
+**1. GitHub CLI auth (hard blocker).** `gh auth status`. If unauthenticated: instruct `gh auth login`, then re-check. Without it the survey can't run — if unresolved after the retry cap, abort with the `gh auth login` directive (do NOT fall through to a browser action).
+
+**2. Browser backend present.** Run [backend detection](#detection-at-setup-before-any-survey-work).
+- **Extension detected** → proceed to check 3.
+- **Only chrome-devtools-mcp detected** → note the preferred extension isn't present; offer `["Proceed on chrome-devtools fallback", "Walk me through installing the extension", "Skip to read-only"]`.
+- **Neither detected** → guided install, recommending the extension first:
+  - **Claude Chrome extension (preferred):** install / enable the extension, confirm the `mcp__claude-in-chrome__*` tools load; note that a Claude Code restart may be required for a newly-added MCP server. Re-check.
+  - **chrome-devtools-mcp (fallback):** configure the MCP server with `--autoConnect`, enable remote debugging at `chrome://inspect/#remote-debugging`, restart Claude Code (see [chrome-devtools-mcp fallback notes](#chrome-devtools-mcp-fallback-notes)). Re-check.
+  - If the user skips both → read-only `/my-turn`.
+
+**3. Backend connectivity.** Confirm the selected backend actually responds:
+- Extension: `tabs_context_mcp` returns a live context. If it errors → guide (open Chrome, confirm the extension is connected / enabled), re-check.
+- chrome-devtools-mcp: `list_pages` responds (not a connection error) and is not a logged-out isolated instance (see [Error handling](#error-handling)). If it errors → guide the `--autoConnect` / remote-debugging fix, re-check.
+
+**4. Site permissions (extension only; non-blocking).** The extension gates access **per site**. Front-load the grants for the domains this command will touch — `github.com` always, plus any third-party console the survey is likely to route to (Vercel, Firebase, App Store Connect, etc., per the [deep-link table](#third-party-console-deep-links)). Because only the user can grant access in the extension UI, the walkthrough explains the model and asks `["github.com granted", "I'll grant on first navigation", "Skip"]`. This is **non-blocking** — a missing grant just surfaces a one-time prompt on first navigation; front-loading avoids a stall mid-action. (Not applicable to the chrome-devtools-mcp backend, which uses the real profile's existing sessions directly.)
+
+**5. Chrome recency (soft advisory).** The extension needs a current Chrome; the chrome-devtools-mcp fallback historically required Chrome 144+. Print a one-line advisory only if a problem is suspected; never block on it.
+
+### Preflight summary
+
+After the checks pass (or the user opts into a degraded path), print a one-line summary, then continue — or, under `--setup`, stop:
+
+```
+Preflight: ✓ gh auth (mattsears18) · ✓ backend: claude-in-chrome · ✓ github.com permitted
+```
+
+If a degraded path was chosen, the summary reflects it (e.g. `⚠ backend: chrome-devtools-mcp (fallback)` or `→ read-only: no backend reachable`).
+
 ## Setup
 
 ### 1. Resolve repo
@@ -81,17 +130,21 @@ If a backend is *selected* but its connection later errors mid-run, treat it as 
 gh repo view --json nameWithOwner -q .nameWithOwner   # if --repo omitted
 ```
 
-### 2. Resolve the authenticated user
+### 2. Run preflight
+
+Run the [preflight](#preflight--detect-gaps-and-guided-setup) checks and guided setup. This confirms gh auth (check 1), selects and connects the browser backend (checks 2–3), and front-loads site permissions (check 4), self-healing any gap interactively.
+
+**If `--setup` was passed, stop here** after printing the preflight summary — do NOT survey or act.
+
+Otherwise continue once preflight clears (or has settled on a degraded path: a fallback backend, or read-only when no backend is reachable).
+
+### 3. Resolve the authenticated user
 
 ```bash
-gh api user --jq .login   # → $ME
+gh api user --jq .login   # → $ME  (auth already confirmed by preflight check 1)
 ```
 
-If `gh` is not authenticated, abort with a clear error directing the user to `gh auth login`.
-
-### 3. Select the browser backend
-
-Run [backend detection](#detection-at-setup-before-any-survey-work). Record which backend was selected (extension / chrome-devtools-mcp / none). If none, print the [absence message](#absence-detection) and run the survey as read-only `/my-turn` output — do NOT attempt to execute the action.
+The browser backend was already selected and connected during preflight; if it settled on read-only (no backend reachable), run the survey as read-only `/my-turn` output and do NOT attempt to execute the action.
 
 ## Survey + ranking
 
@@ -298,9 +351,31 @@ Gate: Mutation — confirm before executing: add repository secret(s)
 [dry-run — no browser action taken]
 ```
 
+### Setup mode (--setup)
+
+```
+Preflight:
+  ✗ Browser backend — neither the Claude Chrome extension nor chrome-devtools-mcp is reachable.
+
+  Recommended: the Claude Chrome extension (claude-in-chrome).
+    1. Install / enable the Claude extension in Chrome.
+    2. Grant it access to github.com in the extension's site permissions.
+    3. Restart Claude Code so the newly-added MCP server loads.
+
+  [AskUserQuestion] Backend setup → "Done — re-check" / "Use chrome-devtools-mcp instead" / "Skip to read-only"
+  > Done — re-check
+  ✓ Browser backend — claude-in-chrome detected and connected.
+
+Preflight: ✓ gh auth (mattsears18) · ✓ backend: claude-in-chrome · ✓ github.com permitted
+
+Setup complete — re-run /my-turn-and-do (without --setup) to survey and act.
+```
+
 ## Don't
 
+- **Don't skip preflight, and don't fail opaquely.** Always run the [preflight](#preflight--detect-gaps-and-guided-setup) first. On any gap, alert the user and walk them through the fix interactively (self-heal loop) before falling back — a missing prerequisite is a setup step to guide the user through, not a terse error to dump. Preflight stays silent when everything is already configured.
 - **Don't assume a backend.** Always run [backend detection](#detection-at-setup-before-any-survey-work) first and act through whichever is live. A missing browser backend is a setup gap, not a reason to fail silently or guess at an alternative driving mechanism.
+- **Don't loop forever on a gap.** The self-heal loop is retry-capped (2 re-checks per gap); after that, fall back to a degraded path or read-only rather than re-prompting indefinitely.
 - **Don't act in a logged-out isolated Chrome.** This only arises on the chrome-devtools-mcp fallback (`--remote-debugging-port` launches a non-profile Chrome). If that backend appears logged out, detect it and print setup instructions rather than proceeding. The extension backend always runs in the real profile.
 - **Don't reflexively screenshot.** Read the page for perception; screenshot only when visual state genuinely matters (logged-in confirmation, layout-dependent actions).
 - **Don't rubber-stamp judgment calls.** PR review, nuanced question responses, issue closure decisions — tee them up in the browser and hand back. Do NOT submit a review, post a comment, or close an issue without the user's explicit confirmation.
