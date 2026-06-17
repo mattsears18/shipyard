@@ -1413,6 +1413,23 @@ The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight
    - If no stale defers were found, verify the turn had a legitimate reason for zero dispatches. A scope-agent batch in flight (`scope_bg > 0`) is a valid reason. All `ready_issues` colliding with `in_flight` paths is a valid reason. Empty `in_flight` + empty queues + all issues deferred is **not** a valid reason — that means the orchestrator is about to declare termination driven entirely by self-defers, which is the failure mode issue [#246](https://github.com/mattsears18/shipyard/issues/246) documented. In this case, add `idle_reason="defers_this_turn=<d> with no dispatches and open slots — verify defer reasons before proceeding to drain"` to the invariant line and do NOT proceed to drain; instead fire a fresh termination-assertion step 4 fetch to surface any issues the defers may have hidden.
    See [RATIONALE → Over-defer self-check](../do-work-RATIONALE.md#step-e--over-defer-self-check-rationale) for the failure mode this prevents.
 
+## Operator layer (`--operate` only)
+
+When `--operate` is set (including via the [`/my-turn-and-do`](../my-turn-and-do.md) alias), the steady-state loop gains a browser-operator layer. The full machinery — backend selection, preflight, standing authorization, per-kind playbooks, the `operator_queue` drain loop, and the proactive sweep — lives in [`do-work/operate.md`](./operate.md); this section is just the two hooks the steady-state loop owns. Without `--operate`, ignore this entire section: `operator_queue` stays empty and nothing here fires.
+
+### A.1 hook — reactive enqueue
+
+When parsing a worker return in [step A.1](#a1-parse-the-return-string), if the bail/defer names a **browser-completable** action (a `blocked:`/`deferred:` reason that is an operator action — approve a deployment, paste a secret, toggle a console — or a scope-agent **`external-dependency`** defer), enqueue an `operator_queue` item `{ source: "worker-handback"|"defer", kind, target, plan, origin_ref }` in addition to the normal recording. Under `--operate` the [setup step-6 recording path](./setup.md#6-initial-scope-pre-flight) already routes `external-dependency` defers to the `needs-operator` label; the enqueue is the in-session working copy the orchestrator drains this session. **Genuine `human-decision-required` / judgment defers are NOT enqueued** — they stay `needs-human-review` hand-backs.
+
+### D hook — proactive sweep + drain
+
+In [step D's periodic refresh](#d-periodic-refresh), additionally:
+
+1. **Proactive sweep.** Run a `/my-turn`-style discovery filtered to the **browser-completable subset** — open issues carrying the **`needs-operator`** label, superseded/duplicate PRs to close, CI secrets flagged by a red run (teed up), a referenced provider toggle, an *unambiguous* drafted reply — and enqueue any not already in `operator_queue`. Judgment calls are never enqueued.
+2. **Drain.** Whenever the orchestrator is otherwise idle (a code worker is in flight and not yet returned, or this is a step-D tick), pop the highest-`rank_key` `operator_queue` item and execute it **on the main thread** via the [operator phase playbooks](./operate.md#playbooks-by-kind) — serialized, one browser action at a time (the real browser is a singleton; never dispatch a subagent to drive it). On success, remove the item and clear the issue's `needs-operator` label; on a hand-back outcome (e.g. a value only the user holds, or a logged-out console), leave the label and surface it. Write-through `operator_queue` to the session-state file on each enqueue/drain.
+
+If preflight found no browser backend, the drain is a no-op: items accumulate and are surfaced as hand-backs at end of session ([operate.md → Degradation](./operate.md#degradation--no-backend-reachable)).
+
 ## Dispatch rules (used by step 7 and step C)
 
 **Per-mode `subagent_type` routing.** The orchestrator picks the `Agent`-tool `subagent_type` based on the worker's `mode:`. The shim agents pin smaller models for the modes whose workload doesn't need Opus 4.7 — cutting per-dispatch inference cost ~5x for CI-repair work that's mostly pattern-matching against failing logs. See [#157](https://github.com/mattsears18/shipyard/issues/157) for the cost rationale.

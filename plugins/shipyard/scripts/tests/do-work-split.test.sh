@@ -1282,9 +1282,10 @@ assert_contains "$setup_path" \
 assert_contains "$setup_path" \
   'ensure-then-label-then-verify' \
   "setup.md step 6 names the ensure-then-label-then-verify discipline (#508)"
+# shellcheck disable=SC2016  # literal needle — must NOT expand $GATE_LABEL
 assert_contains "$setup_path" \
-  'WARNING: #<N> needs-human-review apply did not land' \
-  "setup.md step 6 reads back .labels and warns loudly on a silent no-op (#508/#519)"
+  'WARNING: #<N> $GATE_LABEL apply did not land' \
+  "setup.md step 6 reads back .labels and warns loudly on a silent no-op (#508/#519/#608)"
 assert_contains "$setup_path" \
   'Split the mutations' \
   "setup.md step 6 requires --remove-assignee as its own gh edit, not combined with --add-label (#508)"
