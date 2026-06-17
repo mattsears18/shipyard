@@ -8,7 +8,7 @@ Full issue → PR lifecycle. Self-assign, implement, open a PR with a `Closes #<
 
 - Issue number `#N`.
 - Target repo `<owner/repo>`.
-- `originating_author_trust` — `trusted` or `external`. **Load-bearing for step 6**: it gates auto-merge. The dispatch prompt names it explicitly with the form *"the originating issue's author trust is **`trusted`**"* (or `external`). If you can't find the field in the dispatch prompt, assume `external` (fail-safe — never arm auto-merge on an unclear trust signal). See [do-work's author-trust computation](../../commands/do-work/steady-state.md#dispatch-rules-used-by-step-7-and-step-c) for how it's derived.
+- `originating_author_trust` — `trusted` or `external`. **Load-bearing for step 6**: it gates auto-merge. The dispatch prompt names it explicitly with the form *"the originating issue's author trust is **`trusted`**"* (or `external`). If you can't find the field in the dispatch prompt, **don't hard-default to `external`** — resolve the issue author's collaborator permission live as a fallback (`repos/{owner}/{repo}/collaborators/{author}/permission`; `admin`/`maintain`/`write` ⇒ trusted, anything else ⇒ external). See [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) for the full fallback and [#599](https://github.com/mattsears18/shipyard/issues/599) for why the old hard-`external` default was wrong on owner-authored issues. See [do-work's author-trust computation](../../commands/do-work/steady-state.md#dispatch-rules-used-by-step-7-and-step-c) for how the field itself is derived.
 
 ## Process
 
@@ -341,7 +341,27 @@ EOF
 
 Do NOT call `gh pr merge --auto` in this branch — that's the exact gate this step exists to enforce. The PR sits with `needs-human-review` until a maintainer reviews and merges manually (or closes it).
 
-**If the dispatch prompt doesn't contain an `originating_author_trust` field** — that's an orchestrator-side bug (the field is supposed to be in every issue-work dispatch). The fail-safe is to treat the trust as `external` and take the external branch above. Do NOT default to `trusted`; the cost of one extra human-merge step on a legitimate trusted PR is trivial compared to the cost of auto-merging an external-origin PR by mistake.
+**If the dispatch prompt doesn't contain an `originating_author_trust` field** — that's an orchestrator-side bug (the field is supposed to be in every issue-work dispatch). But a **hard default to `external` is the wrong fail-safe** ([#599](https://github.com/mattsears18/shipyard/issues/599)): on solo / small repos — the common case for this marketplace's users — the issue author is almost always the repo owner, who is unconditionally in the trusted-author set. Hard-defaulting to `external` turns every such run into a manual-intervention run (label removal + re-arm), defeating the point of an autonomous session. The #599 repro: a single-issue run shipped a PR but gated it with `needs-human-review` even though the issue author was the repo owner/admin, because the dispatch omitted the trust field and the worker defaulted to `external`.
+
+Instead, **resolve the issue author's collaborator permission live as a fallback** — mirroring the orchestrator's [step 1.7 trusted-author resolution](../../commands/do-work/setup.md#17-resolve-trusted-author-allowlist). Query the author's per-repo permission and treat `admin` / `maintain` / `write` as **trusted** (these are the push-capable roles, matching the orchestrator's `select(.permissions.push==true)` semantics); anything else — `read`, `none`, or an API error — is **external**:
+
+```bash
+# Fallback trust resolution when the dispatch prompt omits originating_author_trust (#599).
+# The issue author's login is .author.login from the step-0 `gh issue view` projection.
+AUTHOR_LOGIN="<author-login-from-step-0>"
+PERMISSION=$(gh api "repos/<owner/repo>/collaborators/${AUTHOR_LOGIN}/permission" \
+  --jq '.permission' 2>/dev/null)
+case "$PERMISSION" in
+  admin|maintain|write) RESOLVED_TRUST="trusted" ;;
+  *)                    RESOLVED_TRUST="external" ;;   # read / none / API error
+esac
+```
+
+**Why the permission *value*, not the call's exit status, is the signal.** The `collaborators/{author}/permission` endpoint returns `200` with `"permission": "read"` for a **non-collaborator** (it does not 404), so a worker that keys off "did the call succeed" would treat every stranger as trusted — the exact security-boundary break this gate exists to prevent. Only `admin` / `maintain` / `write` (the push-capable roles) clear the gate. A `read` / `none` permission, or any API failure (token can't query the endpoint, repo is org-owned without scope, network error), resolves to `external` — the restrictive default is the safe failure mode, identical to the orchestrator's step-1.7 branch 3.
+
+Then take the matching branch above using `$RESOLVED_TRUST` in place of the missing field: `trusted` → arm auto-merge, `external` → label `needs-human-review` and comment. This keeps the security boundary intact (genuinely untrusted non-collaborator authors still gate) while eliminating the owner-authored false positive. Do NOT skip the resolution and blanket-default to either value — `trusted` would auto-merge a stranger's PR, `external` reintroduces the #599 toil.
+
+(When the dispatch prompt **does** carry `originating_author_trust`, use it directly — it's the orchestrator's session-cached resolution and is authoritative. This live fallback is only for the field-absent path.)
 
 ### 7. Snapshot check state + auto-merge state, then return — don't block on CI
 
@@ -426,7 +446,7 @@ When blocked → return:
 
 - Don't open a duplicate PR. Pre-flight check (step 0) exists for this reason.
 - Don't merge manually unless auto-merge is unavailable AND all checks are green AND the user has explicitly authorized it for this run. Otherwise leave the PR ready and report.
-- **Don't arm auto-merge when `originating_author_trust == "external"`.** That field is the dispatch-side auto-merge gate — defense in depth against external prompt-injection vectors riding `gh pr merge --auto` to `main` when both principal gates (author allowlist, intake auto-label) have failed simultaneously. The external branch in step 6 explicitly does NOT call `gh pr merge --auto`; it labels the PR `needs-human-review` and comments. If you see `external` and reflexively type `gh pr merge --auto` anyway because that's what you do in trusted mode, you've defeated the gate. Fail-safe applies: when the dispatch prompt's trust field is missing or unparseable, treat as `external`, never `trusted`.
+- **Don't arm auto-merge when `originating_author_trust == "external"`.** That field is the dispatch-side auto-merge gate — defense in depth against external prompt-injection vectors riding `gh pr merge --auto` to `main` when both principal gates (author allowlist, intake auto-label) have failed simultaneously. The external branch in step 6 explicitly does NOT call `gh pr merge --auto`; it labels the PR `needs-human-review` and comments. If you see `external` and reflexively type `gh pr merge --auto` anyway because that's what you do in trusted mode, you've defeated the gate. When the dispatch prompt's trust field is missing or unparseable, do NOT blanket-default to either value — resolve the author's collaborator permission live per [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) (push-capable role ⇒ trusted, non-collaborator / API failure ⇒ external). A blanket `trusted` default would auto-merge a stranger's PR; a blanket `external` default reintroduces the owner-authored false positive from [#599](https://github.com/mattsears18/shipyard/issues/599).
 - Don't force-push to a shared/main branch. Force-pushing your own feature branch is OK only if necessary (e.g., a rebase).
 - Don't disable a failing test to make checks pass. If the test is genuinely broken (not the code), comment on the PR with the evidence and return `blocked`.
 - Don't expand scope. New bugs you spot → new issue, not this PR.
