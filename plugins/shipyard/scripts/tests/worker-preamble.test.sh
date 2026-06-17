@@ -35,6 +35,16 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 skill_path="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+# Issue #617 — the 85KB SKILL.md was split into a thin always-loaded core
+# (SKILL.md) + on-demand fragments alongside it. Rarely-hit reference sections
+# moved into fragment files; the assertions below read each section's strings
+# from whichever file now owns it. The fragment paths:
+wp_dir="$repo_root/plugins/shipyard/skills/worker-preamble"
+auto_merge_path="$wp_dir/auto-merge.md"
+reaped_path="$wp_dir/reaped-escape-hatch.md"
+node_bootstrap_path="$wp_dir/node-bootstrap.md"
+ci_pitfalls_path="$wp_dir/ci-pitfalls.md"
+commit_hygiene_path="$wp_dir/commit-hygiene.md"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
 # The dispatch prompts live in the steady-state phase after the issue #154
 # split, and the divert/fix-checks/issue-work prompt templates moved again into
@@ -130,6 +140,41 @@ if [[ -f "$skill_path" ]]; then
   assert_contains "$skill_path" "description:" \
     "SKILL.md frontmatter has a description field"
 
+  # Issue #617 — the on-demand fragments must exist alongside SKILL.md, and
+  # SKILL.md's fragment-index must point at each one so a worker can find the
+  # section it needs. Removing a fragment (or its index row) regresses the
+  # split — a worker mode would lose access to the rule the fragment owns.
+  assert_file_exists "$auto_merge_path" "worker-preamble fragment auto-merge.md exists (issue #617)"
+  assert_file_exists "$reaped_path" "worker-preamble fragment reaped-escape-hatch.md exists (issue #617)"
+  assert_file_exists "$node_bootstrap_path" "worker-preamble fragment node-bootstrap.md exists (issue #617)"
+  assert_file_exists "$ci_pitfalls_path" "worker-preamble fragment ci-pitfalls.md exists (issue #617)"
+  assert_file_exists "$commit_hygiene_path" "worker-preamble fragment commit-hygiene.md exists (issue #617)"
+  assert_contains "$skill_path" "## On-demand fragments" \
+    "SKILL.md has an On-demand fragments index section (issue #617)"
+  assert_contains "$skill_path" "(./auto-merge.md)" \
+    "SKILL.md fragment-index links auto-merge.md (issue #617)"
+  assert_contains "$skill_path" "(./reaped-escape-hatch.md)" \
+    "SKILL.md fragment-index links reaped-escape-hatch.md (issue #617)"
+  assert_contains "$skill_path" "(./node-bootstrap.md)" \
+    "SKILL.md fragment-index links node-bootstrap.md (issue #617)"
+  assert_contains "$skill_path" "(./ci-pitfalls.md)" \
+    "SKILL.md fragment-index links ci-pitfalls.md (issue #617)"
+  assert_contains "$skill_path" "(./commit-hygiene.md)" \
+    "SKILL.md fragment-index links commit-hygiene.md (issue #617)"
+  # The thin core must stay thin: SKILL.md is the always-loaded file, so its
+  # line count is the per-dispatch context tax #617 set out to cut. Assert it
+  # stays well under half the pre-split ~593 lines.
+  skill_lines=$(wc -l < "$skill_path" | tr -d ' ')
+  if (( skill_lines < 300 )); then
+    printf '  %sPASS%s  SKILL.md thin core stays under 300 lines (%d) (issue #617)\n' \
+      "$GREEN" "$RESET" "$skill_lines"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  SKILL.md thin core grew past 300 lines (%d) (issue #617)\n' \
+      "$RED" "$RESET" "$skill_lines"
+    fail=$((fail+1))
+  fi
+
   # Skill must enumerate the four load-bearing rules verbatim so any single
   # reader sees the full contract without bouncing between docs.
   assert_contains "$skill_path" "isolated git worktree" \
@@ -179,18 +224,18 @@ if [[ -f "$skill_path" ]]; then
   # contract; removing the symlink remediation path regresses the
   # cheapest-recovery contract (worker would jump straight to the 30-90s
   # `npm ci` path or, worse, skip the check entirely).
-  assert_contains "$skill_path" "## Dependency-bootstrap check for Node-based target repos" \
-    "SKILL.md covers the Node-deps bootstrap check (issue #316)"
-  assert_contains "$skill_path" "package.json" \
-    "SKILL.md names package.json as the Node-repo detector for the bootstrap check"
-  assert_contains "$skill_path" "node_modules" \
-    "SKILL.md names node_modules as the missing-dir signal for the bootstrap check"
-  assert_contains "$skill_path" "ln -s ../../../node_modules node_modules" \
-    "SKILL.md provides the symlink-from-primary-checkout remediation recipe"
-  assert_contains "$skill_path" "npm ci" \
-    "SKILL.md provides the npm ci fallback remediation"
-  assert_contains "$skill_path" "cannot bootstrap node_modules" \
-    "SKILL.md names the blocked: bail string for the fail-both-paths case"
+  assert_contains "$node_bootstrap_path" "## Dependency-bootstrap check for Node-based target repos" \
+    "node-bootstrap.md covers the Node-deps bootstrap check (issue #316)"
+  assert_contains "$node_bootstrap_path" "package.json" \
+    "node-bootstrap.md names package.json as the Node-repo detector for the bootstrap check"
+  assert_contains "$node_bootstrap_path" "node_modules" \
+    "node-bootstrap.md names node_modules as the missing-dir signal for the bootstrap check"
+  assert_contains "$node_bootstrap_path" "ln -s ../../../node_modules node_modules" \
+    "node-bootstrap.md provides the symlink-from-primary-checkout remediation recipe"
+  assert_contains "$node_bootstrap_path" "npm ci" \
+    "node-bootstrap.md provides the npm ci fallback remediation"
+  assert_contains "$node_bootstrap_path" "cannot bootstrap node_modules" \
+    "node-bootstrap.md names the blocked: bail string for the fail-both-paths case"
 
   # Issue #322 — Bash-tool isolation gotcha in the worktree-reaped escape hatch.
   # The pre-#322 snippet documented a "save once, reuse" pattern that tripped
@@ -201,14 +246,14 @@ if [[ -f "$skill_path" ]]; then
   # makes the re-derive-at-top-of-every-call pattern explicit. Removing the
   # Bash-tool-isolation callout or the re-derive recipe regresses the
   # first-commit-false-positive contract.
-  assert_contains "$skill_path" "Bash-tool isolation" \
-    "SKILL.md calls out Bash-tool isolation as the gotcha (issue #322)"
-  assert_contains "$skill_path" "Re-derive \`WORKTREE_PATH\`" \
-    "SKILL.md prescribes re-deriving WORKTREE_PATH at the top of every write-class call (issue #322)"
-  assert_contains "$skill_path" "do not survive" \
-    "SKILL.md explains that variables do not survive across Bash tool calls (issue #322)"
-  assert_contains "$skill_path" "false-positive \`reaped:\` exit" \
-    "SKILL.md names the false-positive reaped: exit failure mode (issue #322)"
+  assert_contains "$reaped_path" "Bash-tool isolation" \
+    "reaped-escape-hatch.md calls out Bash-tool isolation as the gotcha (issue #322)"
+  assert_contains "$reaped_path" "Re-derive \`WORKTREE_PATH\`" \
+    "reaped-escape-hatch.md prescribes re-deriving WORKTREE_PATH at the top of every write-class call (issue #322)"
+  assert_contains "$reaped_path" "do not survive" \
+    "reaped-escape-hatch.md explains that variables do not survive across Bash tool calls (issue #322)"
+  assert_contains "$reaped_path" "false-positive \`reaped:\` exit" \
+    "reaped-escape-hatch.md names the false-positive reaped: exit failure mode (issue #322)"
 
   # Issue #328 — Auto Mode constraint on node_modules symlink remediation.
   # The symlink path (ln -s ../../../node_modules) is denied by the Auto Mode
@@ -220,14 +265,14 @@ if [[ -f "$skill_path" ]]; then
   # without bouncing between sections. It also documents cp -al as a hard-link
   # copy alternative that the classifier should allow. Removing these docs
   # regresses the Auto-Mode-symlink-denial contract.
-  assert_contains "$skill_path" "Auto Mode constraint" \
-    "SKILL.md names the Auto Mode constraint on the symlink path (issue #328)"
-  assert_contains "$skill_path" "auto-mode classifier" \
-    "SKILL.md names the auto-mode classifier as the denier (issue #328)"
-  assert_contains "$skill_path" "skip the symlink entirely and go directly to \`npm ci\`" \
-    "SKILL.md tells Auto Mode workers to skip the symlink and go straight to npm ci (issue #328)"
-  assert_contains "$skill_path" "cp -al" \
-    "SKILL.md documents cp -al hard-link copy as an alternative to the symlink (issue #328)"
+  assert_contains "$node_bootstrap_path" "Auto Mode constraint" \
+    "node-bootstrap.md names the Auto Mode constraint on the symlink path (issue #328)"
+  assert_contains "$node_bootstrap_path" "auto-mode classifier" \
+    "node-bootstrap.md names the auto-mode classifier as the denier (issue #328)"
+  assert_contains "$node_bootstrap_path" "skip the symlink entirely and go directly to \`npm ci\`" \
+    "node-bootstrap.md tells Auto Mode workers to skip the symlink and go straight to npm ci (issue #328)"
+  assert_contains "$node_bootstrap_path" "cp -al" \
+    "node-bootstrap.md documents cp -al hard-link copy as an alternative to the symlink (issue #328)"
 
   # Issue #458 — Next 16 / Turbopack constraint on the node_modules link
   # strategies. Next.js 16's Turbopack refuses a node_modules that resolves
@@ -238,12 +283,12 @@ if [[ -f "$skill_path" ]]; then
   # unless the preamble tells them to detect Turbopack/Next 16 and skip directly
   # to npm ci. The fix adds the detection snippet + constraint at the symlink
   # remediation spot. Removing these docs regresses the Turbopack-skip contract.
-  assert_contains "$skill_path" "Next 16 / Turbopack constraint" \
-    "SKILL.md names the Next 16 / Turbopack constraint on the link strategies (issue #458)"
-  assert_contains "$skill_path" "points out of the filesystem root" \
-    "SKILL.md names the Turbopack 'points out of the filesystem root' failure (issue #458)"
-  assert_contains "$skill_path" "uses_turbopack" \
-    "SKILL.md provides the Turbopack/Next-16 detection snippet (issue #458)"
+  assert_contains "$node_bootstrap_path" "Next 16 / Turbopack constraint" \
+    "node-bootstrap.md names the Next 16 / Turbopack constraint on the link strategies (issue #458)"
+  assert_contains "$node_bootstrap_path" "points out of the filesystem root" \
+    "node-bootstrap.md names the Turbopack 'points out of the filesystem root' failure (issue #458)"
+  assert_contains "$node_bootstrap_path" "uses_turbopack" \
+    "node-bootstrap.md provides the Turbopack/Next-16 detection snippet (issue #458)"
 
   # Issue #418 — "Mirror new string constants into locale / parity files"
   # section. The section exists because a worker that adds a user-facing string
@@ -253,12 +298,12 @@ if [[ -f "$skill_path" ]]; then
   # break that costs a fix-checks cycle each time (lightwork repro: 3× in one
   # session across PRs #1443 / #1444 / #1447). Removing the section regresses the
   # mirror-the-key-before-push contract.
-  assert_contains "$skill_path" "## Mirror new string constants into locale / parity files" \
-    "SKILL.md covers the locale/parity mirror check (issue #418)"
-  assert_contains "$skill_path" "parity test" \
-    "SKILL.md names the parity test as the CI-red trigger (issue #418)"
-  assert_contains "$skill_path" "mirror the new key into every file the test requires" \
-    "SKILL.md prescribes mirroring the key into every required locale/parity file (issue #418)"
+  assert_contains "$ci_pitfalls_path" "## Mirror new string constants into locale / parity files" \
+    "ci-pitfalls.md covers the locale/parity mirror check (issue #418)"
+  assert_contains "$ci_pitfalls_path" "parity test" \
+    "ci-pitfalls.md names the parity test as the CI-red trigger (issue #418)"
+  assert_contains "$ci_pitfalls_path" "mirror the new key into every file the test requires" \
+    "ci-pitfalls.md prescribes mirroring the key into every required locale/parity file (issue #418)"
 
   # Issue #440 — "GitHub push-protection blocking a synthetic test-fixture
   # secret" section. The section exists because a worker adding a NEW test
@@ -268,16 +313,16 @@ if [[ -f "$skill_path" ]]; then
   # allowlisted does not exempt it (the #402 / #408 scrubber-fixture workers hit
   # exactly this). Removing the section regresses the never-click-the-unblock-URL
   # + rewrite-to-synthetic + rebuild-the-commit contract.
-  assert_contains "$skill_path" "## GitHub push-protection blocking a synthetic test-fixture secret" \
-    "SKILL.md covers the push-protection synthetic-fixture block (issue #440)"
-  assert_contains "$skill_path" "NEVER click the server-side unblock URL" \
-    "SKILL.md tells the worker never to click the push-protection unblock URL (issue #440)"
-  assert_contains "$skill_path" "obviously-synthetic value that still matches the pattern under test" \
-    "SKILL.md prescribes rewriting the fixture to an obviously-synthetic value (issue #440)"
-  assert_contains "$skill_path" "flagged blob never enters pushed history" \
-    "SKILL.md prescribes rebuilding the commit so the flagged blob never enters pushed history (issue #440)"
-  assert_contains "$skill_path" "NOT the same scanner as \`.gitleaks.toml\`" \
-    "SKILL.md distinguishes push-protection from the .gitleaks.toml committed-content scanner (issue #440)"
+  assert_contains "$ci_pitfalls_path" "## GitHub push-protection blocking a synthetic test-fixture secret" \
+    "ci-pitfalls.md covers the push-protection synthetic-fixture block (issue #440)"
+  assert_contains "$ci_pitfalls_path" "NEVER click the server-side unblock URL" \
+    "ci-pitfalls.md tells the worker never to click the push-protection unblock URL (issue #440)"
+  assert_contains "$ci_pitfalls_path" "obviously-synthetic value that still matches the pattern under test" \
+    "ci-pitfalls.md prescribes rewriting the fixture to an obviously-synthetic value (issue #440)"
+  assert_contains "$ci_pitfalls_path" "flagged blob never enters pushed history" \
+    "ci-pitfalls.md prescribes rebuilding the commit so the flagged blob never enters pushed history (issue #440)"
+  assert_contains "$ci_pitfalls_path" "NOT the same scanner as \`.gitleaks.toml\`" \
+    "ci-pitfalls.md distinguishes push-protection from the .gitleaks.toml committed-content scanner (issue #440)"
 
   # Issue #459 — "Husky / core.hooksPath hooks silently skipped on a missing
   # exec bit" section. The section exists because a fresh `git worktree add`
@@ -288,14 +333,14 @@ if [[ -f "$skill_path" ]]; then
   # stderr, exit 0), so lint-staged / prettier never run and no --no-verify
   # was passed (mattsears18.com session do-work-20260601T004608Z, #170 worker).
   # Removing the section regresses the detect-and-chmod-or-npm-ci contract.
-  assert_contains "$skill_path" "## Husky / \`core.hooksPath\` hooks silently skipped on a missing exec bit" \
-    "SKILL.md covers the non-executable-hook silent-skip (issue #459)"
-  assert_contains "$skill_path" "silently ignores a hook that isn't marked executable" \
-    "SKILL.md names the git silent-skip behavior for non-executable hooks (issue #459)"
-  assert_contains "$skill_path" "chmod +x" \
-    "SKILL.md prescribes chmod +x on the worktree hook files as remediation (issue #459)"
-  assert_contains "$skill_path" "Never reach for \`--no-verify\` as a \"workaround.\"" \
-    "SKILL.md forbids --no-verify as the fix for a silently-skipped hook (issue #459)"
+  assert_contains "$node_bootstrap_path" "## Husky / \`core.hooksPath\` hooks silently skipped on a missing exec bit" \
+    "node-bootstrap.md covers the non-executable-hook silent-skip (issue #459)"
+  assert_contains "$node_bootstrap_path" "silently ignores a hook that isn't marked executable" \
+    "node-bootstrap.md names the git silent-skip behavior for non-executable hooks (issue #459)"
+  assert_contains "$node_bootstrap_path" "chmod +x" \
+    "node-bootstrap.md prescribes chmod +x on the worktree hook files as remediation (issue #459)"
+  assert_contains "$node_bootstrap_path" "Never reach for \`--no-verify\` as a \"workaround.\"" \
+    "node-bootstrap.md forbids --no-verify as the fix for a silently-skipped hook (issue #459)"
 
   # Issue #475 — "Pin the default branch in git-using test fixtures" section.
   # The section exists because a worker authoring a *.test.sh fixture that
@@ -306,16 +351,16 @@ if [[ -f "$skill_path" ]]; then
   # PR gate to catch it, so main goes red (repro: #466 fixture → recovery #473).
   # Removing the section regresses the pin-the-branch authoring rule and the
   # GIT_CONFIG_GLOBAL=master verification recipe.
-  assert_contains "$skill_path" "## Pin the default branch in git-using test fixtures" \
-    "SKILL.md covers the git-fixture default-branch pin (issue #475)"
-  assert_contains "$skill_path" "init.defaultBranch" \
-    "SKILL.md names init.defaultBranch as the invisible host dependency (issue #475)"
-  assert_contains "$skill_path" "git init -q -b main" \
-    "SKILL.md prescribes pinning the fixture's initial branch with git init -b (issue #475)"
-  assert_contains "$skill_path" "GIT_CONFIG_GLOBAL" \
-    "SKILL.md provides the GIT_CONFIG_GLOBAL=master verification recipe (issue #475)"
-  assert_contains "$skill_path" "did not match" \
-    "SKILL.md names the pathspec-did-not-match CI failure (issue #475)"
+  assert_contains "$ci_pitfalls_path" "## Pin the default branch in git-using test fixtures" \
+    "ci-pitfalls.md covers the git-fixture default-branch pin (issue #475)"
+  assert_contains "$ci_pitfalls_path" "init.defaultBranch" \
+    "ci-pitfalls.md names init.defaultBranch as the invisible host dependency (issue #475)"
+  assert_contains "$ci_pitfalls_path" "git init -q -b main" \
+    "ci-pitfalls.md prescribes pinning the fixture's initial branch with git init -b (issue #475)"
+  assert_contains "$ci_pitfalls_path" "GIT_CONFIG_GLOBAL" \
+    "ci-pitfalls.md provides the GIT_CONFIG_GLOBAL=master verification recipe (issue #475)"
+  assert_contains "$ci_pitfalls_path" "did not match" \
+    "ci-pitfalls.md names the pathspec-did-not-match CI failure (issue #475)"
 
   # Issue #486 — "Step-0 cwd fail-fast" section. The section exists because
   # an `isolation: "worktree"` dispatch can land with its process cwd pinned
@@ -375,18 +420,18 @@ if [[ -f "$skill_path" ]]; then
   # reddened main on a decompose-epic.test.sh assertion, cost PR #597 + a
   # ~9-minute red-main window to fix forward. Removing the step-0.5 clause
   # regresses the wait-before-ungated-merge contract.
-  assert_contains "$skill_path" "wait for the PR's own checks before merging instead of merging ungated" \
-    "SKILL.md prescribes waiting for the PR's own checks before the ungated admin-direct merge (issue #598)"
-  assert_contains "$skill_path" "ungated admin-direct path" \
-    "SKILL.md names the ungated admin-direct-merge path the wait guards (issue #598)"
-  assert_contains "$skill_path" "NO required status checks (so a direct merge fires before CI completes)" \
-    "SKILL.md names the three-part ungated-config detection: allow_auto_merge false + admin + no required checks (issue #598)"
-  assert_contains "$skill_path" "REQUIRED_CHECKS == 0" \
-    "SKILL.md keys the wait on a zero-required-checks reading (issue #598)"
-  assert_contains "$skill_path" "the merge gate the repo lacks must be re-created by the worker" \
-    "SKILL.md explains the wait re-creates the merge gate the repo's ruleset lacks (issue #598)"
-  assert_contains "$skill_path" "defense-in-depth backstop" \
-    "SKILL.md keeps merged-direct-ungated as the defense-in-depth backstop for residual cases (issue #598)"
+  assert_contains "$auto_merge_path" "wait for the PR's own checks before merging instead of merging ungated" \
+    "auto-merge.md prescribes waiting for the PR's own checks before the ungated admin-direct merge (issue #598)"
+  assert_contains "$auto_merge_path" "ungated admin-direct path" \
+    "auto-merge.md names the ungated admin-direct-merge path the wait guards (issue #598)"
+  assert_contains "$auto_merge_path" "NO required status checks (so a direct merge fires before CI completes)" \
+    "auto-merge.md names the three-part ungated-config detection: allow_auto_merge false + admin + no required checks (issue #598)"
+  assert_contains "$auto_merge_path" "REQUIRED_CHECKS == 0" \
+    "auto-merge.md keys the wait on a zero-required-checks reading (issue #598)"
+  assert_contains "$auto_merge_path" "the merge gate the repo lacks must be re-created by the worker" \
+    "auto-merge.md explains the wait re-creates the merge gate the repo's ruleset lacks (issue #598)"
+  assert_contains "$auto_merge_path" "defense-in-depth backstop" \
+    "auto-merge.md keeps merged-direct-ungated as the defense-in-depth backstop for residual cases (issue #598)"
 
   # Issue #602 — the step-0.5 pre-merge wait must fire on BOTH ungated shapes,
   # not just the #438 shape. PR #600 shipped the #598 wait keyed only on
@@ -399,18 +444,18 @@ if [[ -f "$skill_path" ]]; then
   # shape fires REGARDLESS of allow_auto_merge. The skip is preserved only when
   # required checks ARE configured OR a real auto-merge queue forms. Removing the
   # two-shape extension regresses the dogfood repo back to ungated merges.
-  assert_contains "$skill_path" "There are **two distinct shapes** that put the PR on the ungated admin-direct path" \
-    "SKILL.md §0.5 detects both ungated shapes (#438 and #465), not just the #438 shape (issue #602)"
-  assert_contains "$skill_path" "Shape 2 (#465), which fires *regardless of \`ALLOW_AUTO_MERGE\`*:" \
-    "SKILL.md §0.5 fires the wait on the #465 shape (admin + zero required checks) regardless of allow_auto_merge (issue #602)"
+  assert_contains "$auto_merge_path" "There are **two distinct shapes** that put the PR on the ungated admin-direct path" \
+    "auto-merge.md §0.5 detects both ungated shapes (#438 and #465), not just the #438 shape (issue #602)"
+  assert_contains "$auto_merge_path" "Shape 2 (#465), which fires *regardless of \`ALLOW_AUTO_MERGE\`*:" \
+    "auto-merge.md §0.5 fires the wait on the #465 shape (admin + zero required checks) regardless of allow_auto_merge (issue #602)"
   # shellcheck disable=SC2016
   # Single-quoted on purpose: this needle is the LITERAL shell text of the
-  # two-shape OR fire-condition in SKILL.md — `$ALLOW_AUTO_MERGE`/`$REQUIRED_CHECKS`
+  # two-shape OR fire-condition in auto-merge.md — `$ALLOW_AUTO_MERGE`/`$REQUIRED_CHECKS`
   # must NOT expand; we are asserting the doc contains that exact source line.
-  assert_contains "$skill_path" '[ "$ALLOW_AUTO_MERGE" = "false" ] || [ "$REQUIRED_CHECKS" = "0" ]' \
-    "SKILL.md §0.5 fire-condition is the two-shape OR mirroring setup.md §1.3 (issue #602)"
-  assert_contains "$skill_path" "Do NOT skip on \`ALLOW_AUTO_MERGE == true\` alone" \
-    "SKILL.md §0.5 skip is preserved only when required checks configured OR queue forms, not on allow_auto_merge==true alone (issue #602)"
+  assert_contains "$auto_merge_path" '[ "$ALLOW_AUTO_MERGE" = "false" ] || [ "$REQUIRED_CHECKS" = "0" ]' \
+    "auto-merge.md §0.5 fire-condition is the two-shape OR mirroring setup.md §1.3 (issue #602)"
+  assert_contains "$auto_merge_path" "Do NOT skip on \`ALLOW_AUTO_MERGE == true\` alone" \
+    "auto-merge.md §0.5 skip is preserved only when required checks configured OR queue forms, not on allow_auto_merge==true alone (issue #602)"
 fi
 
 # (1b) Each per-mode spec's return section must reference the #529

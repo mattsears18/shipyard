@@ -63,7 +63,7 @@ Then gather the evidence:
 2. **Read the implicated code.** Walk from the top non-vendor frame in the stack trace into the repo. Identify the exact file:line and the precondition that produced the crash (null deref, unhandled rejection, off-by-one, missing guard).
 3. **Attempt a repro.** Write a failing test that encodes the crash if the surface is testable. If you cannot reproduce (transient infra, a frame you can't reach, environment-specific), that's a *finding*, not a failure — it routes the disposition (see step 4).
 
-**Post a progress comment before any write** if you've reached a concrete root-cause finding (per `shipyard:worker-preamble` § "Incremental progress posting") — a mid-run worktree reap must not destroy the investigation. The comment carries the root cause, file:line, and the Sentry permalink so a re-dispatch starts warm.
+**Post a progress comment before any write** if you've reached a concrete root-cause finding (per `shipyard:worker-preamble` § "Incremental progress posting" — fragment [`reaped-escape-hatch.md`](../../skills/worker-preamble/reaped-escape-hatch.md)) — a mid-run worktree reap must not destroy the investigation. The comment carries the root cause, file:line, and the Sentry permalink so a re-dispatch starts warm.
 
 ### 3. Rewrite the issue body into a real spec
 
@@ -178,7 +178,7 @@ One line, matching the disposition. These extend the `issue-work` vocabulary; th
 | Worktree reaped mid-run | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: <hash\|none>)` |
 | Blocked | `blocked #<N> at <stage>: <reason>` |
 
-The `auto-merge:` and `checks:` suffix values for the fixable path are categorized exactly as in `issue-work` § 7 / `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" — including the `merged-direct-ungated` refinement. Re-use that categorization; don't invent a new one.
+The `auto-merge:` and `checks:` suffix values for the fixable path are categorized exactly as in `issue-work` § 7 / `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" (fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md)) — including the `merged-direct-ungated` refinement. Re-use that categorization; don't invent a new one.
 
 **`reaped:` is retryable; `blocked:` is deterministic; `investigated+*` are terminal successes.** The orchestrator's reconcile re-enqueues on `reaped:`, classifies `blocked:` per [#521](https://github.com/mattsears18/shipyard/issues/521) (refuse → `needs-human-review`, dependency-wait → no label / `Blocked by #N` body-ref filter, subjective → `blocked:agent-soft`), and on any `investigated+*` treats the untriaged issue as dispositioned (removed from the untriaged queue) — that's how the backlog converges to binary.
 

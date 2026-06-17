@@ -593,7 +593,10 @@ fix_rebase_path333="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.m
 fix_checks_path333="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
 fix_batch_path333="$repo_root/plugins/shipyard/agents/issue-worker/fix-failing-prs-batch.md"
 issue_work_path333="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
-worker_preamble_path333="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+# Issue #617 split: the Auto-merge + snapshot-and-return pattern moved out of
+# SKILL.md into the auto-merge.md fragment. The group_by(.name) projection now
+# lives there.
+worker_preamble_path333="$repo_root/plugins/shipyard/skills/worker-preamble/auto-merge.md"
 
 assert_contains "$fix_rebase_path333" \
   'group_by(.name)' \
@@ -946,7 +949,8 @@ assert_count_at_least_across \
 #     options.
 # inline-trivial.md (step E) references the worker-preamble categorization
 # by link to keep the inline path consistent with the worker path.
-worker_preamble_path340="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+# Issue #617 split: the #340 post-call categorization rule moved into auto-merge.md.
+worker_preamble_path340="$repo_root/plugins/shipyard/skills/worker-preamble/auto-merge.md"
 issue_work_path340="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
 inline_trivial_path340="$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
 
@@ -1254,7 +1258,8 @@ assert_contains "$issue_work_path460" \
 #   - inline-trivial.md mirrors the refinement on the inline path.
 #   - steady-state.md step D trigger 1 fires unconditionally for the
 #     merged-direct-ungated sub-case (exempt from the adaptive-skip carve-out).
-worker_preamble_path457="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+# Issue #617 split: the #457 merged-direct-ungated refinement moved into auto-merge.md.
+worker_preamble_path457="$repo_root/plugins/shipyard/skills/worker-preamble/auto-merge.md"
 issue_work_path457="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
 inline_trivial_path457="$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
 
