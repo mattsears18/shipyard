@@ -36,11 +36,19 @@ fi
 
 skill_path="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
-# The dispatch prompts now live in commands/do-work/steady-state.md after
-# the issue #154 split. The worker-preamble references the test counts
-# against the dispatch prompts, so steady-state.md is the file under test
-# for assertion (2) below.
-steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+# The dispatch prompts live in the steady-state phase after the issue #154
+# split, and the divert/fix-checks/issue-work prompt templates moved again into
+# commands/do-work/dispatch-rules.md when the consulted-not-executed Dispatch
+# rules block was extracted from steady-state.md (issue #616). The worker-
+# preamble reference count and the no-inlined-sentence regression guard both
+# target the dispatch prompts, so concatenate the steady-state hot path + the
+# dispatch-rules reference so assertion (2) below sees every dispatch prompt
+# regardless of which file it now lives in.
+steady_state_hot_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
+steady_state_path="$(mktemp -t worker-preamble-steady-concat.XXXXXX)"
+cat "$steady_state_hot_path" "$dispatch_rules_path" > "$steady_state_path" 2>/dev/null
+trap 'rm -f "$steady_state_path"' EXIT
 
 pass=0
 fail=0
@@ -421,7 +429,7 @@ done
 # the issue #154 split) must reference the skill. We count by the canonical
 # reference string the dispatch prompts use to invoke the skill.
 assert_file_exists "$do_work_path" "commands/do-work.md exists"
-assert_file_exists "$steady_state_path" "commands/do-work/steady-state.md exists"
+assert_file_exists "$steady_state_hot_path" "commands/do-work/steady-state.md exists"
 
 if [[ -f "$steady_state_path" ]]; then
   # The five dispatch prompts should reference the skill — expect ≥5 references.

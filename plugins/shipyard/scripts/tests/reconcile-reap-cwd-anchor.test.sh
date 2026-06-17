@@ -48,7 +48,17 @@ if [[ "$repo_root" == "/" ]]; then
   exit 1
 fi
 
-steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+# The four worktree-reap blocks live across the steady-state phase's two files:
+# A.0.5 / A.1 / step B in the hot-path steady-state.md, and the step-C 2d
+# fix-checks dispatch-site reap in the Dispatch rules reference block, which
+# moved to dispatch-rules.md (issue #616). Concatenate both so the
+# count-at-least assertions still see all four reap blocks regardless of which
+# file each now lives in.
+steady_state_hot_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
+steady_state_path="$(mktemp -t reconcile-reap-concat.XXXXXX)"
+cat "$steady_state_hot_path" "$dispatch_rules_path" > "$steady_state_path" 2>/dev/null
+trap 'rm -f "$steady_state_path"' EXIT
 
 pass=0
 fail=0
@@ -90,7 +100,7 @@ echo "Test: reconcile-turn reap cwd-anchor — issue #497 regression guard"
 echo ""
 
 # 1) The spec file exists.
-assert_file_exists "$steady_state_path" "steady-state.md exists"
+assert_file_exists "$steady_state_hot_path" "steady-state.md exists"
 
 # 2) The issue is referenced inline so a reader can trace the rationale.
 assert_contains "$steady_state_path" \
