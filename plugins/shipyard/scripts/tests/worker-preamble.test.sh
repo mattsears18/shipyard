@@ -351,6 +351,34 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md names the stranded-work failure mode for a non-terminal return (issue #529)"
   assert_contains "$skill_path" "block your own turn on a foreground call" \
     "SKILL.md prescribes blocking on a foreground call as the correct wait mechanism (issue #529)"
+
+  # Issue #598 — "wait for the PR's own checks before admin-direct-merge
+  # instead of merging ungated" clause in the Auto-merge + snapshot-and-return
+  # pattern (step 0.5). The clause exists because on a repo where the
+  # dispatcher is admin, allow_auto_merge is false, and the base branch has no
+  # required status checks, `gh pr merge --auto --merge` silently direct-merges
+  # *immediately* — landing the PR before its own CI completes (ungated). The
+  # pre-existing merged-direct-ungated advisory (#457) is only a post-hoc
+  # signal; #598 adds a *pre-merge* gate that detects the ungated config before
+  # arming the merge and waits for the PR's checks to settle, merging only when
+  # green (a red PR is handed back so the orchestrator dispatches fix-checks).
+  # The merged-direct-ungated advisory + fix-main-ci divert remain as the
+  # defense-in-depth backstop. Repro: PR #596 admin-direct-merged ungated,
+  # reddened main on a decompose-epic.test.sh assertion, cost PR #597 + a
+  # ~9-minute red-main window to fix forward. Removing the step-0.5 clause
+  # regresses the wait-before-ungated-merge contract.
+  assert_contains "$skill_path" "wait for the PR's own checks before merging instead of merging ungated" \
+    "SKILL.md prescribes waiting for the PR's own checks before the ungated admin-direct merge (issue #598)"
+  assert_contains "$skill_path" "ungated admin-direct path" \
+    "SKILL.md names the ungated admin-direct-merge path the wait guards (issue #598)"
+  assert_contains "$skill_path" "NO required status checks (so a direct merge fires before CI completes)" \
+    "SKILL.md names the three-part ungated-config detection: allow_auto_merge false + admin + no required checks (issue #598)"
+  assert_contains "$skill_path" "REQUIRED_CHECKS == 0" \
+    "SKILL.md keys the wait on a zero-required-checks reading (issue #598)"
+  assert_contains "$skill_path" "the merge gate the repo lacks must be re-created by the worker" \
+    "SKILL.md explains the wait re-creates the merge gate the repo's ruleset lacks (issue #598)"
+  assert_contains "$skill_path" "defense-in-depth backstop" \
+    "SKILL.md keeps merged-direct-ungated as the defense-in-depth backstop for residual cases (issue #598)"
 fi
 
 # (1b) Each per-mode spec's return section must reference the #529
