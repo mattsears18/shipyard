@@ -379,6 +379,30 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md explains the wait re-creates the merge gate the repo's ruleset lacks (issue #598)"
   assert_contains "$skill_path" "defense-in-depth backstop" \
     "SKILL.md keeps merged-direct-ungated as the defense-in-depth backstop for residual cases (issue #598)"
+
+  # Issue #602 — the step-0.5 pre-merge wait must fire on BOTH ungated shapes,
+  # not just the #438 shape. PR #600 shipped the #598 wait keyed only on
+  # `ALLOW_AUTO_MERGE == false` (the #438 shape), so on `mattsears18/shipyard`
+  # (admin + zero required checks + allow_auto_merge=TRUE — the #465 shape) the
+  # gate was skipped and every issue-work PR still admin-direct-merged ungated
+  # (PRs #600/#601 both landed merged-direct-ungated with checks pending). #602
+  # extends §0.5's detection to mirror setup.md §1.3's two-shape logic: fire when
+  # admin AND (allow_auto_merge==false OR zero required checks) — i.e. the #465
+  # shape fires REGARDLESS of allow_auto_merge. The skip is preserved only when
+  # required checks ARE configured OR a real auto-merge queue forms. Removing the
+  # two-shape extension regresses the dogfood repo back to ungated merges.
+  assert_contains "$skill_path" "There are **two distinct shapes** that put the PR on the ungated admin-direct path" \
+    "SKILL.md §0.5 detects both ungated shapes (#438 and #465), not just the #438 shape (issue #602)"
+  assert_contains "$skill_path" "Shape 2 (#465), which fires *regardless of \`ALLOW_AUTO_MERGE\`*:" \
+    "SKILL.md §0.5 fires the wait on the #465 shape (admin + zero required checks) regardless of allow_auto_merge (issue #602)"
+  # shellcheck disable=SC2016
+  # Single-quoted on purpose: this needle is the LITERAL shell text of the
+  # two-shape OR fire-condition in SKILL.md — `$ALLOW_AUTO_MERGE`/`$REQUIRED_CHECKS`
+  # must NOT expand; we are asserting the doc contains that exact source line.
+  assert_contains "$skill_path" '[ "$ALLOW_AUTO_MERGE" = "false" ] || [ "$REQUIRED_CHECKS" = "0" ]' \
+    "SKILL.md §0.5 fire-condition is the two-shape OR mirroring setup.md §1.3 (issue #602)"
+  assert_contains "$skill_path" "Do NOT skip on \`ALLOW_AUTO_MERGE == true\` alone" \
+    "SKILL.md §0.5 skip is preserved only when required checks configured OR queue forms, not on allow_auto_merge==true alone (issue #602)"
 fi
 
 # (1b) Each per-mode spec's return section must reference the #529

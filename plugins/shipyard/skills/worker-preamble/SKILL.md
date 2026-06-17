@@ -66,12 +66,12 @@ For issue-work mode the PR body MUST include a **closing keyword** — `Closes #
 
 After `gh pr create` returns:
 
-0.5. **First, decide whether this PR is on the ungated admin-direct-merge path — and if so, wait for the PR's own checks before merging instead of merging ungated ([#598](https://github.com/mattsears18/shipyard/issues/598)).** The `merged-direct-ungated` advisory in step 1.5 (from [#457](https://github.com/mattsears18/shipyard/issues/457)) is a *post-hoc* signal: by the time you can read `state: MERGED`, the merge has already fired and an ungated red has potentially already reached the default branch. On the repos shipyard is dogfooded against (`mattsears18/shipyard`, `mattsears18/mattsears18.com` — admin dispatcher + `allow_auto_merge: false` + no required status checks) that post-hoc path is the *common* case, not the edge case, so a pre-merge wait recovers a gate that already exists (the PR's own CI) instead of fixing `main` forward after the fact. The #598 repro: PR #596 (a README refresh) admin-direct-merged ungated, dropped the `decompose-epic.md` substring that `decompose-epic.test.sh` asserts, reddened `main`, and cost a whole second PR (#597) + a ~9-minute red-`main` window to fix forward — a regression the PR's *own* checks (which completed ~53s after merge) would have gated for free.
+0.5. **First, decide whether this PR is on the ungated admin-direct-merge path — and if so, wait for the PR's own checks before merging instead of merging ungated ([#598](https://github.com/mattsears18/shipyard/issues/598)).** The `merged-direct-ungated` advisory in step 1.5 (from [#457](https://github.com/mattsears18/shipyard/issues/457)) is a *post-hoc* signal: by the time you can read `state: MERGED`, the merge has already fired and an ungated red has potentially already reached the default branch. On the repos shipyard is dogfooded against (`mattsears18/shipyard`, `mattsears18/mattsears18.com` — admin dispatcher + no required status checks, *regardless of whether `allow_auto_merge` is `false` (#438) or `true` (#465)*) that post-hoc path is the *common* case, not the edge case, so a pre-merge wait recovers a gate that already exists (the PR's own CI) instead of fixing `main` forward after the fact. The #598 repro: PR #596 (a README refresh) admin-direct-merged ungated, dropped the `decompose-epic.md` substring that `decompose-epic.test.sh` asserts, reddened `main`, and cost a whole second PR (#597) + a ~9-minute red-`main` window to fix forward — a regression the PR's *own* checks (which completed ~53s after merge) would have gated for free.
 
-   Detect the ungated configuration **before** arming auto-merge. It holds when all three are true:
+   Read the three signals **before** arming auto-merge — the two-shape test below combines them (it does NOT require all three; shape 2 fires on `(b)` + `(c)` alone, regardless of `(a)`):
 
    ```bash
-   # (a) repo-level auto-merge is OFF (so gh would fall through to a direct merge), and
+   # (a) repo-level auto-merge flag (shape 1 keys on this being OFF; shape 2 ignores it).
    #     NOTE: the allow-auto-merge flag is NOT exposed by `gh repo view --json`
    #     (there is no autoMergeAllowed field there) — read it from the REST repo
    #     object as `.allow_auto_merge`.
@@ -87,7 +87,20 @@ After `gh pr create` returns:
    case "${REQUIRED_CHECKS}" in (*[!0-9]*|'') REQUIRED_CHECKS=0;; esac
    ```
 
-   When `ALLOW_AUTO_MERGE == false` AND `VIEWER_PERM` is `ADMIN` or `MAINTAIN` AND `REQUIRED_CHECKS == 0` — this is the ungated admin-direct path. Do NOT fire `gh pr merge --auto --merge` (it would direct-merge immediately, ungated). Instead **block on the PR's own checks to settle, then merge only when green** — this is the one issue-work case where you DO `--watch`, because the merge gate the repo lacks must be re-created by the worker:
+   There are **two distinct shapes** that put the PR on the ungated admin-direct path — mirror the orchestrator-side two-shape detector in [`commands/do-work/setup.md` §1.3](../../commands/do-work/setup.md#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) (issues [#438](https://github.com/mattsears18/shipyard/issues/438) / [#465](https://github.com/mattsears18/shipyard/issues/465)). The path is ungated when `VIEWER_PERM` is `ADMIN` or `MAINTAIN` **AND** either shape holds:
+
+   - **Shape 1 (#438):** `ALLOW_AUTO_MERGE == false`. With repo-level auto-merge disabled, `gh pr merge --auto` has nothing to queue against, so an admin's call falls through to an immediate direct merge.
+   - **Shape 2 (#465), which fires *regardless of `ALLOW_AUTO_MERGE`*:** `REQUIRED_CHECKS == 0`. Even with `allow_auto_merge: true`, when the base branch has zero *required* status checks `gh pr merge --auto` has no pending check to wait on — so an admin's call merges *immediately* rather than queuing behind CI. The original #438 detector missed this because it only checked `ALLOW_AUTO_MERGE == false`; the #465 repro (this dogfood repo, `allow_auto_merge: true` + admin + no required checks) is the now-current shape (see issue [#602](https://github.com/mattsears18/shipyard/issues/602)).
+
+   ```bash
+   # Two-shape ungated-path test (mirrors setup.md §1.3). VIEWER_PERM gates both.
+   if { [ "$VIEWER_PERM" = "ADMIN" ] || [ "$VIEWER_PERM" = "MAINTAIN" ]; } \
+      && { [ "$ALLOW_AUTO_MERGE" = "false" ] || [ "$REQUIRED_CHECKS" = "0" ]; }; then
+     UNGATED_ADMIN_DIRECT=1   # shape 1 (#438) OR shape 2 (#465)
+   fi
+   ```
+
+   When the two-shape test holds — this is the ungated admin-direct path. Do NOT fire `gh pr merge --auto --merge` (it would direct-merge immediately, ungated). Instead **block on the PR's own checks to settle, then merge only when green** — this is the one issue-work case where you DO `--watch`, because the merge gate the repo lacks must be re-created by the worker:
 
    ```bash
    # Block until the PR's checks settle (self-heartbeats on every interval tick — watchdog-safe).
@@ -97,7 +110,7 @@ After `gh pr create` returns:
    - If the checks settle **green**, merge now (the PR is gated by its own CI even though the repo's ruleset isn't): `gh pr merge <pr-num> --repo <owner/repo> --squash --delete-branch` (use the repo's configured merge method — `--merge`/`--squash`/`--rebase`; default to `--squash` only if the repo doesn't constrain it).
    - If the checks settle **red**, this is exactly the case the fix-checks loop exists for: do NOT merge a red PR. Hand it back via the mode's normal return (`shipped #<N> via PR #<M> (auto-merge: unavailable — needs manual merge, checks: failing)` for issue-work) so the orchestrator's reconcile dispatches a fresh fix-checks-only worker against it. Do NOT run the fix-loop inline — that's mode-switching, which the per-mode files forbid.
 
-   When any of (a)/(b)/(c) is false — the repo allows auto-merge, the dispatcher lacks admin, or required checks ARE configured — skip this wait entirely and arm auto-merge normally (step 1 below). In those configurations `gh pr merge --auto` is genuinely gated: required checks block gh's direct merge until they pass, and an actual auto-merge queue (`autoMergeRequest != null`) waits for green by design. The proactive wait only fires on the ungated path it's meant to close.
+   When the two-shape test does NOT hold, skip this wait entirely and arm auto-merge normally (step 1 below). Concretely, the skip is correct only when **required status checks ARE configured** (`REQUIRED_CHECKS > 0`, so gh blocks the direct merge until they pass) **OR** the dispatcher lacks `ADMIN`/`MAINTAIN` (so the direct-merge fall-through isn't permitted and `gh pr merge --auto` queues normally). In those configurations `gh pr merge --auto` is genuinely gated — and if a real auto-merge queue forms after arming (`autoMergeRequest != null` in step 1.5's snapshot), it waits for green by design. Do NOT skip on `ALLOW_AUTO_MERGE == true` alone: an admin dispatcher on a repo with zero required checks is the #465 shape-2 ungated path even when auto-merge is enabled, so `allow_auto_merge: true` is *not* on its own sufficient to make the merge gated. The proactive wait fires on both ungated shapes it's meant to close.
 
 1. Arm auto-merge (when the step-0.5 ungated-path check did NOT fire):
    ```bash
