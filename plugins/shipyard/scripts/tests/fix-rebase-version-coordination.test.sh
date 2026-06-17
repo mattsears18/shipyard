@@ -54,7 +54,9 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 fix_rebase="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
-steady_state="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+# The fix-rebase divert prompt template lives in the Dispatch rules reference
+# block, which moved out of steady-state.md into dispatch-rules.md (issue #616).
+dispatch_rules="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 scanner="$repo_root/plugins/shipyard/scripts/conflict-marker-scan.sh"
 
 pass=0
@@ -102,11 +104,11 @@ if [[ -f "$fix_rebase" ]]; then
     "fix-rebase.md reads manifest_version_jq (not hardcoded .version)"
 fi
 
-if [[ -f "$steady_state" ]]; then
-  assert_contains "$steady_state" 'Version-coordination (authoritative)' \
-    "steady-state.md fix-rebase prompt surfaces the version-coordination context"
-  assert_contains "$steady_state" '§4.6' \
-    "steady-state.md fix-rebase prompt points the worker at §4.6"
+if [[ -f "$dispatch_rules" ]]; then
+  assert_contains "$dispatch_rules" 'Version-coordination (authoritative)' \
+    "dispatch-rules.md fix-rebase prompt surfaces the version-coordination context"
+  assert_contains "$dispatch_rules" '§4.6' \
+    "dispatch-rules.md fix-rebase prompt points the worker at §4.6"
 fi
 
 # ---------------------------------------------------------------------------

@@ -37,8 +37,8 @@ Letting in-flight agents finish naturally is safe because they commit at logical
 Before declaring termination (which triggers the drain phase → cleanup → summary → exit), the orchestrator MUST run the following four-step assertion **in order**. Each step is a thing-to-do, not a thing-to-assert-against-stored-state — step 4 in particular must execute the live `gh` query, not infer the result from cached `raw_backlog` size.
 
 1. **`in_flight` is empty.** Check from working memory (the [orchestrator-state struct](../do-work.md#orchestrator-state) `in_flight` map). If non-empty, do NOT proceed — return control and let the existing in-flight workers finish; this step re-runs on the next completion notification.
-2. **`failed_prs` is empty.** Check from working memory. If non-empty, fill the pool from `failed_prs` per [dispatch rule 2](./steady-state.md#dispatch-rules-used-by-step-7-and-step-c) and return control.
-3. **`ready_issues` is empty.** Check from working memory. If non-empty, fill the pool from `ready_issues` per [dispatch rule 3](./steady-state.md#dispatch-rules-used-by-step-7-and-step-c) and return control.
+2. **`failed_prs` is empty.** Check from working memory. If non-empty, fill the pool from `failed_prs` per [dispatch rule 2](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) and return control.
+3. **`ready_issues` is empty.** Check from working memory. If non-empty, fill the pool from `ready_issues` per [dispatch rule 3](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) and return control.
 4. **Fresh-fetch verification.** Run the canonical step-4 backlog query **now** — against the live tracker, not stored state. **Use the same wide-fetch + client-side filter shape that [setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) uses** (the previous narrower `-linked:pr` + `-label:...` server-side qualifiers were removed in [#332](https://github.com/mattsears18/shipyard/issues/332) — they silently excluded resumable-work issues like prior-session self-assigns whose linked PR had been closed or never opened, producing premature "backlog empty → drain" handoffs):
 
    ```bash

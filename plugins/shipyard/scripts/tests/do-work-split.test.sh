@@ -53,7 +53,23 @@ setup_dir="$repo_root/plugins/shipyard/commands/do-work/setup"
 setup_path="$(mktemp -t do-work-setup-concat.XXXXXX)"
 cat "$setup_router_path" "$setup_dir"/*.md > "$setup_path" 2>/dev/null
 trap 'rm -f "$setup_path"' EXIT
-steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+# steady-state.md was itself split into a thin hot-path file + on-demand
+# reference sub-files (issue #616 — the consulted-not-executed Dispatch rules
+# block moved to do-work/dispatch-rules.md, and the --operate-only operator
+# hooks folded into do-work/operate.md, keeping the steady-state hot path under
+# the 256KB single-file Read limit). `steady_state_router_path` is the hot-path
+# file itself; `steady_state_path` is a concatenation of the hot path + the
+# dispatch-rules reference + operate.md, so the many
+# `assert_contains "$steady_state_path" …` content assertions below keep finding
+# the loop/dispatch/operator content regardless of which file it now lives in.
+# The do-work-phase-file-size.test.sh guard (added by #611) enforces the
+# per-file size cap; this test only cares that the content survived the split.
+steady_state_router_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
+operate_path="$repo_root/plugins/shipyard/commands/do-work/operate.md"
+steady_state_path="$(mktemp -t do-work-steady-concat.XXXXXX)"
+cat "$steady_state_router_path" "$dispatch_rules_path" "$operate_path" > "$steady_state_path" 2>/dev/null
+trap 'rm -f "$setup_path" "$steady_state_path"' EXIT
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 cleanup_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
 dont_path="$repo_root/plugins/shipyard/commands/do-work/dont.md"
@@ -172,7 +188,8 @@ echo
 assert_file_exists "$do_work_path" "commands/do-work.md exists (thin entry)"
 assert_file_exists "$rationale_path" "commands/do-work-RATIONALE.md exists"
 assert_file_exists "$setup_router_path" "commands/do-work/setup.md exists (thin router)"
-assert_file_exists "$steady_state_path" "commands/do-work/steady-state.md exists"
+assert_file_exists "$steady_state_router_path" "commands/do-work/steady-state.md exists (hot-path file)"
+assert_file_exists "$dispatch_rules_path" "commands/do-work/dispatch-rules.md exists (#616 reference split)"
 assert_file_exists "$drain_path" "commands/do-work/drain.md exists"
 assert_file_exists "$cleanup_path" "commands/do-work/cleanup-summary.md exists"
 assert_file_exists "$dont_path" "commands/do-work/dont.md exists"

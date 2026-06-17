@@ -231,6 +231,25 @@ Apply **only** when the chrome-devtools-mcp fallback is selected — the extensi
 
 Derive provider-console URLs using the same template table as `/my-turn`'s [third-party console deep-links section](../my-turn.md#third-party-console-deep-links): substitute identifiers from the action's context (issue/PR body, comments, repo config). Fall back to the provider's top-level console when the specific page can't be constructed. **Never fabricate an identifier** to fill a template — a wrong deep link navigates to someone else's app.
 
+## Operator layer hooks into the steady-state loop
+
+*(`--operate` only — without `--operate`, ignore this entire section.)*
+
+When `--operate` is set (including via the [`/my-turn-and-do`](../my-turn-and-do.md) alias), the steady-state loop gains a browser-operator layer. The full machinery — backend selection, preflight, standing authorization, per-kind playbooks, the `operator_queue` drain loop, and the proactive sweep — lives in the rest of this file ([the `operator_queue` and its two feeders](#the-operator_queue-and-its-two-feeders), [playbooks by kind](#playbooks-by-kind)); this section is just the two hooks the steady-state loop owns. Without `--operate`, ignore this entire section: `operator_queue` stays empty and nothing here fires.
+
+### A.1 hook — reactive enqueue
+
+When parsing a worker return in [step A.1](./steady-state.md#a1-parse-the-return-string), if the bail/defer names a **browser-completable** action (a `blocked:`/`deferred:` reason that is an operator action — approve a deployment, paste a secret, toggle a console — or a scope-agent **`external-dependency`** defer), enqueue an `operator_queue` item `{ source: "worker-handback"|"defer", kind, target, plan, origin_ref }` in addition to the normal recording. Under `--operate` the [setup step-6 recording path](./setup/06-scope-preflight.md#6-initial-scope-pre-flight) already routes `external-dependency` defers to the `needs-operator` label; the enqueue is the in-session working copy the orchestrator drains this session. **Genuine `human-decision-required` / judgment defers are NOT enqueued** — they stay `needs-human-review` hand-backs.
+
+### D hook — proactive sweep + drain
+
+In [step D's periodic refresh](./steady-state.md#d-periodic-refresh), additionally:
+
+1. **Proactive sweep.** Run a `/my-turn`-style discovery filtered to the **browser-completable subset** — open issues carrying the **`needs-operator`** label, superseded/duplicate PRs to close, CI secrets flagged by a red run (teed up), a referenced provider toggle, an *unambiguous* drafted reply — and enqueue any not already in `operator_queue`. Judgment calls are never enqueued.
+2. **Drain.** Whenever the orchestrator is otherwise idle (a code worker is in flight and not yet returned, or this is a step-D tick), pop the highest-`rank_key` `operator_queue` item and execute it **on the main thread** via the [operator phase playbooks](#playbooks-by-kind) — serialized, one browser action at a time (the real browser is a singleton; never dispatch a subagent to drive it). On success, remove the item and clear the issue's `needs-operator` label; on a hand-back outcome (e.g. a value only the user holds, or a logged-out console), leave the label and surface it. Write-through `operator_queue` to the session-state file on each enqueue/drain.
+
+If preflight found no browser backend, the drain is a no-op: items accumulate and are surfaced as hand-backs at end of session ([Degradation](#degradation--no-backend-reachable)).
+
 ## Don't
 
 - **Don't drive a code worker's job in the browser.** Operator actions are browser-completable operator work, not code changes. Code goes through dispatched issue-workers; the operator phase only clicks/fills/navigates.
