@@ -83,6 +83,12 @@ From inside any GitHub-connected repo, try one of these:
 # — the human-facing counterpart to /do-work.
 /my-turn
 
+# Same survey, but then DRIVE the #1 action in your real, logged-in Chrome.
+# Run --setup first: a self-onboarding preflight that walks you through the
+# browser extension, gh auth, and site permissions (no survey, no action).
+/my-turn-and-do --setup
+/my-turn-and-do
+
 # Walk a decision-gated issue's blocking decisions one-by-one (with a
 # recommendation for each), record the answers, and clear the gate so
 # /do-work can pick it up — the mutating sibling of /my-turn.
@@ -148,7 +154,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - [`/decompose-epic`](plugins/shipyard/commands/decompose-epic.md) — auto-decompose confirmed epics (issues carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker) into dispatch-ready GitHub sub-issues. `Multi-PR sequence:` / `Missing dependency:` evidence classes get sharded into an ordered `Blocked by #<sibling>` chain (so `/do-work` sequences them automatically); non-mechanical classes fall through to the existing human handoff. Explicit, human-invoked — mirrors `/refine-issues`' sentinel-keyed shape.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`)
 - `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart. When the top item is decision-gated, it *offers* (read-only) to hand off to `/resolve-decisions`.
-- `/my-turn-and-do` — action-taking sibling of `/my-turn`. Runs the same ranked survey, then drives the #1 action in the user's real, logged-in Chrome via `chrome-devtools-mcp` (requires Chrome 144+ with `--autoConnect`). Confirms before any irreversible or outward-facing action; `--dry-run` for survey+plan only; `--yes` to pre-approve this run's planned mutations. Judgment-call items (PR review, nuanced replies) are teed up in the browser and handed back — never rubber-stamped.
+- [`/my-turn-and-do`](plugins/shipyard/commands/my-turn-and-do.md) — action-taking sibling of `/my-turn`. Runs the same ranked survey, then drives the #1 action in your **real, logged-in Chrome**. Backend-agnostic: it prefers the first-party **Claude Chrome extension** (`claude-in-chrome`, which runs inside your real browser and inherits every logged-in session with no setup), falls back to `chrome-devtools-mcp`, and drops to a read-only survey if neither is available. A **preflight** runs first and is self-onboarding — if a prerequisite is missing (`gh` auth, the browser extension, a site permission) it diagnoses the gap and walks you through fixing it interactively rather than failing opaquely; it's silent when everything's already configured. Flags: `--setup` (run preflight only — first-run onboarding / re-verify, no survey or action), `--dry-run` (survey + plan only), `--yes` (pre-approve this run's planned mutations), `--record` (capture the action as a GIF), `--all` (work the full ranked list). Confirms before any irreversible or outward-facing action; judgment-call items (PR review, nuanced replies) are teed up in the browser and handed back — never rubber-stamped.
 - `/resolve-decisions` — interactively walk a decision-gated `needs-human-review` issue's blocking decisions one at a time (each with context, options, and a concrete recommendation+reasoning), then record the answers as a structured issue comment and remove the gating label so `/do-work` can pick it up. The mutating sibling of the read-only `/my-turn`.
 - `/shipyard:init` — scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps. See [`CLAUDE.md`'s "Configuration" section](./CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) for the layering model.
 - `/shipyard:config show|get|set|edit|validate` — inspect or update the effective merged config across the four layers (built-in defaults, user-global, repo, personal override).
