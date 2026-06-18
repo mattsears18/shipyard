@@ -9,7 +9,7 @@ Take issues that aren't yet ready for `/shipyard:do-work` dispatch and run a **s
 
 `/refine-issues` is the **single source of truth** for the refinement logic. `/do-work` invokes it on startup (step 3.5) — the same code path. If you change the refinement prompt, you change it here.
 
-> **Binary-backlog phase 2 ([#520](https://github.com/mattsears18/shipyard/issues/520)).** The `needs-refinement` label has been **eliminated**. It was a *cache* of signals all computable at dispatch time (external author / `## Open questions` heading / bare one-liner / bot-authored), and a persisted cache drifts (edit the body post-intake and the stale label lingers) while adding a third backlog state that contradicts the binary-backlog north star. This command now computes the refinement-candidate set **live** from those source signals over open issues, right before dispatch — which is the only moment refinement matters. Security is preserved: external-author issues still get `needs-human-review` from the separate [`external-author-gate.yml`](../../../.github/workflows/external-author-gate.yml). The GitHub `needs-refinement` label object is left in place for a manual cleanup pass; nothing applies or reads it anymore.
+> **Binary-backlog phase 2 ([#520](https://github.com/mattsears18/shipyard/issues/520)).** The `needs-refinement` label has been **eliminated** — this command now computes the refinement-candidate set **live** from source signals (the section below), right before dispatch. See CLAUDE.md → Label conventions (the `needs-refinement` eliminated entry) for the full rationale and the `external-author-gate.yml` security-preservation note.
 
 ## What "needs refinement" means (the source signals)
 
@@ -146,7 +146,7 @@ gh issue list --repo <owner/repo> --state open --limit 200 \
 
 The scan keys on the three live source signals: the `user-feedback` label (→ classify+rewrite), an `## Open questions` heading (→ resolve-defaults), or a bot author with no recognizable pattern (→ fall-through). The branch decision is recomputed per-issue inside each refinement worker from the same signals — the scan only decides *which* issues are candidates. The `comments` projection keeps only the first line of each comment body for the sentinel check in step 4 (`<!-- do-work-refinement-agent -->`); full comment bodies burn tool-result tokens the sentinel-check never reads (worker-preamble §"`gh` JSON discipline").
 
-> **No persisted gate label means no stale-cache drift.** Because the candidate set is recomputed every run, editing a body to *add* an `## Open questions` section makes the issue a candidate immediately (no need to re-apply a label by hand), and editing a body to *remove* the section drops it from the candidate set on the next scan. This is the central reason [#520](https://github.com/mattsears18/shipyard/issues/520) eliminated the label: a cached gate drifts out of sync with the body it was caching.
+> **No persisted gate label means no stale-cache drift.** Because the candidate set is recomputed every run, editing a body to *add* an `## Open questions` section makes the issue a candidate immediately, and removing it drops the issue on the next scan — no label to re-apply by hand. (This drift-avoidance is the central reason the label was eliminated; see CLAUDE.md → Label conventions.)
 
 ### 4. Filter via the sentinel
 
