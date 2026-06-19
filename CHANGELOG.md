@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.23.3 — 2026-06-18
+
+**Add a security/access-control carve-out to the `--operate` console-action playbook so Claude-as-operator tees up auth settings instead of trying to flip them** (#626). The operator phase's `toggle-setting` / `console-action` playbook told the operator to *"execute it"* for any mechanical toggle — but when the operator is **Claude** (the `--operate` path), Claude's safety boundary forbids modifying security/access-control settings, and that boundary outranks `--operate`'s standing authorization *and* explicit user authorization. So for the most common class of provider-console operator work (auth/security config — password policy, OAuth redirect URIs, authorized domains, IAM, sharing permissions), the playbook instructed an action Claude structurally won't take, and an auth-heavy `--operate` backlog silently degraded to hand-backs with no spec acknowledgement. The fix mirrors the existing `paste-secret` tee-up-and-hand-back: classify each console action into "Claude-safe to auto-drive" vs "hand back (security/access-control)" and route accordingly. Files touched:
+
+- `plugins/shipyard/commands/do-work/operate.md` — rewrites the `toggle-setting` / `console-action` playbook's step 4 to classify before mutating; adds a **"Claude-safe to auto-drive vs hand back"** subsection with a concrete two-column table and a conservative-default rule; adds a **security/access-control bullet** to the Safety — trust boundary section (the boundary outranks standing authorization); adds a **"security/access-control-heavy operator queue"** degradation note framing an auth-heavy backlog as expected (teed up, your turn) rather than a failure.
+- `plugins/shipyard/commands/do-work.md` — extends the `--operate` arg docs to note that security/access-control settings are teed up and handed back, so `--operate` auto-completes only the mechanical, non-security subset on an auth-heavy backlog.
+
+Sibling issue #627 (a read-only verify-and-report operator outcome) also touches `operate.md` but is out of scope here; this change leaves that work unobstructed.
+
 ### 1.23.2 — 2026-06-18
 
 **Add the "Your setup / stack" field to the bug-report template too** (follow-up to #630). The 1.23.1 intake refresh gave the *feature-request* template a stack/setup field but left it off the *bug-report* template, on a keep-the-change-minimal judgment. That was an inconsistency: a bug in shipyard-generated config (the #628 class) is often entirely explained by the reporter's stack (Terraform / Expo / Firebase / CI), so the field is just as load-bearing for a bug as for a feature request. Files touched:
