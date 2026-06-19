@@ -4,14 +4,24 @@
 #
 # Background — issue #142: `/shipyard:do-work` handles agent-driven work; the
 # user needed a human-driven counterpart that scans open PRs + issues +
-# comments and prints a prioritized list of items genuinely blocked on the
-# user (not on Claude). Before this command, the user discovered those items
-# by manually browsing — `/shipyard:my-turn` collapses that into one
-# read-only command.
+# comments and surfaces items genuinely blocked on the user (not on Claude).
+# Before this command, the user discovered those items by manually browsing.
+#
+# Issue #635 reshaped the command: instead of surfacing the single next action
+# and stopping (read-only / advisory-only), `/my-turn` now WALKS the human
+# through the human-only queue one item at a time, advancing to the next until
+# the queue is empty. It stays human-facing and non-autonomous (no agent
+# dispatch, no sharing of /do-work's worker machinery) and reuses
+# /shipyard:resolve-decisions' interactive walkthrough for decision-gated
+# items. Browser-completable (needs-operator) work is filtered out — that's
+# /do-work --operate's job. The three-command division is: /do-work =
+# autonomous code loop; /do-work --operate = code loop + browser operation;
+# /my-turn = human-only interactive walkthrough.
 #
 # This test is the regression guard: if anyone deletes the command, removes
-# the priority tiers, drops a required input source, or strips the
-# advisory-only contract (v1 must not mutate state), the test fails.
+# the priority tiers, drops a required input source, reverts the looping
+# walkthrough back to a stop-after-one-item render, or stops filtering
+# browser-completable work out of the human-only queue, the test fails.
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -121,13 +131,18 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "draft" \
     "command surfaces stale draft PRs"
 
-  # Advisory-only contract (v1). This is the load-bearing distinction from
-  # /do-work — the new command MUST NOT mutate state. Forbid the obvious
-  # mutation commands in the spec body.
-  assert_contains "$cmd_path" "advisory" \
-    "command declares advisory-only contract"
-  assert_contains "$cmd_path" "read-only" \
-    "command declares read-only contract"
+  # Human-facing / non-autonomous contract (issue #635). The load-bearing
+  # distinction from /do-work --operate: /my-turn is human-paced and dispatches
+  # no agents — it walks the human through items, advancing when *they* finish.
+  # The only mutation it performs is the human-directed decisions record (via
+  # the reused /resolve-decisions flow). It does not share /do-work's worker
+  # machinery or drive the browser.
+  assert_contains "$cmd_path" "human-facing" \
+    "command declares it stays human-facing (#635)"
+  assert_contains "$cmd_path" "non-autonomous" \
+    "command declares it is non-autonomous (#635)"
+  assert_contains "$cmd_path" "dispatches no agents" \
+    "command does not dispatch agents or share /do-work's worker machinery (#635)"
 
   # Don't section is a common convention across shipyard commands — keeps
   # non-goals explicit.
@@ -146,19 +161,34 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "age" \
     "command output includes per-item age"
 
-  # Single-action default (issue #391): the command must lead with the single
-  # next action, not a full ranked list. The default render is the #1-ranked
-  # item as a "→ Next:" directive; the full list is opt-in via --all.
-  assert_contains "$cmd_path" "→ Next:" \
-    "command renders the top item as a → Next: directive (single-action mode)"
+  # Looping walkthrough default (issue #635): the command no longer stops after
+  # one item. The default render WALKS the human through the human-only queue
+  # one item at a time, advancing to the next until the queue is empty. The
+  # headline item renders as a "→ Now:" directive; --all / --limit render a
+  # static list-snapshot instead of walking.
+  assert_contains "$cmd_path" "Walkthrough mode" \
+    "command documents the looping Walkthrough default render mode (#635)"
+  assert_contains "$cmd_path" "→ Now:" \
+    "command renders the current item as a → Now: directive (#635)"
+  assert_contains "$cmd_path" "advancing" \
+    "command describes advancing to the next item, not stopping after one (#635)"
+  assert_contains "$cmd_path" "Termination contract" \
+    "command defines a termination contract for the advancing loop (#635)"
   assert_contains "$cmd_path" "--all" \
-    "command accepts an --all flag to render the full ranked list"
-  assert_contains "$cmd_path" "single-action mode" \
-    "command documents the single-action default render mode"
-  assert_contains "$cmd_path" "list mode" \
-    "command documents the opt-in list render mode"
-  # The empty-state one-liner is explicitly unchanged by the single-action
-  # refinement — it's identical across modes.
+    "command accepts an --all flag to render a static snapshot of the queue"
+  assert_contains "$cmd_path" "list-snapshot mode" \
+    "command documents the opt-in list-snapshot render mode (#635)"
+  # Human-only queue filter (issue #635): browser-completable / needs-operator
+  # items are /do-work --operate's job and must be excluded from the walkthrough
+  # queue (surfaced only via a one-line operator pointer).
+  assert_contains "$cmd_path" "Human-only queue filter" \
+    "command documents the human-only queue filter (#635)"
+  assert_contains "$cmd_path" "my-turn-and-do" \
+    "command points needs-operator / browser-completable work at /my-turn-and-do (#635)"
+  assert_contains "$cmd_path" "#635" \
+    "command cites issue #635 for the looping human-only walkthrough"
+  # The empty-state one-liner is unchanged — it doubles as the
+  # walkthrough-complete confirmation when the queue drains.
   assert_contains "$cmd_path" "Nothing on your plate" \
     "command keeps the unchanged empty-state one-liner"
 
@@ -222,24 +252,25 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "#565" \
     "command cites issue #565 for the leverage-score within-tier sort"
 
-  # Decision-gated handoff offer (issue #566): when the top → Next: item is a
-  # decision-gated needs-human-review issue (answerable blocking decisions
-  # present), /my-turn appends a READ-ONLY opt-in offer to hand off to the
-  # mutating sibling /resolve-decisions. The mutation (walkthrough + record +
-  # gate removal) lives entirely in that sibling — /my-turn only prints the
-  # offer and stays read-only. These assertions guard that the offer exists,
-  # names the sibling command, and is explicitly read-only (so a future reader
-  # doesn't mistake it for a mutation exception carved into /my-turn).
-  assert_contains "$cmd_path" "Decision-gated handoff offer" \
-    "command documents the decision-gated handoff offer subsection (#566)"
+  # Decision-gated walkthrough (issues #566 → #635): when the current
+  # walkthrough item is a decision-gated needs-human-review issue (answerable
+  # blocking decisions present), /my-turn walks the decisions INLINE by reusing
+  # /shipyard:resolve-decisions' interactive per-decision flow and its
+  # record-and-unblock mutation. #566 originally made /my-turn only *offer* a
+  # read-only hand-off; #635 changed that to reusing the walkthrough inline as
+  # part of the advancing loop (the one human-directed mutation /my-turn
+  # performs). These assertions guard that the walkthrough exists, names +
+  # links the sibling command, and reuses its flow rather than reinventing it.
+  assert_contains "$cmd_path" "Decision-gated walkthrough" \
+    "command documents the inline decision-gated walkthrough subsection (#635)"
   assert_contains "$cmd_path" "/shipyard:resolve-decisions" \
-    "offer hands off to the sibling /shipyard:resolve-decisions command (#566)"
+    "walkthrough reuses the sibling /shipyard:resolve-decisions flow (#566)"
   assert_contains "$cmd_path" "resolve-decisions.md" \
     "command links the resolve-decisions sibling command file (#566)"
-  assert_contains "$cmd_path" "Offer only, never execute" \
-    "offer is read-only — print-an-offer, never walk/mutate from /my-turn (#566)"
+  assert_contains "$cmd_path" "reuse" \
+    "walkthrough reuses resolve-decisions' flow rather than reinventing it (#635)"
   assert_contains "$cmd_path" "#566" \
-    "command cites issue #566 for the decision-gated handoff offer"
+    "command cites issue #566 for the decision walkthrough lineage"
 fi
 
 echo
