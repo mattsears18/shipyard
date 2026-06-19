@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.23.1 — 2026-06-18
+
+**Solicit shipyard-specific context in the GitHub issue templates so feature requests and bug reports arrive actionable** (#630). The generic templates never asked for the highest-signal information for an autonomous-agent tool — which command ran, against which version, and a link to what shipyard produced — which surfaced in #628, where an external feature request was usable but missing the diagnostic context (the triggering command, a link to the PR with the dead Terraform, the load-bearing "I use Terraform" stack detail) because the form never prompted for it. Files touched:
+
+- `.github/ISSUE_TEMPLATE/feature_request.yml` — adds four optional fields after the existing problem/proposed/alternatives prompts: **Which shipyard command surfaced this?**, **Links to what shipyard did** (PR/issue/commit/session), **Your setup / stack**, and **Versions** (shipyard + Claude Code). Only the existing problem statement stays required, so the form doesn't get higher-friction.
+- `.github/ISSUE_TEMPLATE/bug_report.yml` — adds the same optional **Links to what shipyard did** field (placed after the repro steps, before environment); the existing repro/environment/logs fields are retained.
+- `.github/ISSUE_TEMPLATE/user_feedback.yml` — intentionally left unchanged (free-form; `/refine-issues` rewrites it).
+
+All three templates still parse as valid GitHub issue-form YAML and keep their current `labels:` auto-application.
+
 ### 1.23.0 — 2026-06-18
 
 **Route "set up `<external service>`" work that needs a not-yet-provisioned credential away from autonomously committing dead config and toward the operator handoff** (#628). A user asked shipyard to work their backlog; one ticket was "set up Sentry". Because they manage infra with Terraform, a worker wrote the Terraform autonomously and it deployed config with **no functioning values** — they hadn't created a Sentry account yet, so there was no DSN to set. The committed config was structurally dead. The category is "work with a human-shaped hole in the middle": shipyard can write the code *around* a credential, but the credential itself (a DSN, an API key, a service account) can't be written, inferred, or **fabricated** until a human provisions the external service. Shipyard already had the right destination for this (the `external-dependency` defer → `needs-operator` label → surfaced by `/my-turn`, drivable by `/do-work --operate`, #608) but nothing reliably *routed* provisioning work into it and nothing stopped a worker from committing the placeholder. This closes both gaps at three layers — and explicitly keeps the intentional boundary that shipyard never creates the account or types a real secret it derived from issue text (the `paste-secret` tee-up-and-hand-back model). Files touched:
