@@ -79,21 +79,33 @@ From inside any GitHub-connected repo, try one of these:
 # sub-issues so the sub-work re-enters /do-work without a human round-trip.
 /decompose-epic
 
-# See what's blocked on YOU (PRs waiting on review, issues needing triage, etc.)
-# — the human-facing counterpart to /do-work.
+# Walk through everything that genuinely needs YOU (decisions, judgment calls
+# nothing can complete for you), one item at a time, until the queue is empty
+# — the interactive human counterpart to /do-work.
 /my-turn
 
-# Same survey, but then DRIVE the #1 action in your real, logged-in Chrome.
-# Run --setup first: a self-onboarding preflight that walks you through the
-# browser extension, gh auth, and site permissions (no survey, no action).
+# The /do-work loop PLUS driving browser-completable operator actions in your
+# real, logged-in Chrome (close a superseded PR, paste a CI secret, toggle a
+# console setting). Run --setup first: a self-onboarding preflight for the
+# browser extension, gh auth, and site permissions.
 /my-turn-and-do --setup
 /my-turn-and-do
 
 # Walk a decision-gated issue's blocking decisions one-by-one (with a
 # recommendation for each), record the answers, and clear the gate so
-# /do-work can pick it up — the mutating sibling of /my-turn.
+# /do-work can pick it up — the mutating sibling /my-turn reuses.
 /resolve-decisions --issue 1816
 ```
+
+**Which do I run?** Three commands, one clear division of labor:
+
+| Command | What it does | Loops? |
+|---|---|---|
+| `/do-work` | Autonomous continuous loop — **code work only** (picks issues, opens PRs, arms auto-merge, keeps `main` green) | yes (autonomous) |
+| `/do-work --operate` (= `/my-turn-and-do`) | The `/do-work` loop **plus** driving Chrome to complete browser-completable **operator actions** (close a superseded PR, paste a secret, toggle a non-security console setting) | yes (autonomous) |
+| `/my-turn` | Surfaces **only** what genuinely needs *you* — decisions and judgment calls neither loop can complete — and **walks you through them one at a time**, advancing until the human-only queue is empty | yes (interactive, human-paced) |
+
+Rule of thumb: if a machine could finish it (code, or a browser click), it's `/do-work` or `/do-work --operate`'s job; if it needs *your* decision or judgment, `/my-turn` walks you through it.
 
 ### 3. Watch the loop
 
@@ -152,10 +164,10 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit all <url>` — every audit in parallel
 - `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through).
 - [`/decompose-epic`](plugins/shipyard/commands/decompose-epic.md) — auto-decompose confirmed epics (issues carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker) into dispatch-ready GitHub sub-issues. `Multi-PR sequence:` / `Missing dependency:` evidence classes get sharded into an ordered `Blocked by #<sibling>` chain (so `/do-work` sequences them automatically); non-mechanical classes fall through to the existing human handoff. Explicit, human-invoked — mirrors `/refine-issues`' sentinel-keyed shape.
-- `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`)
-- `/my-turn` — surveys open PRs, the issue backlog, and recent comments to produce a prioritized list of items currently blocked on **you** (not on Claude). Read-only — pairs with `/do-work` as the human-driven counterpart. When the top item is decision-gated, it *offers* (read-only) to hand off to `/resolve-decisions`.
-- [`/my-turn-and-do`](plugins/shipyard/commands/my-turn-and-do.md) — action-taking sibling of `/my-turn`. Runs the same ranked survey, then drives the #1 action in your **real, logged-in Chrome**. Backend-agnostic: it prefers the first-party **Claude Chrome extension** (`claude-in-chrome`, which runs inside your real browser and inherits every logged-in session with no setup), falls back to `chrome-devtools-mcp`, and drops to a read-only survey if neither is available. A **preflight** runs first and is self-onboarding — if a prerequisite is missing (`gh` auth, the browser extension, a site permission) it diagnoses the gap and walks you through fixing it interactively rather than failing opaquely; it's silent when everything's already configured. Flags: `--setup` (run preflight only — first-run onboarding / re-verify, no survey or action), `--dry-run` (survey + plan only), `--yes` (pre-approve this run's planned mutations), `--record` (capture the action as a GIF), `--all` (work the full ranked list). Confirms before any irreversible or outward-facing action; judgment-call items (PR review, nuanced replies) are teed up in the browser and handed back — never rubber-stamped.
-- `/resolve-decisions` — interactively walk a decision-gated `needs-human-review` issue's blocking decisions one at a time (each with context, options, and a concrete recommendation+reasoning), then record the answers as a structured issue comment and remove the gating label so `/do-work` can pick it up. The mutating sibling of the read-only `/my-turn`.
+- `/do-work` — burn down the issue backlog with a rolling pool of parallel workers (default `--concurrency 2`). **Autonomous continuous loop — code work only.**
+- `/my-turn` — the **human counterpart**: surfaces only the items that genuinely need *you* — decisions and judgment calls nothing can complete for you — and **walks you through them one at a time, advancing to the next until the human-only queue is empty**. Interactive and human-paced (it dispatches no agents and shares none of `/do-work`'s machinery); for a decision-gated issue it reuses [`/resolve-decisions`](plugins/shipyard/commands/resolve-decisions.md)' one-by-one walkthrough to record the answers and clear the gate. Browser-completable operator actions and code work are **excluded** — those belong to `/my-turn-and-do`. (`--all` / `--limit N` render a static snapshot of the queue instead of walking it; `--chrome-prompt` emits a copy-paste prompt for the Claude Chrome extension.)
+- [`/my-turn-and-do`](plugins/shipyard/commands/my-turn-and-do.md) — **alias for `/do-work --operate`**: runs the autonomous `/do-work` code loop **plus** drives browser-completable **operator actions** in your **real, logged-in Chrome** — closing a superseded PR, pasting a CI secret, toggling a non-security console setting, posting an unambiguous reply — continuously, until both the code backlog and the operator queue are empty. Backend-agnostic: it prefers the first-party **Claude Chrome extension** (`claude-in-chrome`, which runs inside your real browser and inherits every logged-in session with no setup), falls back to `chrome-devtools-mcp`, and drops to the code-only loop if neither is available. A self-onboarding **preflight** runs first — if a prerequisite is missing (`gh` auth, the browser extension, a site permission) it diagnoses the gap and walks you through fixing it interactively; it's silent when everything's already configured. Flags: `--setup` (preflight only — first-run onboarding / re-verify), `--dry-run` (preview without acting), `--record` (capture browser actions as GIFs), plus everything `/do-work` accepts. Invoking it is standing authorization for browser-completable actions; genuine human-judgment items (PR review, nuanced replies, security/access-control toggles) are still handed back to you, never auto-decided.
+- `/resolve-decisions` — interactively walk a decision-gated `needs-human-review` issue's blocking decisions one at a time (each with context, options, and a concrete recommendation+reasoning), then record the answers as a structured issue comment and remove the gating label so `/do-work` can pick it up. The mutating sibling `/my-turn` reuses for its decision walkthroughs.
 - `/shipyard:init` — scaffold a `shipyard.config.json` with layered overrides for concurrency, label namespaces, and per-mode caps. See [`CLAUDE.md`'s "Configuration" section](./CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) for the layering model.
 - `/shipyard:config show|get|set|edit|validate` — inspect or update the effective merged config across the four layers (built-in defaults, user-global, repo, personal override).
 - `/shipyard:cost report` — query the persistent cost-history ledger at `~/.shipyard/cost-history.jsonl`; filter by repo, mode, model, or issue. See [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl).
@@ -174,7 +186,7 @@ The loop has four phases, and the orchestrator drives them on every iteration of
 
 2. **Refine.** `/refine-issues` scans every open issue for a refinement source signal — no persisted `needs-refinement` label (eliminated in [#520](https://github.com/mattsears18/shipyard/issues/520); candidacy is recomputed live) — and branches by signal: raw user-feedback issues get classified (`already-done` / `decline` / `legitimate`), preserved, and rewritten into engineering tickets with `needs-human-review` set; Claude-filed feature requests with open questions get reasonable defaults committed and become dispatch-eligible immediately; everything else with no automated path falls through to `needs-human-review` for human review. The resolve-defaults branch does NOT apply `needs-human-review` — only the user-feedback and fall-through branches do. No code-modifying agent will touch user-feedback issues until `needs-human-review` is removed.
 
-3. **Human review.** You scan the refined backlog, drop `needs-human-review` from the ones you want shipped, and run `/do-work`. This is the only required human step. Everything before it (audits filing, feedback refining) and everything after (dispatch, fix-up, merge) is autonomous. Use [`/my-turn`](plugins/shipyard/commands/my-turn.md) for a focused read-only view of what's actually blocked on you across PRs and issues.
+3. **Human review.** You scan the refined backlog, drop `needs-human-review` from the ones you want shipped, and run `/do-work`. This is the only required human step. Everything before it (audits filing, feedback refining) and everything after (dispatch, fix-up, merge) is autonomous. Run [`/my-turn`](plugins/shipyard/commands/my-turn.md) to be walked through the items that genuinely need *you* — decisions and judgment calls neither loop can complete — one at a time until the human-only queue is empty.
 
 4. **Orchestrator → workers → PR.** `/do-work` ranks the eligible backlog, then keeps `--concurrency` workers in flight at all times. Each worker is dispatched into an isolated git worktree on a deterministic branch (`do-work/issue-<N>`), implements the smallest change that satisfies the acceptance criteria, opens a PR that closes the issue, and enables auto-merge with squash. Green CI = merged = the next worker slot opens. When CI goes red, an in-progress PR fails its checks, or the default branch breaks, the orchestrator diverts a worker to fix it before resuming normal backlog work.
 

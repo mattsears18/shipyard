@@ -7,7 +7,7 @@ argument-hint: [--repo owner/repo] [--concurrency N] [--dry-run] [--record]
 
 **`/my-turn-and-do` is a thin alias for [`/shipyard:do-work --operate`](./do-work.md).** It exists as a memorable name for "do my work *and* operate the browser for me." All behavior lives in `/do-work` and its [operator phase](./do-work/operate.md) — this file just forwards.
 
-> **Re-parented from `/my-turn` to `/do-work` (was: action-taking sibling of `/my-turn`).** Earlier versions extended [`/shipyard:my-turn`](./my-turn.md) — a *single*, human-operator, one-shot action. That was the wrong lineage: the intent is a **continuous loop** that does the normal `/do-work` issue-burndown **as well as** any browser-completable operator action it needs, not one task and stop. So it's now `/do-work --operate`. For a read-only, single-item "what's blocked on *me*?" survey, use [`/my-turn`](./my-turn.md) (unchanged).
+> **Re-parented from `/my-turn` to `/do-work` (was: action-taking sibling of `/my-turn`).** Earlier versions extended [`/shipyard:my-turn`](./my-turn.md) — a one-shot, surface-the-#1-action behavior. That was the wrong lineage: the intent is a **continuous autonomous loop** that does the normal `/do-work` issue-burndown **as well as** any browser-completable operator action it needs, not one task and stop. So it's now `/do-work --operate`. For the human counterpart — an interactive walkthrough of the items that genuinely need *you* (decisions and judgment calls `--operate` can't complete), one at a time until the human-only queue is empty — use [`/my-turn`](./my-turn.md). The three-command division: `/my-turn` = human-only interactive walkthrough; `/do-work` = autonomous code loop; `/do-work --operate` (this command) = code loop **+** browser operation.
 
 ## What it does
 
@@ -32,5 +32,5 @@ Identical to [`/do-work`](./do-work.md#args), with `--operate` implied (you don'
 
 ## Don't
 
-- **Don't expect `/my-turn` semantics.** This is not "do one human-blocked task and stop" — it's the continuous `/do-work` loop with a browser-operator layer. For the read-only single-item human survey, use [`/my-turn`](./my-turn.md).
+- **Don't expect `/my-turn` semantics.** This is the continuous *autonomous* `/do-work` loop with a browser-operator layer — it works the backlog and drives the browser without per-step human pacing. For the human-only interactive walkthrough (the items that genuinely need *you*, walked one at a time), use [`/my-turn`](./my-turn.md).
 - Everything else: the prohibitions live in [`do-work/dont.md`](./do-work/dont.md) and the operator-specific ones in [`do-work/operate.md` → Don't](./do-work/operate.md#dont).

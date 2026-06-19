@@ -160,14 +160,16 @@ if [[ -f "$cmd_path" ]]; then
     "command has a Don't section to scope non-goals"
 fi
 
-# (2) The /my-turn side of the contract: the read-only command must OFFER the
-# hand-off (design (a)) and must NOT itself mutate. Guard that the offer points
-# at this command and that /my-turn stays read-only.
+# (2) The /my-turn side of the contract: /my-turn reuses this command's
+# walkthrough for decision-gated items rather than reinventing it. (Originally
+# #566 had /my-turn only *offer* a read-only hand-off; #635 changed that to
+# reusing the walkthrough inline as part of /my-turn's advancing loop.) Guard
+# that /my-turn references this command for its decision walkthroughs.
 if [[ -f "$myturn_path" ]]; then
   assert_contains "$myturn_path" "/shipyard:resolve-decisions" \
-    "/my-turn offers the hand-off to /shipyard:resolve-decisions (#566)"
-  assert_contains "$myturn_path" "Offer only, never execute" \
-    "/my-turn's offer is read-only — it does not walk or mutate (#566)"
+    "/my-turn reuses /shipyard:resolve-decisions for decision walkthroughs (#566, #635)"
+  assert_contains "$myturn_path" "Decision-gated walkthrough" \
+    "/my-turn documents its inline decision-gated walkthrough (#635)"
 fi
 
 echo
