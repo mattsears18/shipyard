@@ -27,6 +27,12 @@ body:
     validations:
       required: true
   - type: textarea
+    id: artifacts
+    attributes:
+      label: Links to what shipyard did
+      description: Link any PR(s), issue(s), commit(s), or session that shows the bug. For an autonomous tool a link to what it produced is usually higher-signal than a prose repro.
+      placeholder: "PR: https://github.com/<you>/<repo>/pull/123"
+  - type: textarea
     id: environment
     attributes:
       label: Environment

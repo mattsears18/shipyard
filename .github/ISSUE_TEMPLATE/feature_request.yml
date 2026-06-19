@@ -20,6 +20,30 @@ body:
     attributes:
       label: Alternatives considered
       description: What else have you tried or considered?
+  - type: input
+    id: command
+    attributes:
+      label: Which shipyard command surfaced this?
+      description: The command + flags you were running, if any (e.g. /shipyard:do-work, /shipyard:my-turn, /shipyard:do-work --operate).
+      placeholder: "/shipyard:do-work"
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Links to what shipyard did
+      description: Link any PR(s), issue(s), commit(s), or session that shows the behavior. For an autonomous tool this is usually the most useful thing you can give us.
+      placeholder: "PR: https://github.com/<you>/<repo>/pull/123 — it committed Terraform with no real values"
+  - type: textarea
+    id: stack
+    attributes:
+      label: Your setup / stack
+      description: Relevant context about your repo — language/framework, infra (Terraform, Vercel, Firebase…), CI, anything that shapes the request.
+      placeholder: "Expo RN app, infra in Terraform, CI on GitHub Actions"
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: shipyard plugin version (/shipyard:version) and Claude Code version.
+      placeholder: "shipyard 1.23.0, Claude Code 2.x"
   - type: checkboxes
     id: scope
     attributes:
