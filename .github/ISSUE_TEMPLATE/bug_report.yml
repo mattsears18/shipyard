@@ -33,6 +33,12 @@ body:
       description: Link any PR(s), issue(s), commit(s), or session that shows the bug. For an autonomous tool a link to what it produced is usually higher-signal than a prose repro.
       placeholder: "PR: https://github.com/<you>/<repo>/pull/123"
   - type: textarea
+    id: stack
+    attributes:
+      label: Your setup / stack
+      description: Relevant context about your repo — language/framework, infra (Terraform, Vercel, Firebase…), CI, anything that shapes the bug. A bug in generated config is often entirely explained by your stack.
+      placeholder: "Expo RN app, infra in Terraform, CI on GitHub Actions"
+  - type: textarea
     id: environment
     attributes:
       label: Environment

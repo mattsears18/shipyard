@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.23.2 — 2026-06-18
+
+**Add the "Your setup / stack" field to the bug-report template too** (follow-up to #630). The 1.23.1 intake refresh gave the *feature-request* template a stack/setup field but left it off the *bug-report* template, on a keep-the-change-minimal judgment. That was an inconsistency: a bug in shipyard-generated config (the #628 class) is often entirely explained by the reporter's stack (Terraform / Expo / Firebase / CI), so the field is just as load-bearing for a bug as for a feature request. Files touched:
+
+- `.github/ISSUE_TEMPLATE/bug_report.yml` — adds the optional **Your setup / stack** field (placed after the artifact-links field, before Environment), matching the feature-request template's wording. Versions stay covered by the existing `Environment` field and the triggering command by the `Reproduction steps` placeholder, so only the genuinely-missing field was added.
+
+Template still parses as valid GitHub issue-form YAML and keeps its `labels:` auto-application.
+
 ### 1.23.1 — 2026-06-18
 
 **Solicit shipyard-specific context in the GitHub issue templates so feature requests and bug reports arrive actionable** (#630). The generic templates never asked for the highest-signal information for an autonomous-agent tool — which command ran, against which version, and a link to what shipyard produced — which surfaced in #628, where an external feature request was usable but missing the diagnostic context (the triggering command, a link to the PR with the dead Terraform, the load-bearing "I use Terraform" stack detail) because the form never prompted for it. Files touched:
