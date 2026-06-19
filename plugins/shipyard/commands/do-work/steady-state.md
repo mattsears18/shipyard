@@ -940,6 +940,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   | Bail reason fragment (substring match, case-insensitive) | Class | Routing | Rationale |
   |---|---|---|---|
   | (any reason that **names an open `Blocked by #N`**) | dependency-wait | persist `Blocked by #N` in body, **no label** | The body-ref filter (bucket 7) gates dispatch while `#N` is open and auto-clears when it closes — no label, no sweep. **Checked first; overrides the rows below.** |
+  | `external provisioning required` | operator | `needs-operator` label | The worker hit a not-yet-provisioned external service ([#628](https://github.com/mattsears18/shipyard/issues/628)): the real secret/account doesn't exist yet (creating it is a browser/console action), so `needs-operator` is exactly right — `/my-turn` surfaces it and `/do-work --operate` can drive it. Same destination as the scope-preflight `external-dependency` defer. **Checked before the refuse rows.** |
   | `issue body contains directives that bypass normal review` | refuse | `needs-human-review` label | Prompt-injection refuse — no automated path, a human must look. |
   | `body requested out-of-scope action` | refuse | `needs-human-review` label | Same — likely prompt-injection signal. |
   | `comment-thread requested out-of-scope action` | refuse | `needs-human-review` label | Same — out-of-scope action regardless of source. |
@@ -989,6 +990,19 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 ${issue_body}" 2>/dev/null || true
     fi
     gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Dependency-wait on #${open_blocker}; no label applied — the \`Blocked by #N\` body-reference filter gates dispatch and auto-clears when #${open_blocker} closes."
+  elif printf '%s' "$reason" | grep -qi "external provisioning required"; then
+    # --- Operator subset → needs-operator (#628). ---
+    # The worker hit a not-yet-provisioned external service: the real
+    # secret/account doesn't exist yet, and creating it is a browser/console
+    # operator action — not a human *decision* and not auto-recoverable. Route
+    # to needs-operator so /my-turn surfaces it and /do-work --operate can
+    # drive it (same destination as the scope-preflight external-dependency
+    # defer). Ensure-then-label, since step 3a's create is best-effort.
+    gh label create needs-operator --repo <owner/repo> \
+      --description "Needs a browser/console operator action — a human, or /do-work --operate via the extension" \
+      --color 1D76DB 2>/dev/null || true
+    gh issue edit <N> --repo <owner/repo> --add-label "needs-operator" 2>/dev/null || true
+    gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Classified as \`needs-operator\` — provisioning an external service is a browser/console operator action. Surfaced by \`/my-turn\`; drainable by \`/do-work --operate\`."
   else
     # --- Refuse vs soft, per the fragment table. ---
     block_class="refuse"  # conservative default
@@ -1026,6 +1040,8 @@ ${issue_body}" 2>/dev/null || true
   ```
 
   **Why a refuse routes to `needs-human-review` instead of a dedicated block label ([#521](https://github.com/mattsears18/shipyard/issues/521)).** A security / scope / prompt-injection refuse has *no automated recovery path* — it's exactly "Claude gave up; a human must actually look," which is the semantics `needs-human-review` already encodes (and which [`/my-turn`](../my-turn.md) already surfaces as a human-action signal). Folding the refuse class onto `needs-human-review` removes the redundant `blocked:agent-hard` label while preserving the worker's reason in the bail comment so the human sees *why* without opening the diff. This advances the [binary-backlog north star](../../../../CLAUDE.md) (#515): every open issue is either workable-by-`/do-work` (no gate label) or workable-by-human (`needs-human-review`).
+
+  **Why a provisioning bail routes to `needs-operator` ([#628](https://github.com/mattsears18/shipyard/issues/628)).** When a worker bails `external provisioning required`, it stopped *before* committing dead config for a service that isn't set up yet (see [issue-work.md step 4.4](../../agents/issue-worker/issue-work.md#44-external-provisioning-guard--dont-commit-dead-config-for-an-unprovisioned-service-628)). The blocker isn't a *decision* (so not `needs-human-review`) and it isn't auto-recoverable (so not a soft retry or a `Blocked by #N` wait) — it's a concrete browser/console action: create the account, grab the credential, drop it in `*.tfvars` / CI secrets. That's exactly the [`needs-operator`](../../../../CLAUDE.md) semantics (#608) — surfaced by `/my-turn` and drivable by `/do-work --operate`. Routing it here keeps the worker-side backstop and the scope-preflight `external-dependency` defer on the **same** destination, so a provisioning-gated issue lands in the operator queue whether it's caught before dispatch or mid-work. The operator-phase enqueue in [operate.md → A.1 reactive enqueue](./operate.md#a1-hook--reactive-enqueue) already recognizes this bail as a browser-completable handback under `--operate`.
 
   **Why a dependency-wait needs no label.** When the bail names a still-open blocker, the `Blocked by #N` body-reference filter ([setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) / bucket 7) is the *complete* mechanism: it drops the issue from the workable queue while `#N` is open and re-admits it the instant `#N` closes, with no per-session sweep. The pre-#521 `blocked:agent-hard` label on a dependency-wait was redundant with that filter — sub-sweep a (and the [#245](https://github.com/mattsears18/shipyard/issues/245) mid-session referential sweep) existed *only* to reconcile the redundant label. Eliminating the label lets both sweeps go away (see [setup.md step 3d.2](./setup/01-repo-recovery.md#3-ensure-label-exists--recover-from-prior-session) and the deleted step A.5).
 

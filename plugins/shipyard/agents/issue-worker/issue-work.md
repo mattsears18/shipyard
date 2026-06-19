@@ -139,6 +139,27 @@ fi
 
 If the scan reports a deletion, restore the missing heading(s) before committing. If the scanner binary isn't present (older plugin installation), skip the check — the CI gate (`changelog-monotonicity-scan.sh` in `tests.yml`) is the load-bearing layer and will catch the issue on push. This worker-side check is defense-in-depth so you catch the error before a push rather than after.
 
+### 4.4 External-provisioning guard — don't commit dead config for an unprovisioned service ([#628](https://github.com/mattsears18/shipyard/issues/628))
+
+Some issues — "set up Sentry", "add Stripe billing", "wire up Datadog" — are integration work whose committed config **cannot function until a human provisions the external service**: the real value (a Sentry DSN, a Stripe secret key, a service account) doesn't exist anywhere yet, can't be inferred, and **must never be fabricated**. The failure mode this guard closes ([#628](https://github.com/mattsears18/shipyard/issues/628)): a worker writes Terraform / config with a placeholder or empty value for a not-yet-provisioned credential, opens a PR, it auto-merges, and the change **deploys non-functional infrastructure** the user never asked to activate — they hadn't even created the account yet. The empty-diff guards in [§4.5](#45-pre-pr-create-diff-sanity-check) / [§5.7](#57-post-pr-create-diff-sanity-check-defense-in-depth) don't catch this because placeholder config is a **non-empty** diff.
+
+**Before any `git add` / `git commit`**, ask: *does this change commit a real-secret-shaped value for an external service that isn't provisioned yet?* If completing the issue requires writing a credential / secret / account-bound value that (a) is structurally required for the change to function and (b) does not yet exist in the repo's config or CI secrets (no env var, no `*.tfvars` entry, no documented already-provisioned secret you can reference) — **do NOT fabricate a placeholder and commit it.** Bail:
+
+```
+blocked: external provisioning required — <service>: <what the human must provision and where the value goes>
+```
+
+Example: `blocked: external provisioning required — Sentry: create a Sentry account, then set sentry_dsn in terraform.tfvars before this integration can deploy`.
+
+The orchestrator routes this bail to the **`needs-operator`** label (a browser/console operator action — see [steady-state.md's bail reason→class table](../../commands/do-work/steady-state.md#a-reconcile-the-return)), surfacing it to `/my-turn` as an actionable provisioning handoff and making it drainable by `/do-work --operate`. This is the worker-side backstop for the same case [scope-preflight](../../commands/do-work/setup/06-scope-preflight.md#6-initial-scope-pre-flight) catches earlier via the `external-dependency` defer — both land on `needs-operator`.
+
+**Don't over-trigger — this guard is narrow.** It fires ONLY when you'd otherwise commit a *fabricated stand-in for a real secret/account that must exist for the change to work*. It does **not** fire when:
+- The change references an **already-provisioned** secret (an env var / CI secret / `*.tfvars` key that already exists) — that's functional config, ship it.
+- You add a **variable *declaration*** (e.g. a Terraform `variable "sentry_dsn" {}` with no default, or a `.env.example` placeholder) AND the change stays **inert until the value is supplied** (nothing deploys/activates with an empty value) AND you document in the PR body that the user must populate it. A declared-but-unset variable that can't deploy dead is fine; a hardcoded fake value that *will* deploy is not.
+- The work is pure code with no live-credential dependency.
+
+When in doubt between "inert declaration" and "dead config that will deploy", bail — a `needs-operator` handoff with a provisioning checklist is cheap and recoverable; an auto-merged dead deploy is the harm this exists to prevent.
+
 ### 4.5 Pre-PR-create diff sanity check
 
 Closes [#356](https://github.com/mattsears18/shipyard/issues/356) — the **phantom-merge** failure mode. A worker can reach the end of step 4 with `git status` clean (no working-tree edits, no staged changes) yet still proceed to step 5 and open a PR whose body claims substantial scope (new files, modified files, acceptance criteria checked). The PR merges, the body's `Closes #N` keyword closes the linked issue, and the backlog claims work shipped — but nothing landed. Repro: [`mattsears18/lightwork#1169`](https://github.com/mattsears18/lightwork/pull/1169) merged on 2026-05-25 with a 0-file diff against its parent, auto-closing [`mattsears18/lightwork#1160`](https://github.com/mattsears18/lightwork/issues/1160) which then sat as CLOSED for the rest of the day until a follow-up session noticed the missing code.
