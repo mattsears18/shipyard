@@ -43,7 +43,7 @@ plugins/
     commands/                     # slash commands: /audit, /do-work, /my-turn, /refine-issues
     agents/                       # auditor subagents + the issue-worker
     skills/                       # shared skills loaded by agents
-    hooks/                        # safety hooks (worktree isolation, edit scope, error report)
+    hooks/                        # safety hooks (worktree isolation, edit scope, error report, session-end reap)
     scripts/                      # session-state.sh, worktree-reap.sh, error reporter
     scripts/tests/                # bash unit tests, run by CI
 CLAUDE.md                         # repo-scoped rules (load-bearing for Claude sessions)
@@ -108,7 +108,7 @@ If you're adding a new origin / state / gate label, document it in `CLAUDE.md` a
 Test layout:
 
 - [`plugins/shipyard/scripts/tests/`](./plugins/shipyard/scripts/tests/) — bash unit tests, one file per concern (`*.test.sh`). Existing tests cover the worker-preamble skill linkage, the do-work.md / RATIONALE.md split, the auditor wiring, the secret-scrubbing in the auto-reporter, the worktree-reap helper, the session-state helper, and the shellcheck gate.
-- [`plugins/shipyard/hooks/tests/`](./plugins/shipyard/hooks/tests/) — hook tests (worktree-isolation, edit-scope enforcement).
+- [`plugins/shipyard/hooks/tests/`](./plugins/shipyard/hooks/tests/) — hook tests (worktree-isolation, edit-scope enforcement, session-end reap).
 
 Run all tests locally:
 
