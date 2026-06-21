@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.25.0 — 2026-06-20
+
+**Add a `SessionEnd` hook so worktree cleanup no longer depends on the orchestrator completing a clean turn** (#638, PR #639; the structural fix behind #637). Every reap in shipyard previously ran as best-effort bash *inside the orchestrator's own turn* (the in-loop reaps in `steady-state.md`, the `cleanup-summary.md` end-of-session sweep), so if a session crashed, was interrupted, or the orchestrator's turn ended before cleanup ran, stale worktree state orphaned — the failure mode #280 / #509 / #529 / #326 each patched piecemeal but never eliminated (observed on one real checkout: 33 stale worktree dirs, 39 dangling `worktree-agent-*` branch refs, 23 `[gone]` `do-work/issue-*` refs). A new `SessionEnd` hook now backstops cleanup independent of the orchestrator's turn, firing on every session exit. v1 scope is deliberately the single clearest unbounded leak — `worktree-agent-*` refs (#326) — because that's the only reap provably safe with no session-liveness reasoning (`reap-orphan-branches` deletes only refs with no live worktree); reaping this-session worktrees and dead-session orchestrator dirs stays with the orchestrator's in-loop reaps + the next-session startup sweep. Files touched:
+
+- `plugins/shipyard/hooks/reap-on-session-end.sh` — thin shim: consumes stdin, runs the helper bounded, never propagates non-zero (a cleanup failure must not break session exit); mirrors `report-plugin-error.sh`.
+- `plugins/shipyard/scripts/session-end-reap.sh` — helper: reaps stale `worktree-agent-*` branch refs via `worktree-reap.sh reap-orphan-branches`, then `git worktree prune`; best-effort, bounded via `timeout`, never errors.
+- `plugins/shipyard/hooks/hooks.json` — registers the `SessionEnd` hook.
+- `plugins/shipyard/scripts/tests/session-end-reap.test.sh` (7 cases) + `plugins/shipyard/hooks/tests/reap-on-session-end.test.sh` (4 cases) — orphan ref reaped, unrelated branch untouched, reads cwd from stdin payload, non-git / missing-helper / empty-stdin no-ops, end-to-end reap through the shim.
+- `CONTRIBUTING.md` (hooks list) + `plugins/shipyard/commands/do-work/cleanup-summary.md` (a "Backstop — the SessionEnd hook" note) document it.
+
 ### 1.24.0 — 2026-06-19
 
 **Reconcile the three commands' charters and make `/my-turn` a looping, human-only walkthrough instead of stopping after one item** (#635, PR #636). Recent workflow changes established a clean three-command division of labor that `/my-turn` didn't yet honor, and the README's command descriptions were stale and contradicted it. The division is now consistent across every surface: `/do-work` = autonomous continuous loop, **code work only**; `/do-work --operate` (alias `/my-turn-and-do`) = the `/do-work` loop **plus** driving Chrome to complete browser-completable operator actions; `/my-turn` = surface **only** genuinely human-required items (decisions, judgment calls — anything `--operate` can't complete) and **walk the human through them one at a time, advancing to the next until the human-only queue is empty**. `/my-turn` stays human-facing and non-autonomous (no agent dispatch, no sharing of `/do-work`'s worker machinery) and reuses `/shipyard:resolve-decisions`' interactive walkthrough for decision-gated items. Files touched:
