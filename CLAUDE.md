@@ -4,8 +4,8 @@ These complement the global rules in `~/.claude/CLAUDE.md`. They apply only when
 
 ## Permissions
 
-- **You always have permission to update `main` directly.** Push commits to `main`, pull/fast-forward, reset to `origin/main` — all OK without asking. The user grants this durably because this is personal tooling, not a multi-contributor codebase that needs the PR-review gate for every change. Use judgment: trivial fixes / config / docs / cleanup → push directly is fine; substantive code or spec changes → still go through a PR so CI catches regressions and the change is reviewable in isolation. When in doubt, default to a PR.
-- Worktree-isolation rules from `/shipyard:do-work` (#34) still apply: orchestrated multi-agent sessions work in `.claude/worktrees/orchestrator-<session-id>` so they don't clobber the user's in-progress edits in the primary checkout. The push-to-main permission doesn't override the worktree isolation contract for `/do-work` runs.
+- **You always have permission to land changes on `main` without asking — but `main` requires a PR.** The repo's branch ruleset rejects direct pushes (`GH013: Changes must be made through a pull request`), so the mechanism is always the same: push to a branch, open a PR, and arm auto-merge. You do NOT need a review gate or to ask first — the user grants this durably because this is personal tooling, not a multi-contributor codebase that needs human sign-off on every change. Use judgment on *how much ceremony*: trivial fixes / config / docs / cleanup → a PR with auto-merge armed lands fast and is fine; substantive code or spec changes → also a PR, but lean on CI to catch regressions and keep the change reviewable in isolation. The constant is the PR; what varies is how carefully you treat the review.
+- Worktree-isolation rules from `/shipyard:do-work` (#34) still apply: orchestrated multi-agent sessions work in `.claude/worktrees/orchestrator-<session-id>` so they don't clobber the user's in-progress edits in the primary checkout. The PR-via-auto-merge permission doesn't override the worktree isolation contract for `/do-work` runs.
 
 ## Release process
 
@@ -15,7 +15,7 @@ What "cut a release" means in this repo:
 
 1. Bump `plugins/shipyard/.claude-plugin/plugin.json` `version` (semver — patch bump for fixes / docs / config; minor for new features; major when the user explicitly says so).
 2. Add a new `### <version> — <YYYY-MM-DD>` entry at the top of the `## shipyard` section in `CHANGELOG.md`. Match the prose style of recent entries: one summary paragraph leading with what changed and why, then a bullet list naming the specific files / surfaces touched. Reference the closed issue numbers + PR number inline.
-3. Commit the bump + CHANGELOG entry. Per the [Permissions section](#permissions) above, this can land directly on `main` (docs + config — pre-authorized) — no separate PR needed for the release bump itself.
+3. Commit the bump + CHANGELOG entry, then land it through a PR with auto-merge — like any other change to `main`. Per the [Permissions section](#permissions) above you don't need to ask first, but the branch ruleset rejects direct pushes to `main` (`GH013: Changes must be made through a pull request`), so even a docs + config release bump goes through a PR. The release bump can ride along in the same PR as the change it's releasing (the common case — one PR cuts its own release per the rule above); a standalone catch-up bump still opens its own PR.
 
 There are **no git tags and no GitHub releases** — `plugin.json` is the canonical version surface, and the marketplace checks it directly. Don't introduce a tag/release workflow without asking; the current shape is intentional.
 
