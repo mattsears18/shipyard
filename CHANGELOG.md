@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 1.25.2 — 2026-06-23
+
+**Add first-class handling for local-only-CI merge gates — a `merge_gate.*` config block plus the per-PR gate-run + single-shared-resource pacing pattern documented in the drain phase** (#643, PR #TBD). On a repo where the merge-blocking commit status is posted by a **manually-run command** (e.g. lightwork's `local-ci` status, posted only after a session runs `npm run ci:report` — a ~20-min emulator-backed suite) rather than by cloud CI that auto-runs on push, `/do-work` previously armed `--auto` on every shipped PR but nothing ever posted the gate status, so the loop "succeeded" (PRs shipped) while the backlog never drained. The orchestrator had to improvise the whole gate loop off-book. This makes it first-class and opt-in: `merge_gate.command` defaults to empty (cloud-CI behavior unchanged), and only a non-empty value engages the new drain-phase loop. Files touched:
+
+- `plugins/shipyard/scripts/shipyard-config.sh` — adds the `merge_gate` block to `DEFAULTS_JQ` (`command: ""`, `serialize: false`, `max_unmerged_ahead: 2`, `clear_state_command: ""`).
+- `plugins/shipyard/schemas/shipyard.config.schema.json` — adds the `merge_gate` object (`additionalProperties: false`) with per-key descriptions covering the gate command, the serialize-on-shared-resource flag, the unmerged-ahead pacing cap, and the reused-worktree stale-state cleanup command.
+- `plugins/shipyard/commands/do-work/drain.md` — new **Local-only-CI merge gate** section: the per-poll gate-run action (paced to `max_unmerged_ahead`), the `P_settled` correction so a shipped-but-ungated PR isn't prematurely declared settled, the **single-shared-resource pacing pattern** (wait-for-free + orphan-reap + serialized runs) for emulator/port-locked gates, and the reused-gate-runner stale-generated-state note.
+- `plugins/shipyard/commands/do-work/steady-state.md` — cross-reference on the `shipped #<N>` reconcile noting the gate fires at drain (not at reconcile) when `merge_gate.command` is set.
+- `plugins/shipyard/scripts/tests/shipyard-config.test.sh` — `merge_gate` defaults, override, deep-merge, and schema-rejection coverage.
+
 ### 1.25.1 — 2026-06-21
 
 **Reconcile the repo `CLAUDE.md` with the actual `main` branch ruleset: release bumps and other changes to `main` go through a PR with auto-merge, never a direct push** (#641, PR #TBD). The **Release process** and **Permissions** sections both claimed the release bump (and trivial docs/config changes) could "land directly on `main`" with "no separate PR needed" — but the repo's branch ruleset rejects direct pushes (`GH013: Changes must be made through a pull request`), so every release bump that followed the stale instruction hit a failed-push detour before recovering via a PR. The docs now describe the real mechanism (push a branch, open a PR, arm auto-merge) while preserving the intent — this is personal tooling, so you don't need a review gate or to ask first; what's PR-required is the *push to `main`*, not human sign-off. Files touched:

@@ -167,6 +167,12 @@ DEFAULTS_JQ='{
     "required_workflows": [],
     "max_fix_attempts": 3
   },
+  "merge_gate": {
+    "command": "",
+    "serialize": false,
+    "max_unmerged_ahead": 2,
+    "clear_state_command": ""
+  },
   "version_coordination": {
     "enabled": false,
     "manifest_path": "",

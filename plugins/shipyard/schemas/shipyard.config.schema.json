@@ -179,6 +179,35 @@
         "_comment": { "type": "string" }
       }
     },
+    "merge_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Local-only-CI merge gate (issue #643). On a repo where the merge-blocking commit status is posted by a MANUALLY-run command rather than by cloud CI that auto-runs on push (e.g. lightwork's `local-ci` status, posted only after a session runs `npm run ci:report` — a ~20 min emulator-backed suite), `--auto` is armed but never fires because nothing posts the gate status. When `command` is set, the orchestrator runs it against each shipped PR's HEAD after the `shipped`/`green` reconcile so the status lands and `--auto` can merge. Defaults preserve cloud-CI behavior unchanged (empty `command` = no gate runs). See do-work/drain.md → 'Local-only-CI merge gate' for the run loop and the single-shared-resource pacing pattern.",
+      "properties": {
+        "command": {
+          "type": "string",
+          "default": "",
+          "description": "Shell command run against each shipped PR's HEAD (checked-out worktree) to post the local merge-gate commit status. Empty string (the default) means cloud-CI behavior is unchanged — the orchestrator never runs a gate command and relies on checks completing automatically on push, exactly as before #643. Example: `npm run ci:report`. The command runs in a checked-out worktree on the PR's head commit; it is expected to post the gate commit-status for that SHA (success or failure) as a side effect. A non-empty value engages the merge-gate loop in drain.md."
+        },
+        "serialize": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the orchestrator runs at most ONE `command` invocation at a time across the whole session — required when the gate command contends on a single shared machine-wide resource (an emulator with a fixed port, a serialization lock, a single test database). Concurrent gate runs on such a resource fail on contention (port-in-use, lock-held) rather than on code, producing false failures. With `serialize: true` the orchestrator waits for the in-flight gate run to finish (and reaps any orphaned resource — see drain.md's wait-for-free + orphan-reap pattern) before starting the next. Default false (the gate command is safe to run in parallel — stateless or per-worktree-isolated)."
+        },
+        "max_unmerged_ahead": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Pacing cap: the maximum number of shipped-but-unmerged PRs the orchestrator lets accumulate ahead of the merge gate before it pauses opening new gate runs to let the gate catch up. Because each `command` run is expensive (the #643 repro was ~20 min/run), the orchestrator does NOT fire a gate run for every shipped PR immediately; it keeps at most this many PRs queued ahead of the gate. Lower it (e.g. 1) on a very slow / heavily-contended gate to minimize concurrent pressure; raise it when the gate is cheaper and you want more throughput. Default 2 (matches the #643 operator's manual choice of 'keep ≤2 unmerged PRs ahead of the gate')."
+        },
+        "clear_state_command": {
+          "type": "string",
+          "default": "",
+          "description": "Optional cleanup command run in the gate-runner worktree BEFORE each `command` invocation, to clear stale generated state that a REUSED worktree carries between gate runs (issue #643). The #643 session hit stale gitignored Expo typed-routes in a reused `ci:report` runner, which produced a spurious gate failure. When set, the orchestrator runs this command (e.g. `git clean -fdX -- app` or a project-specific reset) to evict generated/gitignored artifacts so each gate run starts from a clean generated state. Empty string (default) means no pre-run cleanup — appropriate when the gate command regenerates its own state or runs in a fresh worktree per run. Leave empty unless a reused gate-runner worktree demonstrably carries stale generated files between runs."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "version_coordination": {
       "type": "object",
       "additionalProperties": false,

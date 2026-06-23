@@ -647,6 +647,8 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
 - **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. **Append `<M>` to `session_prs`** (the set the [end-of-session drain](./drain.md#end-of-session-drain) watches). Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.
 
+  **Local-only-CI repos: the merge gate fires at drain, not here ([#643](https://github.com/mattsears18/shipyard/issues/643)).** On a repo where the merge-blocking status is posted by a manually-run command (config `merge_gate.command` non-empty — e.g. `npm run ci:report`) rather than by cloud CI that auto-runs on push, a shipped PR's checks stay `pending` until that command runs against the PR's HEAD. Nothing about the `shipped` reconcile changes — `--auto` is armed exactly as on a cloud-CI repo — but the gate command runs **per shipped PR, paced to `merge_gate.max_unmerged_ahead`, in the [end-of-session drain](./drain.md#local-only-ci-merge-gate)**, which is where `--auto` then fires. When `merge_gate.command` is empty (the default), this is moot — cloud-CI behavior is unchanged.
+
   **Then post a cost-tracking comment on the resulting PR.** The session-state file's `.tokens.per_pr[<M>]` bucket was populated by every `bump-tokens` call made while the worker was in flight (see [Cost-tracking write-through](../do-work.md#cost-tracking-write-through) below). Read it as a Markdown body via the helper and post on the PR with edit-or-create semantics keyed on the `<!-- do-work-cost-tracking -->` sentinel:
 
   ```bash

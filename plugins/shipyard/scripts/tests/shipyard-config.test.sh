@@ -781,6 +781,71 @@ JSON
 assert_exit_code "$?" 70 "scope.self_modification_paths rejects non-string array items (#591)"
 
 # --------------------------------------------------------------------------
+echo "== merge_gate — local-only-CI merge gate (issue #643)"
+repo=$(mktmprepo)
+home=$(mktmprepo)
+export SHIPYARD_REPO_ROOT="$repo"
+export SHIPYARD_HOME="$home"
+
+# Built-in defaults preserve cloud-CI behavior: empty command = no gate runs.
+# (An empty-string default key reports as "not present in effective config" for
+# `get`/`--with-source`, matching the existing version_coordination.manifest_path
+# convention — so source is asserted on the non-empty-default keys below.)
+assert_equals "$("$helper" get merge_gate.command)" "" "default merge_gate.command is empty (cloud-CI behavior unchanged)"
+assert_equals "$("$helper" get merge_gate.serialize)" "false" "default merge_gate.serialize is false"
+assert_equals "$("$helper" get merge_gate.serialize --with-source | cut -f2)" "defaults" "merge_gate.serialize default comes from the built-in layer"
+assert_equals "$("$helper" get merge_gate.max_unmerged_ahead)" "2" "default merge_gate.max_unmerged_ahead is 2"
+assert_equals "$("$helper" get merge_gate.clear_state_command)" "" "default merge_gate.clear_state_command is empty"
+
+# Repo-level override is honored and validates; sibling keys untouched (deep merge).
+out=$("$helper" set merge_gate.command "npm run ci:report" --repo 2>&1)
+assert_contains "$out" "wrote merge_gate.command" "set --repo writes merge_gate.command"
+assert_equals "$("$helper" get merge_gate.command)" "npm run ci:report" "repo override returns the command"
+assert_equals "$("$helper" get merge_gate.command --with-source | cut -f2)" "repo" "override source is repo"
+assert_equals "$("$helper" get merge_gate.max_unmerged_ahead)" "2" "max_unmerged_ahead still falls through to default after command override"
+
+# serialize + max_unmerged_ahead overrides validate.
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "merge_gate": { "command": "make ci", "serialize": true, "max_unmerged_ahead": 1, "clear_state_command": "git clean -fdX -- app" } }
+JSON
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "merge_gate accepts a full valid block"
+
+# Schema rejects a non-string command.
+echo '{"version":1,"merge_gate":{"command":42}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "merge_gate.command rejects a non-string value"
+
+# Schema rejects a non-boolean serialize.
+echo '{"version":1,"merge_gate":{"serialize":"yes"}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "merge_gate.serialize rejects a non-boolean value"
+
+# Schema rejects max_unmerged_ahead below the minimum (1).
+echo '{"version":1,"merge_gate":{"max_unmerged_ahead":0}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "merge_gate.max_unmerged_ahead rejects 0 (below minimum)"
+
+# Schema rejects a non-integer max_unmerged_ahead.
+echo '{"version":1,"merge_gate":{"max_unmerged_ahead":2.5}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "merge_gate.max_unmerged_ahead rejects a non-integer"
+
+# Schema rejects unknown merge_gate fields (additionalProperties: false).
+echo '{"version":1,"merge_gate":{"banana":true}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "merge_gate rejects unknown fields"
+
+# Local layer overrides repo for merge_gate.serialize (deep merge across layers).
+echo '{"version":1,"merge_gate":{"serialize":true}}' > "$repo/shipyard.config.json"
+"$helper" set merge_gate.serialize false --local
+assert_equals "$("$helper" get merge_gate.serialize)" "false" "local layer overrides repo for merge_gate.serialize"
+
+# Reset to valid
+rm -rf "$repo/.shipyard"
+echo '{"version":1}' > "$repo/shipyard.config.json"
+
+# --------------------------------------------------------------------------
 echo
 total=$((pass + fail))
 if [[ $fail -eq 0 ]]; then
