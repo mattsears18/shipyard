@@ -25,12 +25,33 @@ After `gh pr create` returns:
    REQUIRED_CHECKS=$(gh api "repos/<owner/repo>/branches/${DEFAULT_BRANCH}/protection/required_status_checks/contexts" \
      --jq 'length' 2>/dev/null)
    case "${REQUIRED_CHECKS}" in (*[!0-9]*|'') REQUIRED_CHECKS=0;; esac
+   # Ruleset-aware fallback (#645). Classic branch protection (the contexts
+   # endpoint above) and repository RULESETS are two SEPARATE gating mechanisms;
+   # the contexts probe only sees CLASSIC protection. On a repo whose default
+   # branch is gated by a *ruleset* (GitHub Rulesets — increasingly the default
+   # shape), the classic probe returns 0 contexts even though the branch IS
+   # gated: a false "ungated" reading that would mis-fire shape 2 and send the
+   # worker into an unnecessary --watch-then-merge block. So when the classic
+   # probe reads 0, ALSO probe the rulesets endpoint; if an active ruleset
+   # requires status checks OR requires a PR, the branch is gated after all —
+   # set REQUIRED_CHECKS to a non-zero sentinel so the two-shape test below does
+   # NOT classify this as the ungated admin-direct path. Mirrors the two-shape
+   # ruleset idiom the orchestrator's CHANGELOG-backfill write-path probe in
+   # steady-state.md already uses (`repos/{repo}/rules/branches/{branch}`).
+   if [ "$REQUIRED_CHECKS" = "0" ]; then
+     RULESET_GATED=$(gh api "repos/<owner/repo>/rules/branches/${DEFAULT_BRANCH}" \
+       --jq '[.[].type] | (contains(["required_status_checks"]) or contains(["pull_request"])) | tostring' \
+       2>/dev/null || echo "false")
+     case "$RULESET_GATED" in (true) REQUIRED_CHECKS=1;; esac   # ruleset gates the branch — treat as required-checks present, NOT ungated
+   fi
    ```
 
    There are **two distinct shapes** that put the PR on the ungated admin-direct path — mirror the orchestrator-side two-shape detector in [`commands/do-work/setup.md` §1.3](../../commands/do-work/setup/01-repo-recovery.md#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) (issues [#438](https://github.com/mattsears18/shipyard/issues/438) / [#465](https://github.com/mattsears18/shipyard/issues/465)). The path is ungated when `VIEWER_PERM` is `ADMIN` or `MAINTAIN` **AND** either shape holds:
 
    - **Shape 1 (#438):** `ALLOW_AUTO_MERGE == false`. With repo-level auto-merge disabled, `gh pr merge --auto` has nothing to queue against, so an admin's call falls through to an immediate direct merge.
    - **Shape 2 (#465), which fires *regardless of `ALLOW_AUTO_MERGE`*:** `REQUIRED_CHECKS == 0`. Even with `allow_auto_merge: true`, when the base branch has zero *required* status checks `gh pr merge --auto` has no pending check to wait on — so an admin's call merges *immediately* rather than queuing behind CI. The original #438 detector missed this because it only checked `ALLOW_AUTO_MERGE == false`; the #465 repro (this dogfood repo, `allow_auto_merge: true` + admin + no required checks) is the now-current shape (see issue [#602](https://github.com/mattsears18/shipyard/issues/602)).
+
+   > **Ruleset-aware `REQUIRED_CHECKS` reading (#645).** The signal-(c) `REQUIRED_CHECKS` count above comes from the **classic** branch-protection contexts endpoint, which does NOT see repository **rulesets**. A default branch gated by a *ruleset* (GitHub Rulesets, not classic protection) returns 0 from the contexts endpoint even though it requires checks — a false "ungated" reading that would mis-fire shape 2 on the now-common Rulesets-protected repo shape (the #645 repro: `mattsears18/lightwork` protects `main` via a ruleset requiring 4 checks, yet the classic contexts probe reports 0). The signal-(c) snippet closes this by probing `repos/{owner}/{repo}/rules/branches/{branch}` when the classic count is 0 and treating the branch as gated when an active ruleset requires status checks **or** a PR — the same two-shape ruleset idiom the orchestrator's CHANGELOG-backfill write-path probe already uses. Treat the branch as gated if **either** classic protection **or** an active ruleset requires checks / a PR.
 
    ```bash
    # Two-shape ungated-path test (mirrors setup.md §1.3). VIEWER_PERM gates both.
