@@ -139,12 +139,13 @@ plugins/shipyard/scripts/session-state.sh is-active --session-id "<session-id>"
 
 # Bump token-usage counts after an Agent dispatch returns. --issue / --pr
 # optional. --allow-degraded-init + --degraded-init-repo REQUIRED (see
-# steady-state.md A.0). --degraded-total-only: harness-gap fallback (#279).
+# steady-state.md A.0). Strict path — harness <usage> exposes the breakdown:
 plugins/shipyard/scripts/session-state.sh bump-tokens \
   --session-id "<session-id>" --issue <N> --pr <M> \
   --input <N> --output <N> --cache-read <N> --cache-creation <N> \
-  --mode <mode> --model <model-id> \
-  --allow-degraded-init --degraded-init-repo "<owner/repo>" [--degraded-total-only]
+  --mode <mode> --model <model-id> --allow-degraded-init --degraded-init-repo "<owner/repo>"
+# Degraded path (#279 — <usage> total-only): REPLACE the four breakdown flags
+# with `--input <total_tokens> --degraded-total-only` (mutually exclusive; #320).
 
 # Read aggregated token data. --format json (default) or comment (Markdown
 # body with the <!-- do-work-cost-tracking --> sentinel for idempotent posting).
