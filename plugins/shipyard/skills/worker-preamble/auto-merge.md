@@ -32,17 +32,26 @@ After `gh pr create` returns:
    # shape), the classic probe returns 0 contexts even though the branch IS
    # gated: a false "ungated" reading that would mis-fire shape 2 and send the
    # worker into an unnecessary --watch-then-merge block. So when the classic
-   # probe reads 0, ALSO probe the rulesets endpoint; if an active ruleset
-   # requires status checks OR requires a PR, the branch is gated after all —
-   # set REQUIRED_CHECKS to a non-zero sentinel so the two-shape test below does
-   # NOT classify this as the ungated admin-direct path. Mirrors the two-shape
-   # ruleset idiom the orchestrator's CHANGELOG-backfill write-path probe in
-   # steady-state.md already uses (`repos/{repo}/rules/branches/{branch}`).
+   # probe reads 0, ALSO probe the rulesets endpoint for a `required_status_checks`
+   # rule; if one is active, the branch IS gated on CI after all — set
+   # REQUIRED_CHECKS to a non-zero sentinel so the two-shape test below does NOT
+   # classify this as the ungated admin-direct path. NOTE: check ONLY for the
+   # `required_status_checks` rule type here, NOT `pull_request` — a `pull_request`
+   # ruleset rule requires the change arrive via a PR but does NOT gate the merge
+   # on CI, so an admin `--auto` still direct-merges *immediately* (ungated) on a
+   # repo whose ruleset has `pull_request` but no `required_status_checks` (the
+   # `mattsears18/shipyard` shape: ruleset `[deletion, non_fast_forward,
+   # pull_request]`). Including `pull_request` here would over-gate that shape —
+   # falsely skipping the protective wait and allowing an ungated merge. The
+   # CHANGELOG-backfill write-path probe checks `pull_request` because *its*
+   # question is "can I direct-write to the branch" (which a PR rule blocks) — a
+   # different question from "will an admin --auto land ungated", which only
+   # required status checks answer.
    if [ "$REQUIRED_CHECKS" = "0" ]; then
      RULESET_GATED=$(gh api "repos/<owner/repo>/rules/branches/${DEFAULT_BRANCH}" \
-       --jq '[.[].type] | (contains(["required_status_checks"]) or contains(["pull_request"])) | tostring' \
+       --jq '[.[].type] | contains(["required_status_checks"]) | tostring' \
        2>/dev/null || echo "false")
-     case "$RULESET_GATED" in (true) REQUIRED_CHECKS=1;; esac   # ruleset gates the branch — treat as required-checks present, NOT ungated
+     case "$RULESET_GATED" in (true) REQUIRED_CHECKS=1;; esac   # ruleset requires status checks — gated, NOT ungated
    fi
    ```
 
@@ -51,7 +60,7 @@ After `gh pr create` returns:
    - **Shape 1 (#438):** `ALLOW_AUTO_MERGE == false`. With repo-level auto-merge disabled, `gh pr merge --auto` has nothing to queue against, so an admin's call falls through to an immediate direct merge.
    - **Shape 2 (#465), which fires *regardless of `ALLOW_AUTO_MERGE`*:** `REQUIRED_CHECKS == 0`. Even with `allow_auto_merge: true`, when the base branch has zero *required* status checks `gh pr merge --auto` has no pending check to wait on — so an admin's call merges *immediately* rather than queuing behind CI. The original #438 detector missed this because it only checked `ALLOW_AUTO_MERGE == false`; the #465 repro (this dogfood repo, `allow_auto_merge: true` + admin + no required checks) is the now-current shape (see issue [#602](https://github.com/mattsears18/shipyard/issues/602)).
 
-   > **Ruleset-aware `REQUIRED_CHECKS` reading (#645).** The signal-(c) `REQUIRED_CHECKS` count above comes from the **classic** branch-protection contexts endpoint, which does NOT see repository **rulesets**. A default branch gated by a *ruleset* (GitHub Rulesets, not classic protection) returns 0 from the contexts endpoint even though it requires checks — a false "ungated" reading that would mis-fire shape 2 on the now-common Rulesets-protected repo shape (the #645 repro: `mattsears18/lightwork` protects `main` via a ruleset requiring 4 checks, yet the classic contexts probe reports 0). The signal-(c) snippet closes this by probing `repos/{owner}/{repo}/rules/branches/{branch}` when the classic count is 0 and treating the branch as gated when an active ruleset requires status checks **or** a PR — the same two-shape ruleset idiom the orchestrator's CHANGELOG-backfill write-path probe already uses. Treat the branch as gated if **either** classic protection **or** an active ruleset requires checks / a PR.
+   > **Ruleset-aware `REQUIRED_CHECKS` reading (#645).** The signal-(c) `REQUIRED_CHECKS` count above comes from the **classic** branch-protection contexts endpoint, which does NOT see repository **rulesets**. A default branch gated by a *ruleset* (GitHub Rulesets, not classic protection) returns 0 from the contexts endpoint even though it requires checks — a false "ungated" reading that would mis-fire shape 2 on the now-common Rulesets-protected repo shape (the #645 repro: `mattsears18/lightwork` protects `main` via a ruleset requiring 4 checks, yet the classic contexts probe reports 0). The signal-(c) snippet closes this by probing `repos/{owner}/{repo}/rules/branches/{branch}` when the classic count is 0 and treating the branch as gated when an active ruleset has a `required_status_checks` rule. Treat the branch as gated if **either** classic protection **or** an active ruleset requires status checks. **Check only the `required_status_checks` rule, not `pull_request`** — a `pull_request` ruleset rule requires the change to arrive via a PR but does NOT gate the *merge* on CI, so an admin `--auto` still direct-merges immediately (ungated) on a ruleset that has `pull_request` but no `required_status_checks` (the `mattsears18/shipyard` shape). Including `pull_request` would over-gate that shape and falsely skip the protective wait. This is narrower than the CHANGELOG-backfill write-path probe (which checks `pull_request` because *its* question is "can I direct-write to the branch", a different question from "will an admin `--auto` land ungated").
 
    ```bash
    # Two-shape ungated-path test (mirrors setup.md §1.3). VIEWER_PERM gates both.

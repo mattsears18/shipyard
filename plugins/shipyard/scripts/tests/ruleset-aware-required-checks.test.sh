@@ -100,8 +100,19 @@ if [[ -f "$AUTO_MERGE_MD" ]]; then
   # the un-expanded `${DEFAULT_BRANCH}` shell variable as it appears in the doc.
   assert_contains "$AUTO_MERGE_MD" 'repos/<owner/repo>/rules/branches/${DEFAULT_BRANCH}' \
     "auto-merge.md §0.5 probes the rulesets endpoint when classic checks read 0 (#645)"
-  assert_contains "$AUTO_MERGE_MD" 'contains(["required_status_checks"]) or contains(["pull_request"])' \
-    "auto-merge.md §0.5 treats a ruleset requiring checks OR a PR as gated (#645)"
+  # shellcheck disable=SC2016
+  # Literal markdown text — the ruleset probe checks ONLY required_status_checks.
+  assert_contains "$AUTO_MERGE_MD" '[.[].type] | contains(["required_status_checks"])' \
+    "auto-merge.md §0.5 ruleset probe checks the required_status_checks rule (#645)"
+  # The probe must NOT include `pull_request` — that rule requires a PR but does
+  # not gate the merge on CI, so including it over-gates pull_request-only repos
+  # (the mattsears18/shipyard shape) and falsely skips the protective wait.
+  # shellcheck disable=SC2016
+  if grep -qF 'contains(["required_status_checks"]) or contains(["pull_request"])' "$AUTO_MERGE_MD"; then
+    assert_fail "auto-merge.md §0.5 ruleset probe must NOT also gate on pull_request (#645)"
+  else
+    assert_pass "auto-merge.md §0.5 ruleset probe does NOT gate on pull_request (#645)"
+  fi
   assert_contains "$AUTO_MERGE_MD" "Ruleset-aware fallback (#645)" \
     "auto-merge.md §0.5 carries the #645 ruleset-aware-fallback marker"
 
@@ -128,8 +139,15 @@ if [[ -f "$SETUP_MD" ]]; then
 
   assert_contains "$SETUP_MD" 'repos/<owner/repo>/rules/branches/<default-branch>' \
     "setup §1.3 probes the rulesets endpoint when classic checks read 0 (#645)"
-  assert_contains "$SETUP_MD" 'contains(["required_status_checks"]) or contains(["pull_request"])' \
-    "setup §1.3 treats a ruleset requiring checks OR a PR as gated (#645)"
+  # shellcheck disable=SC2016
+  assert_contains "$SETUP_MD" '[.[].type] | contains(["required_status_checks"])' \
+    "setup §1.3 ruleset probe checks the required_status_checks rule (#645)"
+  # shellcheck disable=SC2016
+  if grep -qF 'contains(["required_status_checks"]) or contains(["pull_request"])' "$SETUP_MD"; then
+    assert_fail "setup §1.3 ruleset probe must NOT also gate on pull_request (#645)"
+  else
+    assert_pass "setup §1.3 ruleset probe does NOT gate on pull_request (#645)"
+  fi
   assert_contains "$SETUP_MD" "Ruleset-aware fallback (#645)" \
     "setup §1.3 carries the #645 ruleset-aware-fallback marker"
 
@@ -153,7 +171,9 @@ fi
 # `rules/branches/{branch}` payloads and assert the gated/ungated decision.
 # ---------------------------------------------------------------------------
 if command -v jq >/dev/null 2>&1; then
-  JQ='[.[].type] | (contains(["required_status_checks"]) or contains(["pull_request"])) | tostring'
+  # The detector probe checks ONLY required_status_checks (NOT pull_request):
+  # a pull_request rule requires a PR but does not gate the merge on CI.
+  JQ='[.[].type] | contains(["required_status_checks"]) | tostring'
 
   ruleset_decision() { printf '%s' "$1" | jq -r "$JQ" 2>/dev/null || echo "false"; }
 
@@ -161,9 +181,16 @@ if command -v jq >/dev/null 2>&1; then
     "$(ruleset_decision '[{"type":"required_status_checks"},{"type":"pull_request"}]')"
   assert_equals "ruleset requiring checks only => gated" "true" \
     "$(ruleset_decision '[{"type":"required_status_checks"}]')"
-  assert_equals "ruleset requiring a PR only => gated" "true" \
+  # A pull_request rule alone does NOT gate the merge on CI — an admin --auto
+  # still direct-merges ungated, so this must read ungated (the regression the
+  # pull_request-inclusive form introduced on the mattsears18/shipyard shape).
+  assert_equals "ruleset requiring a PR only (no checks) => ungated" "false" \
     "$(ruleset_decision '[{"type":"pull_request"}]')"
-  assert_equals "ruleset with no checks/PR rule => ungated" "false" \
+  assert_equals "shipyard-shape ruleset (deletion+non_fast_forward+pull_request, no checks) => ungated" "false" \
+    "$(ruleset_decision '[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request"}]')"
+  assert_equals "lightwork-shape ruleset (+required_status_checks) => gated" "true" \
+    "$(ruleset_decision '[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request"},{"type":"required_status_checks"}]')"
+  assert_equals "ruleset with no checks rule => ungated" "false" \
     "$(ruleset_decision '[{"type":"creation"},{"type":"deletion"}]')"
   assert_equals "empty ruleset (no rules) => ungated" "false" \
     "$(ruleset_decision '[]')"
@@ -180,15 +207,16 @@ if command -v jq >/dev/null 2>&1; then
     assert_pass "shape 2 does NOT fire on a ruleset-gated branch (admin + ruleset checks)"
   fi
 
-  # And a genuinely ungated branch (no classic checks, no gating ruleset) still
-  # fires shape 2 — the fix must not over-suppress.
+  # A genuinely ungated pull_request-only ruleset (the mattsears18/shipyard
+  # shape) must STILL fire shape 2 — the fix must not over-suppress. This is the
+  # regression the pull_request-inclusive form introduced.
   required_checks_count=0
-  ruleset_gated=$(ruleset_decision '[]')
+  ruleset_gated=$(ruleset_decision '[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request"}]')
   case "$ruleset_gated" in (true) required_checks_count=1 ;; esac
   if [ "$viewer_admin" = "true" ] && [ "$required_checks_count" = "0" ]; then
-    assert_pass "shape 2 still fires on a genuinely ungated branch (admin + no checks, no ruleset)"
+    assert_pass "shape 2 still fires on a pull_request-only ruleset (admin + no required checks)"
   else
-    assert_fail "shape 2 still fires on a genuinely ungated branch (admin + no checks, no ruleset)"
+    assert_fail "shape 2 still fires on a pull_request-only ruleset (admin + no required checks)"
   fi
 else
   printf '  %sSKIP%s  behavioral jq tests (jq not installed)\n' "$GREEN" "$RESET"
