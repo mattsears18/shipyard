@@ -59,15 +59,21 @@ esac
 # does NOT see repository RULESETS — classic branch protection and rulesets are
 # two SEPARATE gating mechanisms. A default branch gated by a *ruleset* (GitHub
 # Rulesets, increasingly the default shape) reports zero classic required checks
-# while still gating the merge, so shape 2 below would false-fire and warn that
-# `--auto` direct-merges ungated when it actually queues behind the ruleset's
-# checks. When the classic count is 0, probe the rulesets endpoint; if an active
-# ruleset requires status checks OR a PR, treat the branch as gated (non-zero
-# sentinel). Same two-shape ruleset idiom the CHANGELOG-backfill write-path probe
-# in steady-state.md uses (`repos/{repo}/rules/branches/{branch}`).
+# while still gating the merge on CI, so shape 2 below would false-fire and warn
+# that `--auto` direct-merges ungated when it actually queues behind the
+# ruleset's checks. When the classic count is 0, probe the rulesets endpoint for
+# a `required_status_checks` rule; if one is active, treat the branch as gated
+# (non-zero sentinel). Check ONLY `required_status_checks`, NOT `pull_request` —
+# a `pull_request` ruleset rule requires a PR but does NOT gate the merge on CI,
+# so an admin `--auto` still direct-merges ungated on a ruleset that has
+# `pull_request` but no `required_status_checks` (the `mattsears18/shipyard`
+# shape: ruleset `[deletion, non_fast_forward, pull_request]`) — exactly the
+# case this warning must still fire on. The CHANGELOG-backfill write-path probe
+# checks `pull_request` because *its* question (can I direct-write to the branch)
+# is different from this one (will an admin `--auto` land ungated).
 if [ "$required_checks_count" = "0" ]; then
   ruleset_gated=$(gh api "repos/<owner/repo>/rules/branches/<default-branch>" \
-    --jq '[.[].type] | (contains(["required_status_checks"]) or contains(["pull_request"])) | tostring' \
+    --jq '[.[].type] | contains(["required_status_checks"]) | tostring' \
     2>/dev/null || echo "false")
   case "$ruleset_gated" in (true) required_checks_count=1 ;; esac
 fi
@@ -82,7 +88,7 @@ fi
 
 The warning fires unconditionally of `--concurrency` (the steady-state leapfrog is worst at C≥2, but a C=1 operator who later raises concurrency benefits from having seen it once). It's two REST reads folded into the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) alongside step 1's reads — fire them in the same burst, not serially. If either read fails (network, permission), the fallbacks (`|| echo '{}'` for the repo read, `|| echo 0` for the required-checks read) plus the `case` numeric-shape normalize on `required_checks_count` make the missing signals empty/zero, and the worst case is an extra advisory warning on a transient required-checks read failure — no hard failure on a diagnostic read. The normalize is load-bearing (#479): `gh api` does not apply `--jq` to error responses, so on a 404 (`Branch not protected` — the zero-required-checks shape this detector targets) it writes the raw error body to *stdout* and `|| echo 0` *appends* `0` rather than replacing the body; without the `case` collapse the resulting non-numeric string never equals `"0"` and shape-2 stays silently suppressed on exactly the repos it warns about. With the normalize in place, a 404 or any transient failure of the required-checks read on an admin repo collapses to `0` and surfaces the warning; that's the conservative direction (warn-on-doubt) for a diagnostic-only line.
 
-**Ruleset-aware fallback (#645).** The classic `required_status_checks` read sees only **classic** branch protection, not repository **rulesets** — two separate gating mechanisms. A default branch gated by a ruleset reports zero classic required checks while still gating the merge, so without the fallback shape 2 false-fires and warns that `--auto` direct-merges ungated when it actually queues behind the ruleset's checks (the #645 repro: `mattsears18/lightwork` protects `main` via a ruleset requiring 4 checks, yet the classic probe reports 0). When the classic count is 0, the detector additionally probes `repos/{owner}/{repo}/rules/branches/{branch}` and treats the branch as gated if an active ruleset requires status checks **or** a PR — the same two-shape ruleset idiom the orchestrator's CHANGELOG-backfill write-path probe in [steady-state.md](../steady-state.md) already uses. This keeps the issue-worker's mirrored §0.5 detector ([worker-preamble `auto-merge.md`](../../../skills/worker-preamble/auto-merge.md)) and this orchestrator-side warning consistent on Rulesets-protected repos.
+**Ruleset-aware fallback (#645).** The classic `required_status_checks` read sees only **classic** branch protection, not repository **rulesets** — two separate gating mechanisms. A default branch gated by a ruleset's `required_status_checks` rule reports zero classic required checks while still gating the merge on CI, so without the fallback shape 2 false-fires and warns that `--auto` direct-merges ungated when it actually queues behind the ruleset's checks (the #645 repro: `mattsears18/lightwork` protects `main` via a ruleset requiring 4 checks, yet the classic probe reports 0). When the classic count is 0, the detector additionally probes `repos/{owner}/{repo}/rules/branches/{branch}` and treats the branch as gated if an active ruleset has a `required_status_checks` rule. It checks **only** `required_status_checks`, **not** `pull_request`: a `pull_request` ruleset rule requires a PR but does NOT gate the *merge* on CI, so an admin `--auto` still direct-merges ungated on a ruleset that has `pull_request` but no `required_status_checks` (the `mattsears18/shipyard` shape, ruleset `[deletion, non_fast_forward, pull_request]`) — exactly the case this warning must still fire on. (This is narrower than the CHANGELOG-backfill write-path probe in [steady-state.md](../steady-state.md), which checks `pull_request` because *its* question — can I direct-write to the branch — differs from this one.) This keeps the issue-worker's mirrored §0.5 detector ([worker-preamble `auto-merge.md`](../../../skills/worker-preamble/auto-merge.md)) and this orchestrator-side warning consistent on Rulesets-protected repos.
 
 ### 1.5 Initialise the session state file
 
