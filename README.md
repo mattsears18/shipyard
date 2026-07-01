@@ -139,7 +139,7 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release. Pin to a specif
 
 An autonomous engineering loop for web + mobile app development. Three things it does:
 
-1. **Finds work** — `/audit` runs deep audits across UX, performance, security, accessibility, DX, privacy, PWA readiness, release readiness, SEO, tech debt, testing, docs, observability, and API surface health, and autonomously files GitHub issues for every finding.
+1. **Finds work** — `/audit` runs deep audits across UX, performance, security, accessibility, DX, privacy, PWA readiness, release readiness, SEO, tech debt, testing, docs, observability, API surface health, and data-model lifecycle integrity, and autonomously files GitHub issues for every finding.
 2. **Refines work** — `/refine-issues` is a source-branched refiner: raw user-feedback issues get classified (already-done / decline / legitimate) and rewritten into implementation-ready tickets; Claude-filed feature requests with `## Open questions` get reasonable defaults committed; everything else falls through to `needs-triage`. The user-feedback path is gated by a `needs-human-review` label so no code-modifying agent runs until a human signs off; the open-questions and triage paths are decoupled from human review.
 3. **Does work** — `/do-work` orchestrates a rolling pool of parallel issue-workers, each in an isolated git worktree. It dispatches up to `--concurrency` workers at once, opens PRs with auto-merge, and gracefully handles failing checks, red main CI, and PR pileups via specialized diversion workers.
 
@@ -161,6 +161,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit docs` — README drift, broken links, docstring drift from signatures, missing ADRs, stale dated TODOs in docs
 - `/audit observability` — error-tracking effectiveness, structured-logging consistency, tracing coverage, alert config
 - `/audit api` — OpenAPI / GraphQL schema drift, missing pagination, inconsistent auth and error envelopes, breaking-change diffs
+- `/audit data-lifecycle` — data-model mutation integrity: orphaned records after a parent delete, denormalized snapshots that drift on update, missing cascades / back-reference cleanup, ephemeral/counter collections with no GC/TTL
 - `/audit all <url>` — every audit in parallel
 - `/refine-issues` — process refinement-gated issues (user-feedback classify+rewrite, open-questions resolve-defaults, or escalate-to-triage fall-through).
 - [`/decompose-epic`](plugins/shipyard/commands/decompose-epic.md) — auto-decompose confirmed epics (issues carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker) into dispatch-ready GitHub sub-issues. `Multi-PR sequence:` / `Missing dependency:` evidence classes get sharded into an ordered `Blocked by #<sibling>` chain (so `/do-work` sequences them automatically); non-mechanical classes fall through to the existing human handoff. Explicit, human-invoked — mirrors `/refine-issues`' sentinel-keyed shape.

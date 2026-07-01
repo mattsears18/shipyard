@@ -11,7 +11,7 @@ Run an autonomous audit and file GitHub issues for every finding. No approval ga
 
 `$ARGUMENTS` may include:
 
-- **Audit type** (optional, first positional — **defaults to `all` when omitted**): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `security`, `a11y`, `seo`, `privacy`, `release-readiness`, `pwa`, `tech-debt`, `testing`, `dx`, `docs`, `observability`, `api`, or `all`. When `/audit` is run with no audit-type argument, proceed straight to `all` — do **not** prompt via `AskUserQuestion` to pick a type.
+- **Audit type** (optional, first positional — **defaults to `all` when omitted**): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `security`, `a11y`, `seo`, `privacy`, `release-readiness`, `pwa`, `tech-debt`, `testing`, `dx`, `docs`, `observability`, `api`, `data-lifecycle`, or `all`. When `/audit` is run with no audit-type argument, proceed straight to `all` — do **not** prompt via `AskUserQuestion` to pick a type.
 - **URL** (optional, second positional, web audits only): the page to audit. If omitted and the audit needs a URL, ask via `AskUserQuestion`.
 - **--repo owner/repo** (optional): target GitHub repo. If omitted, auto-detect via `gh repo view --json nameWithOwner -q .nameWithOwner`. If that fails (not in a repo), ask via `AskUserQuestion`.
 
@@ -41,6 +41,7 @@ Resolve the target repo *once* in the main session and pass it to every agent. T
 | `docs` | `shipyard:docs-auditor` | no |
 | `observability` | `shipyard:observability-auditor` | no |
 | `api` | `shipyard:api-auditor` | no |
+| `data-lifecycle` | `shipyard:data-lifecycle-auditor` | no |
 | `all` | every agent above (parallel) | yes |
 
 When dispatching multiple agents, send them as multiple `Agent` tool calls in a single message so they run concurrently.
