@@ -60,6 +60,7 @@ Every issue you file MUST also carry an `audit:<dimension>` label identifying wh
 | `tech-debt-auditor` | `audit:tech-debt` | `c5def5` |
 | `testing-auditor` | `audit:testing` | `c5def5` |
 | `dx-auditor` | `audit:dx` | `c5def5` |
+| `functional-qa-auditor` | `audit:functional-qa` | `c5def5` |
 
 **Auto-create your audit:* label if it doesn't exist** — because the label is the agent's own metadata, not a repo-config decision. Do this once at the start of the run (alongside the `shipyard` ensure above):
 
