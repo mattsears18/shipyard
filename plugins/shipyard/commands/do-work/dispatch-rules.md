@@ -225,7 +225,7 @@ When filling a slot, walk this decision tree:
 
    > **`mode: fix-checks-only`** — Fix failing CI checks on PR #<M> in `<owner/repo>` (head branch `<headRefName>`). **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/fix-checks-only.md`.** Existing PR — do NOT open a new one, do NOT change scope, do NOT modify title/body/labels.
    >
-   > Return values: `green #<M>`, `noop: already green`, or `blocked: <last failing check> — <last error excerpt>`.
+   > Return values: `green #<M>`, `noop: already green`, `flake #<M>: re-ran failed jobs (<signature>)` (infra flake — cancelled jobs / dev-server timeout / setup-job failure, local gates pass; re-ran instead of code-fixing, does not count toward the `blocked:ci` cap), or `blocked: <last failing check> — <last error excerpt>`.
 
    **For `fix-rebase` dispatches (drain-phase only — see [end-of-session drain](./drain.md#end-of-session-drain)):** the same `failed_prs`-style branch-targeted dispatch shape, but a different prompt template and a different return contract. Use `subagent_type: "shipyard:fix-rebase-worker"` (Haiku-pinned).
 

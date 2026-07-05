@@ -25,12 +25,12 @@ git switch "$HEAD_REF"
 ## Hard rules
 
 1. Do NOT modify scope. Do NOT amend the PR title/description. Do NOT close the linked issue from this PR. Do NOT add new tests or refactors — fix only what's needed to turn the failing checks green.
-2. **Hard cap: 3 fix attempts.** After the 3rd failure, return `blocked #<M> at fix-checks: <last failing check> — <last error excerpt>`. The orchestrator will label the PR `blocked:ci` and move on. Do not let one PR consume the session.
+2. **Hard cap: 3 fix attempts.** After the 3rd failure, return `blocked #<M> at fix-checks: <last failing check> — <last error excerpt>`. The orchestrator will label the PR `blocked:ci` and move on. Do not let one PR consume the session. **An infra-flake re-run (the `flake #<M>` disposition) is NOT a fix attempt and does not count toward this cap** — you never attempted a code fix; you deliberately re-ran healthy jobs on flaky infrastructure. See [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing).
 3. **`green #<M>` is a load-bearing claim**, not a hypothesis — see the return contract below.
 
 ## Return contract — read carefully
 
-When you finish, your **last line MUST be exactly one of the three strings below** (with `<M>` substituted). Anything else is a contract violation that wastes orchestrator turns. The exact semantics of `green` matter:
+When you finish, your **last line MUST be exactly one of the four strings below** (with `<M>` substituted). Anything else is a contract violation that wastes orchestrator turns. The exact semantics of `green` matter:
 
 - `green #<M>` — **a full CI run completed and passed AFTER your final push.** Not "pushed and queued." Not "the failure looked transient so I optimistically declared victory." Not "I rebased onto a green main so it should work now." Not "I fixed what I concluded the failure was, so it should be green now." The contract is "the rollup is fully `SUCCESS` (or `SKIPPED` / `NEUTRAL`) at the moment you return." You enforce this by running the `gh pr checks <M> --watch --interval 30` step in the fix-loop below to completion — not by polling once and assuming the queued runs will eventually pass — **and then re-confirming the specific check(s) that were failing at dispatch flipped to SUCCESS on the post-push SHA** (the [named-failing-check re-verification gate](#named-failing-check-re-verification-gate-load-bearing) below). The orchestrator's [step A reconcile](../../commands/do-work/steady-state.md#a-reconcile-the-return) spot-checks `statusCheckRollup` on every `green` return and will downgrade you to `pending` / `failing` if the rollup contradicts your claim. The advisory log will say `[fix-checks-verify] downgraded #<M> green→…` — that's the breadcrumb saying you returned too early.
 - `noop: already green #<M>` — no failures by the time you started. Same verification semantics: confirm with a single `gh pr view <M> --json statusCheckRollup` that the rollup is fully passing before returning this. The orchestrator spot-checks this path too.
@@ -48,6 +48,8 @@ When you finish, your **last line MUST be exactly one of the three strings below
   ```
 
   If `fails == 0` at the moment of return, you can claim `noop: already green` (or `green`). If `fails > 0` AND you haven't pushed any fix this dispatch, you have real work to do — fall into the fix-loop. The reduction is load-bearing: `group_by(.name) | map(... | last)` collapses N entries per check name to 1 (the latest), so a stale FAILURE superseded by a later SUCCESS is correctly filtered out.
+
+- `flake #<M>: re-ran failed jobs (<signature>)` — **the failing run was an infrastructure flake, not a code defect**, and you re-ran the failed jobs instead of attempting a code fix. Return this ONLY after the [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing) gate matched — a cancelled required job / dev-server boot timeout / setup-job failure / runner-lost signature AND your local gates passed AND the logs show no deterministic code error — and you ran `gh run rerun --failed`. `<signature>` is a short tag naming what you matched (`cancelled-required-jobs`, `webserver-boot-timeout`, `setup-job-failure`, `runner-lost`). This does **not** count as a fix attempt and the orchestrator does **not** label the PR `blocked:ci` — the diff is healthy (local gates pass); CI just needs to re-run on idle infrastructure. Do NOT block on the re-run to complete — return immediately so the concurrency slot frees; the orchestrator's PR-triage picks the PR back up when the re-run settles.
 
 - `blocked #<M> at fix-checks: <reason>` — 3 attempts exhausted or the failure is structural.
 
@@ -115,6 +117,67 @@ If a named check is **still FAILURE after your fix**, your diagnosis was wrong �
 
 **Recognize the i18n-parity signature as a distinct, common pattern.** When the failing log says a parity / completeness test is missing keys — e.g. `locales/en.json is missing keys derived from lib/strings.ts`, `__tests__/i18n.test.ts` asserting every `Strings.*` key has a translation — the fix is to mirror the new keys into the locale file(s), NOT to declare the failure a worktree-ignore artifact. A "No tests found" / zero-test pass from re-running jest with the worktree path stripped does NOT resolve an i18n-parity failure; those are two different checks. If you see a zero-test pass on a diff that touched `Strings.*` / `lib/strings.ts` and a *separate* parity test is red, the parity test is the real failure.
 
+## Infra-flake classification and re-run (load-bearing)
+
+Closes [#654](https://github.com/mattsears18/shipyard/issues/654) — the **infra-flake false-bail** failure mode. A failing CI run is not always a code defect. When CI runs on shared / self-hosted infrastructure (e.g. self-hosted runners on the same host the orchestrator dispatches workers to), runner contention **starves** jobs: required jobs get **cancelled**, dev-servers **time out booting**, and even trivial no-code setup jobs (change-path detection, shard-matrix load, checkout) **fail** — none of which your PR's diff caused. The wild repro (session `01XU6TMaDdGnDyptZqJJJiDm`, `mattsears18/lightwork` PR #2273): a fix-checks worker saw `Lint & Typecheck cancelled`, `Unit Tests cancelled`, and `E2E all 3 shards failed`, concluded it "needed logs to diagnose" while the run was still in progress, returned `blocked #2273 at fix-checks: … logs unavailable while run still in progress`, pushed no fix, and burned ~139k tokens. The correct disposition was to recognize the cancellation / timeout signature as **infrastructure** and re-run the failed jobs on the (now-idle) host.
+
+**This classification runs BEFORE you attempt any code fix.** Its job is to route: infra flake → re-run the failed jobs and return `flake #<M>`; deterministic code error → fall through to the [Fix-loop](#fix-loop). Only fall through to the code-fixing loop when the logs show a deterministic code error.
+
+### Step A — never declare "logs unavailable" on an in-progress run
+
+"Logs unavailable while the run is still in progress" is **not** a terminal condition — it is a signal to WAIT, never to bail. If a job hasn't finished, its logs aren't fetchable yet; the run finishes in minutes. Block your own turn on the foreground watch until the run settles, THEN fetch logs:
+
+```bash
+# Blocks until the rollup resolves (all green, or at least one check concluded
+# non-SUCCESS). Exits non-zero on any failure — either way the run has settled
+# enough to fetch failed-job logs. NEVER bail "logs unavailable" before this.
+gh pr checks <M> --repo <owner/repo> --watch --interval 30 || true
+```
+
+A `blocked` return whose reason is "logs unavailable while run in progress" is **always premature** — wait for completion first, then classify.
+
+### Step B — match the infra-flake signature
+
+After the run has settled and you've pulled the failed-job logs ([Fix-loop](#fix-loop) step 2), classify the failure as an **infra flake** only when ALL of the following hold:
+
+1. **Infra signature present.** At least one failing / cancelled check matches a known infrastructure pattern:
+   - A **required job's conclusion is `CANCELLED`** — the log line `##[error]The operation was canceled.`. Jobs don't cancel themselves on a code error; cancellation is host / runner-driven.
+   - A **dev-server / webServer boot timeout** — e.g. `Timed out waiting <N>ms from config.webServer`, or an equivalent "server did not start in time" message.
+   - A **trivial no-code setup job failed** — change-path detection, shard-matrix load, checkout, dependency-cache restore, `setup-node` / `setup-python`. These have no PR-authored logic to break, so a failure is infrastructure by construction.
+   - A **runner-level error** — `lost communication with the server`, `The runner has received a shutdown signal`, `The self-hosted runner … lost connection`.
+2. **Local gates pass.** You ran the repo's local gate suite — the CI-superset discovery (mirror CI's own `find` / glob, per `issue-work.md` §4) over the PR's changed files — and it passed. This is the proof the diff is not the cause. If you **cannot** run the local gates, do NOT classify as a flake — fall through to the fix-loop.
+3. **No deterministic code error in the logs.** The failing logs do NOT contain a stable code-defect signature — a typecheck error (`error TS####`), a lint-rule violation, an assertion failure with a stable message, a compile error, an import-resolution failure. If a deterministic code error is present *alongside* an infra symptom, treat it as a **code error** (fix it), not a flake — the infra noise doesn't excuse a real failure.
+
+### Step C — bounded re-run, then return `flake`
+
+When Step B matches, re-run only the failed jobs and return the distinct `flake` disposition — do NOT attempt a code fix, and do NOT count this as a fix attempt:
+
+```bash
+# Guard against an unbounded re-run loop on a persistently-starved host.
+# Each `gh run rerun --failed` creates a new ATTEMPT of the same run; if the
+# run has ALREADY been re-run and is STILL infra-flaking, re-running again
+# won't help — the host is persistently starved, which is a human/operator
+# problem, not a transient blip.
+RUN_ID=<failing-run-id>   # from `gh run list` or the failing check's `link`
+ATTEMPT=$(gh run view "$RUN_ID" --repo <owner/repo> --json attempt --jq '.attempt // 1')
+if [ "${ATTEMPT:-1}" -ge 2 ]; then
+  echo "blocked #<M> at fix-checks: infra flake persisted across ${ATTEMPT} run attempts (<signature>) — CI host may be resource-starved; needs human/operator attention, not another re-run"
+  exit 0
+fi
+
+gh run rerun "$RUN_ID" --repo <owner/repo> --failed
+```
+
+Then return exactly:
+
+> `flake #<M>: re-ran failed jobs (<signature>)`
+
+where `<signature>` is the short tag naming what you matched (`cancelled-required-jobs`, `webserver-boot-timeout`, `setup-job-failure`, `runner-lost`). **Do NOT block on the re-run to complete** — return immediately so the concurrency slot frees. The orchestrator's PR-triage picks the PR back up when the re-run settles: green → auto-merge fires; still-red → a fresh fix-checks dispatch, which — if the run's attempt count has now reached the bound above — bails `blocked:ci` rather than re-running forever.
+
+**Why `flake` is distinct from `blocked` and doesn't hit the cap.** The 3-attempt cap and its `blocked:ci` label exist for PRs whose *diff* is stuck failing CI. An infra flake is the opposite — the diff is fine (local gates pass); CI just needs to re-run on healthy infrastructure. Counting a re-run against the cap would burn the budget for a case the cap doesn't apply to, and stamping `blocked:ci` would falsely mark a healthy PR as human-blocked. The `flake` return keeps the PR moving without either penalty. The bounded-attempt guard (attempt ≥ 2 → `blocked`) is the escape hatch that DOES engage `blocked:ci` when the flake is chronic rather than transient — at that point a human/operator genuinely needs to look (e.g. drain the runner queue, reduce concurrency).
+
+**This is distinct from the chronic per-test flake registry** ([Fix-loop step 1.5](#fix-loop) and the flake-registry recording below). That registry tracks a *specific test* flaking across many PRs over time; this section handles a *whole-run infrastructure* failure within a single dispatch. They can co-occur but are separate mechanisms — don't record an infra-flake whole-run re-run in the per-test registry (it has no test id to key on).
+
 ## Fix-loop
 
 In this mode — and only this mode — you do block on CI, because resolving a known-failing PR is the agent's entire job.
@@ -152,6 +215,9 @@ On failure:
    gh run view <run-id> --repo <owner/repo> --log-failed 2>&1 | tee /tmp/failed.log
    ```
    The same heartbeat discipline applies to `npm ci` and to a buffered local test re-run in step 3 — keep stream output flowing so a 5–15 min command doesn't read as a stall.
+
+   **If the logs aren't fetchable because the run is still in progress, do NOT bail "logs unavailable" — wait for completion first** (the [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing) Step A watch), then re-fetch. A run finishes in minutes; a premature "logs unavailable while run in progress" bail is the exact #654 failure mode.
+2.5. **Infra-flake classification (before any code fix).** With the failed-job logs in hand, run the [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing) gate. If the failure matches the cancellation / dev-server-timeout / setup-job-failure / runner-lost signature AND your local gates pass AND the logs show no deterministic code error, `gh run rerun --failed` (respecting the attempt-count bound) and return `flake #<M>: re-ran failed jobs (<signature>)` — do NOT proceed to a code fix, and do NOT count this as a fix attempt. Only fall through to step 3 when the logs show a **deterministic code error** (a real defect your diff introduced).
 3. Reproduce locally if practical.
 4. Fix the smallest thing that resolves the failure. Don't expand scope.
 5. `git commit` + `git push` to the same branch. Never `--no-verify` (see worker-preamble). Never force-push unless rewriting history is genuinely required.
@@ -186,6 +252,8 @@ The registry lives at `~/.shipyard/flake-registry.jsonl` (one line per event). T
 ## Don't
 
 - Don't open a new PR. The PR is already open; this mode repairs CI only.
+- **Don't bail `blocked … logs unavailable while run in progress`.** That's a wait-signal, not a diagnosis — block on the [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing) Step A watch until the run settles, then classify. A premature "logs unavailable" bail on an in-progress run is the exact [#654](https://github.com/mattsears18/shipyard/issues/654) failure mode (~139k tokens burned, no fix pushed, a healthy PR mislabeled).
+- **Don't treat a cancelled job / dev-server boot timeout / setup-job failure as an undiagnosable code failure.** Those are the infra-flake signature — when local gates pass, `gh run rerun --failed` and return `flake #<M>: re-ran failed jobs (<signature>)` per [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing), do NOT attempt a code fix. But do NOT re-run *forever*: the attempt-count bound converts a chronic infra flake into a `blocked:ci` hand-off for a human/operator.
 - Don't modify the PR title or description.
 - Don't close the linked issue from this PR. The original PR body already has the `Closes #N` line; merging the rebased branch closes the issue automatically.
 - Don't add new tests or refactors. Fix only what's needed to turn the failing checks green.
