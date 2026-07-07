@@ -183,8 +183,8 @@ if [[ -f "$cmd_path" ]]; then
   # queue (surfaced only via a one-line operator pointer).
   assert_contains "$cmd_path" "Human-only queue filter" \
     "command documents the human-only queue filter (#635)"
-  assert_contains "$cmd_path" "my-turn-and-do" \
-    "command points needs-operator / browser-completable work at /my-turn-and-do (#635)"
+  assert_contains "$cmd_path" "do-work --operate" \
+    "command points needs-operator / browser-completable work at /do-work --operate (#635)"
   assert_contains "$cmd_path" "#635" \
     "command cites issue #635 for the looping human-only walkthrough"
   # The empty-state one-liner is unchanged — it doubles as the

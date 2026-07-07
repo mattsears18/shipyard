@@ -1,10 +1,10 @@
 # /shipyard:do-work — Operator phase (default-on)
 
-The browser-operator layer of `/do-work`, loaded **by default on every run** since [#661](https://github.com/mattsears18/shipyard/issues/661) made autonomous, operator-inclusive operation the default. It is loaded for a plain `/do-work` run (and, identically, when invoked as [`/shipyard:my-turn-and-do`](../my-turn-and-do.md), the thin alias for `/do-work --operate`). It is **skipped only under the `--no-operate` / `--hands-off` opt-out** — the rare dispatch-only run.
+The browser-operator layer of `/do-work`, loaded **by default on every run** since [#661](https://github.com/mattsears18/shipyard/issues/661) made autonomous, operator-inclusive operation the default. It is loaded for a plain `/do-work` run (equivalently `/do-work --operate`, a retained no-op flag). It is **skipped only under the `--no-operate` / `--hands-off` opt-out** — the rare dispatch-only run.
 
 This phase adds one capability to the autonomous loop: the orchestrator drains an [`operator_queue`](../do-work.md#orchestrator-state) of **browser-completable operator actions** by driving the user's real, logged-in Chrome — the work `/do-work` otherwise *defers* or *hands back*. It turns "I can't proceed, handing this back" moments into "I did it in the browser."
 
-It owns the browser-driving machinery formerly in `commands/my-turn-and-do.md` (backend selection, self-onboarding preflight, stale-tab recovery, standing authorization, read-page perception) **plus** the queue-drain loop and the proactive browser-completable sweep.
+It owns the browser-driving machinery (backend selection, self-onboarding preflight, stale-tab recovery, standing authorization, read-page perception) **plus** the queue-drain loop and the proactive browser-completable sweep.
 
 ## How it fits the loop
 
@@ -52,7 +52,7 @@ When the orchestrator is idle (a code worker is in flight and not yet returned, 
 
 ## Standing authorization
 
-**Running `/do-work` is itself the authorization** ([#608](https://github.com/mattsears18/shipyard/issues/608); default-on since [#661](https://github.com/mattsears18/shipyard/issues/661)) — the operator layer is the default, so a bare `/do-work` (equivalently `/do-work --operate` or `/my-turn-and-do`) grants it; only `--no-operate` / `--hands-off` withholds it. It grants standing consent, for the duration of the run, to perform **anything completable by manipulating the browser** — navigate, click, fill, type, submit, comment, close, merge — without a per-action in-chat "say 'close it' to proceed" confirmation. The user is watching their own logged-in browser; the act of invoking the command is the go-ahead. The orchestrator **announces** each browser action (one line) before performing it, then reports what it did — transparency without a blocking yes/no.
+**Running `/do-work` is itself the authorization** ([#608](https://github.com/mattsears18/shipyard/issues/608); default-on since [#661](https://github.com/mattsears18/shipyard/issues/661)) — the operator layer is the default, so a bare `/do-work` (equivalently `/do-work --operate`) grants it; only `--no-operate` / `--hands-off` withholds it. It grants standing consent, for the duration of the run, to perform **anything completable by manipulating the browser** — navigate, click, fill, type, submit, comment, close, merge — without a per-action in-chat "say 'close it' to proceed" confirmation. The user is watching their own logged-in browser; the act of invoking the command is the go-ahead. The orchestrator **announces** each browser action (one line) before performing it, then reports what it did — transparency without a blocking yes/no.
 
 What standing authorization does **not** cover:
 
@@ -276,7 +276,7 @@ Derive provider-console URLs using the same template table as `/my-turn`'s [thir
 
 *(Default-on — under `--no-operate` / `--hands-off`, ignore this entire section.)*
 
-On every run except the `--no-operate` / `--hands-off` opt-out (including via the [`/my-turn-and-do`](../my-turn-and-do.md) alias), the steady-state loop has a browser-operator layer. The full machinery — backend selection, preflight, standing authorization, per-kind playbooks, the `operator_queue` drain loop, and the proactive sweep — lives in the rest of this file ([the `operator_queue` and its two feeders](#the-operator_queue-and-its-two-feeders), [playbooks by kind](#playbooks-by-kind)); this section is just the two hooks the steady-state loop owns. Under `--no-operate` / `--hands-off`, ignore this entire section: `operator_queue` stays empty and nothing here fires.
+On every run except the `--no-operate` / `--hands-off` opt-out, the steady-state loop has a browser-operator layer. The full machinery — backend selection, preflight, standing authorization, per-kind playbooks, the `operator_queue` drain loop, and the proactive sweep — lives in the rest of this file ([the `operator_queue` and its two feeders](#the-operator_queue-and-its-two-feeders), [playbooks by kind](#playbooks-by-kind)); this section is just the two hooks the steady-state loop owns. Under `--no-operate` / `--hands-off`, ignore this entire section: `operator_queue` stays empty and nothing here fires.
 
 ### A.1 hook — reactive enqueue
 
