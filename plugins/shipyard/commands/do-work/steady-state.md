@@ -240,7 +240,7 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 
 **Pre-reap recovery check — save committed and uncommitted work before discarding the worktree ([#493](https://github.com/mattsears18/shipyard/issues/493), [#495](https://github.com/mattsears18/shipyard/issues/495)).** Before reaping a crashed worker's worktree, check whether the worker left any work that hasn't reached `origin` yet. Two cases apply: (a) the worker committed locally but hadn't pushed yet, and (b) the worker's working tree is dirty (edits staged or unstaged, never committed). Either way the worker completed expensive work that a full redo would duplicate. The recovery converts a mid-run stall or watchdog kill from "lose N edits + redo from scratch" into "salvage + push + open PR for the work already done."
 
-**Version-coordination bump during recovery ([#575](https://github.com/mattsears18/shipyard/issues/575)).** When `version_coordination.enabled` is true and a `manifest_path` is configured, the crashed worker may not have reached its own release-bump step (the worker crashes mid-implementation, before adding the manifest version bump + CHANGELOG entry). The recovery path checks whether the manifest version row in the worktree is unchanged from `origin/<default>` — if so, the recovery computes `next_available_version` and folds the bump + a minimal CHANGELOG stub into the auto-commit (dirty-worktree path) or as an additional commit (committed-but-unpushed path) before pushing. This guarantees the recovered PR carries the release bump the crashed worker never reached. The bump is **best-effort / fire-and-forget**: if the computation fails (manifest read fails, `jq` missing, coordination disabled), the recovery still pushes the PR as-is and logs a loud `[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required` advisory so the operator can patch it before merge. **Non-version-coordinated repos are unaffected** — when `version_coordination.enabled` is false or `manifest_path` is empty, the helper is a no-op and the recovery proceeds exactly as before.
+**Version-coordination bump during recovery ([#575](https://github.com/mattsears18/shipyard/issues/575)).** When `version_coordination.enabled` is true and a `manifest_path` is configured, the crashed worker may not have reached its own release-bump step (the worker crashes mid-implementation, before adding the manifest version bump + CHANGELOG entry). The recovery path checks whether the manifest version row in the worktree is unchanged from `origin/<default>` — if so, the recovery computes `next_available_version` — **bump-type-aware ([#671](https://github.com/mattsears18/shipyard/issues/671))**, inferring major/minor/patch from the recovered issue's Conventional Commits title/body so a breaking-change or feature issue isn't stamped with a semver-wrong patch — and folds the bump + a minimal CHANGELOG stub into the auto-commit (dirty-worktree path) or as an additional commit (committed-but-unpushed path) before pushing. This guarantees the recovered PR carries the release bump the crashed worker never reached. The bump is **best-effort / fire-and-forget**: if the computation fails (manifest read fails, `jq` missing, coordination disabled), the recovery still pushes the PR as-is and logs a loud `[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required` advisory so the operator can patch it before merge. **Non-version-coordinated repos are unaffected** — when `version_coordination.enabled` is false or `manifest_path` is empty, the helper is a no-op and the recovery proceeds exactly as before.
 
 **Recovery semantics, in order:**
 
@@ -364,9 +364,29 @@ if [ "$is_terminal" = "false" ]; then
           return 0
         fi
 
-        # Compute next_available_version = patch bump of origin_version.
+        # Infer the release bump LEVEL from the recovered issue's Conventional
+        # Commits signals (#671) — the same bump-type-awareness as the
+        # dispatch-time next-available-version computation in dispatch-rules.md.
+        # A patch-only bump stamps a semver-wrong version on a recovered PR whose
+        # issue requires a major (breaking) or minor (feature) release. Best-effort:
+        # a failed title/body read falls back to the patch default.
+        a05_title=$(gh issue view "$issue_num" --repo <owner/repo> --json title -q .title 2>/dev/null || echo "")
+        a05_body=$(gh issue view "$issue_num" --repo <owner/repo> --json body -q .body 2>/dev/null || echo "")
+        a05_level="patch"
+        printf '%s' "$a05_title" | grep -qiE '^[[:space:]]*feat(\([^)]*\))?[[:space:]]*:' && a05_level="minor"
+        if printf '%s' "$a05_title" | grep -qiE '^[[:space:]]*[a-z]+(\([^)]*\))?!:' \
+           || printf '%s\n%s' "$a05_title" "$a05_body" | grep -qiE 'BREAKING[ -]CHANGE|major version bump|\(X\.0\.0\)'; then
+          a05_level="major"
+        fi
+
+        # Compute next_ver = origin_version bumped at the inferred level
+        # (major → (X+1).0.0, minor → X.(Y+1).0, patch → X.Y.(Z+1)).
         IFS='.' read -r vc_maj vc_min vc_pat <<< "$origin_version"
-        next_ver="${vc_maj}.${vc_min}.$((vc_pat + 1))"
+        case "$a05_level" in
+          major)   next_ver="$((vc_maj + 1)).0.0" ;;
+          minor)   next_ver="${vc_maj}.$((vc_min + 1)).0" ;;
+          patch|*) next_ver="${vc_maj}.${vc_min}.$((vc_pat + 1))" ;;
+        esac
 
         # Apply the version bump to the manifest file in the worktree.
         # Use jq to rewrite the file in-place (temp-file dance for safety).

@@ -333,7 +333,9 @@ When filling a slot, walk this decision tree:
 
    This is the third defense-in-depth layer (after intake-side and dispatch-time filters). See [RATIONALE → Author-trust defense in depth](../do-work-RATIONALE.md#author-trust-computation--defense-in-depth).
 
-   **Next-available-version computation (per-dispatch, opt-in via `version_coordination.*`).** Closes [#339](https://github.com/mattsears18/shipyard/issues/339). On repos where every PR cuts a release by bumping a shared manifest row (e.g. `plugins/shipyard/.claude-plugin/plugin.json` `.version` for the shipyard plugin itself), sequential dispatch alone is not enough to prevent version-row collisions: at C=1 the second worker is dispatched against `origin/main` while the first PR is still in flight (auto-merge armed, checks pending — typical 2–5 min window), and both naïvely read the same pre-merge version. The drain-phase fix-rebase then pays the disambiguation tax on every collision. The orchestrator can pre-empt this by computing the next-available version BEFORE composing the prompt and injecting it as an authoritative slot the worker MUST honor.
+   **Next-available-version computation (per-dispatch, opt-in via `version_coordination.*`).** Closes [#339](https://github.com/mattsears18/shipyard/issues/339). On repos where every PR cuts a release by bumping a shared manifest row (e.g. `plugins/shipyard/.claude-plugin/plugin.json` `.version` for the shipyard plugin itself), sequential dispatch alone is not enough to prevent version-row collisions: at C=1 the second worker is dispatched against `origin/main` while the first PR is still in flight (auto-merge armed, checks pending — typical 2–5 min window), and both naïvely read the same pre-merge version. The drain-phase fix-rebase then pays the disambiguation tax on every collision. The orchestrator can pre-empt this by computing the next-available version BEFORE composing the prompt and injecting the collision-avoidance **floor** plus a recommended slot into the dispatch prompt.
+
+   **The computation is bump-type-aware ([#671](https://github.com/mattsears18/shipyard/issues/671)).** It infers whether the dispatched issue requires a **major** (breaking) / **minor** (feature) / **patch** (fix) release from the issue's Conventional Commits title + body, then computes the next free slot at *that* level. A patch-only floor was a latent correctness trap: it injected a semver-wrong "use this exact value" directive on any issue requiring a non-patch bump, contradicting the issue body's stated release intent and handing the worker two conflicting instructions (the [#671](https://github.com/mattsears18/shipyard/issues/671) repro: the #659 epic's shards each declared MAJOR/minor intent, but the patch-only formula would have injected `x.y.(z+1)` for every one). The **floor** (`max_inflight_version`) is the hard collision constraint the worker must never use or undercut; the **level** is the issue's to determine — a worker whose read of the issue requires a *higher* level than the orchestrator inferred may raise it (never below the floor), keeping the issue body as the single source of truth for semver intent.
 
    Gated on three config keys from the merged effective config:
 
@@ -384,15 +386,45 @@ When filling a slot, walk this decision tree:
      max_inflight_version=$(printf '%s\n%s\n' "$max_inflight_version" "$version_cursor" | sort -V | tail -1)
    fi
 
-   # next_available_version = max_inflight_version + patch bump.
+   # #671: infer the bump LEVEL from the dispatched issue's Conventional
+   # Commits signals so the computed slot matches the issue's stated release
+   # intent (a patch-only floor injects a semver-wrong "authoritative" version
+   # on any issue requiring a major/minor bump — the common case for a
+   # feature/breaking-change backlog). Reads the same title+body signals the
+   # worker would, so the orchestrator's inference matches the worker's read
+   # in the overwhelmingly-common case.
+   issue_title=$(gh issue view "<N>" --repo <owner/repo> --json title -q .title 2>/dev/null || echo "")
+   issue_body=$(gh issue view "<N>" --repo <owner/repo> --json body -q .body 2>/dev/null || echo "")
+   bump_level="patch"   # default: fix / perf / docs / chore / refactor / test / no recognizable prefix
+   # minor: a `feat`-type Conventional Commits prefix (new feature).
+   printf '%s' "$issue_title" | grep -qiE '^[[:space:]]*feat(\([^)]*\))?[[:space:]]*:' && bump_level="minor"
+   # major: a `!` breaking-change marker after the type (e.g. `feat!:` / `fix!:`),
+   # a `BREAKING CHANGE` footer, or an explicit "major version bump" / `(X.0.0)`
+   # statement anywhere in the title or body. Checked last so it wins over minor.
+   if printf '%s' "$issue_title" | grep -qiE '^[[:space:]]*[a-z]+(\([^)]*\))?!:' \
+      || printf '%s\n%s' "$issue_title" "$issue_body" | grep -qiE 'BREAKING[ -]CHANGE|major version bump|\(X\.0\.0\)'; then
+     bump_level="major"
+   fi
+
+   # next_available_version = max_inflight_version bumped at the inferred level.
    if [ -n "$max_inflight_version" ]; then
-     # Parse semver X.Y.Z; increment Z by 1.
+     # Parse semver X.Y.Z, then bump at the inferred level (higher levels zero
+     # the lower components, per semver): major → (X+1).0.0, minor → X.(Y+1).0,
+     # patch → X.Y.(Z+1).
      IFS='.' read -r MAJ MIN PAT <<< "$max_inflight_version"
-     next_available_version="${MAJ}.${MIN}.$((PAT + 1))"
-     # Advance the cursor to the value we're handing out so the NEXT dispatch
-     # in this same batch (or the next sequential dispatch before this PR
-     # opens) sees it as claimed and bumps past it. This is the load-bearing
-     # write that makes a batch of N simultaneous dispatches monotonic.
+     case "$bump_level" in
+       major)   next_available_version="$((MAJ + 1)).0.0" ;;
+       minor)   next_available_version="${MAJ}.$((MIN + 1)).0" ;;
+       patch|*) next_available_version="${MAJ}.${MIN}.$((PAT + 1))" ;;
+     esac
+     # Advance the cursor to the EXACT value we're handing out so the NEXT
+     # dispatch in this same batch (or the next sequential dispatch before this
+     # PR opens) sees it as claimed and bumps past it. This is the load-bearing
+     # write that makes a batch of N simultaneous dispatches monotonic — the
+     # cursor advances to the level-correct value, so two same-level batch
+     # siblings never collide (slot 1 → floor bumped at its level, slot 2 reads
+     # the cursor as its floor and bumps again). The collision-avoidance
+     # monotonicity guarantee is preserved at whatever level each was inferred.
      version_cursor="$next_available_version"
    else
      # No floor available (manifest read failed, no in-flight bumps) — omit
@@ -404,7 +436,7 @@ When filling a slot, walk this decision tree:
 
    When `next_available_version` is non-empty, append a Context paragraph to the dispatch prompt between the `mode:` line and the Return values line:
 
-   > **Next-available version (orchestrator-supplied):** `<vc_manifest>`'s `<vc_version_jq>` row is coordination-managed across this session's in-flight PRs. The next available version is **`<next_available_version>`**. Use this exact value when bumping `<vc_manifest>`. <When `vc_changelog` is non-empty:> Add a fresh `### <next_available_version> — <YYYY-MM-DD>` entry above the highest existing entry in `<vc_changelog>` (do NOT collide on the same row). Earlier in-flight PRs already claimed lower version slots; honoring this value prevents the drain-phase rebase tax on a manifest-row text conflict.
+   > **Next-available version (orchestrator-supplied):** `<vc_manifest>`'s `<vc_version_jq>` row is coordination-managed across this session's in-flight PRs. The collision-avoidance **floor** is **`<max_inflight_version>`** — do NOT bump to this value or any lower one (earlier in-flight PRs already claimed the slots at and below it). Based on the issue's inferred release level (**`<bump_level>`**, from its Conventional Commits title/body), the next free slot is **`<next_available_version>`** — bump `<vc_manifest>` to this value. <When `vc_changelog` is non-empty:> Add a fresh `### <next_available_version> — <YYYY-MM-DD>` entry above the highest existing entry in `<vc_changelog>` (do NOT collide on an in-flight sibling's row). If your own reading of the issue's stated release intent requires a **higher** bump level than `<bump_level>` (e.g. the body declares a breaking change but the title prefix didn't signal it), take the next free version at that higher level strictly above the floor instead, and note the deviation in the PR body — the floor is the hard constraint, the level is yours to raise. Honoring the floor prevents the drain-phase rebase tax on a manifest-row text conflict.
 
    When `next_available_version` is empty (coordination disabled, manifest read failed, no in-flight bumps to compute against), the paragraph is omitted entirely and the worker uses its normal "bump-from-origin/main HEAD" path. Workers never need to special-case the field's absence — the issue-work spec's normal path is the no-coordination default; the injected paragraph is the override.
 
