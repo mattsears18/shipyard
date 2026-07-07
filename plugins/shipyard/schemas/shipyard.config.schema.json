@@ -307,6 +307,25 @@
         "_comment": { "type": "string" }
       }
     },
+    "decompose": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls inline auto-decomposition of confirmed epics inside /do-work (issue #665). When a scope-preflight defer is `confirmed-non-shippable-as-single-PR` with a mechanically-decomposable `evidence_pointer` prefix (`Multi-PR sequence:` or `Missing dependency:`), the orchestrator inline-invokes the `/decompose-epic` worker logic (the single source of truth for the sharding) to shard the epic into an ordered `Blocked by #<sibling>` sub-issue chain right then — no human round-trip. The confidence gate + `max_subissues` cap are the guardrails: a low-confidence or over-cap breakdown, and every non-mechanical evidence class, still falls through to the human handoff (`needs-human-review` + trigger marker preserved).",
+      "properties": {
+        "auto": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true (default), /do-work inline auto-decomposes `confirmed-non-shippable-as-single-PR` epics whose `evidence_pointer` prefix is `Multi-PR sequence:` or `Missing dependency:` — reusing the `/decompose-epic` worker logic — instead of parking them for a manual `/decompose-epic` invocation. Set to false to restore the pre-#665 defer-to-human behavior: the epic gets `needs-human-review` + the `<!-- do-work-needs-decomposition -->` trigger marker and waits for an explicit `/decompose-epic` run. Non-mechanical evidence classes (`Multi-service coordination:`, `Body cites <artifact>:`) always defer to the human handoff regardless of this flag."
+        },
+        "max_subissues": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 8,
+          "description": "Hard cap on the number of sub-issues the inline auto-decompose path (and the standalone `/decompose-epic --max-subissues`) will create per epic. A confident breakdown that would exceed the cap escalates to the human handoff rather than fanning out — an epic that won't shard cleanly under the cap is too big to decompose mechanically. Default 8."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "flake_registry": {
       "type": "object",
       "additionalProperties": false,
