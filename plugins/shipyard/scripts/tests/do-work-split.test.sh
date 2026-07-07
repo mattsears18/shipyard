@@ -55,7 +55,7 @@ cat "$setup_router_path" "$setup_dir"/*.md > "$setup_path" 2>/dev/null
 trap 'rm -f "$setup_path"' EXIT
 # steady-state.md was itself split into a thin hot-path file + on-demand
 # reference sub-files (issue #616 — the consulted-not-executed Dispatch rules
-# block moved to do-work/dispatch-rules.md, and the --operate-only operator
+# block moved to do-work/dispatch-rules.md, and the operator-layer operator
 # hooks folded into do-work/operate.md, keeping the steady-state hot path under
 # the 256KB single-file Read limit). `steady_state_router_path` is the hot-path
 # file itself; `steady_state_path` is a concatenation of the hot path + the

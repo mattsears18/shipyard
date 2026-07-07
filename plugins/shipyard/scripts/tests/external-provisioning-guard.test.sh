@@ -149,7 +149,7 @@ if [[ -f "$scope_preflight_path" ]]; then
     "scope-preflight renders a provisioning checklist in the diagnosis comment"
 fi
 
-# --- Operator-layer wiring: --operate recognizes the bail as browser-completable ---
+# --- Operator-layer wiring: the operator layer recognizes the bail as browser-completable ---
 assert_file_exists "$operate_path" "commands/do-work/operate.md exists"
 if [[ -f "$operate_path" ]]; then
   assert_contains "$operate_path" "external provisioning required" \

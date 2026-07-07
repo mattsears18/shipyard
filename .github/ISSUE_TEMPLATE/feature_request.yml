@@ -24,7 +24,7 @@ body:
     id: command
     attributes:
       label: Which shipyard command surfaced this?
-      description: The command + flags you were running, if any (e.g. /shipyard:do-work, /shipyard:my-turn, /shipyard:do-work --operate).
+      description: The command + flags you were running, if any (e.g. /shipyard:do-work, /shipyard:my-turn).
       placeholder: "/shipyard:do-work"
   - type: textarea
     id: artifacts

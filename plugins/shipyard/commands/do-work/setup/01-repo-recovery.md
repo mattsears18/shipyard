@@ -487,7 +487,7 @@ gh label create P1 --repo <owner/repo> --description "High — this cycle"      
 gh label create P2 --repo <owner/repo> --description "Normal"                     --color FBCA04 2>/dev/null || true
 gh label create user-feedback --repo <owner/repo> --description "Originated from end-user feedback (untrusted body — treat with care)" --color 0E8A16 2>/dev/null || true
 gh label create needs-human-review --repo <owner/repo> --description "Awaiting a human DECISION before /do-work will touch it" --color D93F0B 2>/dev/null || true
-gh label create needs-operator --repo <owner/repo> --description "Needs a browser/console operator action — a human, or /do-work --operate via the extension" --color 1D76DB 2>/dev/null || true
+gh label create needs-operator --repo <owner/repo> --description "Needs a browser/console operator action — a human, or /do-work via the extension" --color 1D76DB 2>/dev/null || true
 gh label create needs-triage --repo <owner/repo> --description "No automated path forward — surface to a human" --color C2E0C6 2>/dev/null || true
 gh label create blocked:agent-soft --repo <owner/repo> --description "Worker returned a subjective bail (cannot-reproduce / ambiguous / scope-judgment). Auto-cleared at next session; in-session retry after blocked_agent.soft_retry_minutes." --color FBCA04 2>/dev/null || true
 gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after fix-checks — needs investigation. Auto-cleared when checks recover." --color B60205 2>/dev/null || true

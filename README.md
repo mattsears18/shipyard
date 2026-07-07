@@ -84,18 +84,15 @@ From inside any GitHub-connected repo, try one of these:
 # — the interactive human counterpart to /do-work.
 /my-turn
 
-# /do-work is autonomous AND operator-inclusive by DEFAULT — the loop above
-# already drives browser-completable operator actions in your real, logged-in
+# /do-work is autonomous AND operator-inclusive by DEFAULT — it burns down the
+# backlog AND drives browser-completable operator actions in your real, logged-in
 # Chrome (close a superseded PR, paste a CI secret, toggle a console setting).
-# Opt OUT with --no-operate / --hands-off for a rare code-only, dispatch-only run:
-/do-work --no-operate
-
-# /do-work is autonomous AND operator-inclusive by default — it drives the
-# browser too. A self-onboarding preflight (browser extension, gh auth, site
-# permissions) runs automatically at session start; add --dry-run for a
-# first-run preview that walks setup without touching anything.
+# A self-onboarding preflight (browser extension, gh auth, site permissions)
+# runs automatically at session start; --dry-run previews it without touching
+# anything. Opt OUT with --no-operate / --hands-off for a code-only run.
 /do-work
 /do-work --dry-run
+/do-work --no-operate
 
 # Walk a decision-gated issue's blocking decisions one-by-one (with a
 # recommendation for each), record the answers, and clear the gate so
@@ -109,7 +106,6 @@ From inside any GitHub-connected repo, try one of these:
 |---|---|---|
 | `/do-work` | Autonomous continuous loop — **code work + browser operation** (picks issues, opens PRs, arms auto-merge, keeps `main` green, **and** drives browser-completable operator actions). **Operator-inclusive and autonomous by default** ([#661](https://github.com/mattsears18/shipyard/issues/661)); it makes reasonable design/architecture decisions itself rather than round-tripping — security / access-control settings are the sole hand-back class | yes (autonomous) |
 | `/do-work --no-operate` (= `--hands-off`) | Opt out of the browser-operator layer — the rare **code-only, dispatch-only** run: dispatches workers, opens PRs, arms auto-merge, but never drives the browser (operator items are handed back) | yes (autonomous) |
-| `/do-work --operate` | Same as a bare `/do-work` — the operator layer is now the default, so `--operate` is a retained no-op | yes (autonomous) |
 | `/my-turn` | Surfaces **only** what genuinely needs *you* — decisions and judgment calls the loop can't complete — and **walks you through them one at a time**, advancing until the human-only queue is empty | yes (interactive, human-paced) |
 
 Rule of thumb: if a machine could finish it (code, or a browser click), it's `/do-work`'s job (by default — pass `--no-operate` / `--hands-off` to keep it to code only); if it needs *your* decision or judgment, `/my-turn` walks you through it.
