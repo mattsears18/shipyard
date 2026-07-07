@@ -145,9 +145,10 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "untrusted" \
     "decompose-epic declares the untrusted-input discipline"
 
-  # Explicit-command-only for v1; the auto path is deferred.
-  assert_contains "$cmd_path" "decompose.enabled" \
-    "decompose-epic documents the deferred opt-in auto path (decompose.enabled)"
+  # The auto path is built and default-on for the mechanical classes (#665);
+  # gated by the decompose.auto config knob (opt-out).
+  assert_contains "$cmd_path" "decompose.auto" \
+    "decompose-epic documents the inline auto path config knob (decompose.auto, #665)"
 
   # Standard shipyard command convention.
   assert_contains "$cmd_path" "Don't" \

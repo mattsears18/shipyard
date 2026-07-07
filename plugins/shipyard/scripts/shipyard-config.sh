@@ -199,6 +199,10 @@ DEFAULTS_JQ='{
   "scope": {
     "diagnosis_reuse_hours": 72,
     "self_modification_paths": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"]
+  },
+  "decompose": {
+    "auto": true,
+    "max_subissues": 8
   }
 }'
 
