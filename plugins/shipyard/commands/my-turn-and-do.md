@@ -7,7 +7,9 @@ argument-hint: [--repo owner/repo] [--concurrency N] [--dry-run] [--record]
 
 **`/my-turn-and-do` is a thin alias for [`/shipyard:do-work --operate`](./do-work.md).** It exists as a memorable name for "do my work *and* operate the browser for me." All behavior lives in `/do-work` and its [operator phase](./do-work/operate.md) — this file just forwards.
 
-> **Re-parented from `/my-turn` to `/do-work` (was: action-taking sibling of `/my-turn`).** Earlier versions extended [`/shipyard:my-turn`](./my-turn.md) — a one-shot, surface-the-#1-action behavior. That was the wrong lineage: the intent is a **continuous autonomous loop** that does the normal `/do-work` issue-burndown **as well as** any browser-completable operator action it needs, not one task and stop. So it's now `/do-work --operate`. For the human counterpart — an interactive walkthrough of the items that genuinely need *you* (decisions and judgment calls `--operate` can't complete), one at a time until the human-only queue is empty — use [`/my-turn`](./my-turn.md). The three-command division: `/my-turn` = human-only interactive walkthrough; `/do-work` = autonomous code loop; `/do-work --operate` (this command) = code loop **+** browser operation.
+> **The operator layer is now the `/do-work` default ([#661](https://github.com/mattsears18/shipyard/issues/661)).** Since operator-inclusive operation became the default, a bare `/do-work` already runs the code loop **plus** the browser-operator layer, so `/do-work --operate` (and this alias) is now functionally equivalent to a bare `/do-work`. `/my-turn-and-do` is retained as the memorable "do my work *and* operate the browser" name; the `--operate` it forwards is a no-op default. The only way to get a code-only loop is the `--no-operate` / `--hands-off` opt-out.
+
+> **Re-parented from `/my-turn` to `/do-work` (was: action-taking sibling of `/my-turn`).** Earlier versions extended [`/shipyard:my-turn`](./my-turn.md) — a one-shot, surface-the-#1-action behavior. That was the wrong lineage: the intent is a **continuous autonomous loop** that does the normal `/do-work` issue-burndown **as well as** any browser-completable operator action it needs, not one task and stop. So it's now `/do-work --operate`. For the human counterpart — an interactive walkthrough of the items that genuinely need *you* (decisions and judgment calls the loop can't complete), one at a time until the human-only queue is empty — use [`/my-turn`](./my-turn.md). The three-command division: `/my-turn` = human-only interactive walkthrough; `/do-work` = autonomous code loop **+** browser operation (operator-inclusive by default; `--no-operate` / `--hands-off` for code-only); `/do-work --operate` (this command's alias) = the same default, named for the browser half.
 
 ## What it does
 
@@ -28,7 +30,7 @@ First-run tip: `/do-work --operate --dry-run` (or `/my-turn-and-do --dry-run`) r
 
 ## Args
 
-Identical to [`/do-work`](./do-work.md#args), with `--operate` implied (you don't pass it — the alias sets it). Commonly: `--repo owner/repo`, `--concurrency N`, `--dry-run` (preview only), `--record` (capture browser actions as GIFs, extension backend only). `--label` / `--prioritize-label` / `--fast` all carry through from `/do-work`.
+Identical to [`/do-work`](./do-work.md#args), with `--operate` implied (you don't pass it — the alias sets it, though it's a no-op default since [#661](https://github.com/mattsears18/shipyard/issues/661)). Commonly: `--repo owner/repo`, `--concurrency N`, `--dry-run` (preview only), `--record` (capture browser actions as GIFs, extension backend only). `--label` / `--prioritize-label` / `--fast` all carry through from `/do-work`. Passing `--no-operate` / `--hands-off` here would defeat the alias's whole purpose (it exists to operate the browser) — use plain `/do-work --no-operate` for a code-only run.
 
 ## Don't
 
