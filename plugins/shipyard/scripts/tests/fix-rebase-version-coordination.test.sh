@@ -88,8 +88,13 @@ if [[ -f "$fix_rebase" ]]; then
     "fix-rebase.md links to originating issue #466"
   assert_contains "$fix_rebase" 'version_coordination.enabled' \
     "fix-rebase.md gates the carve-out on version_coordination.enabled"
-  assert_contains "$fix_rebase" 'next free patch' \
-    "fix-rebase.md names the next-free-patch bump"
+  assert_contains "$fix_rebase" 'next free slot' \
+    "fix-rebase.md names the next-free-slot bump"
+  # #673: the re-number must be bump-level-aware (major/minor/patch), not patch-only.
+  assert_contains "$fix_rebase" 'issues/673' \
+    "fix-rebase.md links to the bump-level-aware fix (#673)"
+  assert_contains "$fix_rebase" 'bump_level' \
+    "fix-rebase.md infers the PR's release level (bump_level), not a hardcoded patch"
   assert_contains "$fix_rebase" 'newest-first' \
     "fix-rebase.md requires the re-numbered CHANGELOG entry placed newest-first"
   assert_contains "$fix_rebase" '--diff-filter=U' \
@@ -113,137 +118,131 @@ fi
 
 # ---------------------------------------------------------------------------
 # (B) Behavioral — reconstruct the #466 conflict and prove the resolution.
+#     Parameterized over the PR's release level (issue #673): the re-number
+#     must preserve the PR's intended major/minor/patch level, NOT collapse
+#     every leapfrogged PR to a patch bump of main's floor.
 # ---------------------------------------------------------------------------
 
-if ! command -v git >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-  echo "  (skipping behavioral tests — git/jq unavailable)"
-else
-  work="$(mktemp -d)"
-  trap 'rm -rf "$work"' EXIT
+# Level-aware next-free computation, mirroring fix-rebase.md §4.6 step 1:
+# infer the PR's level from (base_version -> pr_version) delta, then bump the
+# floor at that level. Echoes the computed next-free version.
+compute_next_free() {
+  # $1 base_version  $2 pr_version  $3 floor
+  local base="$1" pr="$2" floor="$3" level
+  local bMAJ bMIN pMAJ pMIN fMAJ fMIN fPAT
+  IFS='.' read -r bMAJ bMIN _ <<< "$base"
+  IFS='.' read -r pMAJ pMIN _ <<< "$pr"
+  if   [ "${pMAJ:-0}" -gt "${bMAJ:-0}" ]; then level="major"
+  elif [ "${pMIN:-0}" -gt "${bMIN:-0}" ]; then level="minor"
+  else level="patch"; fi
+  IFS='.' read -r fMAJ fMIN fPAT <<< "$floor"
+  case "$level" in
+    major)   echo "$((fMAJ + 1)).0.0" ;;
+    minor)   echo "${fMAJ}.$((fMIN + 1)).0" ;;
+    patch|*) echo "${fMAJ}.${fMIN}.$((fPAT + 1))" ;;
+  esac
+}
 
-  if ! cd "$work"; then
-    bad "could not cd into the behavioral fixture dir"
-  else
+# run_fixture BASE_VER PR_VER MAIN_VER -> sets globals: conflicted,
+# resolved_version, headings, marker_rc, dupes. Reconstructs the #466 conflict
+# (PR pre-allocated PR_VER, sibling advanced main to MAIN_VER) and applies the
+# §4.6 recipe with the level-aware compute_next_free.
+run_fixture() {
+  local base_ver="$1" pr_ver="$2" main_ver="$3"
+  local fx; fx="$(mktemp -d)"
+  (
+    cd "$fx" || exit 1
     git init -q -b main  # pin default branch — CI's init.defaultBranch may not be 'main' (#466 main-CI fix)
     git config user.email t@t.t
     git config user.name t
     git config commit.gpgsign false
 
-    manifest="plugin.json"
-    changelog="CHANGELOG.md"
+    printf '{\n  "version": "%s"\n}\n' "$base_ver" > plugin.json
+    printf '# Changelog\n\n## shipyard\n\n### %s — 2026-05-31\n\nBase entry.\n' "$base_ver" > CHANGELOG.md
+    git add -A && git commit -qm "base"
 
-    # Base: version 1.8.37, one CHANGELOG entry.
-    printf '{\n  "version": "1.8.37"\n}\n' > "$manifest"
-    cat > "$changelog" <<'EOF'
-# Changelog
-
-## shipyard
-
-### 1.8.37 — 2026-05-31
-
-Base entry.
-EOF
-    git add -A && git commit -qm "base 1.8.37"
-
-    # PR branch: pre-allocated 1.8.38, prepends its CHANGELOG entry.
     git checkout -qb pr
-    printf '{\n  "version": "1.8.38"\n}\n' > "$manifest"
-    cat > "$changelog" <<'EOF'
-# Changelog
+    printf '{\n  "version": "%s"\n}\n' "$pr_ver" > plugin.json
+    printf '# Changelog\n\n## shipyard\n\n### %s — 2026-06-01\n\nPR entry (this PR work).\n\n### %s — 2026-05-31\n\nBase entry.\n' "$pr_ver" "$base_ver" > CHANGELOG.md
+    git add -A && git commit -qm "PR work"
 
-## shipyard
-
-### 1.8.38 — 2026-06-01
-
-PR entry (this PR's work).
-
-### 1.8.37 — 2026-05-31
-
-Base entry.
-EOF
-    git add -A && git commit -qm "PR work, bump 1.8.38"
-
-    # main advances past the PR: siblings landed 1.8.39, 1.8.40, 1.8.41.
     git checkout -q main
-    printf '{\n  "version": "1.8.41"\n}\n' > "$manifest"
-    cat > "$changelog" <<'EOF'
-# Changelog
+    printf '{\n  "version": "%s"\n}\n' "$main_ver" > plugin.json
+    printf '# Changelog\n\n## shipyard\n\n### %s — 2026-06-01\n\nSibling entry.\n\n### %s — 2026-05-31\n\nBase entry.\n' "$main_ver" "$base_ver" > CHANGELOG.md
+    git add -A && git commit -qm "main advanced"
 
-## shipyard
-
-### 1.8.41 — 2026-06-01
-
-Sibling entry.
-
-### 1.8.37 — 2026-05-31
-
-Base entry.
-EOF
-    git add -A && git commit -qm "main advanced to 1.8.41"
-
-    # Rebase PR onto main — this is the #466 conflict.
     git checkout -q pr
-    if git rebase main >/dev/null 2>&1; then
-      echo "    (rebase unexpectedly clean — fixture did not reproduce the conflict)" >&2
-    fi
+    git rebase main >/dev/null 2>&1 || true
+  ) || { bad "fixture setup failed for $pr_ver over $main_ver"; return 1; }
 
-    # Confirm BOTH files conflicted (the #466 shape) and nothing else.
-    conflicted="$(git diff --name-only --diff-filter=U | sort | tr '\n' ' ')"
+  cd "$fx" || { bad "could not cd into fixture"; return 1; }
+  conflicted="$(git diff --name-only --diff-filter=U | sort | tr '\n' ' ')"
 
-    # --- §4.6 resolution recipe ---------------------------------------------
-    # 1. Compute next free version = main's floor + 1 patch.
-    floor="$(git show "main:$manifest" | jq -r '.version')"
-    IFS='.' read -r maj min pat <<< "$floor"
-    next="${maj}.${min}.$((pat + 1))"
+  # §4.6 resolution recipe (level-aware).
+  local floor next
+  floor="$(git show "main:plugin.json" | jq -r '.version')"
+  next="$(compute_next_free "$base_ver" "$pr_ver" "$floor")"
 
-    # 2. Write resolved manifest (take main's tree, set version to next).
-    git show "main:$manifest" | jq --arg v "$next" '.version = $v' > "$manifest"
+  git show "main:plugin.json" | jq --arg v "$next" '.version = $v' > plugin.json
+  git show "main:CHANGELOG.md" > CHANGELOG.md
+  awk -v nv="$next" '
+    /^## shipyard$/ && !inserted {
+      print; print ""
+      print "### " nv " — 2026-06-01"
+      print ""; print "PR entry (this PR work)."
+      inserted=1; next
+    }
+    { print }
+  ' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
 
-    # 3. Re-number + reorder CHANGELOG: this PR's entry renumbered to $next,
-    #    hoisted above main's top entry. Start from main's CHANGELOG, then
-    #    splice the PR's (renumbered) block in at the top of the section.
-    git show "main:$changelog" > "$changelog"
-    # Insert the renumbered PR block immediately after the "## shipyard" line.
-    awk '
-      /^## shipyard$/ && !inserted {
-        print
-        print ""
-        print "### NEXTVERSION — 2026-06-01"
-        print ""
-        print "PR entry (this PR'"'"'s work)."
-        inserted=1
-        next
-      }
-      { print }
-    ' "$changelog" > "$changelog.tmp"
-    sed "s/NEXTVERSION/$next/" "$changelog.tmp" > "$changelog"
-    rm -f "$changelog.tmp"
+  git add plugin.json CHANGELOG.md
+  GIT_EDITOR=true git rebase --continue >/dev/null 2>&1
 
-    git add "$manifest" "$changelog"
-    GIT_EDITOR=true git rebase --continue >/dev/null 2>&1
+  resolved_version="$(jq -r '.version' plugin.json)"
+  headings="$(grep -oE '^### [0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')"
+  marker_rc=0
+  bash "$scanner" plugin.json CHANGELOG.md >/dev/null 2>&1 || marker_rc=$?
+  dupes="$(grep -oE '^### [0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | sort | uniq -d | wc -l | tr -d ' ')"
 
-    # --- collect results ----------------------------------------------------
-    resolved_version="$(jq -r '.version' "$manifest")"
-    # CHANGELOG version headings in file order.
-    headings="$(grep -oE '^### [0-9]+\.[0-9]+\.[0-9]+' "$changelog" | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')"
-    # Conflict-marker scan over the resolved tree.
-    marker_rc=0
-    bash "$scanner" "$manifest" "$changelog" >/dev/null 2>&1 || marker_rc=$?
-    # Duplicate-heading count.
-    dupes="$(grep -oE '^### [0-9]+\.[0-9]+\.[0-9]+' "$changelog" | sort | uniq -d | wc -l | tr -d ' ')"
+  cd "$repo_root" || true
+  rm -rf "$fx"
+}
 
-    cd "$repo_root" || true
-
-    # --- assertions ---------------------------------------------------------
-    assert_equals "rebase conflicted on exactly the two coordinated files" \
+if ! command -v git >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+  echo "  (skipping behavioral tests — git/jq unavailable)"
+else
+  # --- Patch PR (the original #466 shape): 1.8.37 -> PR 1.8.38, main 1.8.41.
+  if run_fixture "1.8.37" "1.8.38" "1.8.41"; then
+    assert_equals "[patch] rebase conflicted on exactly the two coordinated files" \
       "CHANGELOG.md plugin.json " "$conflicted"
-    assert_equals "resolved version = main floor (1.8.41) + 1 patch, NOT stale 1.8.38" \
+    assert_equals "[patch] resolved = main floor (1.8.41) + 1 patch, NOT stale 1.8.38" \
       "1.8.42" "$resolved_version"
-    assert_equals "CHANGELOG headings strictly descending, newest-first" \
+    assert_equals "[patch] CHANGELOG headings strictly descending, newest-first" \
       "1.8.42 1.8.41 1.8.37" "$headings"
-    assert_equals "no duplicate CHANGELOG headings" "0" "$dupes"
-    assert_equals "resolved tree is conflict-marker-clean (#436 assertion passes)" \
-      "0" "$marker_rc"
+    assert_equals "[patch] no duplicate CHANGELOG headings" "0" "$dupes"
+    assert_equals "[patch] resolved tree conflict-marker-clean (#436)" "0" "$marker_rc"
+  fi
+
+  # --- Minor PR (#673): base 2.3.9 -> PR 2.4.0 (feature), main advanced 2.3.12.
+  #     Patch-only would wrongly resolve to 2.3.13; level-aware must give 2.4.0.
+  if run_fixture "2.3.9" "2.4.0" "2.3.12"; then
+    assert_equals "[minor] resolved preserves the minor level (2.4.0), NOT patch 2.3.13" \
+      "2.4.0" "$resolved_version"
+    assert_equals "[minor] CHANGELOG headings strictly descending, newest-first" \
+      "2.4.0 2.3.12 2.3.9" "$headings"
+    assert_equals "[minor] no duplicate CHANGELOG headings" "0" "$dupes"
+    assert_equals "[minor] resolved tree conflict-marker-clean (#436)" "0" "$marker_rc"
+  fi
+
+  # --- Major PR (#673): base 2.3.9 -> PR 3.0.0 (breaking), main advanced 2.4.5.
+  #     Patch-only would wrongly resolve to 2.4.6; level-aware must give 3.0.0.
+  if run_fixture "2.3.9" "3.0.0" "2.4.5"; then
+    assert_equals "[major] resolved preserves the major level (3.0.0), NOT patch 2.4.6" \
+      "3.0.0" "$resolved_version"
+    assert_equals "[major] CHANGELOG headings strictly descending, newest-first" \
+      "3.0.0 2.4.5 2.3.9" "$headings"
+    assert_equals "[major] no duplicate CHANGELOG headings" "0" "$dupes"
+    assert_equals "[major] resolved tree conflict-marker-clean (#436)" "0" "$marker_rc"
   fi
 fi
 
