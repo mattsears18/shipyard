@@ -14,8 +14,8 @@
 # dispatch, no sharing of /do-work's worker machinery) and reuses
 # /shipyard:resolve-decisions' interactive walkthrough for decision-gated
 # items. Browser-completable (needs-operator) work is filtered out — that's
-# /do-work --operate's job. The three-command division is: /do-work =
-# autonomous code loop; /do-work --operate = code loop + browser operation;
+# /do-work's job. The two-command division is: /do-work = autonomous code
+# loop + browser operation (operator-inclusive by default);
 # /my-turn = human-only interactive walkthrough.
 #
 # This test is the regression guard: if anyone deletes the command, removes
@@ -132,7 +132,7 @@ if [[ -f "$cmd_path" ]]; then
     "command surfaces stale draft PRs"
 
   # Human-facing / non-autonomous contract (issue #635). The load-bearing
-  # distinction from /do-work --operate: /my-turn is human-paced and dispatches
+  # distinction from /do-work: /my-turn is human-paced and dispatches
   # no agents — it walks the human through items, advancing when *they* finish.
   # The only mutation it performs is the human-directed decisions record (via
   # the reused /resolve-decisions flow). It does not share /do-work's worker
@@ -179,12 +179,12 @@ if [[ -f "$cmd_path" ]]; then
   assert_contains "$cmd_path" "list-snapshot mode" \
     "command documents the opt-in list-snapshot render mode (#635)"
   # Human-only queue filter (issue #635): browser-completable / needs-operator
-  # items are /do-work --operate's job and must be excluded from the walkthrough
+  # items are /do-work's job and must be excluded from the walkthrough
   # queue (surfaced only via a one-line operator pointer).
   assert_contains "$cmd_path" "Human-only queue filter" \
     "command documents the human-only queue filter (#635)"
-  assert_contains "$cmd_path" "do-work --operate" \
-    "command points needs-operator / browser-completable work at /do-work --operate (#635)"
+  assert_contains "$cmd_path" "run /shipyard:do-work to have Claude complete them" \
+    "operator pointer points needs-operator / browser-completable work at /do-work (#635)"
   assert_contains "$cmd_path" "#635" \
     "command cites issue #635 for the looping human-only walkthrough"
   # The empty-state one-liner is unchanged — it doubles as the

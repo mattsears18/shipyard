@@ -151,7 +151,7 @@ blocked: external provisioning required — <service>: <what the human must prov
 
 Example: `blocked: external provisioning required — Sentry: create a Sentry account, then set sentry_dsn in terraform.tfvars before this integration can deploy`.
 
-The orchestrator routes this bail to the **`needs-operator`** label (a browser/console operator action — see [steady-state.md's bail reason→class table](../../commands/do-work/steady-state.md#a-reconcile-the-return)), surfacing it to `/my-turn` as an actionable provisioning handoff and making it drainable by `/do-work --operate`. This is the worker-side backstop for the same case [scope-preflight](../../commands/do-work/setup/06-scope-preflight.md#6-initial-scope-pre-flight) catches earlier via the `external-dependency` defer — both land on `needs-operator`.
+The orchestrator routes this bail to the **`needs-operator`** label (a browser/console operator action — see [steady-state.md's bail reason→class table](../../commands/do-work/steady-state.md#a-reconcile-the-return)), surfacing it to `/my-turn` as an actionable provisioning handoff and making it drainable by `/do-work`. This is the worker-side backstop for the same case [scope-preflight](../../commands/do-work/setup/06-scope-preflight.md#6-initial-scope-pre-flight) catches earlier via the `external-dependency` defer — both land on `needs-operator`.
 
 **Don't over-trigger — this guard is narrow.** It fires ONLY when you'd otherwise commit a *fabricated stand-in for a real secret/account that must exist for the change to work*. It does **not** fire when:
 - The change references an **already-provisioned** secret (an env var / CI secret / `*.tfvars` key that already exists) — that's functional config, ship it.

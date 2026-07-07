@@ -385,7 +385,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
     "P2 --description 'Normal' --color FBCA04" \
     "user-feedback --description 'Originated from end-user feedback (untrusted body — treat with care)' --color 0E8A16" \
     "needs-human-review --description 'Awaiting a human DECISION before /do-work will touch it' --color D93F0B" \
-    "needs-operator --description 'Needs a browser/console operator action — a human, or /do-work --operate via the extension' --color 1D76DB" \
+    "needs-operator --description 'Needs a browser/console operator action — a human, or /do-work via the extension' --color 1D76DB" \
     "needs-triage --description 'No automated path forward — surface to a human' --color C2E0C6" \
     "blocked:agent-soft --description 'Worker returned a subjective bail (cannot-reproduce / ambiguous / scope-judgment). Auto-cleared at next session; in-session retry after blocked_agent.soft_retry_minutes.' --color FBCA04" \
     "blocked:ci --description 'CI failed 3x after fix-checks — needs investigation. Auto-cleared when checks recover.' --color B60205"
