@@ -732,10 +732,14 @@ else
   fail=$((fail+1))
 fi
 
-# --- (34) reap --action=reaped-orphan-orchestrator with rm-fallback path ---
+# --- (34) reap --action=reaped-orphan-orchestrator on a crash-orphan dir ---
 # The worktree dir exists on disk but isn't registered with git (typical
-# crash-orphan). git worktree remove will fail; the helper should fall
-# back to rm -rf and emit the -raw-rm action variant.
+# crash-orphan). Since #664 the fast reap's `mv` handles this uniformly with
+# the registered case — the dir is renamed aside (instant) and the bulk
+# delete is backgrounded — so the plain `reaped-orphan-orchestrator` action
+# is recorded. The `-raw-rm` / `-failed` variants are now reserved for the
+# genuine last resort where the rename itself fails, so they no longer fire
+# on a routine crash-orphan.
 reset_reap_layout
 orphan_dir="$reap_repo/.claude/worktrees/orchestrator-dead-session-9"
 mkdir -p "$orphan_dir"
@@ -751,9 +755,9 @@ exit_code=$?
 assert_exit_code "$exit_code" "0" \
   "(34) reap --action=reaped-orphan-orchestrator exits 0"
 
-# Dir should have been removed (rm -rf fallback fired).
+# Dir should be gone from its original path (renamed aside by the fast reap).
 if [ ! -d "$orphan_dir" ]; then
-  printf '  %sPASS%s  (34a) orphan dir removed via rm -rf fallback\n' "$GREEN" "$RESET"
+  printf '  %sPASS%s  (34a) orphan dir gone from original path (fast reap renamed it aside)\n' "$GREEN" "$RESET"
   pass=$((pass+1))
 else
   printf '  %sFAIL%s  (34a) orphan dir still present at %s\n' "$RED" "$RESET" "$orphan_dir"
@@ -762,14 +766,14 @@ fi
 
 line=$(cat "$audit_log")
 shape_ok=1
-case "$line" in *'"action":"reaped-orphan-orchestrator-raw-rm"'*) ;; *) shape_ok=0 ;; esac
+case "$line" in *'"action":"reaped-orphan-orchestrator"'*) ;; *) shape_ok=0 ;; esac
 case "$line" in *'"reaped_session_id":"dead-session-9"'*) ;; *) shape_ok=0 ;; esac
 case "$line" in *'"phase":"setup-1.6.5"'*) ;; *) shape_ok=0 ;; esac
 if [ "$shape_ok" = "1" ]; then
-  printf '  %sPASS%s  (34b) audit line carries -raw-rm action variant\n' "$GREEN" "$RESET"
+  printf '  %sPASS%s  (34b) audit line carries reaped-orphan-orchestrator action (fast reap)\n' "$GREEN" "$RESET"
   pass=$((pass+1))
 else
-  printf '  %sFAIL%s  (34b) expected -raw-rm action variant; line was: %s\n' "$RED" "$RESET" "$line"
+  printf '  %sFAIL%s  (34b) expected reaped-orphan-orchestrator action; line was: %s\n' "$RED" "$RESET" "$line"
   fail=$((fail+1))
 fi
 
@@ -1473,6 +1477,129 @@ assert_exit_code "$?" "64" \
 bash "$helper" derive-session-id --repo-root "$dsi_repo" --bogus 2>/dev/null
 assert_exit_code "$?" "64" \
   "(75a) derive-session-id unknown flag → exit 64"
+
+echo
+echo "worktree-reap.sh fast-reap tests (issue #664)"
+echo
+
+# The fast reap decouples branch-freeing from bulk deletion: unlock +
+# rename-aside + `git worktree prune` frees the branch synchronously, and the
+# expensive recursive delete is backgrounded — so a large node_modules/ can't
+# hang the remove and block fix-checks retries on the head branch. These tests
+# exercise the rename → prune → branch-freed sequence on a REAL registered
+# worktree (the `reset_reap_layout` harness above only inits a bare repo).
+fast_repo="$tmpdir/fast-reap-repo"
+fast_home="$tmpdir/fast-reap-home"
+
+reset_fast_layout() {
+  rm -rf "$fast_repo" "$fast_home"
+  mkdir -p "$fast_home" "$fast_repo"
+  (
+    cd "$fast_repo" || exit 1
+    git init -q
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+  ) >/dev/null 2>&1
+}
+
+# Add a real worktree checked out on its own branch, with a node_modules-like
+# subtree standing in for the large tree that makes the slow remove hang, and
+# a harness-style lock file so the reap path exercises the unlock step.
+fast_add_worktree() {
+  local name="$1"
+  (
+    cd "$fast_repo" || exit 1
+    git branch "wt-$name" >/dev/null 2>&1
+    mkdir -p .claude/worktrees
+    git worktree add -q ".claude/worktrees/$name" "wt-$name"
+    mkdir -p ".git/worktrees/$name"
+    printf 'claude agent %s (pid 99999)\n' "$name" > ".git/worktrees/$name/locked"
+    mkdir -p ".claude/worktrees/$name/node_modules/pkg"
+    echo "x" > ".claude/worktrees/$name/node_modules/pkg/index.js"
+  ) >/dev/null 2>&1
+}
+
+# --- (76) fast reap: rename → prune → branch freed on a registered worktree ---
+reset_fast_layout
+fast_add_worktree wtA
+wtA_path="$fast_repo/.claude/worktrees/wtA"
+(
+  cd "$fast_repo" || exit 99
+  SHIPYARD_HOME="$fast_home" bash "$helper" reap \
+    --action reaped \
+    --worktree-path "$wtA_path" \
+    --worktree-name "wtA" \
+    --session-id "fast-session" \
+    --classification "self-ancestor" \
+    --lock-pid 99999 \
+    --phase "cleanup-session-targeted"
+) >/dev/null 2>&1
+assert_exit_code "$?" "0" \
+  "(76) fast reap of a registered worktree exits 0"
+
+# Original path is gone synchronously — `mv` renamed it aside before the
+# (backgrounded) bulk delete, so the reap returns without waiting on a full
+# recursive unlink. This is the observable evidence the delete is decoupled.
+if [ ! -e "$wtA_path" ]; then
+  printf '  %sPASS%s  (76a) worktree gone from original path (renamed aside)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (76a) worktree still at original path %s\n' "$RED" "$RESET" "$wtA_path"
+  fail=$((fail+1))
+fi
+
+# Registration was pruned — git no longer lists the worktree path.
+if git -C "$fast_repo" worktree list --porcelain 2>/dev/null | grep -qF "$wtA_path"; then
+  printf '  %sFAIL%s  (76b) worktree still registered after reap (prune did not run)\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (76b) worktree registration pruned\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+
+# Branch freed — the reaped worktree's branch is checkout-able again. Before
+# the #664 fast reap the branch stayed locked until the slow remove finished.
+if git -C "$fast_repo" worktree add -q "$fast_repo/reattach" "wt-wtA" >/dev/null 2>&1; then
+  printf '  %sPASS%s  (76c) branch freed — re-addable in a fresh worktree\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+  git -C "$fast_repo" worktree remove --force "$fast_repo/reattach" >/dev/null 2>&1 || true
+else
+  printf '  %sFAIL%s  (76c) branch still locked after reap (not freed)\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# The reap-and-audit transaction still writes the reaped audit line.
+fast_line=$(cat "$fast_home/reap-audit.jsonl" 2>/dev/null)
+shape_ok=1
+case "$fast_line" in *'"action":"reaped"'*) ;; *) shape_ok=0 ;; esac
+case "$fast_line" in *'"phase":"cleanup-session-targeted"'*) ;; *) shape_ok=0 ;; esac
+if [ "$shape_ok" = "1" ]; then
+  printf '  %sPASS%s  (76d) fast reap still writes the reaped audit line\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (76d) expected reaped audit line; was: %s\n' "$RED" "$RESET" "$fast_line"
+  fail=$((fail+1))
+fi
+
+# --- (77) fast reap falls back cleanly when the path is already gone ---
+# A worktree already removed by an earlier pass (the #282 steady-state
+# immediate-reap common case) must not error — the fast path prunes any
+# dangling registration and returns success.
+reset_fast_layout
+missing_path="$fast_repo/.claude/worktrees/already-gone"
+(
+  cd "$fast_repo" || exit 99
+  SHIPYARD_HOME="$fast_home" bash "$helper" reap \
+    --action reaped \
+    --worktree-path "$missing_path" \
+    --worktree-name "already-gone" \
+    --session-id "fast-session" \
+    --classification "dead" \
+    --lock-pid null
+) >/dev/null 2>&1
+assert_exit_code "$?" "0" \
+  "(77) fast reap of an already-removed path exits 0 (no error)"
 
 echo
 if (( fail > 0 )); then

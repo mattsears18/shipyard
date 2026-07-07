@@ -240,13 +240,21 @@
 #
 #     The `reap` subcommand encapsulates the entire reap-and-audit
 #     transaction so the orchestrator can't skip the audit step:
-#       1. Optionally perform the actual `git worktree remove --force`
-#          (skipped when `--skip-remove` is passed — used for "deferred"
-#          action, since the worktree isn't actually removed).
-#       2. For `reaped-orphan-orchestrator` action: if the worktree-remove
-#          fails (typical when the dir is on disk but no longer registered
-#          with git — common after a crash), fall back to `rm -rf` and
-#          emit the `-raw-rm` action variant in the audit line.
+#       1. Optionally perform the actual worktree removal via the #664 fast
+#          reap (`fast_worktree_remove`: unlock + rename-aside + `git worktree
+#          prune` frees the branch synchronously, then a backgrounded `rm -rf`
+#          does the expensive bulk delete; falls back to `git worktree remove
+#          --force` when the rename can't be done). Skipped when
+#          `--skip-remove` is passed — used for "deferred" action, since the
+#          worktree isn't actually removed.
+#       2. For `reaped-orphan-orchestrator` action: the fast reap's `mv`
+#          subsumes the crash-orphan case (dir on disk but no longer
+#          registered with git — common after a crash) as well as the clean
+#          remove. Only when the fast path can't make the dir disappear at
+#          all (rename AND slow-remove both failed) does it escalate to a
+#          synchronous last-resort `rm -rf`, emitting the `-raw-rm` (rm
+#          succeeded) / `-failed` (rm also failed) action variant so the
+#          source of the reap stays traceable.
 #       3. Write exactly one JSONL line to `$SHIPYARD_HOME/reap-audit.jsonl`
 #          describing the outcome. The write is fire-and-forget (errors
 #          on the audit-log write are not fatal — a filesystem permission
@@ -852,6 +860,81 @@ find_orphan_orchestrators() {
   return 0
 }
 
+# Issue #664 — fast worktree-lock reap. `git worktree remove --force`
+# recursively unlinks the worktree directory *inline*, which stalls for many
+# seconds to minutes when the worktree carries a large `node_modules/` (tens
+# of thousands of small files). The branch checked out in that worktree stays
+# locked until the remove completes, so a slow remove blocks fix-checks
+# retries that need the head branch ("head branch locked in another
+# worktree").
+#
+# The fast path decouples branch-freeing from bulk deletion:
+#   1. git worktree unlock <wt>              (a locked worktree's registration
+#                                             is NOT pruned, so the branch
+#                                             would stay held — unlock first)
+#   2. mv <wt> <wt>.reap-dead-<pid>-<epoch>  (instant inode relink on the same
+#                                             filesystem — NOT a recursive copy)
+#   3. git worktree prune                    (the registered worktree path is
+#                                             now missing, so prune drops the
+#                                             registration and frees the branch
+#                                             immediately)
+#   4. rm -rf <wt>.reap-dead-... &           (backgrounded bulk delete — the
+#                                             only expensive step, detached so
+#                                             it can't stall the caller)
+#
+# Steps 1-3 are synchronous and fast (a rename + a prune, independent of the
+# tree size); only the recursive unlink is backgrounded. Falls back to the
+# synchronous `git worktree remove --force` when the rename can't be performed
+# (path missing, cross-device mount, permission, race) so the reap still
+# completes on the slow path rather than silently skipping.
+#
+# Returns 0 when the directory is no longer at <worktree_path> (renamed away
+# or removed); returns 1 when the directory still exists after every attempt,
+# so callers that need a last-resort escalation (the orphan-orchestrator raw
+# rm -rf path) can detect the fast path declined.
+#
+# Pure bash + `git` — no jq/python, same as the rest of this helper. Runs in
+# the caller's cwd (which must be inside the target repo, exactly like the
+# bare `git worktree remove` it replaces).
+fast_worktree_remove() {
+  local worktree_path="$1"
+
+  # A locked worktree's registration is skipped by `git worktree prune`, so
+  # the branch would stay held. Best-effort unlock first — a no-op for an
+  # unregistered crash-orphan dir, harmless when already unlocked.
+  git worktree unlock "$worktree_path" 2>/dev/null || true
+
+  # Nothing at the path: prune any dangling registration (a stale entry whose
+  # dir already vanished still needs its branch released) and report success.
+  if [ ! -e "$worktree_path" ]; then
+    git worktree prune 2>/dev/null || true
+    return 0
+  fi
+
+  # Rename the (potentially huge) dir aside on the same filesystem so `mv` is
+  # an instant relink, then prune to free the branch, then background the
+  # recursive unlink. `$$` + epoch keeps the scratch name unique across
+  # concurrent reaps.
+  local dead_epoch dead_path
+  dead_epoch=$(date +%s 2>/dev/null || echo 0)
+  dead_path="${worktree_path}.reap-dead-$$-${dead_epoch}"
+  if mv "$worktree_path" "$dead_path" 2>/dev/null; then
+    git worktree prune 2>/dev/null || true
+    # Detach the bulk delete so it outlives this short-lived shell without
+    # job-control chatter; it reparents to init on shell exit and finishes.
+    rm -rf "$dead_path" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    return 0
+  fi
+
+  # Rename failed — fall back to the synchronous slow path so the reap still
+  # happens, then prune to clean the registration either way. Report whether
+  # the dir is actually gone so an orphan caller can escalate to rm -rf.
+  git worktree remove --force "$worktree_path" 2>/dev/null || true
+  git worktree prune 2>/dev/null || true
+  [ ! -e "$worktree_path" ]
+}
+
 # Issue #284 — single source of truth for reap-audit writes. Performs the
 # worktree-remove side effect (when applicable) and writes one JSONL line
 # to $SHIPYARD_HOME/reap-audit.jsonl per call.
@@ -1107,9 +1190,13 @@ reap_action() {
       # Perform the actual worktree remove unless the caller explicitly
       # asks us to skip (used when the caller has already removed it).
       if [ "$skip_remove" -eq 0 ]; then
-        # Best-effort unlock first; matches the inline pattern.
-        git worktree unlock "$worktree_path" 2>/dev/null || true
-        git worktree remove --force "$worktree_path" 2>/dev/null || true
+        # Fast reap (#664): unlock + rename-aside + prune frees the branch
+        # lock immediately, and the expensive recursive delete is
+        # backgrounded — so a large node_modules/ in the agent worktree can't
+        # hang the remove and block fix-checks retries on the head branch.
+        # fast_worktree_remove falls back to `git worktree remove --force`
+        # internally when the rename can't be done.
+        fast_worktree_remove "$worktree_path" || true
       fi
       emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"reaped\",\"classification\":$(json_str "$classification"),\"lock_pid\":$lock_pid$phase_suffix}"
       ;;
@@ -1127,14 +1214,19 @@ reap_action() {
         echo "reap: --reaped-session-id is required when --action=reaped-orphan-orchestrator" >&2
         return 64
       fi
-      # Try the structured `git worktree remove --force` path first. On
-      # failure (typical when the worktree dir is on disk but no longer
-      # registered with git — common after a crash, see #280), fall back
-      # to `rm -rf` and emit the `-raw-rm` action variant so the source
-      # of the reap stays traceable.
+      # Fast reap (#664): rename-aside + prune + backgrounded bulk delete.
+      # `mv` works whether or not git has the worktree registered, so the
+      # fast path subsumes both the clean registered-worktree remove and the
+      # crash-orphan case (dir on disk but no longer registered with git —
+      # common after a crash, see #280) without stalling on a large tree and
+      # freeing the branch immediately. Only when the fast path can't make
+      # the directory disappear at all (rename AND slow-remove both failed)
+      # do we escalate to a synchronous last-resort `rm -rf`, recording the
+      # `-raw-rm` / `-failed` audit variant so the source of the reap stays
+      # traceable.
       local actual_action="reaped-orphan-orchestrator"
       if [ "$skip_remove" -eq 0 ]; then
-        if ! git worktree remove --force "$worktree_path" 2>/dev/null; then
+        if ! fast_worktree_remove "$worktree_path"; then
           if rm -rf "$worktree_path" 2>/dev/null; then
             actual_action="reaped-orphan-orchestrator-raw-rm"
           else
