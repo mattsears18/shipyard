@@ -560,6 +560,58 @@ This pattern is documented here rather than re-invented per session: the #643 or
 
 **Termination interaction.** Drain's [termination criterion](#drain-protocol) is unchanged in shape — it still exits when every `session_pr` is settled — but the gate-pending correction above means a shipped-but-ungated PR keeps drain alive until its gate run completes (success → it merges → settled-as-merged; real failure → red → fix-checks or `blocked:ci` → settled). The `max_drain_hours` ceiling still applies as the outer bound, so a wedged gate (resource permanently held, command hanging) can't run drain forever.
 
+### Release-PR auto-arming and deploy watch (own-the-tail phase c — [#663](https://github.com/mattsears18/shipyard/issues/663))
+
+Closes the "own the release train" slice of the [#659](https://github.com/mattsears18/shipyard/issues/659) own-the-tail epic. A repo that produces **release PRs** — a release-please `chore(main): release …` PR, an aggregated release-bump PR, or any PR whose sole job is to cut a version + CHANGELOG entry and (on merge) trigger a deploy — otherwise strands its tail on a human: the session ships feature PRs, they merge, and the release PR that would actually *publish* those merges sits OPEN with nobody to arm it. Under the repo's **standing authority** (the [Permissions section](../../../../CLAUDE.md) grants landing on `main` via PR + auto-merge without asking on this personal-tooling repo, and the equivalent grant on any repo whose `auto_merge.policy` is not `never`), drain arms auto-merge on the release PR and drives it to merged → deployed, then picks up the next release PR for the following batch.
+
+**Engagement.** This sweep runs during drain, once per poll, **only after** the per-poll actions and the merge-gate action above. It is a no-op when `auto_merge.policy == never` (read once at drain entry — the operator has opted every PR, release or not, out of auto-merge) or when no open release PR exists.
+
+**Identifying a release PR.** Match an open `@me` (or bot-authored — see the carve-out) PR against the repo's release convention, in priority order:
+
+1. A configured release marker if the repo sets one (a `release` / `autorelease: pending` label, or a `version_coordination`-declared release-branch prefix).
+2. A release-please head-branch prefix (`release-please--*`) or a conventional release title (`chore(main): release`, `chore: release`, `chore(release):`).
+3. Nothing matches → not a release PR; skip it.
+
+Never infer "release PR" from a version bump *inside a feature PR* — on this repo every feature PR cuts its own release ([per-PR release rule](../../agents/issue-worker/issue-work.md#4-implement)), and those are ordinary feature PRs already in `session_prs`, armed at ship time. This sweep targets **standalone** release PRs (release-please-style aggregation, or a catch-up release bump) that no worker armed.
+
+**Security carve-out — preserved, not bypassed.** A release PR is auto-armed **only** when its author clears the same trust gate every other auto-merge decision uses ([issue-work.md step 6](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust), [`external-author-gate.yml`](../../../../.github/workflows/external-author-gate.yml)):
+
+- The author is **push-capable / in `trust.authors`** (the repo owner, a vetted collaborator), OR a **trusted release bot** the repo lists in `trust.authors` (e.g. `github-actions[bot]`, `release-please[bot]`). Release bots are the common case and are exactly why they must be *explicitly* trusted rather than auto-cleared — a release PR opened by an *untrusted* actor (a fork bot, a stranger who titled their PR `chore: release` to smuggle a merge) is **never** armed. Resolve trust the same way issue-work step 6 does when the field is absent: `repos/{owner}/{repo}/collaborators/{author}/permission` → `admin`/`maintain`/`write` ⇒ trusted, anything else ⇒ external.
+- When the release PR's author is **external**, do NOT arm — label it `needs-human-review` and comment (same treatment as an external-author feature PR), then continue. The release still lands, but a human signs off on the merge. The standing-authority grant covers *trusted* release authorship, not a bypass of the external-author defense-in-depth.
+
+**Arming.** For a trusted release PR not already armed this session:
+
+```bash
+# Arm auto-merge with the repo's release merge method (release-please repos
+# typically squash; a plain release-bump PR merges). Respect the same
+# admin-direct-merge pre-check the workers use (worker-preamble auto-merge.md
+# step 0.5) so an ungated direct-merge on a no-required-checks repo blocks on
+# `gh pr checks <M> --watch` first rather than landing before CI.
+gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch
+```
+
+Add `<M>` to `session_prs` (deduped) so the existing drain termination machinery watches it to merged, exactly like any other session PR — it participates in `P_settled` / `head_unchanged_since` / the `max_drain_hours` ceiling with no special-casing. Log `[release-train] armed auto-merge on release PR #<M> (author <login>, trusted); watching to merged→deploy (#663)`.
+
+**Deploy watch.** When a release PR merges (drain's per-poll snapshot sees it leave `O`), the merge commonly triggers a **deploy** — a `deploy` / `publish` / `release` workflow keyed on the merge to the default branch or a pushed tag. Watch that workflow's outcome **within the existing drain window** (bounded by `max_drain_hours` — the deploy watch never *extends* drain past its ceiling; it rides the same budget):
+
+```bash
+# After the release PR merges, find the deploy workflow run triggered by the
+# merge SHA (best-effort — many repos have no deploy workflow, in which case
+# this is a clean no-op and the release is "settled = merged").
+merge_sha=$(gh pr view <M> --repo <owner/repo> --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "")
+if [ -n "$merge_sha" ]; then
+  gh run list --repo <owner/repo> --commit "$merge_sha" \
+    --json databaseId,name,status,conclusion,workflowName \
+    --jq '[.[] | select(.workflowName | test("deploy|publish|release"; "i"))]' 2>/dev/null || echo "[]"
+fi
+```
+
+- **No deploy workflow found** → the release is settled at merge; nothing to watch. (The common case on this repo — there is no deploy pipeline; `plugin.json` is the version surface and the marketplace reads it directly.)
+- **Deploy in progress** → let it ride the normal per-poll snapshot; the release PR is already merged so it doesn't hold `session_prs` open, but surface the deploy's status in the drain status line (`release #<M> merged · deploy <workflow> <status>`) so the operator sees the tail completing.
+- **Deploy concluded FAILURE / TIMED_OUT** → surface it loudly in the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) as `release #<M> merged but deploy <workflow> failed — <conclusion>` and, if the failure is a systemic CI/infra shape rather than a code defect, file a follow-up issue against the **target repo** (same posture as the [systemic-CI-failure section](#when-drain-catches-a-systemic-ci-failure) below). Do NOT auto-retry the deploy from drain — a failed deploy is a human/operator decision (roll back, re-run, or fix-forward), not a fix-checks target.
+
+**Next release PR.** Once a release PR merges and its deploy settles (or there's no deploy), the sweep's next poll picks up the **next** open release PR (release-please opens a fresh one as soon as new conventional commits land on the default branch). It arms that one under the same trust gate — so a session that merges several feature batches drives each successive release PR to merged without a human, one at a time. This is fire-and-forget and bounded by `max_drain_hours`: a release train that can't converge within the ceiling surfaces its still-open release PRs in the summary for the next session.
+
 ### When drain catches a systemic CI failure
 
 **The drain phase classifies into `P_failing` PRs but does NOT dispatch a fix-checks-only worker against them.** That dispatch is steady-state-only — drain's [Per-poll actions](#drain-protocol) above explicitly fill `failed_prs` from `R_new` and dispatch fix-checks workers against newly-red PRs, but the dispatch loop's resolution window closes at drain entry; once drain is active no new fix-checks-only workers are spawned for PRs that were already failing at drain entry (only for PRs that go red *during* drain via `R_new`). The asymmetry is intentional: drain is the "wind-down, let the merge train settle" phase, and a fix-checks-only worker takes 5–20 min to resolve a checks failure — exactly the cost drain is trying to bound.
