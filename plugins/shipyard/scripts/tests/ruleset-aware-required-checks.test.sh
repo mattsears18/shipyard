@@ -27,8 +27,8 @@
 #   gh api repos/{owner}/{repo}/rules/branches/{branch} \
 #     --jq '[.[].type] | (contains(["required_status_checks"]) or contains(["pull_request"]))'
 #
-# This mirrors the two-shape ruleset idiom the orchestrator's CHANGELOG-backfill
-# write-path probe in steady-state.md already uses.
+# This is the same `gh api .../rules/branches/{branch}` ruleset-probe idiom used
+# elsewhere for branch-protection detection.
 #
 # This test pins:
 #   (A) the ruleset fallback is present in auto-merge.md step 0.5 (regression

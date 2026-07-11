@@ -1847,48 +1847,22 @@ assert_contains "$claude_md_path" \
   'Decision-resolved sentinel' \
   "CLAUDE.md has a 'Decision-resolved sentinel' heading entry (#569)"
 
-# (issue #581) CHANGELOG PR #TBD backfill at shipped reconcile.
+# (issue #691) CHANGELOG-backfill machinery removed.
 #
-# The worker writes the CHANGELOG entry before its PR exists, using a
-# 'PR #TBD' placeholder. On direct-merge repos (admin + no required checks)
-# the PR merges before the worker can push a follow-up self-backfill. The
-# orchestrator's A.1 `shipped` reconcile now applies the backfill as a small
-# direct commit to the default branch.
-#
-# Five assertions pin the contract:
-#   - steady-state.md carries the backfill step in the A.1 `shipped` block.
-#   - The backfill step is guarded by version_coordination.enabled so it
-#     only runs on repos with a configured changelog_path.
-#   - The step uses the GitHub Contents API (PUT) to write the commit — NOT
-#     a local `git commit`, which would require the orchestrator's cwd to be
-#     on the default branch.
-#   - The step anchors the substitution on the EXACT placeholder substring
-#     `closes #<N>; PR #TBD` rather than a line-anchored first-'PR #TBD'-on-the-
-#     line match (#704) or the first file-global 'PR #TBD' occurrence (#700), so
-#     neither a sibling entry's pending placeholder (multiple release PRs merged
-#     in the same window, #700) nor a meta-entry's own prose 'PR #TBD' mention
-#     before its placeholder (#704) is mis-resolved. The behavioral proof of both
-#     scenarios lives in the dedicated changelog-backfill-entry-anchor.test.sh.
-#   - The step is fire-and-forget: any failure logs an advisory and continues
-#     rather than blocking reconcile.
-assert_contains "$steady_state_path" \
-  'PR #TBD' \
-  "steady-state.md A.1 shipped block carries the CHANGELOG PR #TBD backfill step (#581)"
-assert_contains "$steady_state_path" \
-  'version_coordination.enabled' \
-  "steady-state.md CHANGELOG backfill is guarded by version_coordination.enabled (#581)"
-assert_contains "$steady_state_path" \
-  'repos/<owner/repo>/contents/' \
-  "steady-state.md CHANGELOG backfill uses the GitHub Contents API to write the commit (#581)"
+# Option 3 of #691 dropped the per-entry PR number from the CHANGELOG
+# convention: entries now cite `closes #N` (the issue) only, with no PR number
+# and no `PR #TBD` placeholder. With no placeholder to fill, the entire A.1
+# `shipped`-reconcile backfill block (#581/#583, hardened by #700/#704) was
+# deleted — both write paths (direct Contents API commit + the auto-merged
+# `do-work/changelog-backfill-<M>` PR fallback), the `PR #TBD` grep/sed, and
+# the Scope-and-conditions docs. Guard that no residual backfill logic or
+# placeholder mandate remains in the do-work spec.
 assert_not_contains "$steady_state_path" \
-  'sed "s/PR #TBD/PR #<M>/g"' \
-  "steady-state.md backfill uses sed without the g flag — no mass-rewrite of sibling entries (#581)"
-assert_contains "$steady_state_path" \
-  'sed "s/closes #<N>; PR #TBD/closes #<N>; PR #<M>/"' \
-  "steady-state.md backfill anchors the sed on the exact placeholder substring, not a line-anchored or first-occurrence match (#704)"
-assert_contains "$steady_state_path" \
+  'PR #TBD' \
+  "steady-state.md no longer carries any PR #TBD backfill machinery (#691)"
+assert_not_contains "$steady_state_path" \
   'changelog-backfill' \
-  "steady-state.md backfill logs with a [changelog-backfill] advisory prefix (#581)"
+  "steady-state.md no longer carries the [changelog-backfill] backfill step (#691)"
 
 echo
 if (( fail > 0 )); then
