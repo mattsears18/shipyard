@@ -480,6 +480,33 @@ if [[ -f "$skill_path" ]]; then
     "auto-merge.md §0.5 fire-condition is the two-shape OR mirroring setup.md §1.3 (issue #602)"
   assert_contains "$auto_merge_path" "Do NOT skip on \`ALLOW_AUTO_MERGE == true\` alone" \
     "auto-merge.md §0.5 skip is preserved only when required checks configured OR queue forms, not on allow_auto_merge==true alone (issue #602)"
+
+  # Issue #707 — "terminal state is LOCAL gates + PR-opened + auto-merge-armed;
+  # never gate the commit / push / PR-open on a CI result" rule in the
+  # Return-contract discipline section. The rule exists because a worker on a
+  # CI-congested host finished its full implementation, verified it locally,
+  # spawned a background CI-watch, and then STALLED with the work uncommitted
+  # on disk — treating "wait for CI to confirm" as a precondition for committing
+  # (returning "I'll wait for the background waiter … before proceeding to
+  # commit"), so nothing ever committed. This is DISTINCT from #529 (which
+  # forbids using a backgrounded process as the wait mechanism); #707 forbids
+  # treating CI confirmation as a commit precondition AT ALL. Removing the rule
+  # (or the one-shot-snapshot-not-a-wait strengthening in auto-merge.md step 2)
+  # regresses the never-gate-the-commit-on-CI contract.
+  assert_contains "$skill_path" "never gate the commit / push / PR-open on a CI result" \
+    "SKILL.md forbids gating the commit/push/PR-open on a CI result (issue #707)"
+  assert_contains "$skill_path" "([#707](https://github.com/mattsears18/shipyard/issues/707))" \
+    "SKILL.md's terminal-state rule cites issue #707"
+  assert_contains "$skill_path" "CI confirmation is the **orchestrator's** job" \
+    "SKILL.md names CI confirmation as the orchestrator's job, not the worker's (issue #707)"
+  assert_contains "$skill_path" "one-shot snapshot" \
+    "SKILL.md names the post-PR check-rollup read a one-shot snapshot, never a wait (issue #707)"
+  assert_contains "$skill_path" "run it fire-and-forget or skip it — never *wait* on it" \
+    "SKILL.md strengthens the do-not-watch guidance to do-not-wait fire-and-forget-or-skip (issue #707)"
+  assert_contains "$auto_merge_path" "one-shot read for the return string, never a wait" \
+    "auto-merge.md step 2 frames the check-rollup snapshot as a one-shot read, never a wait (issue #707)"
+  assert_contains "$auto_merge_path" "[#707](https://github.com/mattsears18/shipyard/issues/707)" \
+    "auto-merge.md step 2 cites issue #707 for the never-wait-on-CI rule"
 fi
 
 # (1b) Each per-mode spec's return section must reference the #529
@@ -493,6 +520,18 @@ for mode_file in issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-p
       "${mode_file}.md return section references the #529 synchronous-return clause"
   fi
 done
+
+# (1c) issue-work.md — the mode with the #707 repro — must reference the
+# never-gate-commit-on-CI rule in both its §7 snapshot step and its §8 return
+# section, so a worker reading only the issue-work file still sees the
+# prohibition (and the strengthened do-not-watch → do-not-wait guidance).
+issue_work_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+if [[ -f "$issue_work_path" ]]; then
+  assert_contains "$issue_work_path" "do not *wait* on a background CI-watch either ([#707]" \
+    "issue-work.md §7 strengthens do-not-watch to do-not-wait, citing #707"
+  assert_contains "$issue_work_path" "CI confirmation is NOT a precondition for returning ([#707]" \
+    "issue-work.md §8 return section states CI confirmation is not a precondition for returning (issue #707)"
+fi
 
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
 # the issue #154 split) must reference the skill. We count by the canonical
