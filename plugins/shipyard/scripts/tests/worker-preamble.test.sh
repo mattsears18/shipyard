@@ -261,6 +261,31 @@ if [[ -f "$skill_path" ]]; then
   assert_contains "$node_bootstrap_path" "introduction only" \
     "node-bootstrap.md scopes the rule to dependency introduction, not upgrades (issue #694)"
 
+  # Issue #708 — "Nested non-hoisted packages need their own install before
+  # their gates" section. The section exists because the documented root + app
+  # `npm ci` is insufficient for a nested, non-hoisted package (a Firebase
+  # `functions/`, some monorepo service dirs) whose test/build suite resolves
+  # its own deps from its own node_modules — neither install creates that
+  # nested node_modules, so the nested suite fails module resolution until the
+  # worker also `npm ci`s inside the nested package (lightwork functions repro,
+  # session_01Hs4CqGT53F6kwVasHiyLnH). The section must carry the cheapest
+  # heuristic (install the nested pkg your diff touches), the bounded-search
+  # scope (not a full-tree sweep), the distinct-from-#680 note (nested test
+  # suite vs root commit hook), and the generic (non-hardcoded-path) framing.
+  # Removing any of these regresses the nested-non-hoisted-install contract.
+  assert_contains "$node_bootstrap_path" "## Nested non-hoisted packages need their own install before their gates" \
+    "node-bootstrap.md covers the nested non-hoisted package install rule (issue #708)"
+  assert_contains "$node_bootstrap_path" "([#708](https://github.com/mattsears18/shipyard/issues/708))" \
+    "node-bootstrap.md's nested-package section cites issue #708"
+  assert_contains "$node_bootstrap_path" "\`npm ci\` there before running that package's gates" \
+    "node-bootstrap.md gives the cheapest heuristic: npm ci in the touched nested dir before its gates (issue #708)"
+  assert_contains "$node_bootstrap_path" "Bounded search, not a full sweep" \
+    "node-bootstrap.md bounds the nested-package detection to a bounded search, not a full-tree sweep (issue #708)"
+  assert_contains "$node_bootstrap_path" "Distinct from the root-husky/commit-hook install gap" \
+    "node-bootstrap.md marks the nested-package rule distinct from the #680 root-commit-hook gap (issue #708)"
+  assert_contains "$node_bootstrap_path" "Don't hardcode a specific repo's paths" \
+    "node-bootstrap.md keeps the nested-package rule generic, not hardcoded to a repo's paths (issue #708)"
+
   # Issue #322 — Bash-tool isolation gotcha in the worktree-reaped escape hatch.
   # The pre-#322 snippet documented a "save once, reuse" pattern that tripped
   # the very guard it was meant to enforce when run through the Bash tool:

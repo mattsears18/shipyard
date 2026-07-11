@@ -84,6 +84,45 @@ The check is a one-liner; the remediation is the substantive part.
 
 **Exception — root-owned commit hooks in a monorepo ([#680](https://github.com/mattsears18/shipyard/issues/680)).** The "sub-dir only unless it has its own `package.json`" carve-out above is about the deps your *tests* need. It does NOT cover commit-hook tooling: in a non-workspace monorepo, husky / commitlint / lint-staged are usually installed from the **root** `package.json` (often not a workspace member), so they resolve against the **root** `node_modules` regardless of which sub-dir your code change lives in. If you bootstrap only the app workspace and skip the root, the commit hook fails and your commit is rejected. Whenever the repo **root** owns the commit hooks, bootstrap the root too — see [§ "Root-owned commit hooks in a non-workspace monorepo"](#root-owned-commit-hooks-in-a-non-workspace-monorepo) below.
 
+**Exception — nested non-hoisted packages in a monorepo ([#708](https://github.com/mattsears18/shipyard/issues/708)).** The same "sub-dir only unless it has its own `package.json`" carve-out cuts the other way for a *nested, non-hoisted* package whose test/build suite resolves its **own** deps from its **own** `node_modules` (a Firebase `functions/`, some monorepo service dirs). The root + app installs never create that nested `node_modules`, so the nested suite fails a module-resolution error until you `npm ci` inside the nested package too. Whenever your change touches files under a nested dir that owns its own `package.json`, bootstrap that dir before running its gates — see [§ "Nested non-hoisted packages need their own install before their gates"](#nested-non-hoisted-packages-need-their-own-install-before-their-gates) below. This is **distinct from the root-owned-commit-hook gap (#680)** above: that one is the *commit hook* resolving against the missing **root** install; this one is a *nested package's test suite* resolving against its missing **nested** install.
+
+## Nested non-hoisted packages need their own install before their gates
+
+A monorepo-shaped hazard that the root + app `npm ci` in the [Dependency-bootstrap check](#dependency-bootstrap-check-for-node-based-target-repos) above does **not** cover ([#708](https://github.com/mattsears18/shipyard/issues/708)). Those two installs bootstrap the repo-root deps and the app workspace's hoisted deps — but they are insufficient for a nested, **non-hoisted** package whose test/build suite resolves its *own* dependencies from its *own* `node_modules`. The canonical case is a Firebase Cloud Functions dir: `functions/` carries its own `package.json`, its deps are deliberately **not** hoisted into the app's `node_modules` (Firebase deploys `functions/` with a self-contained `node_modules`), so `npm run test:unit:functions` cannot resolve `firebase-functions` until you `npm ci` inside `functions/` too. Neither documented install creates `functions/node_modules`, so the nested suite fails a module-resolution error the worker then burns tool calls diagnosing per session.
+
+**Distinct from the root-husky/commit-hook install gap ([#680](#root-owned-commit-hooks-in-a-non-workspace-monorepo)).** That gap is about the *commit-hook* tooling (husky / commitlint / lint-staged) resolving against the missing **root** `node_modules`; this one is about a *nested package's test/build suite* resolving against its own missing **nested** `node_modules`. A repo can hit either, both, or neither — the remediations don't substitute for each other (a root install does not populate `functions/node_modules`, and a `functions/` install does not populate the root's).
+
+Confirmed repro (issue #708): session `session_01Hs4CqGT53F6kwVasHiyLnH` against `mattsears18/lightwork`, issue-work on a Cloud Functions change (#2444). Layout: repo-root `package.json` (husky/commitlint), `apps/lightwork/package.json` (the app + workspaces), and `apps/lightwork/functions/package.json` — a separately-installed Cloud Functions package whose deps are not hoisted into the app's `node_modules`. The functions Jest suite couldn't resolve `firebase-functions` until the worker also ran `npm ci` in `apps/lightwork/functions/` — the documented "root + app" installs were insufficient for the functions test suite.
+
+### The cheapest heuristic — install the nested package whose files your change touches
+
+Don't sweep the whole tree for every nested `package.json`. Fire on the intersection of *your diff* and *nested-package dirs*: **if your change modifies files under a directory that has its own `package.json` (e.g. `functions/`), `npm ci` there before running that package's gates.** A Cloud Functions change ⇒ `npm ci` in `functions/`; a nested package your diff doesn't touch is left alone (its gates don't run against your change, so it needs no install).
+
+```bash
+# DEFAULT_BRANCH is the repo's default branch (resolved earlier in the flow).
+# For each dir that (a) owns its own package.json distinct from the root / app
+# workspace you already bootstrapped AND (b) contains at least one file your
+# change touches, bootstrap it. Walk up from each changed file to the nearest
+# package.json and install there if its node_modules is missing.
+CHANGED=$(git diff --name-only "origin/${DEFAULT_BRANCH}"...HEAD)
+for f in $CHANGED; do
+  d=$(dirname "$f")
+  while [ "$d" != "." ] && [ "$d" != "/" ]; do
+    if [ -f "$d/package.json" ] && [ ! -d "$d/node_modules" ]; then
+      ( cd "$d" && npm ci --no-audit --no-fund --prefer-offline )
+      break
+    fi
+    d=$(dirname "$d")
+  done
+done
+```
+
+**Bounded search, not a full sweep.** Detect the nested packages to install by (1) walking up from your changed files to the nearest `package.json` (the loop above), or (2) reading any `test:unit:*` / `build` script that `cd`s into a subdir — those scripts name the nested packages whose gates you're expected to run. Do NOT recursively `npm ci` every `package.json` in the tree; install only the nested package(s) your change touches and whose gates you'll actually run before pushing.
+
+**A non-hoisted package needs its own resolved tree — prefer `npm ci` inside it.** The symlink / `cp -al` remediations from the Dependency-bootstrap ladder assume the deps *hoist* (one shared `node_modules`); a non-hoisted package by definition resolves against a *separate* tree, so `npm ci` inside the nested dir is the correct remediation, not a symlink to the app's `node_modules`. The Auto Mode and Turbopack constraints from that ladder apply identically if you do reach for a link strategy.
+
+**Don't hardcode a specific repo's paths.** `functions/` is the common Firebase case, but the rule is generic: *any* nested dir with its own `package.json` + a test/build script whose deps aren't hoisted. Other monorepo service dirs (`services/<svc>/`, out-of-workspace `packages/<pkg>/`) have the same shape — key on the structural signal (own `package.json`, non-hoisted deps, your diff touches it), never on a literal path.
+
 ## Adding a NEW dependency — default to the latest stable version ([#694](https://github.com/mattsears18/shipyard/issues/694))
 
 When your implementation **introduces a package the repo did not already depend on** — a brand-new entry in `package.json` (or the ecosystem equivalent: `requirements.txt` / `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`) — install the **latest stable version by default**, not an arbitrary version remembered from training data or copied from an unrelated example. A dependency introduced at a stale version starts behind and only drifts further; an agent writing code is a frequent introducer, so introduction time is the cheapest place to prevent version debt. The failure mode this closes is concrete ([#694](https://github.com/mattsears18/shipyard/issues/694)): a two-month-old consumer repo (`mattsears18/lightwork`) accumulated *multi-major* dependency debt, several packages caught only because they surfaced as CI failures or a shipped native crash (a `react` / `react-native-renderer` version skew).
