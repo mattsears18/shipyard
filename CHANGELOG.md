@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.3.10 — 2026-07-11
+
+**Document the canonical `PR #TBD` CHANGELOG PR-reference placeholder on the worker side and forbid PR-number prediction** (closes #690; PR #TBD). The orchestrator's CHANGELOG backfill (#581 / #583) matches the placeholder with a literal `grep -qF "PR #TBD"` at `shipped` reconcile time, but no worker spec documented that contract — so workers improvised the PR reference and did so inconsistently: some predicted a PR number (which the interleaved backfill/sibling PRs shift off-by-one), one wrote a non-canonical `PR #<PR>` shape the literal grep never matched. In the #690 repro three of five sequential release entries shipped wrong to `main` and needed a manual cleanup PR. The fix adds the worker-side mandate so the two sides are visibly one contract. Files touched:
+
+- `plugins/shipyard/agents/issue-worker/issue-work.md` — the step-4 CHANGELOG-write cluster gains a bolded paragraph mandating the literal `PR #TBD` token, forbidding PR-number prediction (the worker cannot know its number before `gh pr create` returns), naming the two failure modes (predicted number / non-canonical placeholder shape both ship uncorrected), and cross-referencing the orchestrator backfill (steady-state.md § A.1 / #581 / #583).
+- `plugins/shipyard/scripts/tests/changelog-pr-ref-placeholder.test.sh` — new regression test asserting the guidance names the canonical placeholder, forbids prediction, cross-references the backfill, and that steady-state.md's backfill still greps the literal `PR #TBD` token the worker writes.
+
 ### 2.3.9 — 2026-07-11
 
 **Resolve the absent-rationale-sink branch in `/optimize-markdown` and warn about illustrative / label-form `#NNNN` refs** (closes #678; PR #688). Step 5 listed provenance-relocation as the archetypal SAFE transform, but it assumed a rationale sink already exists — step 3 acknowledged the sink may be absent yet step 5 gave no instruction for that case, and `## Don't` forbade "inventing conventions," leaving an unresolvable branch (relocation is unperformable in any repo without a sink, and the two obvious resolutions were ambiguously-forbidden or lossy). The fix makes the absent case unambiguous: creating a sink is SAFE because a sink is a relocation *destination*, not a *loading* convention, and nothing loads it at runtime. It also warns against naive `#NNNN` stripping, which destroys refs that are the instruction's own illustrative examples (lightwork `CLAUDE.md:30`) or label forms whose removal forces a reword. Spec/docs only; no helper-script runtime change. Files touched:
