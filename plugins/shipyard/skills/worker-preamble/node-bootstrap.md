@@ -1,6 +1,6 @@
 # Worker-preamble fragment — Node dependency bootstrap + hook/test silent-pass gates
 
-On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode runs the **target repo's** local tests / pre-push hooks before pushing — primarily against Node-based or self-hosting target repos. It carries the three silent-quality-gate-bypass guards: missing `node_modules` (#316), non-executable husky hooks (#459), and a test runner that ignores the worktree path (#369). The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "Dependency-bootstrap check for Node-based target repos"`, `§ "Husky / core.hooksPath hooks silently skipped on a missing exec bit"`, `§ "Test-runner silent-pass when the target repo ignores worktree paths"`).
+On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode runs the **target repo's** local tests / pre-push hooks before pushing — primarily against Node-based or self-hosting target repos. It carries the silent-quality-gate-bypass guards — missing `node_modules` (#316), non-executable husky hooks (#459), and a test runner that ignores the worktree path (#369) — plus the non-workspace-monorepo root-hook bootstrap gap that rejects a commit and leaves an empty pushed branch (#680). The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "Dependency-bootstrap check for Node-based target repos"`, `§ "Husky / core.hooksPath hooks silently skipped on a missing exec bit"`, `§ "Test-runner silent-pass when the target repo ignores worktree paths"`, `§ "Root-owned commit hooks in a non-workspace monorepo"`).
 
 **Why these live in a worker-preamble fragment and not per-mode.** Every dispatched worker (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate) eventually runs `git push` against the target repo, and the silent-test-skip failure modes are identical across modes. One fragment beats six copy-pasted recipes. The shipyard repo itself is shell-test-driven with no `package.json` deps to bootstrap and no husky setup, so a worker dispatched against `mattsears18/shipyard` skips these checks — they guard the *target-repo* tooling (lightwork, mattsears18.com, etc.).
 
@@ -81,6 +81,65 @@ The check is a one-liner; the remediation is the substantive part.
 3. **Bail with `blocked:` if both paths fail.** Don't push a Node-repo change whose local tests didn't actually run — the silent-pass failure is exactly the gap this check exists to close. Return `blocked: cannot bootstrap node_modules — symlink target missing AND npm ci failed (<reason>)` and let the orchestrator pick a different issue.
 
 **When NOT to run the check.** Don't run it for non-Node repos (no `package.json`), don't run it inside a sub-directory of a monorepo unless that sub-dir has its own `package.json` (the root's deps may satisfy the sub-dir's tooling), and don't run it for documentation-only changes to a Node repo (no tests to skip silently if your diff is `*.md` files).
+
+**Exception — root-owned commit hooks in a monorepo ([#680](https://github.com/mattsears18/shipyard/issues/680)).** The "sub-dir only unless it has its own `package.json`" carve-out above is about the deps your *tests* need. It does NOT cover commit-hook tooling: in a non-workspace monorepo, husky / commitlint / lint-staged are usually installed from the **root** `package.json` (often not a workspace member), so they resolve against the **root** `node_modules` regardless of which sub-dir your code change lives in. If you bootstrap only the app workspace and skip the root, the commit hook fails and your commit is rejected. Whenever the repo **root** owns the commit hooks, bootstrap the root too — see [§ "Root-owned commit hooks in a non-workspace monorepo"](#root-owned-commit-hooks-in-a-non-workspace-monorepo) below.
+
+## Root-owned commit hooks in a non-workspace monorepo
+
+A fourth silent-quality-gate hazard, and the one that leaves *remote-visible debris* ([#680](https://github.com/mattsears18/shipyard/issues/680)). Here the app you're changing lives in a workspace sub-dir (`apps/<app>/`, `packages/<pkg>/`), but the repo installs its **commit-hook** tooling — husky + commitlint + lint-staged — from the **root** `package.json`, which is frequently *not* a workspace member. `git worktree add` runs no `npm ci` anywhere, and a `CLAUDE.md` that says "`npm ci` in a fresh worktree" (plus the sub-dir-only carve-out in the dependency-bootstrap "When NOT to run" note above) can lead a worker to bootstrap only the app workspace and leave the **root** `node_modules` empty. Then `.husky/commit-msg` (typically `npx --no commitlint ...`, or a `node_modules/.bin/lint-staged` shell-out) resolves against the absent root `node_modules`, the hook errors, and `git commit` is **rejected** — and a worker that already ran `git push` has left an **empty branch** on the remote, which the orchestrator's orphan-branch triage (setup step 3c) and any human reading `git branch -r` mistake for abandoned worker debris.
+
+Confirmed repro (issue #680): session `session_01Hs4CqGT53F6kwVasHiyLnH` against `mattsears18/lightwork` (2026-07-10), issue-work on `lightwork#2388`. The monorepo's app is at `apps/lightwork/`; husky + commitlint are installed from the root `package.json`, which is not a workspace member. The worker `npm ci`'d only in `apps/lightwork`, `.husky/commit-msg` (`npx --no commitlint`) failed against the missing root `node_modules`, the commit was rejected, and an empty branch had already been pushed before the worker diagnosed it. This shape — root-level husky/commitlint/lint-staged with the app in a workspace sub-dir — is the default for `npm workspaces`, `pnpm`, `turbo`, and `nx` monorepos, so it's common, not exotic.
+
+### Bootstrap the ROOT when it owns the commit hooks
+
+Before your first commit, if the repo **root** wires commit hooks — a `.husky/` directory at the root, OR the root `package.json` declares `husky` / `commitlint` (`@commitlint/cli`) / `lint-staged` in `devDependencies` or `dependencies`, OR carries a `lint-staged` / `commitlint` config key or a `prepare: "husky"` script — bootstrap the **root** `node_modules` in addition to whatever workspace sub-dir you bootstrapped for tests, even when your code change is confined to the sub-dir:
+
+```bash
+# From your worktree root (repo root; `git rev-parse --show-toplevel`).
+# Detect root-level hook tooling that resolves against the ROOT node_modules.
+if [ -f package.json ] && [ ! -d node_modules ]; then
+  if [ -d .husky ] \
+     || node -e "const p=require('./package.json'),d={...p.dependencies,...p.devDependencies};process.exit((d.husky||d.commitlint||d['@commitlint/cli']||d['lint-staged']||p['lint-staged']||p.commitlint||(p.scripts&&p.scripts.prepare&&/husky/.test(p.scripts.prepare)))?0:1)" 2>/dev/null; then
+    echo "worker-preamble: repo root owns commit hooks but root node_modules is missing — bootstrap the ROOT, not just the app workspace (#680)" >&2
+    # Apply the SAME remediation ladder as the dependency-bootstrap section
+    # above — symlink ../../../node_modules → cp -al → npm ci — but at the
+    # repo ROOT, not the workspace sub-dir. (The `../../../node_modules`
+    # symlink target IS the primary checkout's root node_modules.) The Auto
+    # Mode / Turbopack constraints apply identically.
+  fi
+fi
+```
+
+The remediation is the same ladder documented in the dependency-bootstrap section (symlink `../../../node_modules` → `cp -al` → `npm ci`, subject to the Auto Mode and Turbopack constraints); the only difference is *where* you apply it — the repo root, not the workspace sub-dir. When both the root (for hooks) and a workspace sub-dir (for tests) need deps, bootstrap **both**.
+
+### Never `git push` before the first `git commit` succeeds
+
+Independent of the root-bootstrap fix above, and worth doing regardless: it bounds the blast radius of *any* commit-hook failure, not just this one. A rejected commit-hook (the root-`node_modules` gap here, a non-executable hook per the section below, a genuine lint failure) exits `git commit` non-zero and lands **no commit**. If you already ran `git push` — or ran commit and push as a fire-and-forget pair without checking the commit's exit status — you push a branch with zero commits, the empty-branch debris above. **Gate the push on the commit actually succeeding:**
+
+```bash
+git add <specific paths>
+if git commit -m "<message>"; then
+  git push -u origin <branch>
+else
+  # Commit was REJECTED (non-zero exit) — do NOT push. A hook likely fired;
+  # see the diagnostic below before assuming the diff is at fault.
+  echo "worker-preamble: git commit failed — NOT pushing (an empty branch would be remote-visible debris)" >&2
+fi
+```
+
+Never run `git commit … && git push` without observing the commit's exit status, and never `git push` speculatively "to be safe" before the commit has landed.
+
+### Diagnostic — a rejected commit with `.husky/` present is a missing-`node_modules` tell, not a bad diff
+
+When `git commit` fails and the repo wires committed hooks (`.husky/` present, or `core.hooksPath` resolves in-tree), suspect the **commit hook**, not your changes, first. A `commit-msg` / `pre-commit` hook that shells out to `npx --no commitlint` / `node_modules/.bin/lint-staged` fails with an `ENOENT`- or "command not found"-shaped error when the `node_modules` it resolves against (usually the **root** — see above) is missing, and that error is easy to misread as a lint failure in your diff. Before touching your changes:
+
+```bash
+# If commit failed and hooks are wired, check the ROOT node_modules first.
+[ -d .husky ] && [ ! -d node_modules ] && \
+  echo "worker-preamble: commit likely rejected by a hook resolving against a missing root node_modules — bootstrap it (see above) and retry the commit, do NOT rewrite the diff" >&2
+```
+
+Bootstrap the missing `node_modules` (per "Bootstrap the ROOT" above), then retry the commit. Do NOT reach for `--no-verify` — the hook *should* run — and do NOT start rewriting a diff that was never the problem.
 
 ## Husky / `core.hooksPath` hooks silently skipped on a missing exec bit
 
