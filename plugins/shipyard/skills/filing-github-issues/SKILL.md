@@ -54,6 +54,7 @@ Every issue you file MUST also carry an `audit:<dimension>` label identifying wh
 | `security-auditor` | `audit:security` | `c5def5` |
 | `a11y-auditor` | `audit:a11y` | `c5def5` |
 | `seo-auditor` | `audit:seo` | `c5def5` |
+| `marketing-auditor` | `audit:marketing` | `c5def5` |
 | `privacy-auditor` | `audit:privacy` | `c5def5` |
 | `release-readiness-auditor` | `audit:release-readiness` | `c5def5` |
 | `pwa-auditor` | `audit:pwa` | `c5def5` |

@@ -142,7 +142,7 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release. Pin to a specif
 
 An autonomous engineering loop for web + mobile app development. Three things it does:
 
-1. **Finds work** — `/audit` runs deep audits across UX, performance, security, accessibility, DX, privacy, PWA readiness, release readiness, SEO, tech debt, testing, docs, observability, API surface health, and data-model lifecycle integrity, and autonomously files GitHub issues for every finding.
+1. **Finds work** — `/audit` runs deep audits across UX, performance, security, accessibility, DX, privacy, PWA readiness, release readiness, SEO, marketing / conversion, tech debt, testing, docs, observability, API surface health, and data-model lifecycle integrity, and autonomously files GitHub issues for every finding.
 2. **Refines work** — `/refine-issues` is a source-branched refiner: raw user-feedback issues get classified (already-done / decline / legitimate) and rewritten into implementation-ready tickets; Claude-filed feature requests with `## Open questions` get reasonable defaults committed; everything else falls through to `needs-triage`. The user-feedback path is gated by a `needs-human-review` label so no code-modifying agent runs until a human signs off; the open-questions and triage paths are decoupled from human review.
 3. **Does work** — `/do-work` orchestrates a rolling pool of parallel issue-workers, each in an isolated git worktree. It dispatches up to `--concurrency` workers at once, opens PRs with auto-merge, and gracefully handles failing checks, red main CI, and PR pileups via specialized diversion workers.
 
@@ -155,6 +155,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit security <url>` — deps, secrets in git, Firebase rules, headers, mobile manifests
 - `/audit a11y <url>` — Lighthouse a11y category + manual keyboard / screen-reader tour
 - `/audit seo <url>` — sitemap, structured data, OG/Twitter cards, canonical URLs, image alt text, internal link graph
+- `/audit marketing <url>` — landing-page value-prop + primary CTA, funnel dead-ends, store-listing persuasiveness gaps, cross-surface positioning consistency (evidence-anchored, not taste — defers to repo brand/voice docs)
 - `/audit privacy <url>` — GDPR / CCPA / COPPA: cookie banners, ATT prompts, account-deletion flow, ASC + Play privacy forms
 - `/audit pwa <url>` — manifest completeness, service worker behavior, offline fallback, install prompt UX, icon coverage
 - `/audit release-readiness` — CHANGELOG ↔ store-metadata sync, app-icon coverage, splash screens, deep-link asset files, version bumps
