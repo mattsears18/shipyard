@@ -237,6 +237,30 @@ if [[ -f "$skill_path" ]]; then
   assert_contains "$node_bootstrap_path" "cannot bootstrap node_modules" \
     "node-bootstrap.md names the blocked: bail string for the fail-both-paths case"
 
+  # Issue #694 — introduce a NEW dependency at the latest stable version, with
+  # the peer/SDK carve-out. A worker that adds a package pinned to a
+  # training-data-remembered stale version starts the dep behind and it only
+  # drifts further (the observed multi-major debt + shipped native crash on
+  # lightwork). The section establishes latest-stable-by-default, the
+  # unconditional peer/SDK carve-out (framework-required version instead), the
+  # expo install preference for Expo repos, recording the version in the PR
+  # body, and introduction-only scope. Removing any of these regresses the
+  # introduction-time-version-debt contract.
+  assert_contains "$node_bootstrap_path" "## Adding a NEW dependency — default to the latest stable version" \
+    "node-bootstrap.md covers introducing a new dependency at latest stable (issue #694)"
+  assert_contains "$node_bootstrap_path" "npm install <pkg>@latest" \
+    "node-bootstrap.md names the latest-stable installer for a new dep (issue #694)"
+  assert_contains "$node_bootstrap_path" "Record the resolved version in the PR body" \
+    "node-bootstrap.md requires recording the resolved version in the PR body (issue #694)"
+  assert_contains "$node_bootstrap_path" "load-bearing carve-out" \
+    "node-bootstrap.md names the peer/SDK load-bearing carve-out (issue #694)"
+  assert_contains "$node_bootstrap_path" "npx expo install <pkg>" \
+    "node-bootstrap.md prefers expo install for Expo repos (issue #694)"
+  assert_contains "$node_bootstrap_path" "new_dep_version" \
+    "node-bootstrap.md references the dependencies.new_dep_version config knob (issue #694)"
+  assert_contains "$node_bootstrap_path" "introduction only" \
+    "node-bootstrap.md scopes the rule to dependency introduction, not upgrades (issue #694)"
+
   # Issue #322 — Bash-tool isolation gotcha in the worktree-reaped escape hatch.
   # The pre-#322 snippet documented a "save once, reuse" pattern that tripped
   # the very guard it was meant to enforce when run through the Bash tool:

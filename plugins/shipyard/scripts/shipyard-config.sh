@@ -203,6 +203,9 @@ DEFAULTS_JQ='{
   "decompose": {
     "auto": true,
     "max_subissues": 8
+  },
+  "dependencies": {
+    "new_dep_version": "latest-stable"
   }
 }'
 
