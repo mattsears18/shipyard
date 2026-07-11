@@ -731,10 +731,22 @@ For **issue work** (`shipped` / `blocked` / `errored`):
       --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "")
 
     if [ -n "$changelog_on_main" ] && echo "$changelog_on_main" | grep -qF "PR #TBD"; then
-      # Replace only the FIRST occurrence — there should be at most one #TBD per
-      # reconcile (the worker writes exactly one entry). sed -i is avoided for
-      # portability; use a temp-file approach via the GitHub API.
-      updated=$(echo "$changelog_on_main" | sed "s/PR #TBD/PR #<M>/")
+      # Anchor the substitution on THIS PR's OWN entry — not the first
+      # file-global 'PR #TBD' occurrence (issue #700). The reconciled issue
+      # #<N> is known at `shipped` time, and the entry's summary line always
+      # carries the token pair '(closes #<N>; PR #TBD)', so restricting the
+      # substitution to lines matching `closes #<N>` resolves exactly the
+      # intended entry. When two or more sibling release PRs merge in the same
+      # window, 'main' carries MULTIPLE pending 'PR #TBD' placeholders at once
+      # (newest-first); a file-global first-occurrence sed ("s/PR #TBD/.../")
+      # would write #<M> into whichever entry is topmost — possibly a DIFFERENT
+      # PR's entry — stranding the intended entry at 'PR #TBD'. The
+      # `[ "$updated" != "$changelog_on_main" ]` guard below then no-ops when
+      # THIS PR's entry has no pending placeholder (already backfilled, or the
+      # only remaining 'PR #TBD' belongs to a sibling), keeping the step
+      # idempotent + correctly-targeted regardless of how many siblings pend.
+      # sed -i is avoided for portability; the write goes via the GitHub API.
+      updated=$(echo "$changelog_on_main" | sed "/closes #<N>[;) ]/ s/PR #TBD/PR #<M>/")
 
       if [ "$updated" != "$changelog_on_main" ]; then
         # Get the current file SHA (required by the GitHub contents PATCH endpoint).
@@ -844,7 +856,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   - **Idempotent** — if `PR #TBD` is already gone (worker self-backfilled, or another reconcile beat this one), the `grep -qF "PR #TBD"` check is false and the step is a no-op. This means it's safe to double-fire on phantom re-fires (though the reconcile-once gate in A.−1 should prevent that).
   - **Fire-and-forget** — every error path logs an advisory and continues. The CHANGELOG backfill is cosmetic (the fix for #581's symptom); the reconcile loop must never block on it.
   - **Write-path selection** — the backfill probes the default branch's ruleset first (via `gh api repos/{repo}/rules/branches/{branch}`), then attempts a direct Contents API write. If the write fails AND the branch has a `pull_request` rule, it falls back to an auto-merged PR on a short-lived `do-work/changelog-backfill-<M>` branch. If both paths fail, it emits a **visible** `WARNING` advisory — never a silent no-op (issue [#583](https://github.com/mattsears18/shipyard/issues/583)).
-  - **One `sed` replacement per run** — the `sed "s/PR #TBD/PR #<M>/"` replaces only the FIRST occurrence. The worker writes exactly one `PR #TBD` entry per dispatch, so one replacement is correct. Historical `#TBD` entries from previous sessions on the same branch are NOT mass-rewritten — the forward fix is the priority per issue #581.
+  - **Entry-anchored replacement** — the `sed "/closes #<N>[;) ]/ s/PR #TBD/PR #<M>/"` restricts the substitution to THIS PR's own CHANGELOG entry (its summary line always carries `(closes #<N>; PR #TBD)`), NOT the first file-global `PR #TBD` occurrence (issue [#700](https://github.com/mattsears18/shipyard/issues/700)). When two or more sibling release PRs merge in the same window, `main` carries multiple pending `PR #TBD` placeholders at once (newest-first); the original file-global first-occurrence `sed "s/PR #TBD/PR #<M>/"` wrote `PR #<M>` into whichever entry was topmost — possibly a *different* PR's entry — stranding the intended entry at `PR #TBD` (the #700 repro: PR #692's `2.3.10` entry stayed `PR #TBD` because PR #693's backfill sed resolved a sibling's topmost placeholder instead). Anchoring on `closes #<N>` (known at `shipped` reconcile time) targets the correct entry regardless of how many sibling placeholders are pending, and the `updated != changelog_on_main` guard keeps the step idempotent and a no-op when this PR's placeholder is already resolved. Historical entries for *other* issues are never touched — the single, correctly-targeted replacement is the fix per issues #581 and #700. Cross-references #691 (backfill volume/churn) and #690 (the `PR #TBD` placeholder contract this anchors on).
 
   **Then reap the agent's worktree immediately — don't wait for end-of-session cleanup.** Closes [#282](https://github.com/mattsears18/shipyard/issues/282): the worker's local branch `do-work/issue-<N>` and worktree directory lingering until end-of-session cleanup is what locks subsequent same-session fix-rebase dispatches out of `git switch <head>` (git enforces one-worktree-per-branch). Reaping immediately on `shipped` frees the PR's head branch right when the merge train might next want to rebase it. The worker has already returned (this is what `shipped` IS), so its worktree is no-longer-live by definition — the classify-lock pass still runs as defensive belt-and-suspenders, but the expected classification is `dead` (process gone) or `self-ancestor` (lock held the orchestrator's PID per the harness convention).
 

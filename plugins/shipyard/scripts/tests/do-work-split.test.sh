@@ -1862,9 +1862,12 @@ assert_contains "$claude_md_path" \
 #   - The step uses the GitHub Contents API (PUT) to write the commit — NOT
 #     a local `git commit`, which would require the orchestrator's cwd to be
 #     on the default branch.
-#   - The step replaces only the FIRST occurrence of 'PR #TBD' (sed without
-#     the `g` flag) so historical entries from prior sessions are not
-#     mass-rewritten.
+#   - The step anchors the substitution on THIS PR's own entry (the sed
+#     address `/closes #<N>[;) ]/`) rather than the first file-global
+#     'PR #TBD' occurrence, so a sibling entry's pending placeholder is not
+#     mis-resolved when >1 release PR merged in the same window (#700). The
+#     behavioral proof of the two-entry scenario lives in the dedicated
+#     changelog-backfill-entry-anchor.test.sh.
 #   - The step is fire-and-forget: any failure logs an advisory and continues
 #     rather than blocking reconcile.
 assert_contains "$steady_state_path" \
@@ -1878,7 +1881,10 @@ assert_contains "$steady_state_path" \
   "steady-state.md CHANGELOG backfill uses the GitHub Contents API to write the commit (#581)"
 assert_not_contains "$steady_state_path" \
   'sed "s/PR #TBD/PR #<M>/g"' \
-  "steady-state.md backfill uses sed without the g flag — replaces only the first occurrence (#581)"
+  "steady-state.md backfill uses sed without the g flag — no mass-rewrite of sibling entries (#581)"
+assert_contains "$steady_state_path" \
+  'sed "/closes #<N>[;) ]/ s/PR #TBD/PR #<M>/"' \
+  "steady-state.md backfill anchors the sed on the reconciled issue's entry, not the first occurrence (#700)"
 assert_contains "$steady_state_path" \
   'changelog-backfill' \
   "steady-state.md backfill logs with a [changelog-backfill] advisory prefix (#581)"
