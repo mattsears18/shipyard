@@ -127,6 +127,12 @@ assert_equals "$("$helper" get models.issue_work)" "claude-opus-4-7" "get models
 # literal here prevents an accidental flip back to 2.
 assert_equals "$("$helper" get concurrency.default)" "1" "get concurrency.default returns 1 (issue #268)"
 
+# dependencies.new_dep_version — issue #694: a worker introducing a NEW dependency
+# defaults to installing the latest stable version (with an unconditional peer/SDK
+# carve-out). The built-in default is latest-stable; asserting the literal here
+# prevents an accidental flip to conservative pinning.
+assert_equals "$("$helper" get dependencies.new_dep_version)" "latest-stable" "get dependencies.new_dep_version returns latest-stable (issue #694)"
+
 # get on an unknown path
 "$helper" get nonexistent.path 2>/dev/null
 assert_exit_code "$?" 3 "get unknown path exits 3"

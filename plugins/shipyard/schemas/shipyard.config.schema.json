@@ -326,6 +326,20 @@
         "_comment": { "type": "string" }
       }
     },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls how a /shipyard:do-work worker chooses the version when its implementation INTRODUCES a new dependency (issue #694). Applies at dependency introduction only — never to upgrading existing deps (that's Dependabot / a separate audit dimension). The peer/SDK carve-out (a framework-constrained package — React / React Native, @react-native-firebase/*, expo-* — must use the framework-required version) is UNCONDITIONAL and is not disabled by any value here, because an SDK-mismatched version is a correctness bug, not a policy preference.",
+      "properties": {
+        "new_dep_version": {
+          "type": "string",
+          "enum": ["latest-stable", "conservative"],
+          "default": "latest-stable",
+          "description": "Version-selection policy when a worker adds a NEW dependency. `latest-stable` (default): install the current latest stable version (`npm install <pkg>@latest` or the ecosystem equivalent) and record the resolved version in the PR body, so a newly-added dep starts current rather than accruing introduction-time version debt. `conservative`: pin new introductions to a documented older baseline — appropriate for a repo deliberately trailing the ecosystem. The peer/SDK carve-out overrides BOTH values for framework-constrained packages."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "flake_registry": {
       "type": "object",
       "additionalProperties": false,
