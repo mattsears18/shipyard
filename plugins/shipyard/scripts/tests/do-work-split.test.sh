@@ -1862,12 +1862,13 @@ assert_contains "$claude_md_path" \
 #   - The step uses the GitHub Contents API (PUT) to write the commit — NOT
 #     a local `git commit`, which would require the orchestrator's cwd to be
 #     on the default branch.
-#   - The step anchors the substitution on THIS PR's own entry (the sed
-#     address `/closes #<N>[;) ]/`) rather than the first file-global
-#     'PR #TBD' occurrence, so a sibling entry's pending placeholder is not
-#     mis-resolved when >1 release PR merged in the same window (#700). The
-#     behavioral proof of the two-entry scenario lives in the dedicated
-#     changelog-backfill-entry-anchor.test.sh.
+#   - The step anchors the substitution on the EXACT placeholder substring
+#     `closes #<N>; PR #TBD` rather than a line-anchored first-'PR #TBD'-on-the-
+#     line match (#704) or the first file-global 'PR #TBD' occurrence (#700), so
+#     neither a sibling entry's pending placeholder (multiple release PRs merged
+#     in the same window, #700) nor a meta-entry's own prose 'PR #TBD' mention
+#     before its placeholder (#704) is mis-resolved. The behavioral proof of both
+#     scenarios lives in the dedicated changelog-backfill-entry-anchor.test.sh.
 #   - The step is fire-and-forget: any failure logs an advisory and continues
 #     rather than blocking reconcile.
 assert_contains "$steady_state_path" \
@@ -1883,8 +1884,8 @@ assert_not_contains "$steady_state_path" \
   'sed "s/PR #TBD/PR #<M>/g"' \
   "steady-state.md backfill uses sed without the g flag — no mass-rewrite of sibling entries (#581)"
 assert_contains "$steady_state_path" \
-  'sed "/closes #<N>[;) ]/ s/PR #TBD/PR #<M>/"' \
-  "steady-state.md backfill anchors the sed on the reconciled issue's entry, not the first occurrence (#700)"
+  'sed "s/closes #<N>; PR #TBD/closes #<N>; PR #<M>/"' \
+  "steady-state.md backfill anchors the sed on the exact placeholder substring, not a line-anchored or first-occurrence match (#704)"
 assert_contains "$steady_state_path" \
   'changelog-backfill' \
   "steady-state.md backfill logs with a [changelog-backfill] advisory prefix (#581)"
