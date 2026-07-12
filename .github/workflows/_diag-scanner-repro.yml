@@ -1,0 +1,45 @@
+name: _diag-scanner-repro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (depth 1, mirrors tests.yml)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Diagnose scanner behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== bash version ==="
+          bash --version | head -1
+          echo "=== git version ==="
+          git --version
+          echo "=== refs ==="
+          git for-each-ref
+          echo "=== origin/HEAD resolve ==="
+          git rev-parse --verify origin/HEAD 2>&1 || echo "FAILED"
+          echo "=== origin/main resolve ==="
+          git rev-parse --verify origin/main 2>&1 || echo "FAILED"
+          echo "=== HEAD~1 resolve ==="
+          git rev-parse --verify HEAD~1 2>&1 || echo "FAILED"
+          echo "=== merge-base HEAD origin/main ==="
+          git merge-base HEAD origin/main 2>&1 || echo "FAILED rc=$?"
+          echo "=== running scanner (no args), full output, no suppression ==="
+          set +e
+          bash plugins/shipyard/scripts/changelog-monotonicity-scan.sh
+          rc=$?
+          set -e
+          echo "=== scanner exit code: $rc ==="
+          echo "=== now inside the test file's own invocation style (bash \"\$t\") ==="
+          set +e
+          bash plugins/shipyard/scripts/tests/changelog-monotonicity-scan.test.sh
+          rc2=$?
+          set -e
+          echo "=== test file exit code: $rc2 ==="
