@@ -20,75 +20,34 @@ Cache all three for the session.
 
 Closes issues [#438](https://github.com/mattsears18/shipyard/issues/438) and [#465](https://github.com/mattsears18/shipyard/issues/465). When the dispatching user has admin permissions, the worker's `gh pr merge --auto` can silently fall through to a **direct merge** instead of queuing (the `merged-direct` outcome documented in `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.5 — fragment [`auto-merge.md`](../../../skills/worker-preamble/auto-merge.md) — and issue [#340](https://github.com/mattsears18/shipyard/issues/340)). At `--concurrency ≥ 2` that breaks version coordination in two compounding ways: (1) whichever PR direct-merges first advances `main`'s manifest version, so every concurrent PR with a lower-or-equal version goes DIRTY even when distinctly pre-assigned a version; (2) every merge changes the top-of-file CHANGELOG entry, re-DIRTYing even distinctly-versioned rebased PRs on the CHANGELOG insert point (the cascade the [drain CHANGELOG-serialization gate](../drain.md#drain-protocol) addresses).
 
-There are **two distinct repo shapes** that trigger this admin direct-merge, and the original #438 detector only caught the first:
+This is a **warning, not a behavior change** — the orchestrator does not flip auto-merge config or add required checks on the repo (that's a maintainer decision). The *behavioral* gates that keep an ungated `--auto` from landing a PR before its CI live at the merge call sites themselves (see the [call-site table](#the-condition-lives-in-exactly-one-place) below); this step only surfaces the shape to the operator, because it also explains why C≥2 version coordination on this repo cannot hold without serialized merges.
 
-1. **`allow_auto_merge: false` + admin** (the original #438 case). With auto-merge disabled at the repo level, `gh pr merge --auto` has nothing to queue against, so an admin's call falls through to an immediate direct merge.
-2. **admin + the default branch has zero *required* status checks** (the #465 case, which fires **regardless of `allow_auto_merge`**). Even with `allow_auto_merge: true`, when there are no required checks gating the branch, `gh pr merge --auto` has no pending check to wait on — so an admin's call merges *immediately* rather than queuing behind CI. The #465 repro: session `do-work-20260601T013917Z-76896` on this repo (`allow_auto_merge=true`, dispatcher is admin, no required checks) saw 3 of 4 issue-work PRs direct-merge out of version order, leapfrogging a pre-allocated version and forcing a manual rebase. The original detector stayed silent because it only checked `allow_auto_merge == false`.
-
-This is a **warning, not a behavior change** — the orchestrator does not flip auto-merge config or add required checks on the repo (that's a maintainer decision). Detect both shapes once at setup and warn so the operator understands why C≥2 version coordination on this repo cannot hold without serialized merges:
+**The condition lives in exactly one place.** Do **not** re-derive the two-shape rule here. It is one executable script — [`scripts/detect-ungated-admin-direct-merge.sh`](../../../scripts/detect-ungated-admin-direct-merge.sh) — which owns the whole rule (both shapes, the `#645` ruleset-aware fallback, the `#479` numeric normalize, and the fail-safe posture that an unreadable signal resolves toward *ungated*). This step calls it:
 
 ```bash
-# One REST read covers the repo-level signals (the GraphQL `gh repo view --json`
-# surface doesn't expose allow_auto_merge — only the REST endpoint does).
-am_shape=$(gh api "repos/<owner/repo>" \
-  --jq '{allow_auto_merge: .allow_auto_merge, admin: .permissions.admin}' 2>/dev/null || echo '{}')
-allow_auto_merge=$(echo "$am_shape" | jq -r '.allow_auto_merge // empty')
-viewer_admin=$(echo "$am_shape" | jq -r '.admin // empty')
-
-# Required-status-checks read for the default branch (#465). A 404 (no branch
-# protection rule), an empty list, or any error means "zero required checks" —
-# the exact shape where an admin --auto merges immediately. The same endpoint
-# the main-CI required-workflows resolution uses (see step 4.5a).
-required_checks_count=$(gh api \
-  "repos/<owner/repo>/branches/<default-branch>/protection/required_status_checks" \
-  --jq '(.checks // []) | length' 2>/dev/null || echo 0)
-# Normalize to a numeric shape (#479). `gh api` does NOT apply `--jq` to error
-# responses: on a 404 ("Branch not protected" — exactly the zero-required-checks
-# shape this detector targets) it prints the raw error JSON to *stdout* and exits
-# non-zero, so `|| echo 0` *appends* `0` to that body instead of replacing it,
-# leaving e.g. `required_checks_count=[{"message":"Branch not protected",...}0]`.
-# That is not "0", so shape-2 below would never match — silently suppressing the
-# warning on precisely the repos it exists to warn about. Collapse any non-digit
-# value (404 body, empty) to `0`, which is the correct semantic: a 404 means the
-# branch has zero required checks.
-case "$required_checks_count" in
-  ''|*[!0-9]*) required_checks_count=0 ;;
-esac
-
-# Ruleset-aware fallback (#645). The classic required_status_checks read above
-# does NOT see repository RULESETS — classic branch protection and rulesets are
-# two SEPARATE gating mechanisms. A default branch gated by a *ruleset* (GitHub
-# Rulesets, increasingly the default shape) reports zero classic required checks
-# while still gating the merge on CI, so shape 2 below would false-fire and warn
-# that `--auto` direct-merges ungated when it actually queues behind the
-# ruleset's checks. When the classic count is 0, probe the rulesets endpoint for
-# a `required_status_checks` rule; if one is active, treat the branch as gated
-# (non-zero sentinel). Check ONLY `required_status_checks`, NOT `pull_request` —
-# a `pull_request` ruleset rule requires a PR but does NOT gate the merge on CI,
-# so an admin `--auto` still direct-merges ungated on a ruleset that has
-# `pull_request` but no `required_status_checks` (the `mattsears18/shipyard`
-# shape: ruleset `[deletion, non_fast_forward, pull_request]`) — exactly the
-# case this warning must still fire on. (A "can I direct-write to the branch?"
-# probe would instead check `pull_request` — a different question from this
-# one's "will an admin `--auto` land ungated?"; this detector answers the latter.)
-if [ "$required_checks_count" = "0" ]; then
-  ruleset_gated=$(gh api "repos/<owner/repo>/rules/branches/<default-branch>" \
-    --jq '[.[].type] | contains(["required_status_checks"]) | tostring' \
-    2>/dev/null || echo "false")
-  case "$ruleset_gated" in (true) required_checks_count=1 ;; esac
-fi
-
-# Shape 1 (#438): allow_auto_merge disabled + admin.
-# Shape 2 (#465): admin + zero required checks — fires regardless of allow_auto_merge.
-if { [ "$allow_auto_merge" = "false" ] && [ "$viewer_admin" = "true" ]; } \
-   || { [ "$viewer_admin" = "true" ] && [ "$required_checks_count" = "0" ]; }; then
-  echo "[setup] WARNING (#438/#465): \`gh pr merge --auto\` will SILENTLY DIRECT-MERGE on this repo (no queue) — you have admin and either allow_auto_merge=false (#438) or the default branch has zero required status checks (#465, fires even when allow_auto_merge=true). At --concurrency >= 2, version/CHANGELOG coordination across in-flight PRs cannot hold: the first PR to merge advances main and re-DIRTYs siblings. Recommend --concurrency 1 here, or add a required status check (and/or enable allow_auto_merge) so --auto actually queues. version_coordination.serialize_drain_rebase (drain phase) mitigates the CHANGELOG cascade but not the steady-state leapfrog."
+verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
+if [ "$verdict" = "ungated" ]; then
+  echo "[setup] WARNING (#438/#465): \`gh pr merge --auto\` will SILENTLY DIRECT-MERGE on this repo (no queue) — you have admin/maintain and either allow_auto_merge=false (#438) or the default branch has zero required status checks (#465, fires even when allow_auto_merge=true). Shipyard's merge call sites gate on this automatically (#720): workers block on the PR's own checks, and the orchestrator-turn sites defer to drain's merge lander. But at --concurrency >= 2, version/CHANGELOG coordination across in-flight PRs still cannot hold: the first PR to merge advances main and re-DIRTYs siblings. Recommend --concurrency 1 here, or add a required status check (and/or enable allow_auto_merge) so --auto actually queues. version_coordination.serialize_drain_rebase (drain phase) mitigates the CHANGELOG cascade but not the steady-state leapfrog."
 fi
 ```
 
-The warning fires unconditionally of `--concurrency` (the steady-state leapfrog is worst at C≥2, but a C=1 operator who later raises concurrency benefits from having seen it once). It's two REST reads folded into the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) alongside step 1's reads — fire them in the same burst, not serially. If either read fails (network, permission), the fallbacks (`|| echo '{}'` for the repo read, `|| echo 0` for the required-checks read) plus the `case` numeric-shape normalize on `required_checks_count` make the missing signals empty/zero, and the worst case is an extra advisory warning on a transient required-checks read failure — no hard failure on a diagnostic read. The normalize is load-bearing (#479): `gh api` does not apply `--jq` to error responses, so on a 404 (`Branch not protected` — the zero-required-checks shape this detector targets) it writes the raw error body to *stdout* and `|| echo 0` *appends* `0` rather than replacing the body; without the `case` collapse the resulting non-numeric string never equals `"0"` and shape-2 stays silently suppressed on exactly the repos it warns about. With the normalize in place, a 404 or any transient failure of the required-checks read on an admin repo collapses to `0` and surfaces the warning; that's the conservative direction (warn-on-doubt) for a diagnostic-only line.
+**Why this step no longer inlines the detection ([#720](https://github.com/mattsears18/shipyard/issues/720)).** It used to carry its own ~55-line reimplementation of the rule — a *third* copy alongside the worker-preamble fragment and `issue-work.md`. That is precisely the drift hazard [#716](https://github.com/mattsears18/shipyard/issues/716) was filed for: the copies diverged, and whichever one a given code path happened to read decided whether the gate fired at all. #716 extracted the rule into the script; #720 finished the job by routing every remaining call site — including this one — through it. **A condition restated in prose (or re-implemented in bash) in N files will drift; a condition that is one command cannot.** If you find yourself about to write `allow_auto_merge` or `required_status_checks` into a spec file, stop and call the script instead.
 
-**Ruleset-aware fallback (#645).** The classic `required_status_checks` read sees only **classic** branch protection, not repository **rulesets** — two separate gating mechanisms. A default branch gated by a ruleset's `required_status_checks` rule reports zero classic required checks while still gating the merge on CI, so without the fallback shape 2 false-fires and warns that `--auto` direct-merges ungated when it actually queues behind the ruleset's checks (the #645 repro: `mattsears18/lightwork` protects `main` via a ruleset requiring 4 checks, yet the classic probe reports 0). When the classic count is 0, the detector additionally probes `repos/{owner}/{repo}/rules/branches/{branch}` and treats the branch as gated if an active ruleset has a `required_status_checks` rule. It checks **only** `required_status_checks`, **not** `pull_request`: a `pull_request` ruleset rule requires a PR but does NOT gate the *merge* on CI, so an admin `--auto` still direct-merges ungated on a ruleset that has `pull_request` but no `required_status_checks` (the `mattsears18/shipyard` shape, ruleset `[deletion, non_fast_forward, pull_request]`) — exactly the case this warning must still fire on. (A "can I direct-write to the branch?" probe would instead check `pull_request` — a different question from this detector's "will an admin `--auto` land ungated?".) This keeps the issue-worker's mirrored §0.5 detector ([worker-preamble `auto-merge.md`](../../../skills/worker-preamble/auto-merge.md)) and this orchestrator-side warning consistent on Rulesets-protected repos.
+The warning fires unconditionally of `--concurrency` (the steady-state leapfrog is worst at C≥2, but a C=1 operator who later raises concurrency benefits from having seen it once). The script's reads fold into the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) alongside step 1's reads — fire them in the same burst, not serially. The script fails safe on its own (any unreadable signal resolves toward `ungated`), so a transient read failure produces at worst an extra advisory line — never a hard failure on a diagnostic read.
+
+**Where the behavioral gates actually are.** Every `gh pr merge --auto` call site in shipyard now branches on this same script's verdict — the split is by whether the caller can afford to block:
+
+| Call site | Runs on | On `ungated` |
+|---|---|---|
+| [issue-work §6.a](../../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust) | worker's own slot | Block on `gh pr checks --watch`, merge only if green |
+| [fix-main-ci step 7.a](../../../agents/issue-worker/fix-main-ci.md) | worker's own slot | Same — blocking wait |
+| [fix-failing-prs-batch step 7.a](../../../agents/issue-worker/fix-failing-prs-batch.md) | worker's own slot | Same — blocking wait |
+| [inline-trivial §E](../inline-trivial.md#e-arm-auto-merge) | orchestrator turn | Leave unarmed → [drain's merge lander](../drain.md#deferred-merge-lander-merge-unarmed-green-session-prs--720) |
+| [A.0.5 crash recovery](../steady-state.md#a05-crash-return-detection--pre-reap-recovery) | orchestrator turn | Leave unarmed → drain's merge lander |
+| [setup-3c orphan recovery](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) | orchestrator turn (setup) | Leave unarmed → drain's merge lander |
+| [drain release-train](../drain.md#release-pr-auto-arming-and-deploy-watch-own-the-tail-phase-c--663) | orchestrator turn (drain poll) | Leave unarmed → drain's merge lander |
+
+A **worker** can afford a multi-minute `--watch` — it owns a dispatch slot and blocks nobody. The **orchestrator** cannot: a block on its own turn stalls the dispatch loop, every in-flight reconcile, and every other PR. So the orchestrator-turn sites leave the PR open and unarmed, and drain's poll loop — which is already a queue — merges it the moment its checks go green.
 
 ### 1.5 Initialise the session state file
 

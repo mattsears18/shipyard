@@ -253,7 +253,9 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
    ```
    Log success or failure. If the push fails (network still down, permissions issue, the branch is already on origin ahead of this commit), continue to step 3 rather than reaping silently — a failed push still leaves the local commit recoverable by a human inspection of the worktree before it's removed.
 3. After a successful push, check whether an open PR already exists for the branch. If no PR exists, create one using the normal issue-work PR template (`Closes #<N>` keyword, `--label shipyard`, `--auto`). If a PR already exists (the worker pushed but crashed before creating the PR), create the PR against the existing branch. If PR creation fails, log it and proceed to the reap anyway — the commit is now on origin and the branch is recoverable via the GitHub UI.
-4. Append the recovered PR number to `session_prs` so the cost-tracking, drain, and end-of-session summary paths all see it as a session-opened PR. Re-enqueue `<N>` via the normal `shipped` reconcile path so auto-merge is armed: call `gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch` (the same step-6 pattern from issue-work.md). Snapshot `state` and `autoMergeRequest` exactly as step 7 of issue-work.md directs; emit a `[reconcile-A.0.5-recovery] #<N> crash-recovered via PR #<M> (auto-merge: <...>, checks: <...>)` log line.
+4. Append the recovered PR number to `session_prs` so the cost-tracking, drain, and end-of-session summary paths all see it as a session-opened PR. Then arm auto-merge **behind the ungated-merge pre-check** ([#720](https://github.com/mattsears18/shipyard/issues/720)) — the same [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust) gate, routed through the one executable detector rather than restated: run [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh); on `gated` call `gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch`, and on `ungated` **leave the PR OPEN and unarmed** so [drain's deferred-merge lander](./drain.md#deferred-merge-lander-merge-unarmed-green-session-prs--720) merges it on the first poll its checks are green (the `session_prs` append above is what hands it to the lander). Snapshot `state` and `autoMergeRequest` exactly as step 7 of issue-work.md directs; emit a `[reconcile-A.0.5-recovery] #<N> crash-recovered via PR #<M> (auto-merge: <...>, checks: <...>)` log line.
+
+   **Why this site must gate, and why it must not block.** A crash-recovered PR is the **least-validated diff in the system** — the dirty-worktree path auto-commits with `--no-verify` (the pre-commit gate may be exactly what hung the worker), so CI is quite literally the only thing that ever inspects it. Arming `--auto` on an ungated repo lands that unvalidated diff on the default branch immediately, and because every recovery step is fire-and-forget (`2>/dev/null || true`) it does so **silently**. But this runs on the orchestrator's reconcile hot path, so the worker-style blocking `gh pr checks --watch` is not available — a multi-minute block here stalls every in-flight dispatch. Deferring to drain's lander gates the merge on green without blocking anything.
 5. Then proceed to the reap. The recovery does not skip the reap — the worktree is still a crashed agent's directory and needs to be cleaned up.
 
 **Scope: recovery applies to issue-work crash returns only.** The issue number `<N>` and the branch name `do-work/issue-<N>` are both in-flight metadata for issue-work dispatches. Synthetic-divert modes (fix-main-ci, fix-failing-prs-batch) and fix-checks-only / fix-rebase dispatches use different branch-naming conventions and don't have a single issue to recover against — don't attempt recovery for them. Check the in-flight slot's `kind` field (per the [in_flight schema](../do-work.md#orchestrator-state)): if it is not `issue` (the value issue-work dispatches carry), skip the recovery check and proceed directly to the reap. The issue number to recover against is the slot's `target` field.
@@ -504,7 +506,25 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
           if [ "$pr_ok" = "true" ] && [ -n "$recovered_pr" ]; then
             # Step 3: arm auto-merge and snapshot, exactly as step 6-7 of
             # issue-work.md. Fire-and-forget — recovery must not block reap.
-            gh pr merge "$recovered_pr" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true
+            #
+            # #720: gate the arm behind the ungated-merge detector. A recovered
+            # PR may have been auto-committed with --no-verify from a dirty
+            # worktree, so CI is the ONLY thing that ever validates it. On an
+            # ungated repo `--auto` is not a queue — it direct-merges that
+            # unvalidated diff immediately, and the `2>/dev/null || true` below
+            # makes it silent. Fail-safe: an unreadable verdict resolves to
+            # `ungated` (defer), never to an immediate merge.
+            verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" \
+              <owner/repo> 2>/dev/null || echo ungated)
+            if [ "$verdict" = "gated" ]; then
+              gh pr merge "$recovered_pr" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true
+            else
+              # Leave OPEN + unarmed. The session_prs append below hands it to
+              # drain's deferred-merge lander, which merges it once CI is green.
+              # Do NOT `gh pr checks --watch` here — this is the reconcile hot
+              # path and a block would stall every in-flight dispatch.
+              echo "[reconcile-A.0.5-recovery] PR #${recovered_pr} left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
+            fi
             # Snapshot state for the log line.
             snap=$(gh pr view "$recovered_pr" --repo <owner/repo> \
               --json state,autoMergeRequest \

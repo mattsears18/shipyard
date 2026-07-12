@@ -132,33 +132,66 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# (B) setup/01-repo-recovery.md step 1.3 — the orchestrator-side warning.
+# (B) The ruleset-aware fallback in the ONE place that owns the required-checks
+#     read — the detector script.
+#
+# #720 UPDATE: this used to assert the fallback inline in setup/01-repo-recovery.md
+# step 1.3, which carried its own ~55-line copy of the two-shape detector (its own
+# classic probe, its own #479 normalize, its own #645 ruleset fallback) — a THIRD
+# copy of the rule alongside the worker-preamble fragment and issue-work.md, and
+# exactly the drift hazard #716 was filed for. #720 deleted the inline copy and
+# re-pointed step 1.3 at `scripts/detect-ungated-admin-direct-merge.sh`.
+#
+# The #645 BEHAVIOR is unchanged and must stay pinned — it just lives in the
+# script now. So assert it there, and assert setup DELEGATES rather than
+# re-deriving (which would re-introduce the very drift this guards against).
 # ---------------------------------------------------------------------------
+DETECTOR="$repo_root/plugins/shipyard/scripts/detect-ungated-admin-direct-merge.sh"
+
+if [[ -f "$DETECTOR" ]]; then
+  assert_pass "detect-ungated-admin-direct-merge.sh exists"
+
+  assert_contains "$DETECTOR" 'rules/branches/' \
+    "detector probes the rulesets endpoint when classic checks read 0 (#645)"
+  # shellcheck disable=SC2016
+  assert_contains "$DETECTOR" '[.[].type] | contains(["required_status_checks"])' \
+    "detector's ruleset probe checks the required_status_checks rule (#645)"
+  # It must NOT also gate on `pull_request`: that rule requires a PR but does not
+  # gate the MERGE on CI, so including it would mark the shipyard shape
+  # ([deletion, non_fast_forward, pull_request]) as gated and falsely SKIP the
+  # protective wait — reintroducing #716.
+  # shellcheck disable=SC2016
+  if grep -qF 'contains(["pull_request"])' "$DETECTOR"; then
+    assert_fail "detector's ruleset probe must NOT also gate on pull_request (#645/#716)"
+  else
+    assert_pass "detector's ruleset probe does NOT gate on pull_request (#645/#716)"
+  fi
+
+  # The classic contexts read must precede the ruleset fallback (the fallback
+  # only fires when the classic count already read 0).
+  classic_line=$(grep -n 'protection/required_status_checks/contexts' "$DETECTOR" | head -1 | cut -d: -f1)
+  ruleset_line=$(grep -n 'rules/branches/' "$DETECTOR" | head -1 | cut -d: -f1)
+  if [[ -n "$classic_line" && -n "$ruleset_line" && "$ruleset_line" -gt "$classic_line" ]]; then
+    assert_pass "detector's ruleset fallback follows the classic contexts read (L$ruleset_line > L$classic_line)"
+  else
+    assert_fail "detector's ruleset fallback follows the classic contexts read (classic=L${classic_line:-?}, ruleset=L${ruleset_line:-?})"
+  fi
+else
+  assert_fail "detect-ungated-admin-direct-merge.sh exists (missing at $DETECTOR)"
+fi
+
+# Setup must DELEGATE to the detector rather than re-derive the condition (#720).
 if [[ -f "$SETUP_MD" ]]; then
   assert_pass "setup/01-repo-recovery.md exists"
 
-  assert_contains "$SETUP_MD" 'repos/<owner/repo>/rules/branches/<default-branch>' \
-    "setup §1.3 probes the rulesets endpoint when classic checks read 0 (#645)"
-  # shellcheck disable=SC2016
-  assert_contains "$SETUP_MD" '[.[].type] | contains(["required_status_checks"])' \
-    "setup §1.3 ruleset probe checks the required_status_checks rule (#645)"
-  # shellcheck disable=SC2016
-  if grep -qF 'contains(["required_status_checks"]) or contains(["pull_request"])' "$SETUP_MD"; then
-    assert_fail "setup §1.3 ruleset probe must NOT also gate on pull_request (#645)"
-  else
-    assert_pass "setup §1.3 ruleset probe does NOT gate on pull_request (#645)"
-  fi
-  assert_contains "$SETUP_MD" "Ruleset-aware fallback (#645)" \
-    "setup §1.3 carries the #645 ruleset-aware-fallback marker"
+  assert_contains "$SETUP_MD" 'detect-ungated-admin-direct-merge.sh' \
+    "setup §1.3 delegates the ruleset-aware read to the detector (#720)"
 
-  # The #479 numeric-shape normalize must still precede the ruleset fallback
-  # (the fallback keys on required_checks_count already being "0").
-  norm_line=$(grep -n "''|\*\[!0-9\]\*) required_checks_count=0 ;;" "$SETUP_MD" | head -1 | cut -d: -f1)
-  ruleset_line=$(grep -n 'rules/branches/<default-branch>' "$SETUP_MD" | head -1 | cut -d: -f1)
-  if [[ -n "$norm_line" && -n "$ruleset_line" && "$ruleset_line" -gt "$norm_line" ]]; then
-    assert_pass "setup §1.3 ruleset fallback follows the #479 normalize (L$ruleset_line > L$norm_line)"
+  # No fourth copy: setup must not re-introduce its own inline ruleset probe.
+  if grep -qE '^\s*ruleset_gated=' "$SETUP_MD"; then
+    assert_fail "setup §1.3 must NOT re-inline its own ruleset probe (#720)"
   else
-    assert_fail "setup §1.3 ruleset fallback follows the #479 normalize (norm=L${norm_line:-?}, ruleset=L${ruleset_line:-?})"
+    assert_pass "setup §1.3 does not re-inline its own ruleset probe (#720)"
   fi
 else
   assert_fail "setup/01-repo-recovery.md exists (missing at $SETUP_MD)"

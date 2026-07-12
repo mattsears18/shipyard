@@ -39,6 +39,27 @@
 # A condition restated in prose in two files WILL drift; a condition that is one
 # command cannot.
 #
+# Follow-up — issue #720
+# -----------------------
+# #716 fixed issue-work, which was only ONE of seven `gh pr merge --auto` call
+# sites. The other six still fired `--auto` with no guard, so on this repo's
+# shape they each landed their PR before its CI completed. It bit twice more in
+# the same session: PR #719 (the #716 fix itself) merged `merged-direct` and
+# landed a red regression on main, and the fix-main-ci PR #723 that cleaned it
+# up ALSO merged ungated.
+#
+# #720 routes every remaining site through the one script. The per-site shape is
+# decided by whether the caller can afford to BLOCK:
+#   - workers (issue-work, fix-main-ci, fix-failing-prs-batch) own a dispatch
+#     slot => re-create the gate by blocking on `gh pr checks --watch`;
+#   - orchestrator-turn sites (inline-trivial, A.0.5 recovery, setup-3c orphan
+#     recovery, drain release-train) run on the orchestrator's own turn, where a
+#     block would stall the dispatch loop => leave the PR OPEN + unarmed and let
+#     drain's deferred-merge lander merge it once its checks go green.
+# A blanket "always --watch when admin" was explicitly rejected: on a
+# ruleset-protected repo `--auto` genuinely queues, so it would burn a worker
+# slot for a full CI duration for nothing (pinned by the ADMIN/true/4 row below).
+#
 # This test pins:
 #   (A) the detector script exists and its decision truth table is correct —
 #       especially the #465/#715 shape (admin + allow_auto_merge TRUE + zero
@@ -46,7 +67,13 @@
 #   (B) issue-work.md §6 invokes the guard BEFORE any `gh pr merge --auto`
 #       (the ordering trap);
 #   (C) issue-work.md no longer carries the shape-1-only skip language;
-#   (D) both call sites reference the one script (no third prose copy).
+#   (D) both call sites reference the one script (no third prose copy);
+#   (E) EVERY remaining merge call site invokes the detector (#720);
+#   (F) the worker modes run the detector before their `--auto` call, and block
+#       on the PR's own checks on the ungated branch (#720);
+#   (G) the orchestrator-turn sites defer to drain's merge lander, the lander
+#       exists, and it preserves the trust gate (#720);
+#   (H) setup no longer re-implements the condition inline — no third copy (#720).
 #
 # Run with:
 #   bash plugins/shipyard/scripts/tests/ungated-merge-gate-reachability.test.sh
@@ -275,6 +302,113 @@ assert_contains "$AUTO_MERGE_MD" 'detect-ungated-admin-direct-merge.sh' \
   "auto-merge.md §0.5 invokes the detector script (#716)"
 assert_contains "$AUTO_MERGE_MD" 'single source of truth' \
   "auto-merge.md names the script as the single source of truth for the condition (#716)"
+echo
+
+# ---------------------------------------------------------------------------
+# (E) EVERY remaining `gh pr merge --auto` call site invokes the detector
+#     (issue #720).
+#
+# #716 fixed issue-work only. The other six sites still fired `--auto` with no
+# guard, so on this repo's shape (admin + allow_auto_merge:true + zero required
+# checks) they each landed their PR before its CI completed. `fix-main-ci` was
+# the sharpest: its entire job is restoring a red default branch, and it could
+# merge its own unverified fix ungated.
+#
+# This is a REACHABILITY test, exactly like (B): the detector being correct is
+# worthless if a call site never calls it.
+# ---------------------------------------------------------------------------
+echo "(E) #720 — every merge call site invokes the detector"
+
+FIX_MAIN_CI_MD="$repo_root/plugins/shipyard/agents/issue-worker/fix-main-ci.md"
+FIX_PR_BATCH_MD="$repo_root/plugins/shipyard/agents/issue-worker/fix-failing-prs-batch.md"
+INLINE_TRIVIAL_MD="$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
+DRAIN_MD="$repo_root/plugins/shipyard/commands/do-work/drain.md"
+STEADY_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+SETUP_WORKTREE_MD="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
+SETUP_REPO_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01-repo-recovery.md"
+INVESTIGATE_MD="$repo_root/plugins/shipyard/agents/issue-worker/investigate.md"
+
+for site in "$FIX_MAIN_CI_MD" "$FIX_PR_BATCH_MD" "$INLINE_TRIVIAL_MD" "$DRAIN_MD" \
+            "$STEADY_STATE_MD" "$SETUP_WORKTREE_MD" "$SETUP_REPO_MD" "$INVESTIGATE_MD"; do
+  assert_contains "$site" 'detect-ungated-admin-direct-merge.sh' \
+    "$(basename "$(dirname "$site")")/$(basename "$site") invokes the detector (#720)"
+done
+echo
+
+# ---------------------------------------------------------------------------
+# (F) ORDERING, per worker mode. Same trap as (B): the guard must appear before
+#     the runnable `gh pr merge <pr-num> ... --auto` template, or a worker
+#     executing commands as it reads has already merged by the time it reaches
+#     the guard.
+# ---------------------------------------------------------------------------
+echo "(F) #720 — worker modes run the detector BEFORE their \`--auto\` call"
+assert_guard_precedes_merge() {
+  local file="$1" label="$2" guard_line merge_line
+  [[ -f "$file" ]] || { assert_fail "$label (missing $file)"; return; }
+  guard_line=$(grep -n 'detect-ungated-admin-direct-merge.sh' "$file" | head -1 | cut -d: -f1)
+  merge_line=$(grep -n 'gh pr merge <pr-num>.*--auto' "$file" | head -1 | cut -d: -f1)
+  if [[ -n "$guard_line" && -n "$merge_line" && "$guard_line" -lt "$merge_line" ]]; then
+    assert_pass "$label (guard=L$guard_line, merge=L$merge_line)"
+  else
+    assert_fail "$label (guard=L${guard_line:-absent}, merge=L${merge_line:-absent}) — ordering trap"
+  fi
+}
+assert_guard_precedes_merge "$FIX_MAIN_CI_MD" \
+  "fix-main-ci.md runs the detector before its \`--auto\` call (#720)"
+assert_guard_precedes_merge "$FIX_PR_BATCH_MD" \
+  "fix-failing-prs-batch.md runs the detector before its \`--auto\` call (#720)"
+assert_guard_precedes_merge "$INLINE_TRIVIAL_MD" \
+  "inline-trivial.md runs the detector before its \`--auto\` call (#720)"
+
+# The two worker modes re-create the gate by BLOCKING on the PR's own checks —
+# they own a dispatch slot, so a --watch is affordable there.
+assert_contains "$FIX_MAIN_CI_MD" 'gh pr checks' \
+  "fix-main-ci.md's ungated branch blocks on the PR's own checks (#720)"
+assert_contains "$FIX_PR_BATCH_MD" 'gh pr checks' \
+  "fix-failing-prs-batch.md's ungated branch blocks on the PR's own checks (#720)"
+echo
+
+# ---------------------------------------------------------------------------
+# (G) The orchestrator-turn sites must NOT block — they defer to drain's
+#     deferred-merge lander. And the lander must exist, or "leave it unarmed"
+#     is a leak: nothing would ever merge the PR and drain would spin to its
+#     ceiling (a hang strictly worse than the ungated merge it replaced).
+# ---------------------------------------------------------------------------
+echo "(G) #720 — orchestrator-turn sites defer to drain's merge lander"
+assert_contains "$DRAIN_MD" 'Deferred-merge lander' \
+  "drain.md defines the deferred-merge lander (#720)"
+
+# The lander's trust boundary. Without the needs-human-review exclusion the
+# lander would merge external-author PRs on green — silently defeating the
+# auto-merge trust gate. `unarmed` is two distinct states; only one is the
+# lander's.
+assert_contains "$DRAIN_MD" 'needs-human-review' \
+  "drain.md's lander excludes needs-human-review PRs (trust gate preserved, #720)"
+# And it must key on the `shipyard` session stamp, never merging a human's own
+# hand-authored open PR.
+assert_contains "$DRAIN_MD" 'shipyard' \
+  "drain.md's lander scopes to shipyard-labelled PRs (#720)"
+
+for site in "$INLINE_TRIVIAL_MD" "$STEADY_STATE_MD" "$SETUP_WORKTREE_MD"; do
+  assert_contains "$site" 'lander' \
+    "$(basename "$site") defers its unarmed PR to drain's merge lander (#720)"
+done
+echo
+
+# ---------------------------------------------------------------------------
+# (H) No THIRD implementation of the condition. setup/01-repo-recovery.md used
+#     to carry a ~55-line bash reimplementation of the two-shape rule — a third
+#     copy alongside the fragment and issue-work.md. That is the exact drift
+#     hazard #716 exists for. It must now call the script instead.
+# ---------------------------------------------------------------------------
+echo "(H) #720 — setup no longer re-implements the condition inline"
+# The tell-tale signals of a local reimplementation: reading the raw REST fields
+# and re-deriving the verdict from them, rather than calling the script.
+if grep -qE '^\s*(allow_auto_merge|viewer_admin|required_checks_count)=' "$SETUP_REPO_MD"; then
+  assert_fail "01-repo-recovery.md must NOT re-derive the condition from raw signals (#720) — call the script"
+else
+  assert_pass "01-repo-recovery.md does not re-derive the condition from raw signals (#720)"
+fi
 echo
 
 printf 'passed: %d, failed: %d\n' "$pass" "$fail"

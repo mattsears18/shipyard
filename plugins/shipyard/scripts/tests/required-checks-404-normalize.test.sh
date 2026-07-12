@@ -96,30 +96,74 @@ echo "required-checks 404-normalize regression tests (issue #479)"
 echo
 
 # ---------------------------------------------------------------------------
-# (A) Spec regression guard — the normalize block must be present in setup.md.
+# (A) Spec regression guard — the normalize must be present in the ONE place
+#     that owns the required-checks read.
+#
+# #720 UPDATE: that place is no longer setup/01-repo-recovery.md. Step 1.3 used
+# to carry its own ~55-line inline copy of the two-shape detector (including its
+# own `required_checks_count` normalize) — a THIRD copy of the rule alongside the
+# worker-preamble fragment and issue-work.md, and exactly the drift hazard #716
+# was filed for. #720 deleted the inline copy and re-pointed step 1.3 at the one
+# executable detector, `scripts/detect-ungated-admin-direct-merge.sh`, which owns
+# the read AND the normalize.
+#
+# So this guard now pins the normalize in the SCRIPT (where the behavior lives)
+# and pins DELEGATION in setup (so nobody re-inlines a fourth copy). Asserting
+# `required_checks_count=0` in setup.md would actively re-pin the duplicated
+# architecture #720 removed.
 # ---------------------------------------------------------------------------
-if [[ -f "$SETUP_MD" ]]; then
-  assert_pass "setup.md exists"
+DETECTOR="$repo_root/plugins/shipyard/scripts/detect-ungated-admin-direct-merge.sh"
 
-  # The load-bearing normalize line. Anchored against literal text so a revert
-  # to the bare `[ -z ... ] && required_checks_count=0` form trips this test.
-  if grep -qF "''|*[!0-9]*) required_checks_count=0 ;;" "$SETUP_MD"; then
-    assert_pass "setup.md step 1.3 carries the numeric-shape normalize (#479)"
+if [[ -f "$DETECTOR" ]]; then
+  assert_pass "detect-ungated-admin-direct-merge.sh exists"
+
+  # The load-bearing normalize. Anchored against literal text so a revert to a
+  # bare `[ -z ... ] && count=0` form (which does NOT collapse a 404 body) trips
+  # this test. The script normalizes in BOTH the reader and the pure decide()
+  # function — belt and braces, since either could receive a non-numeric value.
+  if grep -qF "''|*[!0-9]*) count=0 ;;" "$DETECTOR"; then
+    assert_pass "detector's required-checks reader carries the numeric-shape normalize (#479)"
   else
-    assert_fail "setup.md step 1.3 carries the numeric-shape normalize (#479)"
+    assert_fail "detector's required-checks reader carries the numeric-shape normalize (#479)"
   fi
 
-  # The normalize must come AFTER the required_checks_count read, not before
-  # (normalizing before the read is a no-op). Assert ordering by line number.
-  read_line=$(grep -n 'required_status_checks' "$SETUP_MD" | head -1 | cut -d: -f1)
-  norm_line=$(grep -n "''|\*\[!0-9\]\*) required_checks_count=0 ;;" "$SETUP_MD" | head -1 | cut -d: -f1)
-  if [[ -n "$read_line" && -n "$norm_line" && "$norm_line" -gt "$read_line" ]]; then
-    assert_pass "normalize block follows the required-checks read (L$norm_line > L$read_line)"
+  if grep -qF "''|*[!0-9]*) required_checks=0 ;;" "$DETECTOR"; then
+    assert_pass "detector's decide() carries the numeric-shape normalize (#479)"
   else
-    assert_fail "normalize block follows the required-checks read (read=L${read_line:-?}, norm=L${norm_line:-?})"
+    assert_fail "detector's decide() carries the numeric-shape normalize (#479)"
+  fi
+
+  # The normalize must come AFTER the required-checks read, not before
+  # (normalizing before the read is a no-op). Assert ordering by line number.
+  read_line=$(grep -n 'required_status_checks/contexts' "$DETECTOR" | head -1 | cut -d: -f1)
+  norm_line=$(grep -n "''|\*\[!0-9\]\*) count=0 ;;" "$DETECTOR" | head -1 | cut -d: -f1)
+  if [[ -n "$read_line" && -n "$norm_line" && "$norm_line" -gt "$read_line" ]]; then
+    assert_pass "normalize follows the required-checks read (L$norm_line > L$read_line)"
+  else
+    assert_fail "normalize follows the required-checks read (read=L${read_line:-?}, norm=L${norm_line:-?})"
   fi
 else
-  assert_fail "setup.md exists (missing at $SETUP_MD)"
+  assert_fail "detect-ungated-admin-direct-merge.sh exists (missing at $DETECTOR)"
+fi
+
+# Setup must DELEGATE to the detector rather than re-derive the condition (#720).
+if [[ -f "$SETUP_MD" ]]; then
+  assert_pass "setup/01-repo-recovery.md exists"
+
+  if grep -qF 'detect-ungated-admin-direct-merge.sh' "$SETUP_MD"; then
+    assert_pass "setup §1.3 delegates the required-checks read to the detector (#720)"
+  else
+    assert_fail "setup §1.3 delegates the required-checks read to the detector (#720)"
+  fi
+
+  # No fourth copy: setup must not re-introduce its own inline re-derivation.
+  if grep -qE '^\s*required_checks_count=' "$SETUP_MD"; then
+    assert_fail "setup §1.3 must NOT re-inline its own required-checks derivation (#720)"
+  else
+    assert_pass "setup §1.3 does not re-inline its own required-checks derivation (#720)"
+  fi
+else
+  assert_fail "setup/01-repo-recovery.md exists (missing at $SETUP_MD)"
 fi
 
 # ---------------------------------------------------------------------------
