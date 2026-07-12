@@ -443,7 +443,12 @@ assert_contains "$steady_state_path" \
 # Five assertions pin the post-#317 contract:
 #   - The struct list grew a 12th entry `reconciled_agent_ids` (named in
 #     do-work.md alongside the #317 cross-ref).
-#   - The opening sentence reflects the new struct count ("sixteen" post-#589, was "fifteen" post-#437).
+#   - The opening sentence reflects the struct count ("eighteen" post-#718's
+#     `dispatch_denials`; was "sixteen" post-#589, "fifteen" post-#437). NB the
+#     prose count had drifted one behind the actual bullet count (a struct was
+#     added without updating the sentence); #718 re-synced it — the bullet count
+#     is the ground truth, and the struct-derived line cap in check (2) is
+#     computed from the bullets, not from this sentence.
 #   - steady-state.md gained the new A.−1 step (the gate body lives there).
 #   - The advisory log line shape is documented exactly (so a future
 #     regression that drops the gate without renaming everything else
@@ -454,8 +459,8 @@ assert_contains "$do_work_path" \
   'reconciled_agent_ids' \
   "do-work.md struct list names reconciled_agent_ids (#317)"
 assert_contains "$do_work_path" \
-  'sixteen mental data structures' \
-  "do-work.md opening sentence reflects post-#589 struct count (sixteen)"
+  'eighteen mental data structures' \
+  "do-work.md opening sentence reflects post-#718 struct count (eighteen)"
 assert_contains "$steady_state_path" \
   'A.−1. Reconcile-once gate' \
   "steady-state.md carries the A.−1 reconcile-once gate (#317)"
@@ -1876,6 +1881,110 @@ assert_not_contains "$steady_state_path" \
 assert_not_contains "$steady_state_path" \
   'changelog-backfill' \
   "steady-state.md no longer carries the [changelog-backfill] backfill step (#691)"
+
+# (N) Denied-`Agent`-dispatch recovery branch (issue #718).
+#
+# The orchestrator's own `Agent` dispatch can be REFUSED by the Claude Code
+# auto-mode permission classifier — the tool call never happens, so there is
+# no worker, no worktree, no agent_id, and no completion notification. Before
+# #718 the spec enumerated a dispatch's outcomes as shipped/blocked/noop/errored
+# and had no branch at all for "the dispatch was refused," leaving the recovery
+# to improvisation. The dangerous default under a denial is to keep rewording
+# the prompt until it gets through — which is precisely the bypass the
+# classifier exists to prevent.
+#
+# The load-bearing half of the spec is therefore the GUARDRAIL, not the
+# plumbing. These assertions guard, in order:
+#   - the branch exists in dispatch-rules.md (the file both dispatch sites
+#     consult) and is reachable from steady-state step C AND setup step 7;
+#   - the one-reframe-only rule, and that the reframe is a CORRECTION (more
+#     accurate) rather than a softening (more permissive-sounding);
+#   - the explicit prohibitions: no wording iteration, no retry when the work
+#     genuinely needs the denied capability, no routing around via a different
+#     subagent_type / split dispatch / inline execution;
+#   - second denial => hand back, never a third attempt;
+#   - the denial is RECORDED (dispatch_denials struct) and SURFACED
+#     (`Dispatch denied:` in the end-of-session summary) rather than silently
+#     costing a dispatch slot;
+#   - the in_flight write-through is post-dispatch, so a denial leaves no
+#     phantom slot;
+#   - the content-integrity boundary: the classifier's reasoning never reaches
+#     a public GitHub artifact (matches worker-preamble's #341 rule).
+dispatch_rules_path718="$dispatch_rules_path"
+steady_router_path718="$steady_state_router_path"
+pool_fill_path718="$repo_root/plugins/shipyard/commands/do-work/setup/07-pool-fill.md"
+
+assert_contains "$dispatch_rules_path718" \
+  'Dispatch denied by the harness permission classifier' \
+  "dispatch-rules.md carries the denied-dispatch branch (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'Permission for this action was denied by the Claude Code auto mode classifier' \
+  "dispatch-rules.md quotes the verbatim harness denial so it is recognizable (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'no completion notification is coming' \
+  "dispatch-rules.md states a denied dispatch produces no completion notification (#718)"
+
+# The guardrail — one reframe, and only as a correction.
+assert_contains "$dispatch_rules_path718" \
+  'Exactly ONE re-dispatch is permitted' \
+  "dispatch-rules.md caps re-dispatch at exactly one (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'overstated the work' \
+  "dispatch-rules.md gates the reframe on the prompt having overstated the blast radius (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'never merely more permissive-sounding' \
+  "dispatch-rules.md requires the reframe be more ACCURATE, not more permissive-sounding (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'Do NOT iterate prompt wording against the classifier' \
+  "dispatch-rules.md forbids iterating prompt wording against the classifier (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'Do NOT re-dispatch when the work genuinely requires the denied capability' \
+  "dispatch-rules.md forbids retrying when the work really does need the denied capability (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'Do NOT route around the denial' \
+  "dispatch-rules.md forbids routing around the deny via another tool/agent/split (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'Never a third attempt' \
+  "dispatch-rules.md caps attempts at two — never a third (#718)"
+assert_contains "$dispatch_rules_path718" \
+  'needs-human-review' \
+  "dispatch-rules.md hands a twice-denied issue target back via needs-human-review (#718)"
+
+# Content-integrity boundary — the classifier's reasoning stays local.
+assert_contains "$dispatch_rules_path718" \
+  'must NOT quote, paraphrase, explain, or theorize about the classifier' \
+  "dispatch-rules.md keeps the classifier's reasoning out of public GitHub artifacts (#718/#341)"
+
+# Recorded + surfaced, not silently costing a slot.
+assert_contains "$do_work_path" \
+  'dispatch_denials' \
+  "do-work.md documents the dispatch_denials orchestrator-state struct (#718)"
+assert_contains "$cleanup_path" \
+  'Dispatch denied (#718)' \
+  "cleanup-summary.md surfaces a Dispatch denied line in the end-of-session summary (#718)"
+assert_contains "$cleanup_path" \
+  'silently costs a dispatch slot' \
+  "cleanup-summary.md names the silent-slot-cost this line exists to prevent (#718)"
+
+# Reachable from BOTH dispatch sites, and the phantom-slot ordering rule.
+assert_contains "$steady_router_path718" \
+  'refused by the harness permission classifier' \
+  "steady-state.md step C routes a refused Agent call to the denied-dispatch branch (#718)"
+assert_contains "$pool_fill_path718" \
+  'If the harness permission classifier refuses an' \
+  "setup step 7 (initial pool fill) routes a refused Agent call to the denied-dispatch branch (#718)"
+assert_contains "$steady_router_path718" \
+  'The write-through runs only AFTER the' \
+  "steady-state.md writes the in_flight slot only post-dispatch, so a denial leaves no phantom slot (#718)"
+
+# The Don't list carries the guardrail too — it is the surface a drifting
+# orchestrator is most likely to re-read mid-session.
+assert_contains "$dont_path" \
+  "Don't iterate prompt wording against the permission classifier" \
+  "dont.md forbids iterating prompt wording against the classifier (#718)"
+assert_contains "$dont_path" \
+  "Don't let a denied dispatch silently cost a slot" \
+  "dont.md forbids letting a denied dispatch silently cost a slot (#718)"
 
 echo
 if (( fail > 0 )); then
