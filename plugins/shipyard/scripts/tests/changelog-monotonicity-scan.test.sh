@@ -89,10 +89,20 @@ fi
 # It runs the scanner against origin/HEAD (or origin/main) as the merge-base —
 # the same comparison CI performs on a PR against main.
 if [[ -f "$scanner" ]]; then
-  if bash "$scanner" >/dev/null 2>&1; then
+  __diag_out="$(bash "$scanner" 2>&1)"
+  __diag_rc=$?
+  if [[ $__diag_rc -eq 0 ]]; then
     ok "scanner exits 0 on the current working-tree CHANGELOG.md"
   else
     bad "scanner exited non-zero on the current working tree — was a heading deleted?"
+    echo "DIAG rc=$__diag_rc" >&2
+    echo "DIAG output: $__diag_out" >&2
+    echo "DIAG pwd: $(pwd)" >&2
+    echo "DIAG git rev-parse --show-toplevel: $(git rev-parse --show-toplevel 2>&1)" >&2
+    echo "DIAG git rev-parse --verify origin/HEAD: $(git rev-parse --verify origin/HEAD 2>&1)" >&2
+    echo "DIAG git rev-parse --verify origin/main: $(git rev-parse --verify origin/main 2>&1)" >&2
+    echo "DIAG git rev-parse HEAD: $(git rev-parse HEAD 2>&1)" >&2
+    echo "DIAG git merge-base HEAD origin/main: $(git merge-base HEAD origin/main 2>&1)" >&2
   fi
 fi
 
