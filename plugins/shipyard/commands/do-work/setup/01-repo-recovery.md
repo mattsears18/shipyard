@@ -510,6 +510,9 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
 reaped_stale=0
 deferred_stale=0
+# Issue #712 — worktrees the sweep TRIED to reap but couldn't. Silent-degrade
+# (the old `|| true` posture) is what let them accumulate unnoticed.
+unreaped_stale=0
 # Declare our orchestrator PID so classify-lock can short-circuit reliably
 # (issue #263). The harness writes our PID into every agent lock file;
 # without an explicit declaration, classify-lock's ancestor walk can fail
@@ -541,14 +544,32 @@ for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/n
   # rare at startup since by definition we just launched, but covers the
   # PID-recycling edge case where a stale lock happens to name our PID.)
   git worktree unlock "$worktree_path" 2>/dev/null
-  if git worktree remove --force "$worktree_path" 2>/dev/null; then
+  # Issue #712 — route the remove through `worktree-reap.sh reap`, which
+  # escalates plain `git worktree remove` → evidence-gated `--force` and emits a
+  # `reaped-failed` audit line (never a silent `reaped`) when the removal did
+  # not actually happen. A bare `git worktree remove --force` here is denied
+  # outright by Claude Code's auto-mode permission classifier
+  # ("[Irreversible Local Destruction]"), and because the call was fire-and-
+  # forget the denial was invisible — which is how stale worktrees accumulated
+  # to six unnoticed in the #712 repro. Count `reaped_stale` from the verified
+  # end state (path gone), not from the call's exit status.
+  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+    --action reaped \
+    --worktree-path "$worktree_path" \
+    --worktree-name "$name" \
+    --session-id "<session-id>" \
+    --classification "$classification" \
+    --phase "setup-3b-recovery" 2>/dev/null || true
+  if [ ! -e "$worktree_path" ]; then
     reaped_stale=$((reaped_stale + 1))
+  else
+    unreaped_stale=$((unreaped_stale + 1))
   fi
 done
 git worktree prune
 ```
 
-Record `reaped_stale` and `deferred_stale` — both surface in the end-of-session summary.
+Record `reaped_stale`, `unreaped_stale`, and `deferred_stale` — all three surface in the end-of-session summary. A non-zero `unreaped_stale` means a reap was refused (auto-mode permission classifier, a dirty worktree carrying unpushed commits, or a filesystem error); the summary pairs the count with the `/clean_gone` remediation rather than degrading silently ([#712](https://github.com/mattsears18/shipyard/issues/712)).
 
 **3c. Orphan worktree triage** — scan for `do-work/*` branches whose worktrees survived step 3b (legitimate orphans from THIS session, not dead-process leftovers).
 

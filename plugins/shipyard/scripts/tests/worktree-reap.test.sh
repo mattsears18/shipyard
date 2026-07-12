@@ -1601,6 +1601,208 @@ missing_path="$fast_repo/.claude/worktrees/already-gone"
 assert_exit_code "$?" "0" \
   "(77) fast reap of an already-removed path exits 0 (no error)"
 
+# ---------------------------------------------------------------------------
+# Issue #712 — the reap must not silently degrade when the removal doesn't
+# happen, and `--force` must not be the first move.
+#
+# Root cause: every reap call site bottomed out in `git worktree remove
+# --force` wrapped in `2>/dev/null || true`. In Claude Code's auto permission
+# mode the classifier DENIES that command ("[Irreversible Local Destruction]"),
+# and because the call was fire-and-forget inside a background subshell, the
+# denial was indistinguishable from success — worktrees accumulated forever
+# (the repro found five, every one the residue of an already-merged PR, and the
+# count only grew).
+#
+# Two guards, tested here:
+#   - `report-unreaped` — an after-the-fact filesystem probe. It is the ONLY
+#     mechanism that can catch a classifier denial, because the denial kills
+#     the whole Bash tool call and no audit line is ever written.
+#   - `reaped-failed` — the audit action emitted in place of `reaped` when the
+#     removal did not actually happen, so the failure is recorded rather than
+#     swallowed.
+# ---------------------------------------------------------------------------
+
+# --- (78) report-unreaped: clean layout → empty stdout, exit 0 ---
+reset_fast_layout
+mkdir -p "$fast_repo/.claude/worktrees"
+unreaped_out=$(bash "$helper" report-unreaped --repo-root "$fast_repo" 2>/dev/null)
+unreaped_rc=$?
+assert_equals "$unreaped_out" "" \
+  "(78) report-unreaped emits nothing when no worktrees are left over"
+assert_exit_code "$unreaped_rc" "0" \
+  "(78a) report-unreaped exits 0 on a clean layout"
+
+# --- (79) report-unreaped: leftovers listed; own orchestrator + scratch excluded ---
+reset_fast_layout
+mkdir -p "$fast_repo/.claude/worktrees/agent-leftover1"
+mkdir -p "$fast_repo/.claude/worktrees/agent-leftover2"
+mkdir -p "$fast_repo/.claude/worktrees/orchestrator-dead-session"
+mkdir -p "$fast_repo/.claude/worktrees/orchestrator-live-session"
+# #664 rename-aside scratch dir: already pruned + branch freed, background
+# unlink in flight. NOT a leftover.
+mkdir -p "$fast_repo/.claude/worktrees/agent-zz.reap-dead-1234-99"
+unreaped_out=$(bash "$helper" report-unreaped \
+  --repo-root "$fast_repo" \
+  --current-session-id "live-session" 2>/dev/null)
+unreaped_count=$(printf '%s\n' "$unreaped_out" | grep -c . || true)
+assert_equals "$unreaped_count" "3" \
+  "(79) report-unreaped counts the 3 genuine leftovers"
+
+shape_ok=1
+case "$unreaped_out" in *"agent-leftover1"*) ;; *) shape_ok=0 ;; esac
+case "$unreaped_out" in *"agent-leftover2"*) ;; *) shape_ok=0 ;; esac
+case "$unreaped_out" in *"orchestrator-dead-session"*) ;; *) shape_ok=0 ;; esac
+# Own orchestrator worktree is still live (reaped last) — never reported.
+case "$unreaped_out" in *"orchestrator-live-session"*) shape_ok=0 ;; esac
+# Scratch dir from the fast path — never reported.
+case "$unreaped_out" in *"reap-dead"*) shape_ok=0 ;; esac
+if [ "$shape_ok" = "1" ]; then
+  printf '  %sPASS%s  (79a) report-unreaped excludes own orchestrator + .reap-dead-* scratch\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (79a) unexpected report-unreaped output:\n%s\n' "$RED" "$RESET" "$unreaped_out"
+  fail=$((fail+1))
+fi
+
+# --- (80) report-unreaped: bad usage ---
+bash "$helper" report-unreaped >/dev/null 2>&1
+assert_exit_code "$?" "64" "(80) report-unreaped without --repo-root exits 64"
+bash "$helper" report-unreaped --repo-root "$fast_repo" --bogus >/dev/null 2>&1
+assert_exit_code "$?" "64" "(80a) report-unreaped with an unknown flag exits 64"
+
+# --- (81) a removal that CANNOT happen emits `reaped-failed`, not `reaped` ---
+# Simulate the denial/failure case by making the worktree's parent directory
+# non-writable: `mv` (the fast path), `git worktree remove`, and `git worktree
+# remove --force` all need write permission on the parent to unlink the entry,
+# so every rung of the ladder fails and the directory survives. That is exactly
+# the end state a classifier denial produces, and the audit line must say so.
+# Skipped under root, which bypasses the permission bits entirely.
+if [ "$(id -u)" = "0" ]; then
+  printf '  %sSKIP%s  (81) reaped-failed audit line (running as root — permission bits are a no-op)\n' "$GREEN" "$RESET"
+else
+  reset_fast_layout
+  fast_add_worktree wtFail
+  wtFail_path="$fast_repo/.claude/worktrees/wtFail"
+  chmod 0500 "$fast_repo/.claude/worktrees"
+  (
+    cd "$fast_repo" || exit 99
+    SHIPYARD_HOME="$fast_home" bash "$helper" reap \
+      --action reaped \
+      --worktree-path "$wtFail_path" \
+      --worktree-name "wtFail" \
+      --session-id "fail-session" \
+      --classification "dead" \
+      --lock-pid 99999
+  ) >/dev/null 2>&1
+  reap_rc=$?
+  chmod 0700 "$fast_repo/.claude/worktrees"
+
+  assert_exit_code "$reap_rc" "0" \
+    "(81) a failed reap still exits 0 (the caller's loop must continue)"
+
+  if [ -d "$wtFail_path" ]; then
+    printf '  %sPASS%s  (81a) worktree survived (the failure being recorded is real)\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (81a) worktree was removed — the failure could not be simulated\n' "$RED" "$RESET"
+    fail=$((fail+1))
+  fi
+
+  fail_line=$(cat "$fast_home/reap-audit.jsonl" 2>/dev/null)
+  shape_ok=1
+  case "$fail_line" in *'"action":"reaped-failed"'*) ;; *) shape_ok=0 ;; esac
+  # A bare `"action":"reaped"` would be the pre-#712 silent-success lie.
+  case "$fail_line" in *'"action":"reaped"'*) shape_ok=0 ;; esac
+  case "$fail_line" in *'"reason":'*) ;; *) shape_ok=0 ;; esac
+  if [ "$shape_ok" = "1" ]; then
+    printf '  %sPASS%s  (81b) failed reap emits reaped-failed + a reason (never a silent "reaped")\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (81b) expected a reaped-failed audit line with a reason; was: %s\n' "$RED" "$RESET" "$fail_line"
+    fail=$((fail+1))
+  fi
+fi
+
+# --- (82) reap-session-worktrees reports `unreaped:` when the removal fails ---
+# The status line must reflect the VERIFIED end state, not the intent. Before
+# #712 it printed `reaped:` before the removal even ran, so a failed removal
+# still incremented the caller's reaped counter and the leftover went unnoticed.
+if [ "$(id -u)" = "0" ]; then
+  printf '  %sSKIP%s  (82) unreaped: status line (running as root)\n' "$GREEN" "$RESET"
+else
+  reset_fast_layout
+  fast_add_worktree agent-stuck
+  # Drop the lock file so classify-lock returns `no-lock` deterministically —
+  # the fixture's placeholder PID could in principle be live on the test host,
+  # which would classify as `peer-alive` and defer instead of reaping.
+  rm -f "$fast_repo/.git/worktrees/agent-stuck/locked"
+  chmod 0500 "$fast_repo/.claude/worktrees"
+  session_out=$(printf 'stuck\n' | SHIPYARD_HOME="$fast_home" bash "$helper" \
+    reap-session-worktrees \
+    --repo-root "$fast_repo" \
+    --session-id "fail-session" 2>/dev/null)
+  chmod 0700 "$fast_repo/.claude/worktrees"
+
+  # Match whole lines — `unreaped: agent-stuck` *contains* the substring
+  # `reaped: agent-stuck`, so a substring test would report a false conflict.
+  shape_ok=1
+  printf '%s\n' "$session_out" | grep -qx "unreaped: agent-stuck" || shape_ok=0
+  printf '%s\n' "$session_out" | grep -qx "reaped: agent-stuck" && shape_ok=0
+  if [ "$shape_ok" = "1" ]; then
+    printf '  %sPASS%s  (82) reap-session-worktrees prints unreaped: (not reaped:) on a failed removal\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (82) expected "unreaped: agent-stuck"; was: %s\n' "$RED" "$RESET" "$session_out"
+    fail=$((fail+1))
+  fi
+fi
+
+# --- (83) --force-evidence is accepted and the happy path still reaps ---
+# A caller that has already established force-safety (e.g. setup 3c's
+# `rev-list --count origin/<default>..HEAD == 0`) passes its evidence through
+# rather than making the helper re-derive it.
+reset_fast_layout
+fast_add_worktree wtEvidence
+wtEvidence_path="$fast_repo/.claude/worktrees/wtEvidence"
+(
+  cd "$fast_repo" || exit 99
+  SHIPYARD_HOME="$fast_home" bash "$helper" reap \
+    --action reaped \
+    --worktree-path "$wtEvidence_path" \
+    --worktree-name "wtEvidence" \
+    --session-id "evidence-session" \
+    --classification "dead" \
+    --lock-pid 99999 \
+    --force-evidence "no-commits-beyond-base"
+) >/dev/null 2>&1
+assert_exit_code "$?" "0" "(83) reap accepts --force-evidence"
+
+if [ ! -e "$wtEvidence_path" ]; then
+  printf '  %sPASS%s  (83a) worktree still reaped on the --force-evidence path\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (83a) worktree survived the --force-evidence reap\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (84) `--force` is never the first move ---
+# Regression guard on the #712 ladder itself. Count only *executable* force
+# invocations — a line whose first token is the command — so the file's own
+# comments and its `usage()` heredoc (both of which legitimately name the
+# command) don't inflate the count. Assert the helper retains at most one such
+# call site and that the `worktree_force_is_safe` evidence gate exists to guard
+# it. A future edit that reintroduces an ungated force reddens this.
+force_calls=$(sed 's/#.*//' "$helper" \
+  | grep -cE '^[[:space:]]*git worktree remove --force' || true)
+guarded=$(sed 's/#.*//' "$helper" | grep -c 'worktree_force_is_safe' || true)
+if [ "$force_calls" -le 1 ] && [ "$guarded" -ge 2 ]; then
+  printf '  %sPASS%s  (84) helper keeps a single evidence-gated --force call site\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (84) expected <=1 force call site guarded by worktree_force_is_safe; found %s force call(s), %s gate reference(s)\n' "$RED" "$RESET" "$force_calls" "$guarded"
+  fail=$((fail+1))
+fi
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
