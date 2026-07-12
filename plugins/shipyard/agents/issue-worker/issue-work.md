@@ -412,17 +412,40 @@ This step runs **after** §5.8 (the dispatched-issue closing-link verification) 
 
 ### 6. Enable auto-merge (gated on `originating_author_trust`)
 
-Branch on the `originating_author_trust` field the orchestrator put in your dispatch prompt:
+Branch on the `originating_author_trust` field the orchestrator put in your dispatch prompt.
 
-**When `originating_author_trust == "trusted"`** — arm auto-merge as usual:
+**When `originating_author_trust == "trusted"`:**
+
+#### 6.a Run the ungated-admin-direct-merge pre-check FIRST — before any merge call ([#598](https://github.com/mattsears18/shipyard/issues/598) / [#602](https://github.com/mattsears18/shipyard/issues/602) / [#716](https://github.com/mattsears18/shipyard/issues/716))
+
+**Do not type `gh pr merge` until this check has returned.** `gh pr merge --auto` is widely assumed to mean *"queue this PR and merge it when CI goes green."* On two repo configurations that guarantee **silently does not hold** — gh falls through to an *immediate direct merge*, landing the PR while its own checks are still `IN_PROGRESS`. On those configurations the PR's own CI is the only gate that exists, and `--auto` bypasses it, so a red diff reaches the default branch with nothing having gated it.
+
+Run the detector. It is a **script, not a rule for you to re-derive** — do not reason about `allow_auto_merge` yourself:
+
+```bash
+VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+```
+
+- **`VERDICT == "ungated"`** → **do NOT run `gh pr merge --auto`.** Re-create the missing merge gate by hand: block on the PR's own checks, then merge only if they settle green. This is the one issue-work case where you DO `--watch` (it self-heartbeats on every tick, so it's watchdog-safe):
+
+  ```bash
+  gh pr checks <pr-num> --repo <owner/repo> --watch --interval 30
+  ```
+
+  - Checks settle **green** → merge now: `gh pr merge <pr-num> --repo <owner/repo> --merge --delete-branch` (use the repo's configured merge method).
+  - Checks settle **red** → do NOT merge. Hand the PR back via the step-8 `checks: failing` return so the orchestrator dispatches a fix-checks-only worker. Do NOT run the fix-loop inline — that's mode-switching, which this file forbids.
+
+- **`VERDICT == "gated"`** → `--auto` genuinely queues behind CI. Arm it and move on (§6.b).
+
+**Why this is a script call and not a condition you evaluate.** The rule used to live as prose in two files, and the two copies drifted into contradicting each other — `issue-work.md` claimed the gate only fires when `allow_auto_merge: false` and listed *"repo allows auto-merge"* as a **skip** condition, while the preamble fragment correctly fired on `admin + zero required checks` **regardless of `allow_auto_merge`**. Whichever copy a worker happened to read decided whether the gate fired at all. The [#716](https://github.com/mattsears18/shipyard/issues/716) repro: in one session the worker on PR #713 loaded the fragment and correctly held for its checks, while the worker on PR #715 followed this file's prose, concluded *"auto-merge isn't enabled on the repo"* (it is — `allow_auto_merge: true`), and admin-direct-merged while CI was still `IN_PROGRESS`. **The condition now exists in exactly one executable place** ([`scripts/detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh)) so it cannot drift again. If the script is somehow unavailable, fall back to `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 0.5 — fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md) — which documents the same two-shape rule; do **not** improvise a condition from memory.
+
+#### 6.b Arm auto-merge (only when §6.a returned `gated`)
 
 ```bash
 gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
 ```
 
-**First run `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 0.5 — fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md) — the ungated admin-direct-merge pre-check ([#598](https://github.com/mattsears18/shipyard/issues/598)).** When the repo has `allow_auto_merge: false`, the dispatcher has admin/maintain, and the base branch has no required status checks, `gh pr merge --auto --merge` silently direct-merges *immediately* — landing the PR before its own CI completes (ungated). On that path, do NOT fire `--auto --merge`; instead block on `gh pr checks <pr-num> --watch` until the PR's checks settle, then merge only when green (a red PR is handed back via the step-8 `checks: failing` return so the orchestrator dispatches a fix-checks-only worker — do NOT run the fix-loop inline). The pre-check and wait logic live in the preamble; this is the same proactive gate, applied before arming auto-merge in trusted mode. When that pre-check does NOT fire (repo allows auto-merge, dispatcher isn't admin, or required checks are configured), arm auto-merge normally per the command above.
-
-If this errors because auto-merge isn't enabled at the repo level, **don't try to enable it** (that's a repo setting). But also **don't trust the exit status alone** — gh silently direct-merges (without arming auto-merge) when the repo has `allow_auto_merge: false` and the dispatching user has admin permissions, returning exit 0 with `autoMergeRequest: null` and the PR already at `state: MERGED`. The post-call state snapshot in [step 7](#7-snapshot-check-state--auto-merge-state-then-return--dont-block-on-ci) (and the categorization rules in `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.5 — fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md)) distinguish the three outcomes — `enabled`, `merged-direct`, and genuinely-`unavailable` — and pick the matching return-string suffix in [step 8](#8-return). Don't try to short-circuit the categorization from the merge call alone; let the post-call snapshot decide.
+If this errors because auto-merge isn't enabled at the repo level, **don't try to enable it** (that's a repo setting). But also **don't trust the exit status alone** — gh can silently direct-merge (without arming auto-merge) on the ungated admin-direct path, returning exit 0 with `autoMergeRequest: null` and the PR already at `state: MERGED`. The post-call state snapshot in [step 7](#7-snapshot-check-state--auto-merge-state-then-return--dont-block-on-ci) (and the categorization rules in `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.5 — fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md)) distinguish the three outcomes — `enabled`, `merged-direct`, and genuinely-`unavailable` — and pick the matching return-string suffix in [step 8](#8-return). Don't try to short-circuit the categorization from the merge call alone; let the post-call snapshot decide. A `merged-direct` outcome reaching step 7 after §6.a returned `gated` means the detector's prediction was wrong — the step-7 `merged-direct-ungated` refinement is the defense-in-depth backstop for exactly that residual case.
 
 **When `originating_author_trust == "external"`** — do NOT arm auto-merge. Instead, mark the PR for human review and post a comment so the maintainer's merge-queue view surfaces it as gated:
 
@@ -465,7 +488,7 @@ Then take the matching branch above using `$RESOLVED_TRUST` in place of the miss
 
 **Do not `--watch` — and do not *wait* on a background CI-watch either ([#707](https://github.com/mattsears18/shipyard/issues/707)).** Watching ties up your agent (and its concurrency slot) for the full CI duration, often 5–20 min. The orchestrator's PR-triage step runs at the top of every `/do-work` iteration and will sweep up any PR that goes red — dispatching a fresh fix-checks-only agent against it. Your job is to ship and move on. The snapshot below is a **one-shot read for the return string, not a wait**: your terminal state was already reached at "local gates green, PR opened, auto-merge armed" (worker-preamble § "Return-contract discipline" rule 2) — the commit / push / PR-open **never gated on a CI result**, and CI confirmation is the orchestrator's job. If you spawned a background CI-watch at all (you generally shouldn't), run it **fire-and-forget or skip it** — never block your own completion on it. The #707 repro stalled with a fully-implemented change **uncommitted on disk** because the worker treated a congested-CI background watcher's report as a precondition for committing; it never was.
 
-**Snapshot the auto-merge outcome first** (issue [#340](https://github.com/mattsears18/shipyard/issues/340)) — `gh pr merge --auto` from [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) silently direct-merges when the repo has `allow_auto_merge: false` and the dispatching user has admin permissions, so the call's exit status alone is NOT a reliable signal of the actual outcome:
+**Snapshot the auto-merge outcome first** (issue [#340](https://github.com/mattsears18/shipyard/issues/340)) — `gh pr merge --auto` from [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) silently direct-merges on the **ungated admin-direct path** (the dispatching user has admin/maintain AND *either* `allow_auto_merge: false` [#438] *or* the base branch has zero required status checks [#465] — see [§6.a](#6a-run-the-ungated-admin-direct-merge-pre-check-first--before-any-merge-call-598--602--716)), so the call's exit status alone is NOT a reliable signal of the actual outcome:
 
 ```bash
 gh pr view <pr-num> --repo <owner/repo> --json state,autoMergeRequest \
@@ -475,7 +498,7 @@ gh pr view <pr-num> --repo <owner/repo> --json state,autoMergeRequest \
 Categorize into one of three *base* `auto-merge:` values for the return-string suffix:
 
 - `.autoMerge == true` → **`auto-merge: enabled`** (queued; auto-merge armed and waiting on checks).
-- `.state == "MERGED"` → **`auto-merge: merged-direct`** (gh silently direct-merged because `allow_auto_merge: false` at the repo level but the dispatching user has admin permissions; PR is already landed). **This base value is refined to `merged-direct-ungated` after the check-rollup snapshot below** — see the refinement note.
+- `.state == "MERGED"` → **`auto-merge: merged-direct`** (gh silently direct-merged on the ungated admin-direct path — admin/maintain plus *either* `allow_auto_merge: false` *or* zero required status checks; PR is already landed). **This base value is refined to `merged-direct-ungated` after the check-rollup snapshot below** — see the refinement note. Reaching this outcome after [§6.a](#6a-run-the-ungated-admin-direct-merge-pre-check-first--before-any-merge-call-598--602--716) returned `gated` means the pre-check mispredicted; do **not** report the cause as "auto-merge isn't enabled on the repo" without having actually read `allow_auto_merge` — that false attribution is the [#716](https://github.com/mattsears18/shipyard/issues/716) tell.
 - Otherwise (`.state == "OPEN"` AND `.autoMerge == false`) → **`auto-merge: unavailable — needs manual merge`** (the merge call genuinely failed and no merge happened).
 
 When `originating_author_trust == "external"` and step 6 took the external branch (no `gh pr merge --auto` was called), skip this snapshot — the return-string suffix is fixed at `auto-merge: gated — external-author origin, needs-human-review label applied` per [step 8](#8-return).
@@ -516,7 +539,7 @@ When auto-merge is engaged and you've snapshotted check state → done. Return o
 
 > `shipped #<N> via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
 
-When the post-call snapshot showed the PR is already MERGED **and the check rollup was `green`** (gh silently direct-merged because the repo has `allow_auto_merge: false` but the dispatching user has admin permissions, and CI had completed green at merge time — issue [#340](https://github.com/mattsears18/shipyard/issues/340)) → return:
+When the post-call snapshot showed the PR is already MERGED **and the check rollup was `green`** (gh silently direct-merged on the ungated admin-direct path, and CI had completed green at merge time — issue [#340](https://github.com/mattsears18/shipyard/issues/340)) → return:
 
 > `shipped #<N> via PR #<M> (auto-merge: merged-direct, checks: green)`
 

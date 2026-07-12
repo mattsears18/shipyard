@@ -8,6 +8,16 @@ After `gh pr create` returns:
 
 0.5. **First, decide whether this PR is on the ungated admin-direct-merge path — and if so, wait for the PR's own checks before merging instead of merging ungated ([#598](https://github.com/mattsears18/shipyard/issues/598)).** The `merged-direct-ungated` advisory in step 1.5 (from [#457](https://github.com/mattsears18/shipyard/issues/457)) is a *post-hoc* signal: by the time you can read `state: MERGED`, the merge has already fired and an ungated red has potentially already reached the default branch. On the repos shipyard is dogfooded against (`mattsears18/shipyard`, `mattsears18/mattsears18.com` — admin dispatcher + no required status checks, *regardless of whether `allow_auto_merge` is `false` (#438) or `true` (#465)*) that post-hoc path is the *common* case, not the edge case, so a pre-merge wait recovers a gate that already exists (the PR's own CI) instead of fixing `main` forward after the fact. The #598 repro: PR #596 (a README refresh) admin-direct-merged ungated, dropped the `decompose-epic.md` substring that `decompose-epic.test.sh` asserts, reddened `main`, and cost a whole second PR (#597) + a ~9-minute red-`main` window to fix forward — a regression the PR's *own* checks (which completed ~53s after merge) would have gated for free.
 
+   **Run the detector as a script — don't re-derive the condition ([#716](https://github.com/mattsears18/shipyard/issues/716)).** The rule below is implemented once, executably, in [`scripts/detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh). Call it and branch on the verdict:
+
+   ```bash
+   VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+   # `ungated` => do NOT arm --auto; --watch the PR's checks, merge only if green.
+   # `gated`   => --auto genuinely queues behind CI; arm it (step 1 below).
+   ```
+
+   The script is the **single source of truth** for this decision. It exists because the condition previously lived as prose in both this fragment and `agents/issue-worker/issue-work.md` step 6, and the two copies drifted into contradicting each other — issue-work.md claimed the gate only fires on `allow_auto_merge: false` and named "repo allows auto-merge" as a *skip* condition, so a worker that read that file (rather than this fragment) skipped the gate entirely and admin-direct-merged ungated (the #716 repro: PR #715 landed while CI was `IN_PROGRESS`; its sibling PR #713, whose worker loaded this fragment, correctly held). **Never restate this condition in prose in a third place.** The remainder of this section documents *what the script implements* and why — it is the reference explanation, not a second implementation to hand-execute.
+
    Read the three signals **before** arming auto-merge — the two-shape test below combines them (it does NOT require all three; shape 2 fires on `(b)` + `(c)` alone, regardless of `(a)`):
 
    ```bash
