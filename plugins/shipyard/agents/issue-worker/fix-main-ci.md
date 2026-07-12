@@ -16,12 +16,19 @@ The single highest-leverage action is: identify the root cause and ship the smal
 
 ## Process
 
-1. **Pre-flight: re-confirm main is still red.** State drifts between dispatch and you starting. Run:
+1. **Pre-flight: re-confirm main is still red.** State drifts between dispatch and you starting. The green-main assertion is a **script, not a rule for you to re-derive** — `noop: main already green` is a claim that CI passed, and it must never be reachable from a check that observed nothing (issue [#717](https://github.com/mattsears18/shipyard/issues/717); see `shipyard:worker-preamble` § "An absence-assertion that observed nothing is not a pass" — fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md)):
+
    ```bash
-   gh run list --repo <owner/repo> --branch <default-branch> --status completed --limit 1 \
-     --json conclusion,databaseId
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/assert-ci-green.sh" <owner/repo> --branch <default-branch>
+   VERDICT=$?
    ```
-   If `conclusion == "success"` → return `noop: main already green`. Don't open a PR.
+
+   - **`0` (green)** → return `noop: main already green`. Don't open a PR. **This is the ONLY exit code that permits the noop.**
+   - **`1` (red)** → main is still red as dispatched. Proceed to step 2.
+   - **`3` (pending)** → no workflow has a completed verdict yet. Proceed to step 2 — the dispatch said main was red, and a pending rollup is not evidence that it recovered.
+   - **`2` (unknown)** → the check observed **nothing** (0 runs matched, or the branch/ref couldn't be read). This is *not verified*, not green. Proceed to step 2 on the dispatch's premise; if you also can't read the earliest red run's logs in step 2, return `blocked main-ci-fix: could not read CI state for <default-branch>` rather than guessing.
+
+   Do NOT hand-roll this with a `gh run list ... --json conclusion --jq '[.[] | select(.conclusion != "success")] | length'`-style absence-assertion: on an empty result set that predicate returns 0 and reads as green, so a lookup that matched no runs would produce a false `noop: main already green` and leave the red branch unrepaired.
 
 2. **Pull failed logs from the earliest red run:**
    ```bash

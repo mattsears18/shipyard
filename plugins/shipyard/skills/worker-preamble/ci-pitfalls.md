@@ -1,6 +1,50 @@
-# Worker-preamble fragment — CI / push pitfalls (heartbeat, locale parity, fixture branch pin, push-protection)
+# Worker-preamble fragment — CI / push pitfalls (vacuous verification, heartbeat, locale parity, fixture branch pin, push-protection)
 
-On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode runs long-running commands (CI babysitting, full local test suites), adds user-facing strings, authors git-using shell test fixtures, or adds secret-shaped test fixtures. The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "Heartbeat emission around long-running commands"`, `§ "Mirror new string constants into locale / parity files"`, `§ "Pin the default branch in git-using test fixtures"`, `§ "GitHub push-protection blocking a synthetic test-fixture secret"`).
+On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode **verifies a CI result**, runs long-running commands (CI babysitting, full local test suites), adds user-facing strings, authors git-using shell test fixtures, or adds secret-shaped test fixtures. The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "An absence-assertion that observed nothing is not a pass"`, `§ "Heartbeat emission around long-running commands"`, `§ "Mirror new string constants into locale / parity files"`, `§ "Pin the default branch in git-using test fixtures"`, `§ "GitHub push-protection blocking a synthetic test-fixture secret"`).
+
+## An absence-assertion that observed nothing is not a pass
+
+**Never assert "nothing failed" without first asserting that you observed something.** A check whose result cannot distinguish *"nothing bad found"* from *"nothing looked at"* is not a check — it is a coin that always lands green. This failure mode reports success in the **dangerous direction**: it converts "I could not verify" into "verified green", and every downstream claim that trusted it (the `checks: green` suffix in a return string, an orchestrator's trust-but-verify probe, a post-merge "main is healthy" conclusion) inherits a verdict that was never actually taken.
+
+The canonical instance (issue [#717](https://github.com/mattsears18/shipyard/issues/717)): **`gh run list --commit <sha>` matches only on a FULL 40-char SHA.** An abbreviated SHA silently matches **zero** runs — gh exits 0 and prints an empty list. So:
+
+```bash
+# BAD — vacuously "green". A short SHA matches 0 runs, so `failures` is 0, so the
+# check passes while having observed nothing at all.
+sha=$(git rev-parse --short HEAD)
+failures=$(gh run list --commit "$sha" --json conclusion \
+             --jq '[.[] | select(.conclusion != "success")] | length')
+[ "$failures" -eq 0 ] && echo "main is green"   # <-- a lie on an empty set
+```
+
+**Use the shared helper — don't re-derive the guard per call-site.**
+
+```bash
+# GOOD — one executable answer to "is CI green for <target>?", with the
+# observed-something precondition built in.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/assert-ci-green.sh" <owner/repo> --commit HEAD
+case $? in
+  0) : ;;  # green   — >=1 run observed AND every workflow's latest completed run passed
+  1) : ;;  # red     — a workflow's latest completed run failed
+  3) : ;;  # pending — runs observed, no completed verdict yet
+  2) : ;;  # unknown — NOT VERIFIED (0 runs matched / ref unresolvable / gh failed)
+esac
+```
+
+[`scripts/assert-ci-green.sh`](../../scripts/assert-ci-green.sh) resolves the ref to a full SHA itself (so a caller passing `HEAD` or a short hash cannot reintroduce the trap), refuses to answer `green` on an empty result set, and aggregates at per-workflow / latest-run granularity. It also accepts `--branch <name>` for a default-branch health read, and `--classify '<json>'` for a payload you already hold.
+
+**The three rules, if you must hand-roll a verification anyway:**
+
+1. **Full SHA, always.** `git rev-parse HEAD` — never `--short`, never a hash copied from a log line. `gh run list --commit` does not accept abbreviated SHAs and does not warn.
+2. **`total == 0` is `unknown`, never `green`.** Assert the set is non-empty *before* asserting it is clean. Emit `could not verify — 0 runs matched <sha>` and treat it as not-verified.
+3. **`unknown` is its own outcome.** Don't fold it into green ("nothing red, ship it") or into red ("assume the worst"). The caller usually wants to widen the window, retry, or bail — what it must never do is proceed as if it has a verdict.
+
+**The pattern generalizes past `gh` — watch for any tool whose degenerate output reads as a pass.** Two more from the same session that filed #717:
+
+- GNU grep prints `Binary file <f> matches` (one line, no matches) instead of the matched lines when the file contains a NUL byte — a scanner extracting headings silently got nothing, and "no bad headings found" read as a pass. It passed on macOS/BSD grep and failed only on CI.
+- `grep -P` is **unsupported on macOS** (BSD grep). The error was swallowed by a `2>/dev/null`, the check false-negatived, and the NUL byte it was looking for went undetected — caught only because `file` reported `data` instead of `UTF-8 text`.
+
+In both, an empty/degenerate tool result was consumed as evidence of absence. When you write a check, ask: *what does this print when it fails to look at anything?* If the answer is "the same thing it prints when everything is fine," the check is broken — add the "I observed N things" precondition, and give any new guard a **negative control** (a test that proves the guard's removal changes the outcome; a test that passes with and without the fix is itself an instance of this bug).
 
 ## Heartbeat emission around long-running commands
 
