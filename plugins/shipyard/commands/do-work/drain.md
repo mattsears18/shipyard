@@ -606,7 +606,20 @@ Add `<M>` to `session_prs` (deduped) so the existing drain termination machinery
 # After the release PR merges, find the deploy workflow run triggered by the
 # merge SHA (best-effort — many repos have no deploy workflow, in which case
 # this is a clean no-op and the release is "settled = merged").
+#
+# `.mergeCommit.oid` is the FULL 40-char SHA — keep it that way. `gh run list
+# --commit` matches ONLY on a full SHA and silently returns an empty list for an
+# abbreviated one, so never `cut`/`--short` this value on its way into the call.
+# An empty result here means "no deploy workflow found" ONLY because we know the
+# SHA was full; with a short SHA the same empty list would mean "we looked at
+# nothing" and every downstream conclusion would be vacuous (issue #717 —
+# `shipyard:worker-preamble` § "An absence-assertion that observed nothing is not
+# a pass", fragment `skills/worker-preamble/ci-pitfalls.md`).
 merge_sha=$(gh pr view <M> --repo <owner/repo> --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "")
+if ! printf '%s' "$merge_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "[release-train] could not read a full merge SHA for PR #<M> — deploy watch NOT VERIFIED (skipping, not concluding green)"
+  merge_sha=""
+fi
 if [ -n "$merge_sha" ]; then
   gh run list --repo <owner/repo> --commit "$merge_sha" \
     --json databaseId,name,status,conclusion,workflowName \

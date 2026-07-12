@@ -105,9 +105,10 @@ gh pr view <M> --repo <owner/repo> --json statusCheckRollup,headRefOid --jq "
   }"
 ```
 
-Treat the return as `green` **only when all three hold**:
+Treat the return as `green` **only when all four hold**:
 
 - `head_matches_pushed == true` — GitHub's PR head is the SHA you pushed (you're not reading a stale rollup from before your push).
+- **`named_checks | length` equals the number of checks you recorded as failing at dispatch** — i.e. every name you're re-probing actually came back. **An empty (or short) `named_checks` array is `unknown`, never green** (issue [#717](https://github.com/mattsears18/shipyard/issues/717)): "every element of an empty array concluded SUCCESS" is *vacuously true*, so a `select(.name == "<failing-check-name>")` that matches nothing — a typo'd name, a renamed check, a rollup that hasn't populated yet — would silently satisfy the next bullet while having observed nothing at all. If a name doesn't come back, you have NOT verified it; keep watching, or re-read the rollup to find what the check is actually called. See `shipyard:worker-preamble` § "An absence-assertion that observed nothing is not a pass" (fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md)).
 - Every named-at-dispatch failing check appears in `named_checks` with `conclusion == "SUCCESS"` (or `SKIPPED` / `NEUTRAL`).
 - The overall rollup is all-green per the latest-per-name projection used in the `noop:` path above (no *other* check regressed).
 
