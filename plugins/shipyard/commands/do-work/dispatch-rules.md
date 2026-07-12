@@ -473,3 +473,75 @@ When filling a slot, walk this decision tree:
 6. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
 
 Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`, and the `subagent_type` matching the worker's `mode:` per the routing table at the top of this section. The harness will notify you on completion — that drives the next iteration of the steady-state loop.
+
+**Write the `.in_flight` slot only AFTER the `Agent` call is accepted.** The [per-slot dispatch metadata write-through](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) needs the harness-assigned `agent_id`, which does not exist until the tool call returns — so the write-through is strictly *post*-dispatch, never speculative. This ordering is what makes the denied-dispatch branch below well-defined: a dispatch the harness refused leaves **no** `.in_flight` slot behind, so there is no phantom slot to reap and no completion notification to wait for.
+
+## Dispatch denied by the harness permission classifier ([#718](https://github.com/mattsears18/shipyard/issues/718))
+
+Every branch above assumes the `Agent` tool call *happens*. It can also be **refused outright by the harness** — Claude Code's auto-mode permission classifier evaluates the orchestrator's own `Agent` dispatch, and can deny it:
+
+```
+Permission for this action was denied by the Claude Code auto mode classifier.
+Reason: No reason provided.
+```
+
+This is **not** a worker return. No agent ran, no worktree was created, no `agent_id` exists, and **no completion notification is coming** — do not wait for one, do not run step A against it. It is also distinct from a *worker's* Bash/Edit being denied mid-run ([#712](https://github.com/mattsears18/shipyard/issues/712), which the worker handles per `shipyard:worker-preamble` § "After a classifier denial" by returning `blocked:`): here the dispatch itself never got off the ground.
+
+**Observed trigger.** A prompt that *describes* a permission-surface change reads to the classifier as an agent trying to widen the user's permissions — even when the actual deliverable is a plugin-source edit inside an isolated worktree. The [#718](https://github.com/mattsears18/shipyard/issues/718) repro: the dispatch for [#714](https://github.com/mattsears18/shipyard/issues/714) (*"offer to add an allow rule to `.claude/settings.json`"*) was denied, because the prompt's summary of the work was written in the vocabulary of the live settings file rather than in the vocabulary of the spec file the worker would actually edit.
+
+### 1. Record the denial — never let it silently cost a slot
+
+A denial that is not recorded is invisible: the slot goes unfilled and the target quietly stops being worked, with nothing in the summary to say why. Append an entry to the session-local **`dispatch_denials`** struct (see the [orchestrator-state struct list](../do-work.md#orchestrator-state)):
+
+```
+{ target: <#N | #M | "main" | "pr-pileup">, mode: "<mode>", denied_at: "<iso-8601 UTC>",
+  denial_text: "<verbatim first line of the harness denial>",
+  attempt: 1 | 2, outcome: "reframed" | "handed-back" | "shipped-after-reframe" }
+```
+
+Do **not** write an `.in_flight` slot (per the ordering rule above there is nothing to write) and do **not** decrement any queue yet. Log the advisory inline so the denial is visible in the turn transcript, not just at exit:
+
+```
+[dispatch-denied] mode=<mode> target=<#N> attempt=<1|2> — Agent dispatch refused by the permission classifier (#718)
+```
+
+### 2. Exactly ONE re-dispatch is permitted — and only as a *correction*
+
+**The re-dispatch is permitted if and only if the original prompt overstated the work's blast radius.** That is: the prompt described the change in terms of a capability the worker will not actually exercise. The canonical case is the #714 shape — the issue is *about* a live permission surface (`.claude/settings.json`, `.mcp.json`, a CI secret, a `.github/workflows/` file), so the prompt's one-line summary reads as *"add an allow rule to the user's settings"*, while the worker's real deliverable is an edit to **plugin source** (a spec / command / agent file) inside an **isolated worktree**, and the worker is forbidden from touching any live settings file at all.
+
+The corrected prompt must state the deliverable **accurately**: name the exact files the worker will edit, name the worktree isolation, and state explicitly that the worker will not write the live file. That is the *only* kind of change permitted — the reframe makes the prompt **more truthful**, never merely more permissive-sounding.
+
+**Before re-dispatching, answer this question out loud in the turn:** *"Is the new prompt a truer description of the same work, or the same description made to sound safer?"* Only the first is permitted. **If you cannot name a specific factual inaccuracy in the original prompt, there is no correction to make** — go to step 3 and hand back. "The classifier was probably being over-cautious" is not a factual inaccuracy.
+
+### 2b. What is forbidden — this is the load-bearing half of the rule
+
+The tempting default under a denial is to keep rewording until it gets through. **That is precisely the bypass the classifier exists to prevent**, and it is forbidden without exception:
+
+- **Do NOT iterate prompt wording against the classifier.** No A/B-ing phrasings, no dropping a word to see if it passes, no incremental rewording across attempts. One correction, evaluated once. A dispatch loop that learns *"launder the prompt until the classifier allows it"* has defeated the harness's safety boundary, and it would do so on **every** future dispatch, not just this one.
+- **Do NOT soften, hedge, or euphemize.** Removing the word "permissions" from a prompt whose work genuinely *does* change permissions is laundering, not correcting.
+- **Do NOT re-dispatch when the work genuinely requires the denied capability.** If the worker really will write `.claude/settings.json`, really will modify `.github/workflows/`, really will touch a live secret — the prompt was **accurate** and the classifier was **right**. There is nothing to correct; spending the one reframe here is the failure mode. Hand back immediately (step 3). This is the same structural call the [pre-scope Detector 1 / Detector 2](./setup/06-scope-preflight.md#6-initial-scope-pre-flight) defers make *before* dispatch — a denial here is the late-catching backstop for an issue those detectors didn't pre-empt.
+- **Do NOT route around the denial.** Not by swapping `subagent_type`, not by splitting the work into smaller dispatches to slip each past the classifier, not by doing the work inline on the orchestrator thread ([inline-trivial.md](./inline-trivial.md) is for genuinely trivial work picked *before* any dispatch — it is never a denial-recovery path), not by any other synonym. **Classifier policy targets *effects*, not tool names or agent names**; routing around a deny is the same policy violation as retrying it.
+
+### 3. On a second denial: STOP. Hand back to the human. Never a third attempt.
+
+If the corrected dispatch is *also* denied, the denial is not about phrasing — stop.
+
+1. Record the second denial in `dispatch_denials` with `attempt: 2, outcome: "handed-back"`.
+2. Remove the target from this session's dispatch queues (`ready_issues` / `raw_backlog` / `failed_prs` / `divert_queue` as applicable) and add it to a session-local **do-not-redispatch** set so step C's lightweight backlog re-check cannot re-append it and re-deny in a loop.
+3. **For an issue target** (`issue-work` / `investigate` mode), apply `needs-human-review` — the label class for "no automated path exists" ([#521](https://github.com/mattsears18/shipyard/issues/521)) — and post **one** comment stating the *fact and the outcome only*:
+
+   > Automated worker dispatch against this issue was denied by the Claude Code permission classifier on both permitted attempts (an accurate re-scope of the dispatch prompt was tried once and also denied). Handing back for human review — the work needs a human to run it, or the dispatch needs a permission decision. See the `/shipyard:do-work` session summary for the denial text.
+
+   **The comment must NOT quote, paraphrase, explain, or theorize about the classifier's reasoning, and must NOT argue the denial was wrong.** Same content-integrity boundary the worker operates under (`shipyard:worker-preamble` § "After a classifier denial"): a public GitHub artifact carrying a fabricated or reconstructed explanation of a harness decision is a side-channel a future worker, reviewer, or scraper could read as authoritative. The verbatim `denial_text` stays **local** — the end-of-session summary and the on-disk HTML report, which only the user reads.
+4. **For a synthetic divert target** (`fix-main-ci` / `fix-failing-prs-batch`) there is no issue to label. Drop the `divert_queue` entry, suppress re-enqueue of that diversion for the rest of the session, and surface it in the summary.
+5. **Do NOT file a follow-up issue arguing the denial was wrong.** Relaxing classifier policy is a maintainer decision, not an orchestrator one. The user makes it after seeing the `Dispatch denied:` line.
+
+### 4. The slot does not stay silently empty
+
+A denial consumes a *candidate*, not the *slot*. In the same turn, continue down the dispatch rules and fill the slot with the **next** compatible candidate. Only when no other candidate exists does the slot park — and then step E's `idle_reason` must name the denial concretely, e.g.:
+
+```
+idle_reason="dispatch denied by permission classifier — #<N> handed back (needs-human-review), no other candidate"
+```
+
+A denial is never a valid reason to end the turn without either a dispatch or a structured idle-proof; the [step C mandatory-action contract](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) is unchanged by it.
