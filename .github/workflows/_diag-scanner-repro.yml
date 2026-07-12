@@ -1,7 +1,8 @@
 name: _diag-scanner-repro
 
 on:
-  workflow_dispatch:
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -10,10 +11,12 @@ jobs:
   repro:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (depth 1, mirrors tests.yml)
+      - name: Checkout this PR's own workflow file (shallow, arbitrary)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
 
-      - name: Diagnose scanner behavior
+      - name: Manually replicate the real push-to-main checkout, then diagnose
         shell: bash
         run: |
           set -euo pipefail
@@ -21,6 +24,13 @@ jobs:
           bash --version | head -1
           echo "=== git version ==="
           git --version
+
+          rm -rf /tmp/repro && mkdir -p /tmp/repro && cd /tmp/repro
+          git init -q
+          git remote add origin https://github.com/mattsears18/shipyard.git
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +2ebca1b80e278ea9ecc5caf005a7256c0b0c844d:refs/remotes/origin/main
+          git checkout --progress --force -B main refs/remotes/origin/main
+
           echo "=== refs ==="
           git for-each-ref
           echo "=== origin/HEAD resolve ==="
@@ -31,12 +41,14 @@ jobs:
           git rev-parse --verify HEAD~1 2>&1 || echo "FAILED"
           echo "=== merge-base HEAD origin/main ==="
           git merge-base HEAD origin/main 2>&1 || echo "FAILED rc=$?"
+
           echo "=== running scanner (no args), full output, no suppression ==="
           set +e
           bash plugins/shipyard/scripts/changelog-monotonicity-scan.sh
           rc=$?
           set -e
           echo "=== scanner exit code: $rc ==="
+
           echo "=== now inside the test file's own invocation style (bash \"\$t\") ==="
           set +e
           bash plugins/shipyard/scripts/tests/changelog-monotonicity-scan.test.sh
