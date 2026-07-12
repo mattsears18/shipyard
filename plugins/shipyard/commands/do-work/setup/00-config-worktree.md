@@ -487,7 +487,27 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
       if [ -z "$open_pr" ]; then
         (cd "$path" && gh pr create --repo <owner/repo> --fill --label shipyard 2>/dev/null) || true
         pr_num=$(gh pr list --repo <owner/repo> --head "$branch" --json number --jq '.[0].number' 2>/dev/null)
-        [ -n "$pr_num" ] && gh pr merge "$pr_num" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true
+        # #720: gate the arm behind the ungated-merge detector. This PR is a
+        # PRIOR session's orphaned branch, opened with `--fill` — nothing in this
+        # session ever reviewed its diff. On an ungated repo `--auto` is not a
+        # queue; it direct-merges that unreviewed work immediately, and the
+        # `2>/dev/null || true` makes it silent. Fail-safe: an unreadable verdict
+        # resolves to `ungated` (defer), never to an immediate merge.
+        if [ -n "$pr_num" ]; then
+          verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" \
+            <owner/repo> 2>/dev/null || echo ungated)
+          if [ "$verdict" = "gated" ]; then
+            gh pr merge "$pr_num" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true
+          else
+            # Leave OPEN + unarmed. The PR carries `--label shipyard` (above),
+            # which is exactly the label drain's deferred-merge lander keys on —
+            # so it gets merged on the first poll its checks are green, with no
+            # `session_prs` plumbing needed. Do NOT block on `gh pr checks
+            # --watch` here: this runs in setup's background cleanup group and a
+            # block would stall session start, once per orphan.
+            echo "[setup-3c] PR #${pr_num} left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
+          fi
+        fi
       fi
     fi
   done

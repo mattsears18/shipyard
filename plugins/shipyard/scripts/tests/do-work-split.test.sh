@@ -877,12 +877,25 @@ assert_contains "$setup_path" \
 #       #438 gate only checked allow_auto_merge==false; on a repo with
 #       allow_auto_merge=true but no required checks, an admin's --auto still
 #       direct-merges immediately and version coordination breaks silently.
+#
+#       As of #720 step 1.3 no longer RE-IMPLEMENTS that rule inline — it used
+#       to carry a ~55-line bash copy (its own `required_checks_count` variable,
+#       its own #479 normalize, its own #645 ruleset fallback), which was a THIRD
+#       copy of the condition alongside the worker-preamble fragment and
+#       issue-work.md. That is exactly the drift hazard #716 was filed for. The
+#       rule now lives in ONE executable script and step 1.3 calls it.
+#
+#       So the assertion is now on DELEGATION, not on re-derivation. Asserting
+#       `required_checks_count` here would actively pin the duplicated-logic
+#       architecture that #720 removed (and would contradict section (H) of
+#       ungated-merge-gate-reachability.test.sh, which asserts that variable is
+#       ABSENT from this file).
 assert_contains "$setup_path" \
   'required_status_checks' \
-  "setup.md step 1.3 reads the default branch's required_status_checks (#465)"
+  "setup.md step 1.3 still names required_status_checks (#465 shape) in its prose"
 assert_contains "$setup_path" \
-  'required_checks_count' \
-  "setup.md step 1.3 gates on the required-checks count for the #465 case"
+  'detect-ungated-admin-direct-merge.sh' \
+  "setup.md step 1.3 DELEGATES the two-shape rule to the one detector script (#720)"
 assert_contains "$setup_path" \
   'issues/465' \
   "setup.md step 1.3 cites issue #465 as the source of the broadened gate"

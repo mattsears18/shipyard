@@ -82,14 +82,35 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
    ```
    No `Closes #N` — this is a synthetic divert. The `--label shipyard` is required by the worker-preamble skill.
 
-7. **Enable auto-merge, snapshot, return.** Follow the auto-merge + snapshot + return pattern from the worker-preamble skill:
+7. **Enable auto-merge, snapshot, return.** Follow the auto-merge + snapshot + return pattern from the worker-preamble skill.
+
+   **7.a — Run the ungated-admin-direct-merge pre-check FIRST, before any merge call ([#720](https://github.com/mattsears18/shipyard/issues/720)).** Do not type `gh pr merge` until this has returned. On repo shapes where `gh pr merge --auto` does **not** queue behind CI, it falls through to an *immediate direct merge* — landing your source-fix while its own checks are still `IN_PROGRESS`. That is especially bad in this mode: your fix is the intended remedy for a ≥10-PR red pileup, so if it lands unverified and is wrong it doesn't just red `main` — it deepens the very pileup you were dispatched to clear. The condition is a **script, not a rule for you to re-derive** — do not reason about `allow_auto_merge` yourself:
+
+   ```bash
+   VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+   ```
+
+   - **`VERDICT == "ungated"`** → **do NOT run `gh pr merge --auto`.** Re-create the missing merge gate by hand: block on the PR's own checks, then merge only if they settle green. This is the one case where this mode DOES `--watch` (it self-heartbeats on every tick, so it's watchdog-safe), and the block is affordable precisely because you own a dispatch slot — the orchestrator's loop is not waiting on your turn:
+
+     ```bash
+     gh pr checks <pr-num> --repo <owner/repo> --watch --interval 30
+     ```
+
+     - Checks settle **green** → merge now: `gh pr merge <pr-num> --repo <owner/repo> --merge --delete-branch` (use the repo's configured merge method).
+     - Checks settle **red** → do NOT merge. Return the step-8 string with `checks: failing` so the orchestrator's triage dispatches a fix-checks-only worker against the PR. Do NOT run the fix-loop inline — that's mode-switching, which this file forbids.
+
+   - **`VERDICT == "gated"`** → `--auto` genuinely queues behind CI. Arm it normally (7.b).
+
+   **7.b — Arm auto-merge (only when 7.a returned `gated`), then snapshot:**
 
    ```bash
    gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
    gh pr view <pr-num> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus
    ```
 
-   Synthetic diverts have no `originating_author_trust` field — always arm auto-merge directly; never gate on trust.
+   Categorize the snapshot per `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" (fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md)) — including the `merged-direct` → `merged-direct-ungated` refinement, which is the defense-in-depth backstop for a 7.a misprediction.
+
+   Synthetic diverts have no `originating_author_trust` field — never gate on trust. But **do** gate on 7.a: the trust gate and the ungated-merge gate are orthogonal, and skipping the latter is what [#720](https://github.com/mattsears18/shipyard/issues/720) exists to prevent.
 
 8. **Return one line** — synchronously, after the work reaches its real end state. Per `shipyard:worker-preamble` § "Return-contract discipline" ([#529](https://github.com/mattsears18/shipyard/issues/529)), do NOT arm a `run_in_background` process / `Monitor` / background-waiter and return a non-terminal narrative (e.g. *"I'll wait for the notification"*) before it resolves — that reports the dispatch complete while the work is stranded. Block your own turn on the foreground command if you must wait, then return exactly one of:
    - `shipped pr-batch-fix via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
@@ -109,4 +130,5 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
 - Don't try to fix all failures in one PR. Pick the single shared root cause and fix it; the rebase cascade takes care of the rest.
 - Don't ship a fix without sampling at least 2-3 representative PRs. A "fix" derived from one PR's log is just a fix-checks-only dispatch in disguise — and not even a particularly well-scoped one. The whole point of the batch dispatch is the cross-PR pattern.
 - Don't expand scope. Re-pin a dep, update a snapshot baseline, fix a fixture, repair a CI config — those are the right shapes. If your "fix" is touching 20 files across multiple modules, you've misdiagnosed.
-- Don't `--watch` checks. Snapshot once and return; orchestrator triage owns failure recovery.
+- Don't `--watch` checks — **except** on the step-7.a `ungated` branch, which is the one sanctioned `--watch` in this mode (it re-creates the merge gate the repo lacks). Outside that branch: snapshot once and return; orchestrator triage owns failure recovery.
+- **Don't arm `--auto` without running the step-7.a detector first.** On an ungated repo shape `--auto` is not a queue — it's an immediate merge, and it will land your unverified batch fix on `main`, deepening the pileup you were dispatched to clear ([#720](https://github.com/mattsears18/shipyard/issues/720)).

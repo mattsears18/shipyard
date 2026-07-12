@@ -579,16 +579,24 @@ Never infer "release PR" from a version bump *inside a feature PR* — on this r
 - The author is **push-capable / in `trust.authors`** (the repo owner, a vetted collaborator), OR a **trusted release bot** the repo lists in `trust.authors` (e.g. `github-actions[bot]`, `release-please[bot]`). Release bots are the common case and are exactly why they must be *explicitly* trusted rather than auto-cleared — a release PR opened by an *untrusted* actor (a fork bot, a stranger who titled their PR `chore: release` to smuggle a merge) is **never** armed. Resolve trust the same way issue-work step 6 does when the field is absent: `repos/{owner}/{repo}/collaborators/{author}/permission` → `admin`/`maintain`/`write` ⇒ trusted, anything else ⇒ external.
 - When the release PR's author is **external**, do NOT arm — label it `needs-human-review` and comment (same treatment as an external-author feature PR), then continue. The release still lands, but a human signs off on the merge. The standing-authority grant covers *trusted* release authorship, not a bypass of the external-author defense-in-depth.
 
-**Arming.** For a trusted release PR not already armed this session:
+**Arming.** For a trusted release PR not already armed this session, branch on the drain-entry `merge_gating` verdict ([#720](https://github.com/mattsears18/shipyard/issues/720) — read once at drain entry per the [deferred-merge lander](#deferred-merge-lander-merge-unarmed-green-session-prs--720) below; do NOT re-probe per poll):
 
 ```bash
-# Arm auto-merge with the repo's release merge method (release-please repos
-# typically squash; a plain release-bump PR merges). Respect the same
-# admin-direct-merge pre-check the workers use (worker-preamble auto-merge.md
-# step 0.5) so an ungated direct-merge on a no-required-checks repo blocks on
-# `gh pr checks <M> --watch` first rather than landing before CI.
-gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch
+if [ "$merge_gating" = "gated" ]; then
+  # `--auto` genuinely queues behind CI. Arm it with the repo's release merge
+  # method (release-please repos typically squash; a plain release-bump PR merges).
+  gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch
+else
+  # UNGATED: `--auto` would direct-merge this release PR immediately, before its
+  # own CI completes — publishing an unverified release. Leave it OPEN and
+  # unarmed; the deferred-merge lander merges it on the first poll its checks are
+  # green. Do NOT block on `gh pr checks --watch` here: this runs on the
+  # orchestrator's turn and would stall the drain loop for every other PR.
+  echo "[release-train] PR #<M> left unarmed (ungated repo) — deferred to the merge lander (#720)"
+fi
 ```
+
+The ungated branch is not a downgrade: on such a repo `--auto` was never a queue, so "arm it" and "merge it when green" are the same statement — the lander just runs the queue on drain's poll instead of GitHub's. A release PR is the *last* thing that should merge unverified: it cuts a version and, on repos with a deploy pipeline, ships it.
 
 Add `<M>` to `session_prs` (deduped) so the existing drain termination machinery watches it to merged, exactly like any other session PR — it participates in `P_settled` / `head_unchanged_since` / the `max_drain_hours` ceiling with no special-casing. Log `[release-train] armed auto-merge on release PR #<M> (author <login>, trusted); watching to merged→deploy (#663)`.
 
@@ -611,6 +619,45 @@ fi
 - **Deploy concluded FAILURE / TIMED_OUT** → surface it loudly in the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) as `release #<M> merged but deploy <workflow> failed — <conclusion>` and, if the failure is a systemic CI/infra shape rather than a code defect, file a follow-up issue against the **target repo** (same posture as the [systemic-CI-failure section](#when-drain-catches-a-systemic-ci-failure) below). Do NOT auto-retry the deploy from drain — a failed deploy is a human/operator decision (roll back, re-run, or fix-forward), not a fix-checks target.
 
 **Next release PR.** Once a release PR merges and its deploy settles (or there's no deploy), the sweep's next poll picks up the **next** open release PR (release-please opens a fresh one as soon as new conventional commits land on the default branch). It arms that one under the same trust gate — so a session that merges several feature batches drives each successive release PR to merged without a human, one at a time. This is fire-and-forget and bounded by `max_drain_hours`: a release train that can't converge within the ceiling surfaces its still-open release PRs in the summary for the next session.
+
+### Deferred-merge lander (merge unarmed green session PRs — [#720](https://github.com/mattsears18/shipyard/issues/720))
+
+Closes the orchestrator-turn half of [#720](https://github.com/mattsears18/shipyard/issues/720). On an **ungated** repo shape (`gh pr merge --auto` doesn't queue — it direct-merges immediately; see [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh)), the four orchestrator-turn call sites that would otherwise arm `--auto` — [inline-trivial §E](./inline-trivial.md#e-arm-auto-merge), the [A.0.5 crash-recovery re-arm](./steady-state.md#a05-crash-return-detection--pre-reap-recovery), the [setup-3c orphan-recovery re-arm](./setup/00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch), and the [release-train sweep](#release-pr-auto-arming-and-deploy-watch-own-the-tail-phase-c--663) above — deliberately **leave the PR OPEN and unarmed** rather than merging it ungated. They cannot re-create the gate by blocking on `gh pr checks --watch` the way a worker does ([fix-main-ci step 7.a](../../agents/issue-worker/fix-main-ci.md), [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust)), because they run on the **orchestrator's own turn** — a multi-minute block there stalls the dispatch loop, every in-flight reconcile, and every other PR's progress.
+
+**This section is where those PRs actually land.** Without it, an unarmed PR would never merge and drain would spin until its ceiling — a hang strictly worse than the ungated merge it replaced. The lander is what makes "don't arm" a safe instruction rather than a leak.
+
+**The insight:** drain is *already* a poll loop over `session_prs`. On an ungated repo, "arm auto-merge" and "merge it when the checks go green" are the same statement — there is no queue to arm, so the queue is drain's own poll. Merging a **green** PR directly is not the #720 hazard; it is precisely correct (the [`merged-direct` + `checks: green` case](../../agents/issue-worker/issue-work.md#7-snapshot-check-state--auto-merge-state-then-return--dont-block-on-ci) the spec already calls "effectively gated. Informational."). The hazard is merging a **pending or failing** PR, which this action never does.
+
+**Engagement.** Read the verdict **once at drain entry** (a per-repo property — do NOT re-probe per poll):
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+merge_gating=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
+```
+
+The action is a **no-op when `merge_gating == "gated"`** (GitHub's real auto-merge queue owns the merge — never race it) and a no-op when `auto_merge.policy == never`.
+
+**Candidate set — precise, and deliberately narrow.** Drain's [open-PR query](#drain-protocol) already snapshots every open `@me` PR *with its labels*, so the lander needs no extra fetch. A PR is a candidate when **all** of these hold:
+
+| Condition | Why |
+|---|---|
+| Carries the **`shipyard`** label | The session stamp on every PR shipyard creates. This is the trust boundary: it admits session PRs *and* the [setup-3c orphan-recovery PR](./setup/00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) (which isn't in `session_prs` but is created `--label shipyard`), while **excluding the user's own hand-authored PRs** — never surprise-merge a human's work-in-progress. |
+| `autoMergeRequest == null` (unarmed) | An armed PR is GitHub's to merge. Never race a real auto-merge queue. |
+| **Not** labeled `needs-human-review` | The PR was left unarmed as a **trust/review gate**, not for the ungated-repo reason. The lander must never launder a trust gate into a merge. |
+| **Not** labeled `blocked:ci` | Circuit-breaker already tripped; a human owns it. |
+| Latest-run-per-check rollup is **green** | The whole point — this *is* the CI gate. |
+
+**Per-poll action (runs last, after the per-poll actions, the merge-gate action, and the release-train sweep).** When `merge_gating == "ungated"`, for each candidate:
+
+- Rollup **green** (all `SUCCESS`/`SKIPPED`/`NEUTRAL`, or no checks configured) → **merge it now**: `gh pr merge <M> --repo <owner/repo> --merge --delete-branch` (repo's configured merge method). Log `[drain] PR #<M> unarmed + green on ungated repo → direct-merged by deferred-merge lander (#720)`. The PR leaves `O` on the next snapshot and settles normally.
+- Rollup **failing** → do nothing here. The PR is already in `R_new` / `P_failing` and per-poll action 1 dispatches fix-checks against it; the lander picks it up on a later poll once it goes green.
+- Rollup **pending** → do nothing. Wait for a later poll. This is the queue behaving as a queue.
+
+Reuse the **exact** latest-run-per-check reduction from the [initial snapshot](#drain-protocol) (`group_by(.name) | map(sort_by(.completedAt // .startedAt // "") | last)`) — a stale `FAILURE` superseded by a later `SUCCESS` must not hold a mergeable PR open (issue [#333](https://github.com/mattsears18/shipyard/issues/333)).
+
+**The `needs-human-review` exclusion is load-bearing, not defensive boilerplate.** Every site that hands a PR to this lander declined to arm it *because the repo is ungated*. A **different** set of sites declines to arm *because the author is external* ([issue-work §6](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust), the release-train trust carve-out) — and those PRs are also open and unarmed, so without this exclusion the lander would merge them on green and silently defeat the external-author auto-merge gate. **Unarmed is not one state; it is two, and only one of them is the lander's.**
+
+**Drain exit with a still-unarmed PR.** If drain hits `settled_minutes` / `max_drain_hours` while an unarmed PR's checks are still pending, the PR stays OPEN and unmerged — nothing merges it after the session ends (on an ungated repo there is no queue to persist into; that is the premise). This is **correct and already-modeled**: it is exactly the [bounded-exit / incomplete](#end-of-session-drain) class from [#662](https://github.com/mattsears18/shipyard/issues/662), surfaced in the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) as unfinished tail and picked back up by the **next** `/do-work` run's drive-the-tail drain. Do **not** "just arm `--auto`" at drain exit as a last resort — that reintroduces the exact ungated merge this whole mechanism exists to prevent, at the one moment nobody is watching.
 
 ### When drain catches a systemic CI failure
 

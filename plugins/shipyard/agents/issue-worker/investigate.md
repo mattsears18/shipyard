@@ -108,7 +108,7 @@ The crash has a clear, in-scope code fix you can verify. From here, follow `issu
 - Run the pre-PR-create diff sanity check (`issue-work` § 4.5).
 - Commit + push + PR with `Closes #<N>` (`issue-work` § 5). **Remove `needs-triage`** in the same step: `gh issue edit <N> --repo <owner/repo> --remove-label needs-triage`.
 - Run the post-PR-create diff sanity check (§ 5.7) and the closing-link verification (§ 5.8).
-- Arm auto-merge gated on `originating_author_trust` (`issue-work` § 6) — `trusted` ⇒ `gh pr merge --auto`; `external` ⇒ `needs-human-review` + comment, no auto-merge.
+- Arm auto-merge gated on `originating_author_trust` (`issue-work` § 6) — `external` ⇒ `needs-human-review` + comment, no auto-merge. `trusted` ⇒ run [`issue-work` § 6.a](./issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust)'s ungated-admin-direct-merge pre-check **first**, then arm per § 6.b. The trust gate and the ungated-merge gate are **orthogonal**: `trusted` does NOT mean "type `gh pr merge --auto`" — on an ungated repo shape that call is an immediate merge, not a queue, and it would land your fix before its CI runs ([#720](https://github.com/mattsears18/shipyard/issues/720)). Never re-derive the condition; call [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh).
 - Snapshot auto-merge + check state (`issue-work` § 7).
 
 Return per step 5 below: `investigated+fixed #<N> via PR #<M> (auto-merge: <...>, checks: <...>)`.
