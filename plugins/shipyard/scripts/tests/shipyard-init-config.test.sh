@@ -111,6 +111,35 @@ assert_file_contains "$init_md" '--dry-run' "init.md documents --dry-run flag"
 assert_file_contains "$init_md" 'shipyard-config.sh' "init.md routes through shipyard-config.sh"
 
 # --------------------------------------------------------------------------
+# Issue #714 — /shipyard:init offers to pre-authorize the worktree-reap
+# commands in .claude/settings.json (opt-in, default off).
+#
+# These assertions pin the load-bearing properties of that offer:
+#   - the flags exist and are documented,
+#   - the exact allow rules are named (a typo'd rule is a silent no-op),
+#   - the default is OFF (an allow rule is a permission-surface change, so it
+#     must never be written without explicit consent),
+#   - the two caveats that make the rules honest are documented: the
+#     `.claude/worktrees` protected-path carve-out (the reason the rule works
+#     at all) and the script-internal-commands-aren't-gated nuance.
+echo "== /shipyard:init worktree-reap allowlist offer (#714)"
+
+assert_file_contains "$init_md" '--reap-allowlist' "init.md documents --reap-allowlist flag"
+assert_file_contains "$init_md" '--reap-allowlist-scope' "init.md documents --reap-allowlist-scope flag"
+# Needles are matched with `grep -qF` (fixed string) — write them literally,
+# with no regex metacharacters and no backslash escapes.
+assert_file_contains "$init_md" 'Bash(git worktree remove:*)' "init.md names the worktree-remove allow rule"
+assert_file_contains "$init_md" 'Bash(git worktree prune:*)' "init.md names the worktree-prune allow rule"
+assert_file_contains "$init_md" 'Bash(git worktree unlock:*)' "init.md names the worktree-unlock allow rule"
+assert_file_contains "$init_md" 'permissions.allow' "init.md targets the permissions.allow block"
+assert_file_contains "$init_md" 'never write the allow rules without explicit consent' "init.md requires explicit consent before widening the permission surface"
+assert_file_contains "$init_md" '.claude/worktrees' "init.md documents the .claude/worktrees protected-path carve-out"
+
+# The deny block is a hard-bypass guard (--no-verify et al). The reap-allowlist
+# install path must never touch it — only ever append to `allow`.
+assert_file_contains "$init_md" 'permissions.deny' "init.md forbids the install path from touching permissions.deny"
+
+# --------------------------------------------------------------------------
 echo "== /shipyard:config command file"
 
 config_md="$repo_root/plugins/shipyard/commands/config.md"
