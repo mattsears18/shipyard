@@ -50,10 +50,17 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    # (#282) already removed mid-session are skipped silently (no line).
    targeted_reaped=0
    targeted_deferred=0
+   # Issue #712 — `unreaped:` is emitted when the removal was ATTEMPTED but the
+   # worktree is still on disk afterwards (auto-mode permission denial, dirty
+   # tree carrying unpushed commits, filesystem error). The helper reports the
+   # verified end state rather than its intent, so this counter is never
+   # inflated by a reap that didn't happen.
+   targeted_unreaped=0
    while IFS= read -r status_line; do
      case "$status_line" in
        reaped:*)   targeted_reaped=$((targeted_reaped + 1)) ;;
        deferred:*) targeted_deferred=$((targeted_deferred + 1)) ;;
+       unreaped:*) targeted_unreaped=$((targeted_unreaped + 1)) ;;
      esac
    done < <(
      printf '%s\n' "${session_agent_ids[@]}" \
@@ -63,7 +70,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    )
    ```
 
-   `session_agent_ids` is the deduplicated list `reconciled_agent_ids ∪ { in_flight.*.agent_id }` from [orchestrator state](../do-work.md#orchestrator-state). Fold `targeted_reaped` into the `reaped_worktrees` total and `targeted_deferred` into `deferred_live` for the summary — the generic sweep below (step 3.1) is now the **straggler** pass: it sweeps anything the targeted pass didn't already reap (cross-session leftovers, and — defensively — any this-session worktree whose id wasn't in `session_agent_ids`). Running it second means a stall in the generic loop no longer strands this session's own work, because that work is already gone.
+   `session_agent_ids` is the deduplicated list `reconciled_agent_ids ∪ { in_flight.*.agent_id }` from [orchestrator state](../do-work.md#orchestrator-state). Fold `targeted_reaped` into the `reaped_worktrees` total, `targeted_deferred` into `deferred_live`, and `targeted_unreaped` into the step 5.5 `unreaped_worktrees` advisory ([#712](https://github.com/mattsears18/shipyard/issues/712)) for the summary — the generic sweep below (step 3.1) is now the **straggler** pass: it sweeps anything the targeted pass didn't already reap (cross-session leftovers, and — defensively — any this-session worktree whose id wasn't in `session_agent_ids`). Running it second means a stall in the generic loop no longer strands this session's own work, because that work is already gone.
 
    **3.1. Generic sweep — the straggler + safety-net pass.** Now iterate the remaining `.git/worktrees/agent-*`. The `self-ancestor` case is load-bearing: the Claude Code harness writes the **orchestrator's** PID into every dispatched agent's lock file (lock content is literally `claude agent <agent-id> (pid <orchestrator-pid>)`), so at end-of-session cleanup the lock PID is alive by definition — it's the process running cleanup. A strict liveness check would defer every worktree the orchestrator itself owns (see [issue #138](https://github.com/mattsears18/shipyard/issues/138)). `self-ancestor` means the lock PID is the declared orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`, set below from `detect-orchestrator-pid`'s ancestor walk) OR is in our own process ancestor chain — not a peer agent, just the orchestrator about to retire its own worktree. Safe to reap. The env-var declaration was added in [issue #263](https://github.com/mattsears18/shipyard/issues/263) because the ancestor-walk path from #138 mis-classifies whenever an intermediate harness layer returns empty PPID. See [RATIONALE → Liveness check at shutdown](../do-work-RATIONALE.md#end-of-session-cleanup--why-the-orchestrator-worktree-is-reaped-last):
 
@@ -176,7 +183,38 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    git worktree prune
    ```
 
-Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, and `<deferred_live>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b. A non-zero `<deferred_live>` is a signal worth surfacing — it means an agent was still running when end-of-session cleanup fired (termination declared too early). The worktree survives so the next session's step 3b sweep can finish reaping once the PID is actually dead.
+5.5. **Verify the reaps actually happened — never silent-degrade ([#712](https://github.com/mattsears18/shipyard/issues/712)).** Every reap above is fire-and-forget (`2>/dev/null || true`) inside a background subshell, so a reap that *doesn't happen* produces no signal. The failure mode this closes: in Claude Code's **auto permission mode** the classifier denies `git worktree remove --force` outright —
+
+   > Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Irreversible Local Destruction] `git worktree remove --force` on five pre-existing worktrees … this destroys uncommitted work and unmerged commits that exist nowhere else.
+
+   — and because the denial kills the whole Bash tool call, **no reap-audit line is ever written**. Nothing inside the reap path can observe it. The #712 repro accumulated five stale worktrees on one repo, every one of them the residue of an *already-merged* PR, and the count only grew because each session's reap was denied the same way and nobody noticed.
+
+   The only mechanism that catches this is an independent, after-the-fact probe of the filesystem — assert on the **end state**, not on any step's exit code. That uniformly covers a classifier denial, a git failure, the force-evidence gate declining, and a sweep that never ran:
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+   unreaped_worktrees=0
+   while IFS= read -r leftover_path; do
+     [ -z "$leftover_path" ] && continue
+     unreaped_worktrees=$((unreaped_worktrees + 1))
+   done < <(
+     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" report-unreaped \
+       --repo-root "$(git rev-parse --show-toplevel)" \
+       --current-session-id "<session-id>"
+   )
+   ```
+
+   `report-unreaped` excludes this session's own `orchestrator-<session-id>` worktree (still live — it's reaped last, in step 6) and the `*.reap-dead-*` scratch dirs the [#664](https://github.com/mattsears18/shipyard/issues/664) fast path has already renamed aside (registration pruned, branch freed, background unlink in flight). Everything else it emits is a genuine leftover.
+
+   **When `unreaped_worktrees > 0`, say so and say what to do about it.** Add the advisory line to the [End-of-session summary](#end-of-session-summary) — the count alone is a mystery; the count plus the one command that fixes it is actionable:
+
+   ```
+   Cleanup: <unreaped_worktrees> worktree(s) could not be reaped (permission denied or dirty) — run /clean_gone
+   ```
+
+   Omit the line entirely when the count is 0 (the normal case — no noise). **If a cleanup Bash call was denied by the permission classifier during this session, do NOT swallow it either**: the denial is visible to you in the tool result even though it never reached the helper, so fold it into the same advisory rather than proceeding as if cleanup succeeded. Per `shipyard:worker-preamble` § "After a classifier denial", do not retry the denied command through a workaround and do not argue the denial — surface the leftover count and the `/clean_gone` remediation, and move on.
+
+Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<deferred_live>`, and `<unreaped_worktrees>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b. A non-zero `<deferred_live>` is a signal worth surfacing — it means an agent was still running when end-of-session cleanup fired (termination declared too early). The worktree survives so the next session's step 3b sweep can finish reaping once the PID is actually dead.
 
 6. **Reap the orchestrator's own worktree — last, after the summary prints.** The orchestrator worktree (`.claude/worktrees/orchestrator-<session-id>`) is still around because the orchestrator was running inside it. After the [End-of-session summary](#end-of-session-summary) prints — and only then; you can't remove the worktree you're still cwd'd into — jump back to the user's primary checkout (read-only at this point), then unlock + force-remove:
 
@@ -187,11 +225,17 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, an
 
    cd "$PRIMARY_ABS"
    git worktree unlock "$ORCH_WT_ABS" 2>/dev/null
-   git worktree remove --force "$ORCH_WT_ABS" 2>/dev/null
+   # Issue #712 — non-force FIRST. The orchestrator worktree is normally clean
+   # (the orchestrator commits nothing into it), so the plain remove succeeds and
+   # the destructive-looking `--force` never has to be typed at all. Escalate
+   # only when the plain remove refuses, which means the tree is dirty — itself a
+   # bug worth surfacing.
+   git worktree remove "$ORCH_WT_ABS" 2>/dev/null \
+     || git worktree remove --force "$ORCH_WT_ABS" 2>/dev/null
    git worktree prune
    ```
 
-   `git worktree remove` only modifies shared `.git/worktrees/` metadata — the primary's HEAD never moves. If the remove fails (e.g., uncommitted orchestrator edits — itself a bug), surface that in the summary as `orchestrator worktree NOT reaped: <reason>` and leave it for next session's step 3b sweep.
+   `git worktree remove` only modifies shared `.git/worktrees/` metadata — the primary's HEAD never moves. If the remove fails (e.g., uncommitted orchestrator edits — itself a bug; or an auto-mode permission denial per [#712](https://github.com/mattsears18/shipyard/issues/712)), surface that in the summary as `orchestrator worktree NOT reaped: <reason>` and leave it for next session's step 3b sweep.
 
 7. **Flush the session's token data to the persistent cross-session ledger** — before the session file is deleted, append its rolled-up record to `~/.shipyard/cost-history.jsonl` so it survives into the next session's reports ([issue #163](https://github.com/mattsears18/shipyard/issues/163)):
 
@@ -293,6 +337,7 @@ Final repo health: main:<emoji> · failing PRs (all authors): <m>
 fix-main-ci flake escalations (#589): <sig1> (<attempts> fix attempts, each green-on-PR/red-on-merge), <sig2> (...)
 Reaped from prior sessions: <reaped_stale> stale agent worktrees (dead-PID locks); <deferred_stale> live-PID worktrees left for the owning Claude Code instance
 Cleaned up this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches, <reaped_orphan_branches> orphan worktree-agent-* branch refs; <deferred_live> still-running agent worktrees deferred (next session will sweep)
+Cleanup: <unreaped_worktrees> worktree(s) could not be reaped (permission denied or dirty) — run /clean_gone   ← omit this line entirely when <unreaped_worktrees> == 0 (#712)
 Primary-checkout leaks (#387): <primary_leak_restores> restored to <default-branch>, <primary_leak_dirty_skips> skipped (primary was dirty — needs manual restore)
 Remaining open (non-candidate): L (linked PRs, blocked, assigned elsewhere)
 Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
@@ -496,6 +541,7 @@ Writing to shipyard's own home directory (`~/.shipyard/do-work-reports/`, alongs
            <li>Reaped this session: <reaped_worktrees> agent worktrees, <reaped_branches> [gone] branches, <reaped_orphan_branches> orphan worktree-agent-* branch refs</li>
            <li>Deferred (still-running PIDs): <deferred_live></li>
            <li>Reaped from prior sessions: <reaped_stale> stale worktrees; <deferred_stale> live-PID worktrees left for the owning Claude Code instance</li>
+           <li>Could NOT be reaped (permission denied or dirty): <unreaped_worktrees> — run <code>/clean_gone</code> (omit this <code>&lt;li&gt;</code> entirely when the count is 0; issue #712)</li>
            <li>Final <code>git worktree list</code> shape: <n> worktrees (primary + orchestrator + <m> agent worktrees deferred)</li>
          </ul>
        </section>

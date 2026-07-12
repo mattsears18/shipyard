@@ -306,9 +306,10 @@
 #     Exit codes:
 #       0  audit-log line written. The reap operation may have succeeded
 #          OR the worktree-remove may have failed — for orphan-orchestrator
-#          the helper falls back to rm -rf; for reaped/deferred a failed
-#          remove still emits the audit line (the caller decides whether
-#          to log success or not). Exit 0 means the audit-line write
+#          the helper falls back to rm -rf and emits the `-raw-rm` /
+#          `-failed` action variant; for `reaped` a failed remove emits the
+#          `reaped-failed` variant with a `reason` (issue #712 — the failure
+#          is recorded, never swallowed). Exit 0 means the audit-line write
 #          itself was attempted; an actual write failure on the JSONL
 #          file (permissions, full disk) is fire-and-forget.
 #       64 bad usage (missing required flag, unknown action, invalid
@@ -333,13 +334,15 @@ Usage:
   worktree-reap.sh reap-session-worktrees --repo-root <path> \
                                           --session-id <id> \
                                           [--agent-id <id> ...] [--dry-run]
+  worktree-reap.sh report-unreaped --repo-root <path> \
+                                   [--current-session-id <id>]
   worktree-reap.sh reap --action <reaped|deferred|reaped-orphan-orchestrator> \
                         --worktree-path <path> --worktree-name <name> \
                         --session-id <id> [--actor-pid <pid>] \
                         [--classification <c>] [--reason <r>] \
                         [--lock-pid <pid|null>] \
                         [--reaped-session-id <id>] [--phase <p>] \
-                        [--skip-remove]
+                        [--skip-remove] [--force-evidence <reason>]
 
 classify-lock — Prints one of: no-lock | dead | self-ancestor | peer-alive
 
@@ -385,7 +388,24 @@ reap-session-worktrees  — Issue #509. Targeted reap of THIS session's agent
                           no-lock/dead/self-ancestor, defers on peer-alive.
                           Emits reaped: agent-<id> / deferred: agent-<id>
                           per acted-upon agent-id. --dry-run skips removes
-                          and audit writes.
+                          and audit writes. Issue #712: a worktree whose
+                          removal did NOT happen emits `unreaped: agent-<id>`
+                          instead of `reaped:` — the status line reports the
+                          verified end state, not the intent.
+
+report-unreaped         — Issue #712. Post-sweep verification. Emits one
+                          absolute path per line for every agent-* /
+                          orchestrator-* worktree still on disk under
+                          <repo-root>/.claude/worktrees after the reap sweeps
+                          ran, excluding orchestrator-<current-session-id>
+                          (still live, reaped last) and *.reap-dead-* scratch
+                          dirs (already pruned; background unlink in flight).
+                          Empty stdout when everything was reaped. This is the
+                          ONLY mechanism that catches a reap denied by Claude
+                          Code's auto-mode permission classifier — the denial
+                          kills the whole Bash tool call, so no reap-audit line
+                          is ever written; only an after-the-fact filesystem
+                          probe can see it.
 
 reap                    — Performs the worktree-remove (when applicable)
                           and writes one append-only JSONL line to
@@ -393,12 +413,25 @@ reap                    — Performs the worktree-remove (when applicable)
                           outcome. Issue #284 single source of truth for
                           reap-audit writes — call sites no longer inline
                           the printf >> $REAP_AUDIT_LOG line.
+                          The remove escalates plain `git worktree remove`
+                          → evidence-gated `git worktree remove --force`
+                          (issue #712); `--force-evidence <reason>` lets a
+                          caller that already established force-safety (e.g.
+                          "no-commits-beyond-base") skip the re-derivation.
                           Actions:
                             reaped               — successful agent
                                                     worktree reap
                                                     (requires
                                                     --classification,
                                                     --lock-pid).
+                            reaped-failed        — issue #712. Emitted in
+                                                    place of `reaped` when
+                                                    the remove did NOT
+                                                    happen; carries a
+                                                    `reason` (
+                                                    unsafe-to-force-unpushed-work
+                                                    | worktree-remove-failed).
+                                                    Never swallowed.
                             deferred             — agent worktree reap
                                                     skipped (peer-alive)
                                                     (requires --reason,
@@ -860,6 +893,76 @@ find_orphan_orchestrators() {
   return 0
 }
 
+# Issue #712 — evidence gate for the `--force` escalation.
+#
+# `git worktree remove --force` reads — to a human, and to Claude Code's
+# auto-mode permission classifier — as irreversible local destruction: it
+# discards uncommitted work and unmerged commits that may exist nowhere else.
+# In auto permission mode the classifier DENIES the command outright
+# ("[Irreversible Local Destruction] ... this destroys uncommitted work and
+# unmerged commits that exist nowhere else"), which silently defeats the entire
+# reap subsystem — the #712 repro found five stale worktrees on one repo, every
+# one of them the residue of an already-merged PR.
+#
+# The mitigation is to make the command look as safe as it actually is: try the
+# plain, non-destructive `git worktree remove` first (git itself refuses it on a
+# dirty tree — exactly the safety property the classifier is protecting), and
+# only escalate to `--force` when a preceding, explicit check has established
+# that forcing destroys nothing that exists solely in this worktree.
+#
+# Force is safe when ANY of:
+#   (a) the caller passed positive evidence (`--force-evidence <reason>`) from a
+#       check it already performed — e.g. setup 3c's `rev-list --count
+#       origin/<default>..HEAD == 0` (no commits beyond base);
+#   (b) every commit reachable from HEAD already exists on a remote-tracking ref
+#       (`git branch -r --contains HEAD` is non-empty) — the work is on origin;
+#   (c) HEAD carries no commits beyond the default remote branch — nothing
+#       unique to lose.
+#
+# Anything else (dirty tree carrying unpushed commits) is NOT forced. The caller
+# records a `reaped-failed` audit line and leaves the worktree on disk for a
+# human — a surfaced leftover is strictly better than a silent destruction.
+#
+# Returns 0 (safe to force) / 1 (not safe).
+worktree_force_is_safe() {
+  local worktree_path="$1"
+  local evidence="${2:-}"
+
+  # (a) Caller-supplied evidence from a preceding, explicit check.
+  [ -n "$evidence" ] && return 0
+
+  # Not a readable git worktree at all (crash-orphan dir whose registration was
+  # already pruned). There is nothing for `git worktree remove` to operate on;
+  # the orphan-orchestrator caller escalates to `rm -rf` on its own rather than
+  # claiming force-safety here.
+  git -C "$worktree_path" rev-parse --git-dir >/dev/null 2>&1 || return 1
+
+  # (b) Every commit reachable from HEAD is already on a remote-tracking ref.
+  if [ -n "$(git -C "$worktree_path" branch -r --contains HEAD 2>/dev/null)" ]; then
+    return 0
+  fi
+
+  # (c) No commits beyond the default remote branch — nothing unique to lose.
+  local base=""
+  base="$(git -C "$worktree_path" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"
+  if [ -z "$base" ]; then
+    local cand
+    for cand in origin/main origin/master; do
+      if git -C "$worktree_path" rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then
+        base="$cand"
+        break
+      fi
+    done
+  fi
+  if [ -n "$base" ]; then
+    local ahead
+    ahead="$(git -C "$worktree_path" rev-list --count "${base}..HEAD" 2>/dev/null || echo 1)"
+    [ "$ahead" = "0" ] && return 0
+  fi
+
+  return 1
+}
+
 # Issue #664 — fast worktree-lock reap. `git worktree remove --force`
 # recursively unlinks the worktree directory *inline*, which stalls for many
 # seconds to minutes when the worktree carries a large `node_modules/` (tens
@@ -883,21 +986,42 @@ find_orphan_orchestrators() {
 #                                             it can't stall the caller)
 #
 # Steps 1-3 are synchronous and fast (a rename + a prune, independent of the
-# tree size); only the recursive unlink is backgrounded. Falls back to the
-# synchronous `git worktree remove --force` when the rename can't be performed
-# (path missing, cross-device mount, permission, race) so the reap still
-# completes on the slow path rather than silently skipping.
+# tree size); only the recursive unlink is backgrounded. Note the fast path
+# needs no `--force` at all — that matters for #712 (see below).
+#
+# Slow-path ladder (#712) — when the rename can't be performed (path missing,
+# cross-device mount, permission, race) the reap still has to complete, but it
+# escalates in order of increasing destructiveness:
+#   a. `git worktree remove <wt>`          (NO --force — git refuses on a dirty
+#                                           tree, which is the safety property
+#                                           the auto-mode permission classifier
+#                                           is protecting; it is also far more
+#                                           likely to read as reversible/safe)
+#   b. `git worktree remove --force <wt>`  ONLY when `worktree_force_is_safe`
+#                                           (or caller-supplied evidence) has
+#                                           established the force destroys
+#                                           nothing that exists only here.
+# When neither succeeds the directory survives and we return 1 — the caller
+# records the failure instead of silently swallowing it.
 #
 # Returns 0 when the directory is no longer at <worktree_path> (renamed away
 # or removed); returns 1 when the directory still exists after every attempt,
 # so callers that need a last-resort escalation (the orphan-orchestrator raw
-# rm -rf path) can detect the fast path declined.
+# rm -rf path) — or that need to record an unreaped worktree (#712) — can
+# detect that the fast path declined.
+#
+# Args: <worktree-path> [force-evidence]
+#   force-evidence — optional non-empty string naming a check the CALLER
+#                    already performed that establishes force-safety (e.g.
+#                    "no-commits-beyond-base"). Passed through to
+#                    worktree_force_is_safe.
 #
 # Pure bash + `git` — no jq/python, same as the rest of this helper. Runs in
 # the caller's cwd (which must be inside the target repo, exactly like the
 # bare `git worktree remove` it replaces).
 fast_worktree_remove() {
   local worktree_path="$1"
+  local force_evidence="${2:-}"
 
   # A locked worktree's registration is skipped by `git worktree prune`, so
   # the branch would stay held. Best-effort unlock first — a no-op for an
@@ -930,7 +1054,13 @@ fast_worktree_remove() {
   # Rename failed — fall back to the synchronous slow path so the reap still
   # happens, then prune to clean the registration either way. Report whether
   # the dir is actually gone so an orphan caller can escalate to rm -rf.
-  git worktree remove --force "$worktree_path" 2>/dev/null || true
+  #
+  # #712 ladder: plain remove FIRST (non-destructive; git refuses on a dirty
+  # tree), and escalate to --force only behind the evidence gate.
+  git worktree remove "$worktree_path" 2>/dev/null || true
+  if [ -e "$worktree_path" ] && worktree_force_is_safe "$worktree_path" "$force_evidence"; then
+    git worktree remove --force "$worktree_path" 2>/dev/null || true
+  fi
   git worktree prune 2>/dev/null || true
   [ ! -e "$worktree_path" ]
 }
@@ -973,6 +1103,11 @@ reap_action() {
   local reaped_session_id=""
   local phase=""
   local skip_remove=0
+  # Issue #712 — optional caller-supplied evidence that a `--force` escalation
+  # would destroy nothing (e.g. "no-commits-beyond-base" from setup 3c's
+  # rev-list check). Empty by default: the helper then derives force-safety
+  # itself via worktree_force_is_safe.
+  local force_evidence=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1059,6 +1194,14 @@ reap_action() {
         ;;
       --skip-remove)
         skip_remove=1
+        shift
+        ;;
+      --force-evidence)
+        force_evidence="${2:-}"
+        shift 2
+        ;;
+      --force-evidence=*)
+        force_evidence="${1#--force-evidence=}"
         shift
         ;;
       --)
@@ -1189,16 +1332,43 @@ reap_action() {
       fi
       # Perform the actual worktree remove unless the caller explicitly
       # asks us to skip (used when the caller has already removed it).
+      #
+      # Issue #712 — do NOT swallow a failed remove. The reap used to emit a
+      # `"action":"reaped"` audit line unconditionally (`fast_worktree_remove
+      # ... || true`), so a removal that never happened — denied by the
+      # auto-mode permission classifier, blocked by the force-evidence gate,
+      # or failed on a filesystem error — was indistinguishable from a
+      # successful one. Silent-degrade is what let worktrees accumulate to six
+      # unnoticed in the #712 repro. A failed remove now emits the
+      # `reaped-failed` action variant with a `reason`, so the audit log (and
+      # the end-of-session summary's unreaped count) surface it.
+      local reaped_ok=1
+      local failure_reason=""
       if [ "$skip_remove" -eq 0 ]; then
         # Fast reap (#664): unlock + rename-aside + prune frees the branch
         # lock immediately, and the expensive recursive delete is
         # backgrounded — so a large node_modules/ in the agent worktree can't
         # hang the remove and block fix-checks retries on the head branch.
-        # fast_worktree_remove falls back to `git worktree remove --force`
-        # internally when the rename can't be done.
-        fast_worktree_remove "$worktree_path" || true
+        # fast_worktree_remove falls back to a plain `git worktree remove`,
+        # then to an evidence-gated `--force`, when the rename can't be done.
+        if ! fast_worktree_remove "$worktree_path" "$force_evidence"; then
+          reaped_ok=0
+          if [ -e "$worktree_path" ] \
+             && ! worktree_force_is_safe "$worktree_path" "$force_evidence"; then
+            # The evidence gate declined the --force escalation: this worktree
+            # carries work (dirty tree + unpushed commits) that exists nowhere
+            # else. Leaving it on disk for a human is the correct outcome.
+            failure_reason="unsafe-to-force-unpushed-work"
+          else
+            failure_reason="worktree-remove-failed"
+          fi
+        fi
       fi
-      emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"reaped\",\"classification\":$(json_str "$classification"),\"lock_pid\":$lock_pid$phase_suffix}"
+      if [ "$reaped_ok" -eq 0 ]; then
+        emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"reaped-failed\",\"classification\":$(json_str "$classification"),\"reason\":$(json_str "$failure_reason"),\"lock_pid\":$lock_pid$phase_suffix}"
+      else
+        emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"reaped\",\"classification\":$(json_str "$classification"),\"lock_pid\":$lock_pid$phase_suffix}"
+      fi
       ;;
     deferred)
       if [ -z "$reason" ]; then
@@ -1543,19 +1713,128 @@ reap_session_worktrees() {
     fi
 
     # no-lock / dead / self-ancestor — safe to reap.
-    printf 'reaped: %s\n' "$name"
-    if [ "$dry_run" -eq 0 ]; then
-      reap_action \
-        --action reaped \
-        --worktree-path "$worktree_path" \
-        --worktree-name "$name" \
-        --session-id "$session_id" \
-        --classification "$classification" \
-        --phase "cleanup-session-targeted" \
-        --lock-pid "$lock_pid" \
-        >/dev/null 2>&1 || true
+    if [ "$dry_run" -eq 1 ]; then
+      printf 'reaped: %s\n' "$name"
+      continue
+    fi
+
+    reap_action \
+      --action reaped \
+      --worktree-path "$worktree_path" \
+      --worktree-name "$name" \
+      --session-id "$session_id" \
+      --classification "$classification" \
+      --phase "cleanup-session-targeted" \
+      --lock-pid "$lock_pid" \
+      >/dev/null 2>&1 || true
+
+    # Issue #712 — report what ACTUALLY happened, not what we intended. The
+    # status line used to print `reaped:` before the removal even ran, so a
+    # removal that failed still incremented the caller's reaped counter and
+    # the leftover worktree went unnoticed. Probe the path: still there ⇒
+    # `unreaped:`, which the end-of-session summary surfaces with the
+    # `/clean_gone` remediation.
+    if [ -e "$worktree_path" ]; then
+      printf 'unreaped: %s\n' "$name"
+    else
+      printf 'reaped: %s\n' "$name"
     fi
   done
+
+  return 0
+}
+
+# Issue #712 — post-sweep verification: which worktrees are STILL on disk?
+#
+# The reap sweeps are fire-and-forget (`2>/dev/null || true`) and run inside a
+# background subshell, so when a reap does not happen the orchestrator has no
+# signal. The most important non-happening is a **permission denial**: in Claude
+# Code's auto permission mode the classifier can refuse the whole Bash tool call
+# that carries the reap, so the helper never even runs and no `reaped-failed`
+# audit line is written. Nothing inside the reap path can observe that.
+#
+# The only mechanism that catches it is an independent, after-the-fact probe of
+# the filesystem: enumerate the worktree dirs that are still there once every
+# sweep has had its turn. That covers a classifier denial, a git failure, the
+# force-evidence gate declining, and a sweep that never ran at all — uniformly,
+# because it asserts on the end state rather than on any step's exit code.
+#
+# Emits one absolute path per line for each `agent-*` / `orchestrator-*`
+# directory still present under <repo-root>/.claude/worktrees, EXCLUDING:
+#   - the caller's own orchestrator worktree (`orchestrator-<current-session-id>`),
+#     which is still in use at summary time and is reaped last, and
+#   - `*.reap-dead-*` scratch dirs, which the #664 fast path has already renamed
+#     aside and is unlinking in the background (the branch is already freed).
+# Empty stdout (exit 0) when everything was reaped — the normal case.
+#
+# The caller counts the lines and, when the count is non-zero, surfaces
+# `Cleanup: <N> worktrees could not be reaped — run /clean_gone` in the
+# end-of-session summary rather than silently degrading.
+report_unreaped() {
+  local repo_root=""
+  local current_session_id=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --current-session-id)
+        current_session_id="${2:-}"
+        shift 2
+        ;;
+      --current-session-id=*)
+        current_session_id="${1#--current-session-id=}"
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "report-unreaped: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "report-unreaped: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "report-unreaped: --repo-root is required" >&2
+    return 64
+  fi
+
+  local wt_dir="$repo_root/.claude/worktrees"
+  [ -d "$wt_dir" ] || return 0
+
+  local path name
+  # `find` (not a bare glob) so an empty match is a no-op rather than a fatal
+  # `nomatch` under zsh — same rationale as setup step 3b (#335).
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    [ -d "$path" ] || continue
+    name="$(basename "$path")"
+    # Scratch dirs from the #664 rename-aside fast path: already reaped from
+    # git's point of view (registration pruned, branch freed); the recursive
+    # unlink is in flight. Not a leftover.
+    case "$name" in
+      *.reap-dead-*) continue ;;
+    esac
+    # Our own orchestrator worktree — still live, reaped last.
+    if [ -n "$current_session_id" ] \
+       && [ "$name" = "orchestrator-${current_session_id}" ]; then
+      continue
+    fi
+    printf '%s\n' "$path"
+  done < <(find "$wt_dir" -maxdepth 1 -mindepth 1 -type d \
+             \( -name 'agent-*' -o -name 'orchestrator-*' \) 2>/dev/null | sort)
 
   return 0
 }
@@ -1604,6 +1883,15 @@ main() {
       # reap_session_worktrees for the full algorithm.
       shift
       reap_session_worktrees "$@"
+      ;;
+    report-unreaped)
+      # Issue #712 — post-sweep verification. Enumerates the worktree dirs
+      # still on disk after every reap sweep has run, so a reap that never
+      # happened (auto-mode permission denial, git failure, force-evidence
+      # gate declining) surfaces in the end-of-session summary instead of
+      # silently degrading. See report_unreaped for the exclusion rules.
+      shift
+      report_unreaped "$@"
       ;;
     reap)
       # Issue #284 — single source of truth for reap-audit log writes.
