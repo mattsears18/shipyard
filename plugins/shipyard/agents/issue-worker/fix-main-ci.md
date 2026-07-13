@@ -91,7 +91,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
      gh pr checks <pr-num> --repo <owner/repo> --watch --interval 30
      ```
 
-     - Checks settle **green** → merge now: `gh pr merge <pr-num> --repo <owner/repo> --merge --delete-branch` (use the repo's configured merge method).
+     - Checks settle **green** → merge now: `gh pr merge <pr-num> --repo <owner/repo> --merge --delete-branch` (use the repo's configured merge method). **Report this in step 8 as `auto-merge: gated-manual` — never `merged-direct`** ([#734](https://github.com/mattsears18/shipyard/issues/734)); `merged-direct` names a different event (7.b's `--auto` call falling through unexpectedly) and this branch never calls `--auto`. Skip 7.b's categorization entirely — go straight to the step-8 return with `checks: green` (already confirmed by the `--watch` above).
      - Checks settle **red** → do NOT merge. Your fix did not work. Return the step-8 string with `checks: failing` so the orchestrator's triage dispatches a fix-checks-only worker against the PR. Do NOT run the fix-loop inline — that's mode-switching, which this file forbids.
 
    - **`VERDICT == "gated"`** → `--auto` genuinely queues behind CI. Arm it normally (7.b).
@@ -103,12 +103,13 @@ The single highest-leverage action is: identify the root cause and ship the smal
    gh pr view <pr-num> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus
    ```
 
-   Categorize the snapshot per `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" (fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md)) — including the `merged-direct` → `merged-direct-ungated` refinement, which is the defense-in-depth backstop for a 7.a misprediction.
+   Categorize the snapshot per `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" (fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md)) — including the `merged-direct` → `merged-direct-ungated` refinement, which is the defense-in-depth backstop for a 7.a misprediction. This categorization applies only on this `gated` branch — it never runs on the 7.a `ungated`/`gated-manual` branch above ([#734](https://github.com/mattsears18/shipyard/issues/734)).
 
    Synthetic diverts have no `originating_author_trust` field — they're not scoped to an issue author. Never gate on trust. But **do** gate on 7.a: the trust gate and the ungated-merge gate are orthogonal, and skipping the latter is what [#720](https://github.com/mattsears18/shipyard/issues/720) exists to prevent.
 
 8. **Return one line** — synchronously, after the work reaches its real end state. Per `shipyard:worker-preamble` § "Return-contract discipline" ([#529](https://github.com/mattsears18/shipyard/issues/529)), do NOT arm a `run_in_background` process / `Monitor` / background-waiter and return a non-terminal narrative (e.g. *"I'll wait for the notification"*) before it resolves — that reports the dispatch complete while the work is stranded. Block your own turn on the foreground command if you must wait, then return exactly one of:
    - `shipped main-ci-fix via PR #<M> (auto-merge: enabled, checks: <green|pending|failing>)`
+   - `shipped main-ci-fix via PR #<M> (auto-merge: gated-manual, checks: green)` — 7.a's detector returned `ungated`; you watched checks yourself and merged by hand (issue [#734](https://github.com/mattsears18/shipyard/issues/734)). This is the routine outcome on that branch, not an anomaly — never report it as `merged-direct`.
    - `noop: main already green` — pre-flight (step 1) found green.
    - `blocked main-ci-fix: <reason>` — structural failure or root cause requires human judgment.
 

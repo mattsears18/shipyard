@@ -411,5 +411,72 @@ else
 fi
 echo
 
+# ---------------------------------------------------------------------------
+# (I) #734 — the correct ungated-branch outcome (worker watches its own checks,
+#     then merges by hand) must report a token DISTINCT from `merged-direct`.
+#
+# `merged-direct` means gh's `--auto` call fell through to an immediate merge —
+# a detector misprediction, exactly the #716 regression shape. The step-0.5/
+# 7.a/6.a ungated branch never calls `--auto` at all; it's the worker's own
+# checks-watch-then-merge, a correct and routine outcome. Both leave a PR at
+# `state: MERGED` with `autoMergeRequest: null`, so `gh pr view`'s snapshot
+# alone can't distinguish them — the fix is a NEW token (`gated-manual`) that
+# every ungated-branch green-checks merge must report instead of reusing
+# `merged-direct`. Without this, a real #716-class regression (a `merged-direct`
+# reported after the detector said `gated`) is indistinguishable from routine,
+# correctly-gated behavior in the reconciler's eyes.
+# ---------------------------------------------------------------------------
+echo "(I) #734 — gated-manual is a distinct token from merged-direct on the worker ungated branch"
+
+FIX_MAIN_CI_MD734="$repo_root/plugins/shipyard/agents/issue-worker/fix-main-ci.md"
+FIX_PR_BATCH_MD734="$repo_root/plugins/shipyard/agents/issue-worker/fix-failing-prs-batch.md"
+INVESTIGATE_MD734="$repo_root/plugins/shipyard/agents/issue-worker/investigate.md"
+SKILL_MD734="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+
+for entry in \
+  "$AUTO_MERGE_MD|auto-merge.md" \
+  "$ISSUE_WORK_MD|issue-work.md" \
+  "$FIX_MAIN_CI_MD734|fix-main-ci.md" \
+  "$FIX_PR_BATCH_MD734|fix-failing-prs-batch.md" \
+  "$SKILL_MD734|SKILL.md"
+do
+  file="${entry%%|*}"; label="${entry##*|}"
+  assert_contains "$file" 'gated-manual' \
+    "$label names the gated-manual token (#734)"
+  assert_contains "$file" 'issues/734' \
+    "$label cites issue #734 as the source of the gated-manual disambiguation"
+done
+
+# The dispatched-return vocabulary in each per-mode file must actually offer
+# gated-manual as a return line, not just mention it in passing prose.
+assert_contains "$ISSUE_WORK_MD" \
+  'auto-merge: gated-manual, checks: green' \
+  "issue-work.md's step-8 return vocabulary includes the gated-manual line (#734)"
+assert_contains "$FIX_MAIN_CI_MD734" \
+  'auto-merge: gated-manual, checks: green' \
+  "fix-main-ci.md's step-8 return vocabulary includes the gated-manual line (#734)"
+assert_contains "$FIX_PR_BATCH_MD734" \
+  'auto-merge: gated-manual, checks: green' \
+  "fix-failing-prs-batch.md's step-8 return vocabulary includes the gated-manual line (#734)"
+assert_contains "$INVESTIGATE_MD734" \
+  'gated-manual' \
+  "investigate.md's fixable-path vocabulary table includes gated-manual (#734)"
+
+# Never instruct a worker to reuse merged-direct for the manual-merge branch —
+# the "Report this outcome as gated-manual — never merged-direct" phrasing
+# must be present at each site's green-checks-merge bullet.
+for entry in \
+  "$AUTO_MERGE_MD|auto-merge.md" \
+  "$ISSUE_WORK_MD|issue-work.md" \
+  "$FIX_MAIN_CI_MD734|fix-main-ci.md" \
+  "$FIX_PR_BATCH_MD734|fix-failing-prs-batch.md"
+do
+  file="${entry%%|*}"; label="${entry##*|}"
+  # shellcheck disable=SC2016  # single-quoted needle is a literal grep string, not an expansion
+  assert_contains "$file" 'never `merged-direct`' \
+    "$label explicitly forbids reusing merged-direct for the gated-manual outcome (#734)"
+done
+echo
+
 printf 'passed: %d, failed: %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
