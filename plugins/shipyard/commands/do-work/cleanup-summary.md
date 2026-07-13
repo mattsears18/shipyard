@@ -357,6 +357,8 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 ⚠️  Cost attribution: all <total_invocations> dispatch(es) this session ran on the total-tokens-only path — input/output/cache breakdown unavailable from this harness <usage> block (#279). Reported cost is a lower bound — real spend is roughly 1.5× the printed estimated_usd.
 
 ⚠️  Cost attribution degraded: <degraded_attribution_count> of <total_invocations> dispatch(es) used --degraded-total-only because the harness <usage> block lacked input/output/cache breakdown (#279, #295). Reported cost is a lower bound — real spend is roughly 1.5× the printed estimated_usd on those dispatches.
+
+⚠️  Unpriced model(s): <unpriced_count> model(s) this session are missing from the pricing table (<unpriced_models joined>) — their token counts are recorded but their USD cost is booked as $0.00 (#728). Reported cost is a LOWER BOUND. Fix: add them to PRICING_JQ in scripts/session-state.sh.
 ```
 
 **End-of-session bucket-table rules** (match step 2's modes with one addition):
@@ -384,6 +386,12 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
   - **Partial-degraded (`0 < degraded_attribution_count < total_invocations`)** — print the second banner variant (`⚠️  Cost attribution degraded: <degraded_attribution_count> of <total_invocations> …`). This is the mixed case: some dispatches landed on the strict path (breakdown available) and some didn't (e.g., a worker on a strict-path harness with one or two failing-handoff dispatches). The per-dispatch ratio is informative here because it tells the operator how much of the printed cost is precise vs. lower-bound.
 
   `<degraded_attribution_count>` reads directly from `.tokens.degraded_attribution_count`; `<total_invocations>` is `(.tokens.per_invocation | length)`. The 1.5× lower-bound multiplier matches steady-state.md A.0's tradeoff prose (output-token 5× pricing + cache-token 10% pricing on a typical 60/30/10 split → real spend ≈ 1.5× the input-only attribution). See [#279](https://github.com/mattsears18/shipyard/issues/279) for the harness-side gap this banner surfaces and [#295](https://github.com/mattsears18/shipyard/issues/295) for the all-vs-partial banner split.
+
+- `Unpriced model(s)` block ([#728](https://github.com/mattsears18/shipyard/issues/728)): omit when `.tokens.unpriced_models` is empty or missing — silence is the right default, and it's the *overwhelming* common case (every model the session ran on was in the pricing table). When non-empty, print the banner: `<unpriced_count>` is `(.tokens.unpriced_models | length)` and `<unpriced_models joined>` is the array `, `-joined.
+
+  **This banner is distinct from the `Cost attribution` one above, and both can fire in the same session.** `Cost attribution` means *we know the price but not the token breakdown*; `Unpriced model(s)` means *we know the tokens but not the price*. The failure this one closes is nastier because it degrades to a **confident, plausible number** rather than an obviously-missing one: an unknown model resolves to a $0.00 cost that is indistinguishable from a genuinely free dispatch, so a stale pricing table silently under-reports the whole session (the [#728](https://github.com/mattsears18/shipyard/issues/728) repro: six of seven dispatches ran on `claude-opus-4-8`, which wasn't in the table, and a multi-dollar session reported $0.72). `$0.00` is a legitimate value and must never double as the error sentinel — hence the explicit set rather than an inferred-from-zero heuristic.
+
+  The set is written by `session-state.sh bump-tokens` (which also warns on stderr at the moment of the miss) and persisted into the cross-session ledger by `cost-history.sh flush`, so `/shipyard:cost report` re-surfaces the same advisory long after the session file is reaped. `scripts/tests/pricing-coverage.test.sh` is the upstream guard that keeps a *shipped* model (config default or agent-shim frontmatter) from ever reaching this banner — the banner exists for models the harness picks that the repo doesn't declare.
 
 The lifetime line is sourced from two queries run just before printing the summary:
 

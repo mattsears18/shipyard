@@ -283,6 +283,13 @@ cmd_flush() {
           ),
           tokens: ($s.tokens.totals // {}) | del(.estimated_usd),
           estimated_usd: ($s.tokens.totals.estimated_usd // 0),
+          # Models this session ran on that were missing from the pricing
+          # table (issue #728). Non-empty ⇒ `estimated_usd` above is a LOWER
+          # BOUND, not the real spend. Persisting the set is what lets
+          # `cost report` flag an under-reporting record long after the
+          # session file is gone — without it the ledger row is
+          # indistinguishable from a genuinely cheap session.
+          unpriced_models: ($s.tokens.unpriced_models // []),
           by_model: (
             [ $s.tokens.per_invocation[]? | select(.model != null) ]
             | group_by(.model)
@@ -516,6 +523,11 @@ cmd_report() {
           cache_creation: ([$sessions[].tokens.cache_creation // 0] | add // 0)
         },
         estimated_usd: ([$sessions[].estimated_usd // 0] | add // 0),
+        # Union of every unpriced model across the window (issue #728), plus
+        # the number of session records affected. Both non-zero ⇒ the
+        # `estimated_usd` total above under-reports actual spend.
+        unpriced_models: ([$sessions[].unpriced_models[]?] | unique),
+        unpriced_sessions: ([$sessions[] | select((.unpriced_models // []) | length > 0)] | length),
         by_model: (
           [ $sessions[].by_model // {} | to_entries[]? ]
           | group_by(.key)
@@ -727,9 +739,28 @@ render_markdown_report() {
     "\n  Spend:           $" + (.estimated_usd | . * 100 | round / 100 | tostring) +
       (if .sessions > 0
         then " (avg $" + ((.estimated_usd / .sessions) | . * 100 | round / 100 | tostring) + "/session)"
-        else "" end)
+        else "" end) +
+      (if ((.unpriced_models // []) | length) > 0 then "  [LOWER BOUND]" else "" end)
   '
   printf '\n'
+
+  # Unpriced-model advisory (issue #728). $0.00 is a legitimate value, so it
+  # must never double as the "I don't know what to charge" sentinel — when
+  # any session in the window ran on a model missing from the pricing table,
+  # say so loudly rather than letting the totals above read as authoritative.
+  local unpriced_count
+  unpriced_count=$(printf '%s' "$rollup" | jq -r '(.unpriced_models // []) | length')
+  if [[ "$unpriced_count" != "0" ]]; then
+    printf '%s' "$rollup" | jq -r '
+      "\n⚠  UNPRICED MODELS — the spend above is a LOWER BOUND\n" +
+      "  " + ((.unpriced_sessions // 0) | tostring) + " session(s) ran on " +
+      (((.unpriced_models // []) | length) | tostring) +
+      " model(s) missing from the pricing table; their token counts are\n" +
+      "  recorded but their USD cost is booked as $0.00:\n" +
+      ((.unpriced_models // []) | map("    - " + .) | join("\n")) + "\n" +
+      "  Fix: add them to PRICING_JQ in scripts/session-state.sh (issue #728).\n"
+    '
+  fi
 
   if [[ "$by_model" -eq 1 ]]; then
     printf '\nBY MODEL\n'
