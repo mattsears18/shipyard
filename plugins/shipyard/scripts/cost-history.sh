@@ -42,7 +42,7 @@
 #
 # Subcommands:
 #
-#   flush --session-id <id> [--dry-run] [--reconcile]
+#   flush --session-id <id> [--dry-run] [--reconcile] [--force-replace]
 #     Read $SHIPYARD_HOME/sessions/<id>.json and append:
 #       - One session record to cost-history.jsonl
 #       - One issue record per touched issue to cost-history-issues.jsonl
@@ -54,7 +54,7 @@
 #     --dry-run emits the records to stdout instead of appending.
 #
 #     --reconcile (issue #743): when the session id already has a record
-#     in cost-history.jsonl, REPLACE it with the freshly-projected one
+#     in cost-history.jsonl, MERGE it with the freshly-projected one
 #     instead of silently skipping. For the re-entrant-dispatch safety
 #     net: `session-state.sh bump-tokens --allow-degraded-init` already
 #     self-heals a missing session file (same session id) if a worker is
@@ -66,6 +66,33 @@
 #     updated cumulative totals. Never pass this on the routine
 #     first-and-only flush — it exists specifically for the "cleanup ran
 #     more than once this session" path.
+#
+#     The merge is element-wise max (tokens, estimated_usd, by_model,
+#     by_mode) plus set union (issues_worked, prs_created, unpriced_models)
+#     between the existing record and the fresh projection — NEVER a plain
+#     replace. This is monotonic-or-refuse by construction (issue #745): a
+#     merge can never write a record poorer than what's already in the
+#     ledger, because every field is either maxed or unioned against the
+#     existing value. In the ordinary re-entrant-dispatch case the fresh
+#     projection is a superset of the existing record (a session file's
+#     counters only grow), so the merge is indistinguishable from a
+#     replace; in the degraded case (a corrupted / freshly re-`init`'d
+#     session file at reconcile time) the fresh projection contributes
+#     zeros and the merge simply preserves the existing record instead of
+#     zeroing it out. `flush --reconcile` prints an advisory to stderr
+#     when it detects the fresh projection is empty against a populated
+#     existing record, but still exits 0 — the merge already made the
+#     write safe, so there's nothing to fail on.
+#
+#     --force-replace (issue #745): a genuine destructive replace — discard
+#     the existing record entirely and write only the fresh projection.
+#     Requires --reconcile. Takes a backup of cost-history.jsonl to
+#     `.bak.<ts>` first (matching the `reset` subcommand's posture) so an
+#     accidental or mistaken --force-replace is recoverable by hand. Use
+#     this only when you deliberately want to discard the existing
+#     record's data — the default (plain --reconcile) merge is correct
+#     for every other case, including the re-entrant-dispatch case this
+#     flag used to be the only option for.
 #
 #   report [--last 7d|30d|90d|all] [--repo <owner/repo>] [--by-issue]
 #          [--by-mode] [--by-model] [--top N] [--trend]
@@ -123,7 +150,7 @@ fi
 usage() {
   cat <<'EOF' >&2
 Usage:
-  cost-history.sh flush  --session-id <id> [--dry-run] [--reconcile]
+  cost-history.sh flush  --session-id <id> [--dry-run] [--reconcile] [--force-replace]
   cost-history.sh report [--last 7d|30d|90d|all] [--repo <owner/repo>]
                          [--by-issue] [--by-mode] [--by-model] [--top N]
                          [--trend] [--show-setup] [--format markdown|csv|json]
@@ -181,6 +208,129 @@ append_jsonl() {
 }
 
 # --------------------------------------------------------------------------
+# Reconcile-safe merge helpers (issue #745).
+#
+# `flush --reconcile` used to unconditionally REPLACE an existing session
+# ledger record with a freshly-projected one. That's correct when the fresh
+# projection reflects the session file's true cumulative state (the ordinary
+# re-entrant-dispatch case bump-tokens --allow-degraded-init exists for),
+# but a degraded/empty session file at reconcile time (a fresh `init`, a
+# mid-repopulation read, external truncation) produces a fresh projection
+# that is a *worse* record than what's already in the ledger — and the old
+# unconditional replace wrote that worse record over the good one, silently
+# destroying it.
+#
+# The fix: default `--reconcile` now MERGES the existing record with the
+# fresh projection instead of replacing it. Every counter in a session
+# ledger record (tokens.*, estimated_usd, by_model.*, by_mode.*) is a
+# cumulative total across the life of one session file, so element-wise MAX
+# is the correct merge operator — never a sum. In the ordinary case the
+# fresh projection is a superset of the existing record (tokens only grow
+# over a session's life), so max picks the fresh, larger values and the
+# merge is indistinguishable from the old replace behavior. In the
+# degraded/corrupted case the fresh projection contributes zeros, so max
+# falls back to the existing values and nothing is lost. A plain SUM would
+# double-count: the fresh record already carries forward everything the
+# existing record counted, so summing them would count the same dispatches
+# twice. issues_worked / prs_created / unpriced_models are sets, not
+# counters, so those merge by union (which is also double-count-proof).
+#
+# A genuine destructive replace (discard the existing record entirely) is
+# still available via --force-replace, but it's opt-in and takes a backup
+# first — see cmd_flush's dedupe/reconcile branch below.
+# --------------------------------------------------------------------------
+
+# merge_session_records — element-wise-max/union merge of two already-
+# projected session ledger records ($1 = existing, $2 = fresh). Both must be
+# the same JSON shape flush projects and appends (NOT a raw session-state
+# file) — see the design note above for why max/union is the correct
+# merge operator for that shape.
+# shellcheck disable=SC2016
+merge_session_records() {
+  local existing="$1"
+  local fresh="$2"
+  jq -c -n --argjson e "$existing" --argjson n "$fresh" '
+    def merge_bucket($ea; $na):
+      ($ea + $na)
+      | group_by(.key)
+      | map({
+          key: .[0].key,
+          value: {
+            input:          (map(.value.input          // 0) | max),
+            output:         (map(.value.output         // 0) | max),
+            cache_read:     (map(.value.cache_read     // 0) | max),
+            cache_creation: (map(.value.cache_creation // 0) | max),
+            estimated_usd:  (map(.value.estimated_usd  // 0) | max)
+          }
+        })
+      | from_entries;
+    ([($e.started_at // empty), ($n.started_at // empty)] | min) as $started_at
+    | ([($e.ended_at // empty), ($n.ended_at // empty)] | max) as $ended_at
+    | {
+        session_id: ($e.session_id // $n.session_id),
+        repo: ($e.repo // $n.repo),
+        started_at: $started_at,
+        ended_at: $ended_at,
+        duration_seconds: (
+          (($ended_at | fromdateiso8601) - ($started_at | fromdateiso8601))
+        ),
+        issues_worked: (($e.issues_worked // []) + ($n.issues_worked // []) | unique),
+        prs_created: (($e.prs_created // []) + ($n.prs_created // []) | unique),
+        tokens: {
+          input:          ([($e.tokens.input          // 0), ($n.tokens.input          // 0)] | max),
+          output:         ([($e.tokens.output         // 0), ($n.tokens.output         // 0)] | max),
+          cache_read:     ([($e.tokens.cache_read     // 0), ($n.tokens.cache_read     // 0)] | max),
+          cache_creation: ([($e.tokens.cache_creation // 0), ($n.tokens.cache_creation // 0)] | max)
+        },
+        estimated_usd: ([($e.estimated_usd // 0), ($n.estimated_usd // 0)] | max),
+        unpriced_models: (($e.unpriced_models // []) + ($n.unpriced_models // []) | unique),
+        by_model: merge_bucket(($e.by_model // {} | to_entries); ($n.by_model // {} | to_entries)),
+        by_mode:  merge_bucket(($e.by_mode  // {} | to_entries); ($n.by_mode  // {} | to_entries)),
+        setup: ($n.setup // $e.setup // null)
+      }
+  '
+}
+
+# is_strictly_poorer_record — true if $2 (fresh) carries zero tokens AND
+# empty issues_worked AND empty prs_created while $1 (existing) has real
+# data in at least one of those dimensions. This is the exact shape of the
+# #745 corruption (a degraded/empty session file re-projected at reconcile
+# time) — used only to decide whether to emit a loud stderr advisory before
+# the merge; the merge itself is always safe regardless of this check.
+is_strictly_poorer_record() {
+  local existing="$1"
+  local fresh="$2"
+  jq -n --argjson e "$existing" --argjson n "$fresh" '
+    (
+      ($n.tokens.input // 0) == 0 and ($n.tokens.output // 0) == 0
+      and ($n.tokens.cache_read // 0) == 0 and ($n.tokens.cache_creation // 0) == 0
+      and (($n.issues_worked // []) | length) == 0
+      and (($n.prs_created // []) | length) == 0
+    )
+    and
+    (
+      (($e.tokens.input // 0) + ($e.tokens.output // 0)
+        + ($e.tokens.cache_read // 0) + ($e.tokens.cache_creation // 0)) > 0
+      or (($e.issues_worked // []) | length) > 0
+      or (($e.prs_created // []) | length) > 0
+    )
+  '
+}
+
+# record_summary — one-line "N issues / M PRs / T tokens" projection used
+# in the stderr advisory so the message names both records concretely
+# rather than just asserting "one was poorer."
+record_summary() {
+  local record="$1"
+  jq -r --argjson r "$record" -n '
+    (($r.issues_worked // []) | length | tostring) + " issues, " +
+    (($r.prs_created // []) | length | tostring) + " PRs, " +
+    ((($r.tokens.input // 0) + ($r.tokens.output // 0)
+      + ($r.tokens.cache_read // 0) + ($r.tokens.cache_creation // 0)) | tostring) + " tokens"
+  '
+}
+
+# --------------------------------------------------------------------------
 # flush — read the soon-to-be-deleted session file, project two record
 # shapes (session-level, per-issue), and append.
 # --------------------------------------------------------------------------
@@ -194,18 +344,26 @@ cmd_flush() {
   local session_id=""
   local dry_run=0
   local reconcile=0
+  local force_replace=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --session-id) session_id="${2:-}"; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       --reconcile) reconcile=1; shift ;;
+      --force-replace) force_replace=1; shift ;;
       *) echo "flush: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
 
   if [[ -z "$session_id" ]]; then
     echo "flush: --session-id is required" >&2
+    usage
+    exit 64
+  fi
+
+  if [[ $force_replace -eq 1 && $reconcile -eq 0 ]]; then
+    echo "flush: --force-replace requires --reconcile" >&2
     usage
     exit 64
   fi
@@ -264,41 +422,17 @@ cmd_flush() {
   session_target=$(session_ledger_path)
   issue_target=$(issue_ledger_path)
 
-  # Dedupe gate: if the session id already appears in the session
-  # ledger, skip. Cheap grep (one read of the file, no jq parse) keeps
-  # idempotency cheap even on a long ledger.
-  #
-  # --reconcile (#743) flips the skip into a replace: a session that
-  # dispatches again after its first flush (the post-cleanup re-entrant
-  # dispatch safety net) has fresh cumulative totals in the reconstructed
-  # session file that a plain skip would silently discard. Filter the old
-  # line for this session id out of the ledger via a temp-file + rename so
-  # a concurrent writer's append (a different session id, via `>>`) can
-  # never be lost mid-rewrite, then fall through to project + append the
-  # fresh record below.
-  if [[ -f "$session_target" ]] \
-       && grep -F -q "\"session_id\":\"$session_id\"" "$session_target" 2>/dev/null; then
-    if [[ $dry_run -eq 1 ]]; then
-      : # --dry-run never mutates the ledger; fall through to print below.
-    elif [[ $reconcile -eq 0 ]]; then
-      return 0
-    else
-      local tmp
-      tmp=$(mktemp "${session_target}.XXXXXX")
-      grep -v -F "\"session_id\":\"$session_id\"" "$session_target" > "$tmp" 2>/dev/null || true
-      mv "$tmp" "$session_target"
-    fi
-  fi
-
   local now
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-  # Project the session record. The schema mirrors the issue body's
+  # Project the fresh session record. The schema mirrors the issue body's
   # design — session metadata + tokens block + by-model + by-mode rollups
   # computed from per_invocation. Also persists the `setup` timing block
-  # (issue #238) when the session state contains it.
-  local session_record
-  session_record=$(jq -c \
+  # (issue #238) when the session state contains it. Projected up front
+  # (before the dedupe/reconcile decision below) because the merge path
+  # needs it alongside whatever record is already in the ledger.
+  local new_session_record
+  new_session_record=$(jq -c \
     --arg now "$now" '
       . as $s
       | {
@@ -358,7 +492,7 @@ cmd_flush() {
         }
     ' "$source")
 
-  if [[ -z "$session_record" ]]; then
+  if [[ -z "$new_session_record" ]]; then
     echo "flush: failed to project session record from $source" >&2
     exit 68
   fi
@@ -397,15 +531,102 @@ cmd_flush() {
         }
     ' "$source")
 
-  if [[ $dry_run -eq 1 ]]; then
-    printf '== session record:\n%s\n' "$session_record"
+  # Dedupe / reconcile gate: does the session ledger already have a record
+  # for this session id? Cheap enough (one jq pass over the ledger) and
+  # structural rather than a raw substring grep, so a session id that's a
+  # substring of another can't false-positive.
+  local existing_record=""
+  if [[ -f "$session_target" ]]; then
+    existing_record=$(jq -c --arg sid "$session_id" 'select(.session_id == $sid)' \
+      "$session_target" 2>/dev/null | tail -n1)
+  fi
+
+  if [[ -z "$existing_record" ]]; then
+    # No prior record for this session id — plain append, regardless of
+    # --reconcile / --force-replace (nothing to reconcile against yet).
+    if [[ $dry_run -eq 1 ]]; then
+      printf '== session record:\n%s\n' "$new_session_record"
+      if [[ -n "$issue_records" ]]; then
+        printf '== issue records:\n%s\n' "$issue_records"
+      fi
+      return 0
+    fi
+    append_jsonl "$session_target" "$new_session_record"
     if [[ -n "$issue_records" ]]; then
-      printf '== issue records:\n%s\n' "$issue_records"
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        append_jsonl "$issue_target" "$line"
+      done <<< "$issue_records"
     fi
     return 0
   fi
 
-  append_jsonl "$session_target" "$session_record"
+  # A record already exists for this session id.
+  if [[ $reconcile -eq 0 ]]; then
+    # Plain re-flush is a silent skip — unchanged idempotent behavior for
+    # the routine, non-reconcile caller (a session that flushed once and
+    # is being flushed again with no new data expected).
+    if [[ $dry_run -eq 1 ]]; then
+      printf 'flush: session %s already has a ledger record; a plain (non-reconcile) flush would skip it. Pass --reconcile to merge in the fresh projection below.\n' "$session_id"
+      printf '== fresh projection (NOT written without --reconcile):\n%s\n' "$new_session_record"
+      if [[ -n "$issue_records" ]]; then
+        printf '== issue records:\n%s\n' "$issue_records"
+      fi
+    fi
+    return 0
+  fi
+
+  # --reconcile with an existing record: default to a safe MERGE (issue
+  # #745) — element-wise max / set union of the existing record and the
+  # fresh projection, which can never write a record poorer than what's
+  # already there. A genuine destructive replace is opt-in via
+  # --force-replace, and takes a backup first (item 3 of #745).
+  local final_session_record
+  if [[ $force_replace -eq 1 ]]; then
+    if [[ $dry_run -eq 1 ]]; then
+      printf '== flush --reconcile --force-replace (dry-run): would REPLACE the existing record\n'
+      printf '== existing record:\n%s\n' "$existing_record"
+      printf '== replacement record:\n%s\n' "$new_session_record"
+      if [[ -n "$issue_records" ]]; then
+        printf '== issue records:\n%s\n' "$issue_records"
+      fi
+      return 0
+    fi
+    local ts
+    ts=$(date -u +%Y%m%dT%H%M%SZ)
+    cp "$session_target" "${session_target}.bak.${ts}"
+    echo "flush --reconcile --force-replace: backed up ${session_target} -> ${session_target}.bak.${ts} before destructively replacing session ${session_id}'s record" >&2
+    final_session_record="$new_session_record"
+  else
+    if [[ "$(is_strictly_poorer_record "$existing_record" "$new_session_record")" == "true" ]]; then
+      echo "flush --reconcile: incoming projection for session ${session_id} is empty/degraded ($(record_summary "$new_session_record")) while the existing ledger record has data ($(record_summary "$existing_record")) — merging rather than replacing so no data is lost. Pass --force-replace to intentionally discard the existing record instead." >&2
+    fi
+    final_session_record=$(merge_session_records "$existing_record" "$new_session_record")
+    if [[ -z "$final_session_record" ]]; then
+      echo "flush: failed to merge session record for $session_id" >&2
+      exit 68
+    fi
+    if [[ $dry_run -eq 1 ]]; then
+      printf '== flush --reconcile (dry-run): would MERGE the existing + fresh record\n'
+      printf '== existing record:\n%s\n' "$existing_record"
+      printf '== fresh projection:\n%s\n' "$new_session_record"
+      printf '== merged record (would be written):\n%s\n' "$final_session_record"
+      if [[ -n "$issue_records" ]]; then
+        printf '== issue records:\n%s\n' "$issue_records"
+      fi
+      return 0
+    fi
+  fi
+
+  # Remove the old line(s) for this session id via a temp-file + rename so
+  # a concurrent writer's append (a different session id, via `>>`) can
+  # never be lost mid-rewrite, then append the reconciled record.
+  local tmp
+  tmp=$(mktemp "${session_target}.XXXXXX")
+  jq -c --arg sid "$session_id" 'select(.session_id != $sid)' "$session_target" > "$tmp" 2>/dev/null || true
+  mv "$tmp" "$session_target"
+
+  append_jsonl "$session_target" "$final_session_record"
 
   # Issue records are one per line already (jq -c on a stream).
   if [[ -n "$issue_records" ]]; then
