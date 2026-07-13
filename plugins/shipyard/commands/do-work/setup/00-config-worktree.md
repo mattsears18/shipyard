@@ -464,6 +464,16 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
   git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||' | while read -r branch; do
     path=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
     [ -z "$path" ] && continue
+    # Issue #739 — extract the issue number permissively so a collision-
+    # fallback LOCAL branch name (`do-work/issue-<N>-<timestamp>`, produced
+    # by issue-work.md §3 when a prior worktree still held the canonical
+    # name — see #736/#738) still resolves to `<N>`, not the garbage
+    # compound string `<N>-<timestamp>`. `canonical_branch` is what the
+    # collision-fallback worker actually pushed to and opened its PR
+    # against (its own local checkout may be named differently), so every
+    # remote/PR lookup below must key off it, never off `$branch` verbatim.
+    n=$(echo "$branch" | sed -E 's|^do-work/issue-([0-9]+).*|\1|')
+    canonical_branch="do-work/issue-$n"
     ahead=$(git -C "$path" rev-list --count "origin/<default-branch>..HEAD" 2>/dev/null || echo 0)
     if [ "$ahead" -eq 0 ]; then
       # Issue #712 — non-force FIRST, force only behind evidence. `git worktree
@@ -476,17 +486,22 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
       git worktree remove "$path" 2>/dev/null \
         || git worktree remove --force "$path" 2>/dev/null
       git branch -D "$branch" 2>/dev/null
-      issue_num=$(echo "$branch" | sed 's|do-work/issue-||')
-      gh issue edit "$issue_num" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
+      gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
     else
-      pushed=$(git ls-remote --heads origin "$branch" 2>/dev/null)
+      # Resolve against the CANONICAL remote branch name, not `$branch`
+      # verbatim — a collision-fallback worker's local branch carries a
+      # disambiguating suffix, but it pushes and opens its PR against
+      # `do-work/issue-<N>` (see issue-work.md §3/§5). Checking `$branch`
+      # here would never find that push, causing this sweep to push a
+      # second, spurious remote branch and then open a duplicate PR.
+      pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)
       if [ -z "$pushed" ]; then
-        git -C "$path" push -u origin "$branch" 2>/dev/null || true
+        git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch" 2>/dev/null || true
       fi
-      open_pr=$(gh pr list --repo <owner/repo> --head "$branch" --json number --jq '.[0].number' 2>/dev/null)
+      open_pr=$(gh pr list --repo <owner/repo> --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
       if [ -z "$open_pr" ]; then
-        (cd "$path" && gh pr create --repo <owner/repo> --fill --label shipyard 2>/dev/null) || true
-        pr_num=$(gh pr list --repo <owner/repo> --head "$branch" --json number --jq '.[0].number' 2>/dev/null)
+        (cd "$path" && gh pr create --repo <owner/repo> --head "$canonical_branch" --fill --label shipyard 2>/dev/null) || true
+        pr_num=$(gh pr list --repo <owner/repo> --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
         # #720: gate the arm behind the ungated-merge detector. This PR is a
         # PRIOR session's orphaned branch, opened with `--fill` — nothing in this
         # session ever reviewed its diff. On an ungated repo `--auto` is not a
@@ -523,8 +538,14 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
   # leave the `shipyard` label as provenance, and let the normal step-4
   # backlog fetch pick the issue up on the next dispatch.
   for n in $(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null); do
-    # If a worktree for this issue exists, the loop above already handled it; skip.
-    if git worktree list --porcelain | grep -q "refs/heads/do-work/issue-$n$"; then
+    # If a worktree for this issue exists, the loop above already handled it;
+    # skip. Extract issue numbers from every do-work worktree branch the same
+    # permissive way as the loop above (#739) so a collision-fallback local
+    # branch name (`do-work/issue-$n-<timestamp>`) is still recognized as
+    # "already handled" instead of falling through to the assignee-clear
+    # below on an issue whose worktree is alive, just suffixed.
+    if git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\/issue-/{print $2}' \
+      | sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\1|' | grep -qx "$n"; then
       continue
     fi
     # If a do-work branch for this issue still exists on origin, leave it

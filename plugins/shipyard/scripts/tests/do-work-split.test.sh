@@ -2066,6 +2066,47 @@ assert_contains "$issue_work_path736" \
   "Don't touch another worktree when" \
   "issue-work.md Don't list carries the collision guardrail (#736)"
 
+# (Issue #739) Orphan triage's step-3c sweep must recognize #736's collision-
+# fallback LOCAL branch name (`do-work/issue-<N>-<timestamp>`) — a bare
+# `sed 's|do-work/issue-||'` extraction and an exact-match branch check both
+# treat the suffix as part of the issue number / branch name, so the sweep
+# never finds the canonical remote push and either pushes a spurious second
+# remote branch + opens a duplicate PR, or fails to recognize an alive
+# suffixed worktree as "already handled" in the stale-assign row.
+setup_worktree_path739="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
+
+assert_contains "$setup_worktree_path739" \
+  "sed -E 's|^do-work/issue-([0-9]+).*|\\1|'" \
+  "00-config-worktree.md §3c extracts the issue number permissively, tolerating a collision-fallback suffix (#739)"
+# shellcheck disable=SC2016
+# Literal needle — must NOT expand $n; this is markdown prose text.
+assert_contains "$setup_worktree_path739" \
+  'canonical_branch="do-work/issue-$n"' \
+  "00-config-worktree.md §3c derives the canonical remote branch name independent of the local worktree branch (#739)"
+# shellcheck disable=SC2016
+# Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
+assert_contains "$setup_worktree_path739" \
+  'pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)' \
+  "00-config-worktree.md §3c checks the remote for the canonical branch, not the local (possibly suffixed) branch (#739)"
+# shellcheck disable=SC2016
+# Literal needle — must NOT expand $path/$canonical_branch; this is markdown prose text.
+assert_contains "$setup_worktree_path739" \
+  'git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch"' \
+  "00-config-worktree.md §3c pushes the local worktree's commits under the canonical remote branch name (#739)"
+# shellcheck disable=SC2016
+# Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
+assert_contains "$setup_worktree_path739" \
+  'open_pr=$(gh pr list --repo <owner/repo> --head "$canonical_branch"' \
+  "00-config-worktree.md §3c looks up the open PR by the canonical branch name, not the local branch (#739)"
+# shellcheck disable=SC2016
+# Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
+assert_contains "$setup_worktree_path739" \
+  'gh pr create --repo <owner/repo> --head "$canonical_branch" --fill --label shipyard' \
+  "00-config-worktree.md §3c opens the fallback PR with an explicit --head against the canonical branch (#739)"
+assert_contains "$setup_worktree_path739" \
+  "sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\\1|' | grep -qx \"\$n\"" \
+  "00-config-worktree.md §3c row-5 stale-assign check recognizes a collision-fallback worktree as already-handled (#739)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
