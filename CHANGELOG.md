@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.9.5 — 2026-07-13
+
+#736's fix (PR #738) made issue-work.md's branch step collision-aware: on a worktree-name collision it falls back to a differently-named LOCAL branch (`do-work/issue-<N>-<timestamp>`) while still pushing to and opening the PR against the canonical REMOTE branch `do-work/issue-<N>`. That divergence was invisible to the orphan-triage sweep in `00-config-worktree.md`'s step 3c, which did an exact-match extraction and lookup on the local worktree's branch name — a suffixed branch would extract a garbage issue number, miss the real remote push, push a second spurious remote branch, and then open a duplicate PR (closes #739).
+
+- `plugins/shipyard/commands/do-work/setup/00-config-worktree.md` — step 3c now extracts the issue number with a permissive regex (`sed -E 's|^do-work/issue-([0-9]+).*|\1|'`) and resolves a `canonical_branch` independent of the local worktree's branch name; the remote-branch check, push, PR-head lookup, and `gh pr create --head` all key off the canonical name. The row-5 stale-assign check's "does a worktree already handle this issue" test uses the same permissive extraction so a suffixed worktree is still recognized as already-handled.
+- `plugins/shipyard/scripts/tests/do-work-split.test.sh` — new regression section pinning the permissive extraction, the canonical-branch resolution, and the row-5 recognition fix.
+
 ### 2.9.4 — 2026-07-13
 
 Git enforces one-worktree-per-branch, so a re-dispatched issue-work worker's `git checkout -B do-work/issue-<N>` hard-failed whenever a prior (usually reaped) dispatch for the same issue had left its worktree on disk still holding that branch name — a `locked` worktree looks identical whether it's a dead scaffold or a live concurrent worker's, so the spec gave the worker no safe way to tell and no defined recovery, leaving it to improvise exactly where an improvisation (removing another worktree, force-deleting its branch) could destroy unpushed work (closes #736).
