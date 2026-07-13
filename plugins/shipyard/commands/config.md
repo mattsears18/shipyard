@@ -94,6 +94,8 @@ wrote trust.authors = ["alice","bob"] to /path/to/repo/shipyard.config.json
 
 The value is parsed as JSON first (so `true`, `false`, `42`, `["alice"]` come through as their natural types). If it doesn't parse, it's treated as a string.
 
+**`models.<mode>` is honored at dispatch time** ([#727](https://github.com/mattsears18/shipyard/issues/727)). `/shipyard:do-work` resolves the key through [`scripts/resolve-dispatch-model.sh`](../scripts/resolve-dispatch-model.sh) when it composes each `Agent` call and passes the result as the tool's `model` parameter, which overrides the agent shim's frontmatter pin — so setting `models.fix_checks_only` (or the user-global `default_models.fix_checks_only`) genuinely changes which model that mode dispatches on. The value is matched on its model **family** (`claude-sonnet-4-6` → `sonnet`), so both concrete ids and bare aliases work. An id matching no known family (`opus`/`sonnet`/`haiku`/`fable`) is a no-op with a stderr warning — the shim's frontmatter default applies rather than the dispatch failing.
+
 Every `set` runs schema validation against the target layer's schema before the write commits. A failing value never lands on disk:
 
 ```bash
