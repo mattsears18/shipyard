@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.9.3 — 2026-07-13
+
+On an ungated repo shape, issue-work §6.a correctly makes a worker block on `gh pr checks --watch` and merge by hand only once green — but the return string that outcome reported was `auto-merge: merged-direct`, the exact same token `gh pr merge --auto` silently falling through to an immediate merge would report. Both events leave a PR at `state: MERGED` with `autoMergeRequest: null`, so a worker deriving the outcome from `gh pr view`'s post-merge snapshot alone can't tell "I watched checks and merged correctly" from "the detector mispredicted and `--auto` merged unverified" — the exact regression shape #716 exists to catch. In one session, 2 of 4 observed ungated-branch merges reported `merged-direct` for what was, on inspection, a correctly-gated manual merge, erasing the one signal that would reveal a real #716-class regression (closes #734).
+
+- `plugins/shipyard/skills/worker-preamble/auto-merge.md` — the canonical fragment now returns a distinct `auto-merge: gated-manual` token for the step-0.5 checks-watch-then-merge branch, with an explicit callout that the step-1.5 `merged-direct`/`merged-direct-ungated` categorization applies only to the step-1 `--auto` call and must never be reused for the manual-merge outcome.
+- `plugins/shipyard/agents/issue-worker/issue-work.md` — §6.a's green-checks merge now returns `gated-manual` directly and skips §7's categorization; §7 opens with a short-circuit note; §8 gains the `gated-manual` return line and a `Don't` bullet against relabeling it `merged-direct`.
+- `plugins/shipyard/agents/issue-worker/fix-main-ci.md` and `fix-failing-prs-batch.md` — mirror the same `gated-manual` return line and disambiguation on their 7.a/8 steps.
+- `plugins/shipyard/agents/issue-worker/investigate.md` — the fixable-path return vocabulary table adds `gated-manual` alongside the existing outcomes.
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — the auto-merge fragment summary names `gated-manual` and warns against collapsing it into `merged-direct`.
+- `plugins/shipyard/scripts/tests/ungated-merge-gate-reachability.test.sh` — new section (I) pins the `gated-manual` token, its issue-#734 citation, and the explicit merged-direct exclusion across every site above.
+
 ### 2.9.2 — 2026-07-13
 
 This repo's own committed `shipyard.config.json` asked for `concurrency.default: 2` while its own merge shape is `ungated` (admin + zero required status checks) — exactly the shape step 1.3's detector warns produces a steady-state manifest/CHANGELOG leapfrog at C≥2, since the first PR to direct-merge advances `main` and re-DIRTYs every sibling regardless of version coordination. The warning printed the recommendation but nothing enforced it, so avoiding the collision depended on the orchestrator LLM noticing the contradiction and overriding the committed config by judgment on every single run (closes #733).
