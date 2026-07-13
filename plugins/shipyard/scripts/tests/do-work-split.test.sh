@@ -443,12 +443,13 @@ assert_contains "$steady_state_path" \
 # Five assertions pin the post-#317 contract:
 #   - The struct list grew a 12th entry `reconciled_agent_ids` (named in
 #     do-work.md alongside the #317 cross-ref).
-#   - The opening sentence reflects the struct count ("eighteen" post-#718's
-#     `dispatch_denials`; was "sixteen" post-#589, "fifteen" post-#437). NB the
-#     prose count had drifted one behind the actual bullet count (a struct was
-#     added without updating the sentence); #718 re-synced it — the bullet count
-#     is the ground truth, and the struct-derived line cap in check (2) is
-#     computed from the bullets, not from this sentence.
+#   - The opening sentence reflects the struct count ("nineteen" post-#746's
+#     `operator_denials`; was "eighteen" post-#718, "sixteen" post-#589,
+#     "fifteen" post-#437). NB the prose count had drifted one behind the
+#     actual bullet count (a struct was added without updating the sentence);
+#     #718 re-synced it — the bullet count is the ground truth, and the
+#     struct-derived line cap in check (2) is computed from the bullets, not
+#     from this sentence.
 #   - steady-state.md gained the new A.−1 step (the gate body lives there).
 #   - The advisory log line shape is documented exactly (so a future
 #     regression that drops the gate without renaming everything else
@@ -459,8 +460,8 @@ assert_contains "$do_work_path" \
   'reconciled_agent_ids' \
   "do-work.md struct list names reconciled_agent_ids (#317)"
 assert_contains "$do_work_path" \
-  'eighteen mental data structures' \
-  "do-work.md opening sentence reflects post-#718 struct count (eighteen)"
+  'nineteen mental data structures' \
+  "do-work.md opening sentence reflects post-#746 struct count (nineteen)"
 assert_contains "$steady_state_path" \
   'A.−1. Reconcile-once gate' \
   "steady-state.md carries the A.−1 reconcile-once gate (#317)"
@@ -1985,6 +1986,90 @@ assert_contains "$dont_path" \
 assert_contains "$dont_path" \
   "Don't let a denied dispatch silently cost a slot" \
   "dont.md forbids letting a denied dispatch silently cost a slot (#718)"
+
+# ----------------------------------------------------------------------
+# (Issue #746) The operator layer's "standing authorization" claim over-sold
+# what the Claude Code auto-mode classifier actually grants: a `merge-pr` /
+# `close-pr` item against an inherited third-party PR (one this session
+# never opened or touched — the common case being a Dependabot PR) gets
+# denied by the classifier BY NAME, regardless of the operator layer's
+# default-on posture. #746 mirrors #718's dispatch-denial contract for
+# operator actions:
+#   - the scope correction: standing authorization reliably covers only
+#     session-owned artifacts; inherited third-party merge-pr/close-pr
+#     items need a batched (one-per-session, not one-per-item)
+#     AskUserQuestion confirmation first;
+#   - a denied operator action is RECORDED (operator_denials struct) and
+#     SURFACED (`Operator denied:` in the end-of-session summary) rather
+#     than silently costing a queue item;
+#   - at most one re-attempt, and only to cite an explicit confirmation
+#     already on record — never to iterate wording against the classifier;
+#   - a second denial (or no confirmation to cite) degrades to a
+#     needs-operator hand-back, never a silent drop;
+#   - the content-integrity boundary: the classifier's reasoning never
+#     reaches a public GitHub artifact (matches #718/#341).
+assert_contains "$do_work_path" \
+  'operator_denials' \
+  "do-work.md documents the operator_denials orchestrator-state struct (#746)"
+assert_contains "$do_work_path" \
+  'session-owned artifacts' \
+  "do-work.md Args section scopes standing authorization to session-owned artifacts (#746)"
+
+# The scope correction — session-owned vs inherited third-party PRs, and
+# the batched (not per-item) confirmation.
+assert_contains "$operate_path" \
+  'Scope of standing authorization' \
+  "operate.md carries the session-owned vs inherited-third-party-PR scope section (#746)"
+assert_contains "$operate_path" \
+  'Permission for this action was denied by the Claude Code auto mode classifier' \
+  "operate.md quotes the verbatim harness denial so it is recognizable (#746)"
+# shellcheck disable=SC2016  # literal needle — must NOT expand `session_prs`
+assert_contains "$operate_path" \
+  'Any PR in `session_prs`' \
+  "operate.md defines session-owned artifacts concretely (#746)"
+assert_contains "$operate_path" \
+  'Proceed with all' \
+  "operate.md's batched AskUserQuestion offers a single proceed-with-all option (#746)"
+assert_contains "$operate_path" \
+  'one-shot, session-scoped ask' \
+  "operate.md caps the inherited-PR confirmation at one ask per session, not per item (#746)"
+
+# The denial branch — record, one re-attempt (only to cite an existing
+# confirmation), second denial hands back.
+assert_contains "$operate_path" \
+  'Operator action denied by the harness permission classifier' \
+  "operate.md carries the denied-operator-action branch (#746)"
+assert_contains "$operate_path" \
+  'At most ONE re-attempt' \
+  "operate.md caps operator-action re-attempts at exactly one (#746)"
+assert_contains "$operate_path" \
+  'Do NOT iterate wording against the classifier' \
+  "operate.md forbids iterating operator-action wording against the classifier (#746)"
+assert_contains "$operate_path" \
+  'Do NOT route around the denial' \
+  "operate.md forbids routing an operator denial around via a different mechanism (#746)"
+assert_contains "$operate_path" \
+  'degrade to a hand-back' \
+  "operate.md degrades a twice-denied operator item to a hand-back rather than dropping it (#746)"
+assert_contains "$operate_path" \
+  'to any public GitHub artifact' \
+  "operate.md keeps the classifier's reasoning out of public GitHub artifacts for operator denials (#746)"
+
+# Recorded + surfaced, not silently costing a queue item.
+assert_contains "$cleanup_path" \
+  'Operator denied (#746)' \
+  "cleanup-summary.md surfaces an Operator denied line in the end-of-session summary (#746)"
+assert_contains "$cleanup_path" \
+  'silently costs a queue item' \
+  "cleanup-summary.md names the silent-queue-item-cost this line exists to prevent (#746)"
+
+# operate.md's own Don't list carries the guardrail too.
+assert_contains "$operate_path" \
+  "Don't iterate operator-action wording against the permission classifier" \
+  "operate.md forbids iterating operator-action wording against the classifier (#746)"
+assert_contains "$operate_path" \
+  "Don't assume standing authorization covers a" \
+  "operate.md forbids assuming standing authorization covers an inherited-PR merge-pr/close-pr item (#746)"
 
 # (Issue #729) The orchestrator's own worktree is always dirty at
 # end-of-session (step 0.55 stashes `.shipyard-session-id`, an untracked
