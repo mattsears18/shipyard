@@ -6,7 +6,7 @@ The dispatch decision tree consulted by the [steady-state loop](./steady-state.m
 
 **Per-mode `subagent_type` routing.** The orchestrator picks the `Agent`-tool `subagent_type` based on the worker's `mode:`. The shim agents pin smaller models for the modes whose workload doesn't need Opus 4.7 — cutting per-dispatch inference cost ~5x for CI-repair work that's mostly pattern-matching against failing logs. See [#157](https://github.com/mattsears18/shipyard/issues/157) for the cost rationale.
 
-| `mode:`                  | `subagent_type`                  | Model (frontmatter) | Reason for the model choice                                       |
+| `mode:`                  | `subagent_type`                  | Model (frontmatter **default**) | Reason for the model choice                                       |
 |--------------------------|----------------------------------|---------------------|-------------------------------------------------------------------|
 | `issue-work`             | `shipyard:issue-worker`          | default (Opus)      | Full code authorship, test design, PR composition — Opus stays.   |
 | `fix-checks-only`        | `shipyard:fix-checks-worker`     | `haiku`             | Pattern-match the failing log, apply targeted fix.                |
@@ -15,7 +15,25 @@ The dispatch decision tree consulted by the [steady-state loop](./steady-state.m
 | `fix-failing-prs-batch`  | `shipyard:fix-pr-batch-worker`   | `sonnet`            | Cross-PR pattern-spotting across ≤5 representative failures.      |
 | `investigate`            | `shipyard:investigate-worker`    | `sonnet`            | Investigate untriaged/bot-authored crash reports; disposition into binary backlog. |
 
+The frontmatter column is the **default**, not the last word — the merged config's `models.<mode>` overrides it per the model-resolution rule below.
+
 Every shim agent forwards to the same per-mode spec under [`agents/issue-worker/<mode>.md`](../../agents/issue-worker/) — the model pin is the only behavioral difference between dispatching via the shim vs the original `shipyard:issue-worker` entry router (which still handles every mode for forward-compat, just on Opus). When in doubt about a mode's behavioral contract, read the per-mode file, not the shim.
+
+**Per-dispatch model resolution — honor `models.<mode>` ([#727](https://github.com/mattsears18/shipyard/issues/727)).** The frontmatter pins above are plugin-owned, so a consumer repo cannot override them — which is precisely what the `models.*` config block exists for. Until #727 that block was a **dead surface**: schema-defined, settable via `/shipyard:config set models.issue_work <id>`, documented in CLAUDE.md, covered by tests — and read by nothing, so a user who set `models.issue_work: claude-sonnet-4-6` to cut spend silently kept dispatching on the session model (Opus), with no warning anywhere. **Every** `Agent` dispatch in the table above — step 7's initial pool fill and step C's replacement dispatch alike — now resolves the mode's model from the merged config and passes it as the `Agent` tool's `model` parameter, which takes precedence over the agent definition's frontmatter:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+
+# <mode> is the dispatch's mode, hyphenated or underscored — both are accepted.
+dispatch_model=$("${CLAUDE_PLUGIN_ROOT}/scripts/resolve-dispatch-model.sh" <mode> 2>/dev/null)
+```
+
+- **`dispatch_model` non-empty** (`opus` / `sonnet` / `haiku` / `fable`) → set `model: "<dispatch_model>"` on the `Agent` call alongside `subagent_type` and `isolation: "worktree"`.
+- **`dispatch_model` empty** → **omit** the `model` parameter entirely so the shim's frontmatter default applies. Empty means "no override": the key is unset in every config layer, the config was unreadable, or the configured id matched no known model family (the script warns on stderr in that last case).
+
+**This is a script call, not a rule to re-derive** — [`scripts/resolve-dispatch-model.sh`](../../scripts/resolve-dispatch-model.sh) is the single executable source of truth, for the same anti-drift reason as [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh) (#716). In particular, do NOT pass the raw config value through: the `Agent` tool's `model` parameter is an **enum** (`opus` | `sonnet` | `haiku` | `fable`), while the config (and the pricing table) speak in concrete ids like `claude-sonnet-4-6`; the script maps the id onto its family alias, and a raw id would fail the tool call's input validation. The built-in defaults (`shipyard-config.sh`) already mirror the frontmatter pins family-for-family, so on a repo that sets no `models.*` override the resolution is behaviorally a no-op — it only diverges when a repo (or the user-global layer) deliberately asks for a different tier.
+
+**Don't fail a dispatch on a model-resolution problem.** The resolver's posture is fail-open: an unreadable config or a typo'd model id resolves to empty, and the dispatch proceeds on the frontmatter default. A missing override must never block work.
 
 **Every dispatch in the table above MUST set `isolation: "worktree"` on the `Agent` tool call**, regardless of which shim is being invoked. The Claude Code agent-definition frontmatter format doesn't support an `isolation:` default, so the requirement falls on the caller. The [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) `PreToolUse` hook hard-fails dispatches of any guarded shim that omit the parameter (#293 — the original hook only matched `shipyard:issue-worker` exactly, silently passing through the five model-pinned shims; `shipyard:investigate-worker` was added to the guarded set when the shim shipped with #514 — no hook change needed here). When adding a new worker shim to this table, update the hook's guarded-set in lockstep.
 
@@ -472,7 +490,7 @@ When filling a slot, walk this decision tree:
 
 6. **Nothing to dispatch (all queues empty and no candidate available)?** → leave the slot empty. Termination check kicks in once `in_flight` also empties.
 
-Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`, and the `subagent_type` matching the worker's `mode:` per the routing table at the top of this section. The harness will notify you on completion — that drives the next iteration of the steady-state loop.
+Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`, the `subagent_type` matching the worker's `mode:` per the routing table at the top of this section, and — when [`resolve-dispatch-model.sh <mode>`](../../scripts/resolve-dispatch-model.sh) returns non-empty — the `model` it resolved from `models.<mode>` (omit the parameter when it returns empty, per the per-dispatch model-resolution rule above). The harness will notify you on completion — that drives the next iteration of the steady-state loop.
 
 **Write the `.in_flight` slot only AFTER the `Agent` call is accepted.** The [per-slot dispatch metadata write-through](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) needs the harness-assigned `agent_id`, which does not exist until the tool call returns — so the write-through is strictly *post*-dispatch, never speculative. This ordering is what makes the denied-dispatch branch below well-defined: a dispatch the harness refused leaves **no** `.in_flight` slot behind, so there is no phantom slot to reap and no completion notification to wait for.
 

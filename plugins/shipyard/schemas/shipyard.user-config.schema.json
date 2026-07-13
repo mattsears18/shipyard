@@ -36,13 +36,14 @@
     "default_models": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Default per-mode model IDs across every repo. Remapped onto the canonical models.* paths on load (shipyard-config.sh normalize_user_layer, issue #403); an explicit repo/local models.<mode> still wins.",
+      "description": "Default per-mode model IDs across every repo. Remapped onto the canonical models.* paths on load (shipyard-config.sh normalize_user_layer, issue #403); an explicit repo/local models.<mode> still wins. Honored at dispatch time by resolve-dispatch-model.sh, which maps the id onto the Agent tool's model parameter (issue #727) — one key per worker mode, matching models.* in the repo schema.",
       "properties": {
         "issue_work": { "type": "string" },
         "fix_checks_only": { "type": "string" },
         "fix_rebase": { "type": "string" },
         "fix_main_ci": { "type": "string" },
-        "fix_failing_prs_batch": { "type": "string" }
+        "fix_failing_prs_batch": { "type": "string" },
+        "investigate": { "type": "string" }
       }
     },
     "cost_tracking_enabled": {
