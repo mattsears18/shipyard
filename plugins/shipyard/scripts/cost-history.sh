@@ -42,7 +42,7 @@
 #
 # Subcommands:
 #
-#   flush --session-id <id> [--dry-run]
+#   flush --session-id <id> [--dry-run] [--reconcile]
 #     Read $SHIPYARD_HOME/sessions/<id>.json and append:
 #       - One session record to cost-history.jsonl
 #       - One issue record per touched issue to cost-history-issues.jsonl
@@ -52,6 +52,20 @@
 #     `session-state.sh cleanup`. Exit 0 if the session file is missing
 #     (nothing to flush — equivalent to a session that never ran).
 #     --dry-run emits the records to stdout instead of appending.
+#
+#     --reconcile (issue #743): when the session id already has a record
+#     in cost-history.jsonl, REPLACE it with the freshly-projected one
+#     instead of silently skipping. For the re-entrant-dispatch safety
+#     net: `session-state.sh bump-tokens --allow-degraded-init` already
+#     self-heals a missing session file (same session id) if a worker is
+#     dispatched after cleanup has already flushed once this session —
+#     but a second plain `flush` against that reconstructed file would
+#     be a no-op under the dedupe gate above, silently dropping the
+#     re-entrant dispatch's tokens from the ledger. `--reconcile` is how
+#     a second, later flush for the same session id actually lands the
+#     updated cumulative totals. Never pass this on the routine
+#     first-and-only flush — it exists specifically for the "cleanup ran
+#     more than once this session" path.
 #
 #   report [--last 7d|30d|90d|all] [--repo <owner/repo>] [--by-issue]
 #          [--by-mode] [--by-model] [--top N] [--trend]
@@ -109,7 +123,7 @@ fi
 usage() {
   cat <<'EOF' >&2
 Usage:
-  cost-history.sh flush  --session-id <id> [--dry-run]
+  cost-history.sh flush  --session-id <id> [--dry-run] [--reconcile]
   cost-history.sh report [--last 7d|30d|90d|all] [--repo <owner/repo>]
                          [--by-issue] [--by-mode] [--by-model] [--top N]
                          [--trend] [--show-setup] [--format markdown|csv|json]
@@ -179,11 +193,13 @@ append_jsonl() {
 cmd_flush() {
   local session_id=""
   local dry_run=0
+  local reconcile=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --session-id) session_id="${2:-}"; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
+      --reconcile) reconcile=1; shift ;;
       *) echo "flush: unknown arg $1" >&2; usage; exit 64 ;;
     esac
   done
@@ -251,9 +267,27 @@ cmd_flush() {
   # Dedupe gate: if the session id already appears in the session
   # ledger, skip. Cheap grep (one read of the file, no jq parse) keeps
   # idempotency cheap even on a long ledger.
-  if [[ $dry_run -eq 0 ]] && [[ -f "$session_target" ]] \
+  #
+  # --reconcile (#743) flips the skip into a replace: a session that
+  # dispatches again after its first flush (the post-cleanup re-entrant
+  # dispatch safety net) has fresh cumulative totals in the reconstructed
+  # session file that a plain skip would silently discard. Filter the old
+  # line for this session id out of the ledger via a temp-file + rename so
+  # a concurrent writer's append (a different session id, via `>>`) can
+  # never be lost mid-rewrite, then fall through to project + append the
+  # fresh record below.
+  if [[ -f "$session_target" ]] \
        && grep -F -q "\"session_id\":\"$session_id\"" "$session_target" 2>/dev/null; then
-    return 0
+    if [[ $dry_run -eq 1 ]]; then
+      : # --dry-run never mutates the ledger; fall through to print below.
+    elif [[ $reconcile -eq 0 ]]; then
+      return 0
+    else
+      local tmp
+      tmp=$(mktemp "${session_target}.XXXXXX")
+      grep -v -F "\"session_id\":\"$session_id\"" "$session_target" > "$tmp" 2>/dev/null || true
+      mv "$tmp" "$session_target"
+    fi
   fi
 
   local now

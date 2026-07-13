@@ -188,6 +188,54 @@ assert_equals "$lines" "1" "re-flushing the same session id is idempotent"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== flush --reconcile — replaces an existing session record (#743)"
+# --------------------------------------------------------------------------
+# Simulates the re-entrant-dispatch safety net: cleanup flushes once, a
+# worker dispatches again (bump-tokens --allow-degraded-init reconstructs
+# the same session id with fresh cumulative totals), and a second flush
+# must land the update rather than being silently skipped by the dedupe
+# gate that a plain (non-reconcile) flush would hit.
+
+tmphome=$(mktmphome)
+seed_session "$tmphome" "recon"
+
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "recon" >/dev/null
+
+lines=$(wc -l < "$tmphome/cost-history.jsonl" | tr -d ' ')
+assert_equals "$lines" "1" "reconcile setup: first flush writes one session record"
+
+# A plain re-flush (no --reconcile) is still a silent skip — unchanged
+# behavior for the routine, non-reconcile caller.
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "recon" >/dev/null
+content_before=$(cat "$tmphome/cost-history.jsonl")
+assert_contains "$content_before" '"prs_created":[200]' \
+  "plain re-flush leaves the original record untouched"
+
+# Re-entrant dispatch: bump more tokens into the SAME session id (mirrors
+# --allow-degraded-init reconstructing the file with the same id after
+# cleanup already deleted it), then flush --reconcile.
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "recon" \
+  --issue 144 --pr 201 \
+  --input 3000 --output 500 \
+  --mode issue-work --model claude-opus-4-7 >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "recon" --reconcile >/dev/null
+
+lines=$(wc -l < "$tmphome/cost-history.jsonl" | tr -d ' ')
+assert_equals "$lines" "1" "reconcile replaces in place — still exactly one session record"
+
+content_after=$(cat "$tmphome/cost-history.jsonl")
+assert_contains "$content_after" '"session_id":"recon"' \
+  "reconciled record still carries the same session_id"
+assert_contains "$content_after" '"issues_worked":[142,143,144]' \
+  "reconciled record picks up the re-entrant dispatch's issue"
+assert_contains "$content_after" '"prs_created":[200,201]' \
+  "reconciled record picks up the re-entrant dispatch's PR"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== flush — missing session file is a no-op (exit 0)"
 # --------------------------------------------------------------------------
 
