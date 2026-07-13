@@ -2022,6 +2022,50 @@ else
   fail=$((fail+1))
 fi
 
+# (Issue #736) Collision-aware branch step — git enforces one-worktree-per-
+# branch, so a re-dispatched worker's `git checkout -B do-work/issue-<N>`
+# hard-fails when a prior (usually reaped) dispatch for the same issue left
+# its worktree on disk still holding that branch name. The spec previously
+# had no defined recovery, leaving the worker to improvise at exactly the
+# moment it's most likely to do something destructive (removing another
+# worktree, force-deleting a branch that might hold unpushed work). The fix
+# adds a local-name/remote-name split to issue-work.md §3: on the
+# `already used by worktree` failure, check out a collision-free LOCAL
+# branch instead, but still push to and open the PR against the canonical
+# `do-work/issue-<N>` REMOTE branch so orphan triage can still find it.
+issue_work_path736="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+
+assert_contains "$issue_work_path736" \
+  'issues/736' \
+  "issue-work.md cites issue #736 as the source of the collision-aware branch step"
+assert_contains "$issue_work_path736" \
+  'already used by worktree' \
+  "issue-work.md §3 detects the worktree-name-collision failure mode (#736)"
+assert_contains "$issue_work_path736" \
+  'REMOTE_BRANCH="do-work/issue-<N>"' \
+  "issue-work.md §3 pins REMOTE_BRANCH to the canonical do-work/issue-<N> name (#736)"
+assert_contains "$issue_work_path736" \
+  'Do NOT touch the other worktree' \
+  "issue-work.md §3 forbids touching the colliding worktree on fallback (#736)"
+# shellcheck disable=SC2016
+# Literal needle — must NOT expand $(date +%s); this is markdown prose text.
+assert_contains "$issue_work_path736" \
+  'LOCAL_BRANCH="do-work/issue-<N>-$(date +%s)"' \
+  "issue-work.md §3 falls back to a collision-free LOCAL branch name (#736)"
+# shellcheck disable=SC2016
+# Backticks/single-quotes are literal markdown punctuation in the needle.
+assert_contains "$issue_work_path736" \
+  'git push -u origin "HEAD:refs/heads/${REMOTE_BRANCH:-do-work/issue-<N>}"' \
+  "issue-work.md §5 pushes to the canonical REMOTE_BRANCH regardless of the local checkout name (#736)"
+# shellcheck disable=SC2016
+# Literal needle — must NOT expand ${REMOTE_BRANCH}; this is markdown prose text.
+assert_contains "$issue_work_path736" \
+  '--head "${REMOTE_BRANCH:-do-work/issue-<N>}"' \
+  "issue-work.md §5 opens the PR with an explicit --head against REMOTE_BRANCH (#736)"
+assert_contains "$issue_work_path736" \
+  "Don't touch another worktree when" \
+  "issue-work.md Don't list carries the collision guardrail (#736)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
