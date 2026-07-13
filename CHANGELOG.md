@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.9.1 — 2026-07-13
+
+The orchestrator's own worktree reap fell through to the destructive-looking `--force` path on literally every session, defeating #712's non-force-first safety property for the one worktree guaranteed to need reaping every run (closes #729). The cause: step 0.55 stashes `.shipyard-session-id` — an untracked bookkeeping file — into the orchestrator worktree for the session's lifetime, so the tree is never actually clean by the time end-of-session cleanup tries the plain, non-force `git worktree remove`; git refuses `remove` on any dirty tree by design, so the `--force` fallback fired unconditionally. #712's mitigation (try non-force first, since a bare `--force` reads as `[Irreversible Local Destruction]` to Claude Code's auto-mode classifier) was dead code for this specific worktree from the day it shipped.
+
+- `plugins/shipyard/commands/do-work/cleanup-summary.md` — step 6 now deletes the session-id stash immediately before attempting the remove (nothing downstream reads it — steps 7/7.5/8 all use the already-known `<session-id>` template value, never a file re-read), and routes the actual remove through `worktree-reap.sh`'s evidence-gated `reap` action instead of a raw `git worktree remove --force` fallback — matching every other reap call site in the file and giving this reap an audit-log line (`~/.shipyard/reap-audit.jsonl`) for the first time.
+- `plugins/shipyard/scripts/tests/do-work-split.test.sh` — new regression assertions pin the stash-delete, the evidence-gated routing, the absence of the old raw `--force` call, and the ordering (stash deleted strictly before the reap call runs).
+
 ### 2.9.0 — 2026-07-13
 
 **`models.*` is a real config surface now — it was documented, schema-validated, settable, tested, and read by absolutely nothing** (closes #727). A user could run `/shipyard:config set models.issue_work claude-sonnet-4-6`, watch it validate, see it in `/shipyard:config show`, and still have every issue-work dispatch run on Opus — because model selection lived exclusively in each agent shim's `model:` frontmatter, which no consumer repo can override, and no dispatch path ever read the key. This repo's own committed config asked for Sonnet; all five issue-work dispatches of one session ran on `claude-opus-4-8` anyway, ~5x the cost, with no warning anywhere. A key that silently no-ops is worse than no key: the config surface exists precisely to make the #157 per-mode model pins overridable, and it didn't.

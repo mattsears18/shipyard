@@ -216,26 +216,50 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
 
 Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<deferred_live>`, and `<unreaped_worktrees>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b. A non-zero `<deferred_live>` is a signal worth surfacing — it means an agent was still running when end-of-session cleanup fired (termination declared too early). The worktree survives so the next session's step 3b sweep can finish reaping once the PID is actually dead.
 
-6. **Reap the orchestrator's own worktree — last, after the summary prints.** The orchestrator worktree (`.claude/worktrees/orchestrator-<session-id>`) is still around because the orchestrator was running inside it. After the [End-of-session summary](#end-of-session-summary) prints — and only then; you can't remove the worktree you're still cwd'd into — jump back to the user's primary checkout (read-only at this point), then unlock + force-remove:
+6. **Reap the orchestrator's own worktree — last, after the summary prints.** The orchestrator worktree (`.claude/worktrees/orchestrator-<session-id>`) is still around because the orchestrator was running inside it. After the [End-of-session summary](#end-of-session-summary) prints — and only then; you can't remove the worktree you're still cwd'd into — jump back to the user's primary checkout (read-only at this point), then unlock + remove:
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+
    # Capture both paths BEFORE we move
    ORCH_WT_ABS="$(git -C "<repo-root>/.claude/worktrees/orchestrator-<session-id>" rev-parse --show-toplevel)"
    PRIMARY_ABS="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"  # first entry = primary
 
    cd "$PRIMARY_ABS"
+
+   # Issue #729 — drop the session-id stash (written at step 0.55) BEFORE
+   # attempting the remove. It is the orchestrator worktree's only untracked
+   # file, so leaving it in place makes the tree permanently dirty — the
+   # plain, non-force `git worktree remove` below then refuses on EVERY
+   # session (git refuses `remove` on a dirty tree by design), so the
+   # `--force` fallback fires unconditionally and #712's non-force-first
+   # safety property never actually applies to the one worktree guaranteed
+   # to need reaping every single run. Nothing downstream reads this file —
+   # steps 7/7.5/8 below all use the `<session-id>` template value, never a
+   # file re-read — so deleting it here is free.
+   rm -f "$ORCH_WT_ABS/.shipyard-session-id"
+
    git worktree unlock "$ORCH_WT_ABS" 2>/dev/null
-   # Issue #712 — non-force FIRST. The orchestrator worktree is normally clean
-   # (the orchestrator commits nothing into it), so the plain remove succeeds and
-   # the destructive-looking `--force` never has to be typed at all. Escalate
-   # only when the plain remove refuses, which means the tree is dirty — itself a
-   # bug worth surfacing.
-   git worktree remove "$ORCH_WT_ABS" 2>/dev/null \
-     || git worktree remove --force "$ORCH_WT_ABS" 2>/dev/null
+
+   # Issue #712 / #729 — route the actual remove through worktree-reap.sh's
+   # `reap` action instead of a raw `git worktree remove --force` fallback,
+   # so any escalation this worktree still needs (e.g. it's dirty for some
+   # OTHER reason than the stash above) goes through the same evidence gate
+   # (`worktree_force_is_safe`) as every other reap call site in this file,
+   # and this reap gets an audit-log line like every other one. The helper's
+   # `fast_worktree_remove` tries a non-destructive rename-aside first, then
+   # falls back to plain `git worktree remove`, and only escalates to
+   # `--force` behind the evidence gate.
+   "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+     --action reaped \
+     --worktree-path "$ORCH_WT_ABS" \
+     --worktree-name "orchestrator-<session-id>" \
+     --session-id "<session-id>" \
+     --classification "self-orchestrator" 2>/dev/null || true
    git worktree prune
    ```
 
-   `git worktree remove` only modifies shared `.git/worktrees/` metadata — the primary's HEAD never moves. If the remove fails (e.g., uncommitted orchestrator edits — itself a bug; or an auto-mode permission denial per [#712](https://github.com/mattsears18/shipyard/issues/712)), surface that in the summary as `orchestrator worktree NOT reaped: <reason>` and leave it for next session's step 3b sweep.
+   `git worktree remove` only modifies shared `.git/worktrees/` metadata — the primary's HEAD never moves. The reap-audit log (`~/.shipyard/reap-audit.jsonl`) now records this removal too — an `"action":"reaped"` line with `"classification":"self-orchestrator"` on success, or `"action":"reaped-failed"` with a `reason` (`unsafe-to-force-unpushed-work` or `worktree-remove-failed`) when the tree was dirty for some reason beyond the stash file and the evidence gate declined to force it. If the remove fails (e.g., genuine uncommitted orchestrator edits — itself a bug; or an auto-mode permission denial per [#712](https://github.com/mattsears18/shipyard/issues/712)), surface that in the summary as `orchestrator worktree NOT reaped: <reason>` and leave it for next session's step 3b sweep.
 
 7. **Flush the session's token data to the persistent cross-session ledger** — before the session file is deleted, append its rolled-up record to `~/.shipyard/cost-history.jsonl` so it survives into the next session's reports ([issue #163](https://github.com/mattsears18/shipyard/issues/163)):
 

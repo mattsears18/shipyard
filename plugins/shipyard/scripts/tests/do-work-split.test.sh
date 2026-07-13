@@ -1986,6 +1986,42 @@ assert_contains "$dont_path" \
   "Don't let a denied dispatch silently cost a slot" \
   "dont.md forbids letting a denied dispatch silently cost a slot (#718)"
 
+# (Issue #729) The orchestrator's own worktree is always dirty at
+# end-of-session (step 0.55 stashes `.shipyard-session-id`, an untracked
+# file, into it for the session's lifetime), so #712's non-force-first
+# `git worktree remove` ALWAYS refused and fell through to the raw
+# `--force` fallback on every single session — defeating #712's mitigation
+# for the one worktree guaranteed to need reaping every run. The fix
+# deletes the stash before attempting the remove (it has no value past
+# this point) and routes the `--force` escalation, if still needed for some
+# other reason, through worktree-reap.sh's evidence-gated `reap` action
+# instead of a raw ungated `--force` call.
+# shellcheck disable=SC2016  # literal needle — must NOT expand $ORCH_WT_ABS
+assert_contains "$cleanup_path" \
+  'rm -f "$ORCH_WT_ABS/.shipyard-session-id"' \
+  "cleanup-summary.md deletes the .shipyard-session-id stash before reaping the orchestrator worktree (#729)"
+assert_contains "$cleanup_path" \
+  '--classification "self-orchestrator"' \
+  "cleanup-summary.md routes the orchestrator-worktree reap through worktree-reap.sh's evidence-gated helper (#729)"
+# shellcheck disable=SC2016  # literal needle — must NOT expand $ORCH_WT_ABS
+assert_not_contains "$cleanup_path" \
+  'git worktree remove --force "$ORCH_WT_ABS"' \
+  "cleanup-summary.md no longer calls a raw, ungated --force on the orchestrator worktree (#729)"
+
+# Ordering matters: the stash MUST be deleted before the reap call runs, not
+# after — a delete that races in after a failed remove doesn't help.
+# shellcheck disable=SC2016  # literal needle — must NOT expand $ORCH_WT_ABS
+rm_stash_line=$(grep -n 'rm -f "\$ORCH_WT_ABS/\.shipyard-session-id"' "$cleanup_path" | head -1 | cut -d: -f1)
+self_orch_reap_line=$(grep -n 'classification "self-orchestrator"' "$cleanup_path" | head -1 | cut -d: -f1)
+if [[ -n "$rm_stash_line" && -n "$self_orch_reap_line" && "$rm_stash_line" -lt "$self_orch_reap_line" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "cleanup-summary.md deletes the session-id stash BEFORE the orchestrator-worktree reap call, not after (#729)"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "cleanup-summary.md deletes the session-id stash BEFORE the orchestrator-worktree reap call, not after (#729)"
+  printf '    rm_stash_line=%s self_orch_reap_line=%s (rm must come first)\n' "${rm_stash_line:-missing}" "${self_orch_reap_line:-missing}"
+  fail=$((fail+1))
+fi
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
