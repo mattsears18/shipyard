@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.9.4 — 2026-07-13
+
+Git enforces one-worktree-per-branch, so a re-dispatched issue-work worker's `git checkout -B do-work/issue-<N>` hard-failed whenever a prior (usually reaped) dispatch for the same issue had left its worktree on disk still holding that branch name — a `locked` worktree looks identical whether it's a dead scaffold or a live concurrent worker's, so the spec gave the worker no safe way to tell and no defined recovery, leaving it to improvise exactly where an improvisation (removing another worktree, force-deleting its branch) could destroy unpushed work (closes #736).
+
+- `plugins/shipyard/agents/issue-worker/issue-work.md` — §3's branch step is now collision-aware: it attempts the normal `git checkout -B` first, and on an `already used by worktree` failure falls back to a collision-free LOCAL branch name while never touching the other worktree. §5's push and `gh pr create` calls now target the canonical `REMOTE_BRANCH` (`do-work/issue-<N>`) explicitly via `HEAD:refs/heads/<name>` and `--head`, so the PR — and the orchestrator's orphan triage — still resolve correctly even when the local checkout diverges. A new `Don't` bullet documents the guardrail.
+- `plugins/shipyard/scripts/tests/do-work-split.test.sh` — new regression section pinning the collision detection, the local/remote branch split, the never-touch-the-other-worktree rule, and the explicit `--head` on PR creation.
+
 ### 2.9.3 — 2026-07-13
 
 On an ungated repo shape, issue-work §6.a correctly makes a worker block on `gh pr checks --watch` and merge by hand only once green — but the return string that outcome reported was `auto-merge: merged-direct`, the exact same token `gh pr merge --auto` silently falling through to an immediate merge would report. Both events leave a PR at `state: MERGED` with `autoMergeRequest: null`, so a worker deriving the outcome from `gh pr view`'s post-merge snapshot alone can't tell "I watched checks and merged correctly" from "the detector mispredicted and `--auto` merged unverified" — the exact regression shape #716 exists to catch. In one session, 2 of 4 observed ungated-branch merges reported `merged-direct` for what was, on inspection, a correctly-gated manual merge, erasing the one signal that would reveal a real #716-class regression (closes #734).
