@@ -495,8 +495,10 @@ rm -rf "$tmphome"
 echo "== bump-tokens — USD pricing"
 # --------------------------------------------------------------------------
 # Pricing table is embedded in the script (per 1M tokens). Verify the
-# math for a known model (opus = $15 input + $75 output per 1M).
-#   1_000_000 * $15 / 1_000_000 = $15.00 for 1M input tokens.
+# math for a known model (Opus tier = $5 input + $25 output per 1M).
+#   1_000_000 * $5 / 1_000_000 = $5.00 for 1M input tokens.
+# (The pre-#728 table carried a stale $15/$75 Opus rate — the pre-Opus-4.5
+# price — which over-reported every Opus dispatch by 3x.)
 
 tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-price" --repo "o/r" >/dev/null
@@ -506,15 +508,21 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --input 1000000 --output 0 \
   --model claude-opus-4-7 >/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-price" --path ".tokens.totals.estimated_usd")
-assert_equals "$out" "15" "opus pricing: 1M input tokens -> \$15.00 USD"
+assert_equals "$out" "5" "opus pricing: 1M input tokens -> \$5.00 USD"
 
-# Unknown model -> zero USD; tokens still counted.
+# Unknown model -> tokens still counted, USD unknown. Crucially the USD is
+# NOT silently booked as a confident $0: the model is recorded in
+# `.tokens.unpriced_models` so every downstream reader can label the total a
+# LOWER BOUND (issue #728 — see pricing-coverage.test.sh for the full
+# contract).
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-price" \
   --input 1000 \
-  --model "unknown-model" >/dev/null
+  --model "unknown-model" 2>/dev/null >/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-price" --path ".tokens.totals.input")
 assert_equals "$out" "1001000" "unknown model still records token counts"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-price" --path ".tokens.unpriced_models" | jq -r '.[0]')
+assert_equals "$out" "unknown-model" "unknown model is flagged, not silently zeroed"
 
 rm -rf "$tmphome"
 
@@ -538,14 +546,15 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-dated-haiku" --path ".tokens.totals.estimated_usd")
 assert_equals "$out" "1" "dated haiku suffix resolves to canonical pricing row"
 
-# Bare alias `opus` should resolve to claude-opus-4-7.
+# Bare alias `opus` should resolve to the current Opus (claude-opus-4-8).
+# Opus-tier input is $5/Mtok → 1M input = $5.00.
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-alias-opus" --repo "o/r" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-alias-opus" \
   --input 1000000 --output 0 \
   --model "opus" >/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-alias-opus" --path ".tokens.totals.estimated_usd")
-assert_equals "$out" "15" "bare alias 'opus' resolves to canonical pricing row"
+assert_equals "$out" "5" "bare alias 'opus' resolves to canonical pricing row"
 
 # Bare alias `sonnet` should resolve to claude-sonnet-4-6.
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-alias-sonnet" --repo "o/r" >/dev/null
@@ -652,15 +661,17 @@ assert_contains "$out" "issue-work" "comment format includes the mode"
 # unitless ratio rather than a currency amount. This pins the format so a
 # future jq refactor can't regress.
 #
-# 18203 input + 4102 output + 8210 cache_read at opus-4-7 pricing
-# (15 / 75 / 1.5 USD per 1M tokens):
-#   18203 * 15/1e6 + 4102 * 75/1e6 + 8210 * 1.5/1e6 = 0.27305 + 0.30765 + 0.01232 = 0.59302
-# rounds to $0.59.
-assert_contains "$out" "| Estimated cost (USD) | \$0.59 |" "USD cost rendered as \$X.YZ with dollar prefix + 2 decimals"
+# 18203 input + 4102 output + 8210 cache_read at Opus-tier pricing
+# (5 / 25 / 0.5 USD per 1M tokens — see PRICING_JQ; the pre-#728 table
+# carried a stale $15/$75 Opus rate):
+#   18203 * 5/1e6 + 4102 * 25/1e6 + 8210 * 0.5/1e6
+#     = 0.091015 + 0.10255 + 0.004105 = 0.19767
+# rounds to $0.20.
+assert_contains "$out" "| Estimated cost (USD) | \$0.20 |" "USD cost rendered as \$X.YZ with dollar prefix + 2 decimals"
 
-# Negative regression check: the unrounded raw-float string (`0.593`) must
+# Negative regression check: the unrounded raw-float string (`0.19767`) must
 # NOT appear in the comment body. If this fires, the formatter was bypassed.
-if [[ "$out" == *"| Estimated cost (USD) | 0.593 |"* ]]; then
+if [[ "$out" == *"| Estimated cost (USD) | 0.19767 |"* ]]; then
   printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "USD cost no longer renders as raw float"
   fail=$((fail+1))
 else
@@ -686,14 +697,14 @@ rm -rf "$tmphome"
 
 # Rounding edge case: a token count that produces a value with >2 decimal
 # places must round to cents (banker's rounding via jq's `round`). 18203
-# input tokens alone at opus-4-7 pricing = 0.27305 -> $0.27.
+# input tokens alone at Opus-tier pricing ($5/Mtok) = 0.091015 -> $0.09.
 tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-round" --repo "o/r" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-round" --input 18203 \
   --mode issue-work --model claude-opus-4-7 >/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-round" --format comment)
-assert_contains "$out" "| Estimated cost (USD) | \$0.27 |" "0.27305 USD rounds to \$0.27"
+assert_contains "$out" "| Estimated cost (USD) | \$0.09 |" "0.091015 USD rounds to \$0.09"
 rm -rf "$tmphome"
 
 # Bad --format value -> usage error.

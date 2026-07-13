@@ -128,9 +128,26 @@
 #
 #   The USD estimate in `bump-tokens` and `read-tokens` uses a hardcoded
 #   pricing table embedded in this script (per 1M tokens, current as of
-#   2026-05-21). Update the `PRICING_JQ` block below when Anthropic
-#   changes pricing. Unknown models fall back to zero — the token counts
-#   are still tracked, only the dollar estimate is `0.00`.
+#   2026-07-13). Update the `PRICING_JQ` block below when Anthropic
+#   changes pricing or ships a new model.
+#
+#   An unknown model is NOT silently priced at zero (issue #728). $0.00 is
+#   a legitimate value and must not double as the error sentinel: a stale
+#   table would otherwise report a confident — and confidently wrong —
+#   near-zero spend for every dispatch on a model it hasn't heard of.
+#   Instead, `bump-tokens` on a table miss:
+#
+#     * still records the token counts (no data is lost),
+#     * emits a loud warning on stderr (the call is fire-and-forget, so it
+#       must not fail the dispatch — but it must not be silent either),
+#     * records the model id in the session's `.tokens.unpriced_models`
+#       set and stamps `unpriced: true` on the `per_invocation` entry.
+#
+#   `read-tokens`, the end-of-session summary, and `/shipyard:cost report`
+#   read that set and label the USD total a LOWER BOUND when it's non-empty.
+#   `scripts/tests/pricing-coverage.test.sh` asserts every model id shipped
+#   in the repo (config defaults + agent-shim frontmatter) resolves to a
+#   pricing row, so a new model can't ship into a $0 hole.
 #
 # Environment variables:
 #
@@ -233,17 +250,70 @@ EOF
 }
 
 # --------------------------------------------------------------------------
-# Pricing table — USD per 1M tokens, current as of 2026-05-21. Update
-# alongside Anthropic's pricing page. Models not listed fall back to zero
-# (token counts still recorded, USD estimate emits 0.00).
+# Pricing table — USD per 1M tokens, current as of 2026-07-13. Update
+# alongside Anthropic's pricing page whenever pricing changes OR a new model
+# ships. A model that is NOT listed here is treated as *unpriced*, not as
+# free: see the "Pricing table" section of the header comment and
+# `resolve_pricing_row` below (issue #728).
+#
+# Cache rows follow Anthropic's published multipliers off the input rate:
+# cache_read = 0.1x input, cache_creation (5-minute TTL) = 1.25x input.
+#
+# NOTE (#728): the `claude-opus-4-7` / `claude-opus-4-6` rows previously
+# carried the pre-Opus-4.5 rate ($15/$75). Opus-tier pricing is $5/$25 —
+# the stale rows over-reported every Opus dispatch by 3x, which is the same
+# "confidently wrong number" failure this issue exists to close, so they are
+# corrected here alongside the new `claude-opus-4-8` row.
 # --------------------------------------------------------------------------
 PRICING_JQ='{
-  "claude-opus-4-7":   { "input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_creation": 18.75 },
-  "claude-opus-4-6":   { "input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_creation": 18.75 },
+  "claude-fable-5":    { "input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_creation": 12.50 },
+  "claude-opus-4-8":   { "input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_creation":  6.25 },
+  "claude-opus-4-7":   { "input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_creation":  6.25 },
+  "claude-opus-4-6":   { "input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_creation":  6.25 },
+  "claude-sonnet-5":   { "input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_creation":  3.75 },
   "claude-sonnet-4-6": { "input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_creation":  3.75 },
   "claude-sonnet-4-5": { "input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_creation":  3.75 },
   "claude-haiku-4-5":  { "input":  1.00, "output":  5.00, "cache_read": 0.10, "cache_creation":  1.25 }
 }'
+
+# Bare-alias map. Some dispatch sites pass `opus` / `sonnet` / `haiku`
+# rather than a canonical id; each resolves to the *current* model of that
+# tier. Keep in lockstep with PRICING_JQ when a tier's current model rolls.
+ALIASES_JQ='{
+  "opus":   "claude-opus-4-8",
+  "sonnet": "claude-sonnet-4-6",
+  "haiku":  "claude-haiku-4-5"
+}'
+
+# resolve_pricing_row <model-id>
+#
+# Echo the pricing row for <model-id> as compact JSON, or the empty string
+# when the model is unknown to the table. The caller distinguishes the two
+# (a "" return is the unpriced sentinel) — this is the single place the
+# lookup lives, so bump-tokens' warning and the USD math can never disagree
+# about whether a model was priced.
+#
+# Lookup is alias-then-longest-prefix, not exact-match (closes #226): the
+# harness reports dated ids like `claude-haiku-4-5-20251001`, and some
+# callers pass bare aliases. A dated suffix resolves via the prefix match;
+# a bare alias resolves via ALIASES_JQ. Longest-prefix (rather than first
+# match) keeps `claude-opus-4-8` from being swallowed by a hypothetical
+# shorter `claude-opus-4` key.
+resolve_pricing_row() {
+  local model="${1:-}"
+  [[ -z "$model" ]] && { printf ''; return 0; }
+  jq -c -n \
+    --arg model "$model" \
+    --argjson pricing "$(jq -c -n "$PRICING_JQ")" \
+    --argjson aliases "$(jq -c -n "$ALIASES_JQ")" '
+      ($aliases[$model] // $model) as $resolved
+      | $pricing
+      | to_entries
+      | map(select(.key as $k | $resolved | startswith($k)))
+      | sort_by(-(.key | length))
+      | (.[0].value // empty)
+    ' 2>/dev/null
+}
 
 # Resolve the canonical session-file path. Mirrors the spec in
 # commands/do-work.md: `$SHIPYARD_HOME/sessions/<session-id>.json`.
@@ -504,7 +574,8 @@ cmd_init() {
          },
          per_issue: {},
          per_pr: {},
-         per_invocation: []
+         per_invocation: [],
+         unpriced_models: []
        },
        setup: null
      }' | atomic_write "$target"
@@ -867,13 +938,31 @@ cmd_bump_tokens() {
   # per-issue / per-pr buckets when --issue / --pr is supplied; always
   # append a `per_invocation` ring-buffer entry (cap at 200) for trace.
   #
-  # `cost` is computed inline using the embedded pricing table:
+  # `cost` is computed from the pricing row resolved by `resolve_pricing_row`:
   #
   #   usd = (input * P.input + output * P.output
   #        + cache_read * P.cache_read + cache_creation * P.cache_creation) / 1e6
   #
-  # Unknown models → zero USD (price lookup returns `null`, multiplications
-  # short-circuit to 0 via the `// 0` fallback).
+  # Unpriced model (a non-empty --model that misses the table) → the token
+  # counts are still recorded, but the dispatch is flagged rather than
+  # silently booked at $0.00 (issue #728). We warn loudly on stderr and mark
+  # the invocation + the session-level `unpriced_models` set so every
+  # downstream reader can label the USD figure a LOWER BOUND.
+  #
+  # An *empty* --model is a different thing (the caller didn't attribute a
+  # model at all) and is NOT flagged as unpriced — `per_invocation[].model`
+  # is already null, which is self-describing.
+  local price_row
+  price_row=$(resolve_pricing_row "$model")
+  local unpriced=0
+  if [[ -n "$model" && -z "$price_row" ]]; then
+    unpriced=1
+    echo "bump-tokens: WARNING — model '${model}' is not in the pricing table; its token counts are recorded but its USD cost is UNKNOWN (booked as 0). Session USD totals are a LOWER BOUND. Add the model to PRICING_JQ in $(basename "${BASH_SOURCE[0]}") — see https://github.com/mattsears18/shipyard/issues/728" >&2
+  fi
+  # A miss still needs a numeric row for the arithmetic below; the `unpriced`
+  # flag — not the zeros — is what carries "we don't know what to charge".
+  [[ -z "$price_row" ]] && price_row='{"input":0,"output":0,"cache_read":0,"cache_creation":0}'
+
   local jq_args=(
     --arg now "$now"
     --argjson input "$input"
@@ -884,7 +973,8 @@ cmd_bump_tokens() {
     --arg model "$model"
     --arg issue "$issue"
     --arg pr "$pr"
-    --argjson pricing "$(jq -c -n "$PRICING_JQ")"
+    --argjson p "$price_row"
+    --argjson unpriced "$unpriced"
     --argjson degraded "$degraded_total_only"
   )
 
@@ -929,32 +1019,21 @@ cmd_bump_tokens() {
   fi
 
   # Compose the full pipeline. `$usd_delta` is computed once at the top and
-  # reused in every accumulator below.
-  #
-  # Pricing lookup is longest-prefix-match, not exact-match: the harness
-  # reports dated model ids like `claude-haiku-4-5-20251001`, and some
-  # callers pass bare aliases like `opus` / `sonnet` / `haiku`. The pricing
-  # table is keyed on the canonical undated id (`claude-haiku-4-5`); a
-  # longest-prefix match resolves the dated suffix, and a fallback alias
-  # table resolves bare aliases. Both fall through to a zero row only when
-  # the model is genuinely unknown to the table (closes #226).
+  # reused in every accumulator below. `$p` (the pricing row) and `$unpriced`
+  # are resolved shell-side by `resolve_pricing_row` so the warning and the
+  # arithmetic can never disagree about whether the model was priced.
   local jq_pipeline='
-    {opus: "claude-opus-4-7", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5"} as $aliases
-    | ($aliases[$model] // $model) as $resolved
-    | (
-        $pricing
-        | to_entries
-        | map(select(.key as $k | $resolved | startswith($k)))
-        | sort_by(-(.key | length))
-        | (.[0].value // {input:0, output:0, cache_read:0, cache_creation:0})
-      ) as $p
-    | (
+    (
         ($input * ($p.input // 0)
          + $output * ($p.output // 0)
          + $cache_read * ($p.cache_read // 0)
          + $cache_creation * ($p.cache_creation // 0)
         ) / 1000000
       ) as $usd_delta
+    | .tokens.unpriced_models //= []
+    | (if $unpriced == 1
+         then .tokens.unpriced_models = ((.tokens.unpriced_models + [$model]) | unique)
+         else . end)
     | .tokens.totals.input          += $input
     | .tokens.totals.output         += $output
     | .tokens.totals.cache_read     += $cache_read
@@ -972,6 +1051,7 @@ cmd_bump_tokens() {
         cache_read: $cache_read,
         cache_creation: $cache_creation,
         estimated_usd: $usd_delta,
+        unpriced: ($unpriced == 1),
         degraded: ($degraded == 1)
       }]
     | .tokens.per_invocation = (.tokens.per_invocation | if length > 200 then .[-200:] else . end)
@@ -1046,12 +1126,21 @@ cmd_read_tokens() {
   # surfaces on the PR; issue scoping is only used for /shipyard:my-turn
   # cost surfacing). Without either, scope is session-wide totals.
   local scope_jq
+  # `unpriced_jq` yields the set of unpriced model ids in scope (issue #728).
+  # Session scope reads the durable session-level set; issue/pr scope derives
+  # it from the matching per_invocation entries. (The per_invocation ring
+  # buffer is capped at 200, so the session-level set — which never forgets —
+  # is the authoritative one where it's available.)
+  local unpriced_jq
   if [[ -n "$pr" ]]; then
     scope_jq='.tokens.per_pr[$key] // {input:0, output:0, cache_read:0, cache_creation:0, estimated_usd:0, issue:null}'
+    unpriced_jq='[.tokens.per_invocation[]? | select(.pr == ($key | tonumber)) | select(.unpriced == true) | .model] | unique'
   elif [[ -n "$issue" ]]; then
     scope_jq='.tokens.per_issue[$key] // {input:0, output:0, cache_read:0, cache_creation:0, estimated_usd:0}'
+    unpriced_jq='[.tokens.per_invocation[]? | select(.issue == ($key | tonumber)) | select(.unpriced == true) | .model] | unique'
   else
     scope_jq='.tokens.totals'
+    unpriced_jq='.tokens.unpriced_models // []'
   fi
 
   local key=""
@@ -1062,7 +1151,9 @@ cmd_read_tokens() {
   fi
 
   if [[ "$format" == "json" ]]; then
-    jq --arg key "$key" "$scope_jq" "$target"
+    # `unpriced_models` rides alongside the scope's token counts so a JSON
+    # consumer can tell "this cost $0" from "we don't know what this cost".
+    jq --arg key "$key" "($scope_jq) + {unpriced_models: ($unpriced_jq)}" "$target"
     return 0
   fi
 
@@ -1096,6 +1187,7 @@ cmd_read_tokens() {
     --arg repo "$session_repo" \
     "
     ($scope_jq) as \$scope
+    | ($unpriced_jq) as \$unpriced
     | ($mode_filter) as \$invocations
     | (\$invocations | map(.mode) | unique | map(select(. != null)) | join(\", \")) as \$modes
     | (\$invocations | map(.model) | unique | map(select(. != null)) | join(\", \")) as \$models
@@ -1116,6 +1208,13 @@ cmd_read_tokens() {
       (if \$models != \"\" then \"| Models | \" + \$models + \" |\n\" else \"\" end) +
       \"| Session | \`\" + \$session_id + \"\` (\" + \$started + \") |\n\" +
       \"| Repo | \" + \$repo + \" |\n\n\" +
+      (if (\$unpriced | length) > 0 then
+         \"> ⚠️ **The USD figure above is a LOWER BOUND.** \" +
+         (\$unpriced | length | tostring) +
+         \" model(s) in this scope are missing from the pricing table, so their spend is booked as \$0.00: \" +
+         (\$unpriced | map(\"\`\" + . + \"\`\") | join(\", \")) +
+         \". Add them to \`PRICING_JQ\` in \`scripts/session-state.sh\` (see issue #728).\n\n\"
+       else \"\" end) +
       \"_Posted automatically by \`/shipyard:do-work\` for cost-tracking. Edit-or-create idempotency keyed on the HTML sentinel comment above._\n\"
     " "$target"
 }

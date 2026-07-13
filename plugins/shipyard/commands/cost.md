@@ -60,6 +60,24 @@ TOTALS
 Want more detail? Try '/shipyard:cost report --by-issue --top 20'.
 ```
 
+## Unpriced models — when the totals are a LOWER BOUND
+
+The USD figures come from a hand-maintained pricing table (`PRICING_JQ` in `scripts/session-state.sh`), which goes stale every time Anthropic ships a model. A model the table has never heard of is reported, **not** silently priced at zero ([#728](https://github.com/mattsears18/shipyard/issues/728)) — `$0.00` is a legitimate value and must never double as the "I don't know what to charge" sentinel.
+
+When any session in the window ran on an unpriced model, the `Spend:` line is tagged `[LOWER BOUND]` and the report prints an advisory naming the offending model ids:
+
+```
+TOTALS
+  ...
+  Spend:           $12.40 (avg $6.20/session)  [LOWER BOUND]
+
+⚠  UNPRICED MODELS — the spend above is a LOWER BOUND
+  2 session(s) ran on 1 model(s) missing from the pricing table; their token counts are
+  recorded but their USD cost is booked as $0.00:
+    - claude-opus-4-9
+  Fix: add them to PRICING_JQ in scripts/session-state.sh (issue #728).
+```
+
 **`--show-setup`** adds a `SETUP PHASE TIMING` section that aggregates per-phase wall-clock data across sessions. Only sessions recorded after the #238 instrumentation landed contribute — older sessions don't have a `setup` block. Once ≥ 3 instrumented sessions exist, the per-phase means become actionable for prioritizing the perf work in #235 (#231, #232, #233).
 
 The deeper flags compose:
