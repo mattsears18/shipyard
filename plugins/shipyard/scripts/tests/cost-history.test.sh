@@ -188,13 +188,17 @@ assert_equals "$lines" "1" "re-flushing the same session id is idempotent"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
-echo "== flush --reconcile — replaces an existing session record (#743)"
+echo "== flush --reconcile — merges in an existing session record (#743)"
 # --------------------------------------------------------------------------
 # Simulates the re-entrant-dispatch safety net: cleanup flushes once, a
 # worker dispatches again (bump-tokens --allow-degraded-init reconstructs
 # the same session id with fresh cumulative totals), and a second flush
 # must land the update rather than being silently skipped by the dedupe
-# gate that a plain (non-reconcile) flush would hit.
+# gate that a plain (non-reconcile) flush would hit. As of #745 the
+# reconciled write is a MERGE (element-wise max / union) rather than a
+# blind replace — since the fresh projection here is a superset of the
+# original (bump-tokens only adds), the merge result is identical to what
+# a replace would have produced, so this test's assertions are unchanged.
 
 tmphome=$(mktmphome)
 seed_session "$tmphome" "recon"
@@ -232,6 +236,123 @@ assert_contains "$content_after" '"issues_worked":[142,143,144]' \
   "reconciled record picks up the re-entrant dispatch's issue"
 assert_contains "$content_after" '"prs_created":[200,201]' \
   "reconciled record picks up the re-entrant dispatch's PR"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== flush --reconcile against a degraded/empty session file must not zero a populated record (#745)"
+# --------------------------------------------------------------------------
+# Regression test for the data-loss repro in #745: a re-entrant dispatch's
+# flush --reconcile is supposed to ADD the missing dispatch's tokens to the
+# ledger. If the session file backing the reconcile is degraded (freshly
+# re-`init`'d, corrupted, mid-repopulation) instead of carrying forward the
+# original cumulative totals, the old unconditional-replace implementation
+# overwrote a complete, correct ledger record with zeros. The fix makes
+# --reconcile merge instead of replace, so a degraded incoming projection
+# can never shrink the existing record.
+
+tmphome=$(mktmphome)
+seed_session "$tmphome" "degraded"
+
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "degraded" >/dev/null
+
+lines=$(wc -l < "$tmphome/cost-history.jsonl" | tr -d ' ')
+assert_equals "$lines" "1" "degraded-reconcile setup: first flush writes one populated session record"
+
+before=$(cat "$tmphome/cost-history.jsonl")
+assert_contains "$before" '"issues_worked":[142,143]' \
+  "degraded-reconcile setup: populated record carries the seeded issues"
+assert_contains "$before" '"prs_created":[200]' \
+  "degraded-reconcile setup: populated record carries the seeded PR"
+
+# Simulate the #745 corruption: re-`init` the session file (same session
+# id) to a fresh, all-empty state — mirrors a freshly re-`init`'d or
+# mid-repopulation session file at reconcile time. `--force` is required
+# because the file already exists from seed_session.
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "degraded" --repo "owner/repo" --force --pid 0 >/dev/null
+
+# The (now-empty) session file's projection has zero tokens and empty
+# issues_worked / prs_created. A plain --reconcile flush against it must
+# NOT zero out the existing populated ledger record.
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "degraded" --reconcile >/dev/null
+
+lines=$(wc -l < "$tmphome/cost-history.jsonl" | tr -d ' ')
+assert_equals "$lines" "1" "degraded reconcile — still exactly one session record"
+
+after=$(cat "$tmphome/cost-history.jsonl")
+assert_contains "$after" '"issues_worked":[142,143]' \
+  "degraded reconcile preserves the existing issues_worked — NOT zeroed"
+assert_contains "$after" '"prs_created":[200]' \
+  "degraded reconcile preserves the existing prs_created — NOT zeroed"
+if [[ "$after" == *'"issues_worked":[]'* ]] || [[ "$after" == *'"prs_created":[]'* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "degraded reconcile must not shrink issues_worked/prs_created to empty"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "degraded reconcile does not shrink issues_worked/prs_created to empty"
+  pass=$((pass+1))
+fi
+
+# Token totals: the pre-corruption record had non-zero input tokens; the
+# merge must preserve that (max(existing, 0) == existing), never write 0.
+input_tokens=$(printf '%s' "$after" | jq -r 'select(.session_id=="degraded") | .tokens.input')
+if [[ "$input_tokens" -gt 0 ]]; then
+  printf '  %sPASS%s  %s (input=%s)\n' "$GREEN" "$RESET" "degraded reconcile preserves non-zero token totals" "$input_tokens"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (input=%s)\n' "$RED" "$RESET" "degraded reconcile preserves non-zero token totals" "$input_tokens"
+  fail=$((fail+1))
+fi
+
+# Advisory: the degraded-incoming-vs-populated-existing case should be
+# surfaced on stderr (loud, not silent) even though the write itself
+# succeeds via merge. Re-run the same scenario fresh to capture stderr
+# cleanly (the flush above redirected stderr along with stdout).
+tmphome2=$(mktmphome)
+seed_session "$tmphome2" "degraded-advisory"
+SHIPYARD_HOME="$tmphome2" bash "$helper" flush --session-id "degraded-advisory" >/dev/null
+SHIPYARD_HOME="$tmphome2" bash "$session_helper" init \
+  --session-id "degraded-advisory" --repo "owner/repo" --force --pid 0 >/dev/null
+advisory_stderr=$(SHIPYARD_HOME="$tmphome2" bash "$helper" flush --session-id "degraded-advisory" --reconcile 2>&1 >/dev/null)
+assert_contains "$advisory_stderr" "merging rather than replacing" \
+  "degraded reconcile emits a loud stderr advisory naming the empty-vs-populated conflict"
+rm -rf "$tmphome2"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== flush --reconcile --force-replace — genuine destructive replace, backed up (#745)"
+# --------------------------------------------------------------------------
+# --force-replace is the explicit opt-in for a real destructive replace.
+# It must (a) require --reconcile, (b) back up the ledger file first, and
+# (c) actually discard the existing record's data (unlike the default
+# merge path above).
+
+tmphome=$(mktmphome)
+
+# --force-replace without --reconcile is a usage error.
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "x" --force-replace >/dev/null 2>/dev/null
+rc=$?
+assert_equals "$rc" "64" "--force-replace without --reconcile is a usage error"
+
+seed_session "$tmphome" "forcerepl"
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "forcerepl" >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "forcerepl" --repo "owner/repo" --force --pid 0 >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "forcerepl" \
+  --reconcile --force-replace >/dev/null
+
+lines=$(wc -l < "$tmphome/cost-history.jsonl" | tr -d ' ')
+assert_equals "$lines" "1" "force-replace — still exactly one session record"
+
+after_force=$(cat "$tmphome/cost-history.jsonl")
+assert_contains "$after_force" '"issues_worked":[]' \
+  "force-replace genuinely discards the existing record (empty issues_worked)"
+
+backup_count=$(find "$tmphome" -maxdepth 1 -name 'cost-history.jsonl.bak.*' | wc -l | tr -d ' ')
+assert_equals "$backup_count" "1" "force-replace backs up the ledger before replacing"
 
 rm -rf "$tmphome"
 
