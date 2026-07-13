@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.9.2 — 2026-07-13
+
+This repo's own committed `shipyard.config.json` asked for `concurrency.default: 2` while its own merge shape is `ungated` (admin + zero required status checks) — exactly the shape step 1.3's detector warns produces a steady-state manifest/CHANGELOG leapfrog at C≥2, since the first PR to direct-merge advances `main` and re-DIRTYs every sibling regardless of version coordination. The warning printed the recommendation but nothing enforced it, so avoiding the collision depended on the orchestrator LLM noticing the contradiction and overriding the committed config by judgment on every single run (closes #733).
+
+- `plugins/shipyard/commands/do-work/setup/01-repo-recovery.md` — step 1.3 now resolves an `EFFECTIVE_CONCURRENCY` value (explicit `--concurrency` CLI flag, else the repo's committed `concurrency.default`, else the built-in default of `1`) and clamps it to `1` whenever the detector's verdict is `ungated` AND no explicit CLI flag was passed — an operator-supplied `--concurrency N` always overrides the clamp. Step 1.5's `session-state.sh init` now consumes `$EFFECTIVE_CONCURRENCY` instead of independently re-reading the CLI arg.
+- `plugins/shipyard/commands/do-work.md` — the `--concurrency` flag doc now documents the clamp behavior.
+- `shipyard.config.json` — this repo's own `concurrency.default` corrected from `2` to `1`, matching its actual `ungated` merge shape (necessary on its own, but the step 1.3 clamp is what keeps the trap from re-arming on any repo with the same shape).
+
 ### 2.9.1 — 2026-07-13
 
 The orchestrator's own worktree reap fell through to the destructive-looking `--force` path on literally every session, defeating #712's non-force-first safety property for the one worktree guaranteed to need reaping every run (closes #729). The cause: step 0.55 stashes `.shipyard-session-id` — an untracked bookkeeping file — into the orchestrator worktree for the session's lifetime, so the tree is never actually clean by the time end-of-session cleanup tries the plain, non-force `git worktree remove`; git refuses `remove` on any dirty tree by design, so the `--force` fallback fired unconditionally. #712's mitigation (try non-force first, since a bare `--force` reads as `[Irreversible Local Destruction]` to Claude Code's auto-mode classifier) was dead code for this specific worktree from the day it shipped.
