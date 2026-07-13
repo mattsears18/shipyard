@@ -129,6 +129,38 @@ for safety in enforce-worktree-isolation enforce-edit-scope refuse-escape-symlin
 done
 
 # -----------------------------------------------------------------------------
+echo "== guard-primary-checkout.sh is registered under BOTH mutating matchers (#741)"
+# -----------------------------------------------------------------------------
+# A hook that exists on disk but isn't wired into hooks.json is indistinguishable
+# from no hook at all (#741's own root cause). Assert per-matcher registration
+# rather than the loose "registered somewhere" check above, since a hook wired
+# to only one of its two intended matchers is a silent half-guard.
+
+for matcher in "Bash" "Edit|Write|MultiEdit|NotebookEdit"; do
+  matcher_commands=$(jq -r --arg m "$matcher" '
+    [ .hooks.PreToolUse[]? | select(.matcher == $m) | .hooks[].command ] | .[]
+  ' "$hooks_json")
+  if printf '%s\n' "$matcher_commands" | grep -q '/guard-primary-checkout\.sh"'; then
+    ok "guard-primary-checkout.sh registered under matcher: $matcher"
+  else
+    no "guard-primary-checkout.sh NOT registered under matcher: $matcher"
+  fi
+done
+
+# The Bash matcher already carried refuse-escape-symlink-commit.sh — assert
+# it's still there alongside the new hook (hooks compose; the fix must
+# append, not replace).
+bash_commands=$(jq -r '
+  [ .hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[].command ] | .[]
+' "$hooks_json")
+if printf '%s\n' "$bash_commands" | grep -q '/refuse-escape-symlink-commit\.sh"' \
+  && printf '%s\n' "$bash_commands" | grep -q '/guard-primary-checkout\.sh"'; then
+  ok "Bash matcher composes refuse-escape-symlink-commit.sh AND guard-primary-checkout.sh (appended, not replaced)"
+else
+  no "Bash matcher lost an existing hook when guard-primary-checkout.sh was wired in"
+fi
+
+# -----------------------------------------------------------------------------
 echo "== Summary"
 # -----------------------------------------------------------------------------
 

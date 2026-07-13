@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
-# PreToolUse hook — guards a user's INTERACTIVE session against editing the
-# repo's PRIMARY checkout instead of a linked git worktree.
+# PreToolUse hook — guards ANY session (interactive or orchestrated) against
+# editing the repo's PRIMARY checkout instead of a linked git worktree.
 #
-# This is the reference hook offered (opt-in, default off) by /shipyard:init
-# (issue #482). It is NOT registered in the plugin's own hooks.json — it is
-# wired into the user's `~/.claude/settings.json` (global) or `.claude/
-# settings.json` (repo) by /shipyard:init, so users who don't opt in never run
-# it. The plugin ships the script so init can reference it via
-# ${CLAUDE_PLUGIN_ROOT}/hooks/guard-primary-checkout.sh.
+# Wired into the plugin's own hooks.json (issue #741) under both the
+# `Edit|Write|MultiEdit|NotebookEdit` matcher and the `Bash` matcher, so it
+# runs unconditionally for every PreToolUse call once the plugin is
+# installed — no opt-in required. Prior to #741 this script existed but was
+# never registered anywhere in hooks.json, making it dead code; the #482
+# real-world repro (a second interactive session switching the shared
+# primary checkout's branch mid-task) and the #741 repro (a dispatched
+# worker running `git checkout -B` against the primary) both went
+# unenforced as a result.
+#
+# /shipyard:init ALSO offers this same script as an *additional*, separately
+# configurable opt-in wiring into the user's `~/.claude/settings.json`
+# (global) or `.claude/settings.json` (repo) — a user who has run
+# /shipyard:init may end up with the hook registered twice (plugin-level +
+# user-level). That's harmless: both copies run the same idempotent
+# detection and their exit codes compose (either one blocking is enough),
+# and the user-level copy lets a user pin a stricter SHIPYARD_PRIMARY_GUARD
+# mode at their own settings layer without editing the plugin.
 #
 # THE PROBLEM IT SOLVES
 # ---------------------
@@ -39,13 +51,22 @@
 # ----------------------------------------------------------------
 #   off        → never fires (a no-op; lets the user disable without unwiring)
 #   warn       → prints the guidance to stderr but exits 0 (does NOT block)
-#   block      → prints the guidance and exits 2 (blocks the Edit/Write/commit)
+#   block      → prints the guidance and exits 2 (blocks the mutating call)
 # /shipyard:init writes the chosen mode into the hook's `env` block in
 # settings.json, so the same script serves all three policies.
 #
-# SCOPE: only Edit / Write / MultiEdit / NotebookEdit, and `git commit` Bash
-# invocations — the three mutating surfaces issue #482 names. Every other tool
-# (Read, Grep, plain Bash, a non-commit git command) falls through to exit 0.
+# SCOPE: Edit / Write / MultiEdit / NotebookEdit, and the full write-class git
+# surface for Bash — commit, checkout, switch, reset, branch -d/-D/-f
+# (deletion only; a bare `git branch <name>` just creates a ref and stays
+# out of scope), merge, rebase, cherry-pick, stash, clean (issue #741). Every
+# one of these can move the primary's HEAD or dirty its index out from under
+# a concurrent session — `git commit` alone (the original, pre-#741 scope)
+# was arguably the *least* dangerous of the set, since it never relocates
+# HEAD. Read-class git (status, log, show, diff, ls-remote, rev-parse,
+# worktree list, fetch) always falls through to exit 0 — the orchestrator and
+# workers legitimately run these against the primary checkout and the
+# worktree-isolation spec explicitly permits it. Any other tool (Read, Grep,
+# a non-write-class Bash command) also falls through to exit 0.
 #
 # FAIL-OPEN: not a repo / detection error / malformed input → allow. A guard
 # that blocks every edit on a hiccup is far worse than one that occasionally
@@ -74,14 +95,24 @@ case "$tool_name" in
     : # always in scope
     ;;
   Bash)
-    # Only `git commit` invocations are in scope for Bash. Everything else
-    # (Read-equivalent gits, plain commands) passes through. Match the command
-    # string loosely: a `git commit` token anywhere in the command. This
-    # mirrors the issue's `if: "Bash(git commit*)"` gate intent.
+    # The full write-class git surface is in scope for Bash — not just `git
+    # commit` (issue #741). Match the command string loosely: a write-verb
+    # token anywhere in the command, mirroring the issue's `if: "Bash(git
+    # commit*)"` gate intent but widened to the full write-class set. Everything
+    # else (read-class gits, plain commands) passes through unchanged.
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
-    if ! printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_-])git[[:space:]]+([^|&;]*[[:space:]])?commit([[:space:]]|$)'; then
-      exit 0
+    write_verbs='commit|checkout|switch|reset|merge|rebase|cherry-pick|stash|clean'
+    in_scope=0
+    if printf '%s' "$cmd" | grep -Eq "(^|[^[:alnum:]_-])git[[:space:]]+([^|&;]*[[:space:]])?(${write_verbs})([[:space:]]|\$)"; then
+      in_scope=1
+    elif printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_-])git[[:space:]]+([^|&;]*[[:space:]])?branch([[:space:]]|$)' \
+      && printf '%s' "$cmd" | grep -Eq '(^|[[:space:]])-([dDf]+|-delete|-force)([[:space:]=]|$)'; then
+      # `git branch` is only in scope with a deletion flag (-d/-D/-f, or the
+      # long forms) — a bare `git branch <name>` just creates a ref pointer
+      # and doesn't move HEAD, so it stays out of scope.
+      in_scope=1
     fi
+    [[ "$in_scope" == "0" ]] && exit 0
     ;;
   *)
     exit 0
@@ -130,9 +161,10 @@ session into its own worktree first:
      for the new location, and handles cleanup on exit.
   2. Fallback — `git worktree add ../<repo>-task <branch>` then cd into it.
 
-This guard was installed opt-in by /shipyard:init. To change or remove it, edit
-the SHIPYARD_PRIMARY_GUARD env (off | warn | block) on the hook entry in your
-settings.json, or re-run /shipyard:init.
+This guard now runs by default (wired into the shipyard plugin hooks.json). To
+change its mode, set the SHIPYARD_PRIMARY_GUARD env (off | warn | block) — via
+/shipyard:init for a per-repo or global settings.json override, or directly in
+your shell environment.
 EOF
 )
 

@@ -4,11 +4,14 @@
 # Run with:
 #   bash plugins/shipyard/hooks/tests/guard-primary-checkout.test.sh
 #
-# The hook is the opt-in primary-checkout guard offered by /shipyard:init
-# (issue #482). It fires (warn or block, per SHIPYARD_PRIMARY_GUARD) when an
-# Edit/Write/MultiEdit/NotebookEdit or `git commit` Bash call runs in the repo's
-# PRIMARY checkout rather than a linked worktree. It allows everything in a
-# linked worktree, allows non-mutating tools, and fails open on any uncertainty.
+# The hook is the primary-checkout guard, wired into hooks.json by default as
+# of issue #741 (previously it was opt-in-only via /shipyard:init, issue
+# #482). It fires (warn or block, per SHIPYARD_PRIMARY_GUARD) when an
+# Edit/Write/MultiEdit/NotebookEdit or a write-class git Bash call (commit,
+# checkout, switch, reset, branch -d/-D/-f, merge, rebase, cherry-pick,
+# stash, clean) runs in the repo's PRIMARY checkout rather than a linked
+# worktree. It allows everything in a linked worktree, allows read-class git
+# and other non-mutating tools, and fails open on any uncertainty.
 #
 # Each test crafts a PreToolUse JSON payload, pipes it to the hook with a given
 # SHIPYARD_PRIMARY_GUARD mode + cwd, and asserts on exit code + stderr.
@@ -153,6 +156,67 @@ assert_exit "$out" "0" "non-git command mentioning commit → allowed"
 
 out=$(run_hook block "$(bashpayload "git commit -m wip" "$WT")")
 assert_exit "$out" "0" "git commit in linked worktree → allowed"
+
+# -----------------------------------------------------------------------------
+echo "== the full write-class git surface is in scope (issue #741), not just commit"
+# -----------------------------------------------------------------------------
+# Deny list — every one of these can move the primary's HEAD or dirty its
+# index, and #741's repro showed `git checkout -B` slipping past the old
+# commit-only gate uncaught.
+for cmd in \
+  "git checkout -B do-work/issue-741 origin/main" \
+  "git checkout main" \
+  "git switch main" \
+  "git switch -c foo" \
+  "git reset --hard HEAD~1" \
+  "git branch -D do-work/issue-1" \
+  "git branch -d do-work/issue-1" \
+  "git branch -f main origin/main" \
+  "git merge origin/main" \
+  "git rebase main" \
+  "git cherry-pick abc123" \
+  "git stash" \
+  "git stash pop" \
+  "git clean -fd" \
+  ; do
+  out=$(run_hook block "$(bashpayload "$cmd" "$PRIMARY")")
+  assert_blocked_with "$out" "PRIMARY checkout" "'$cmd' in primary → blocked"
+done
+
+# Allow list — read-class git must keep falling through even after the
+# widened gate. The worktree-isolation spec explicitly permits the
+# orchestrator and workers to run these against the primary checkout.
+for cmd in \
+  "git status" \
+  "git log --oneline" \
+  "git show HEAD" \
+  "git diff" \
+  "git diff --name-only origin/main...HEAD" \
+  "git ls-remote origin" \
+  "git rev-parse --show-toplevel" \
+  "git worktree list" \
+  "git worktree list --porcelain" \
+  "git fetch origin" \
+  "git branch" \
+  "git branch --list" \
+  "git branch -a" \
+  ; do
+  out=$(run_hook block "$(bashpayload "$cmd" "$PRIMARY")")
+  assert_exit "$out" "0" "'$cmd' in primary → allowed (read-class)"
+done
+
+# The write-class verbs are also allowed once the cwd is a linked worktree —
+# the guard gates on cwd, not on the command string alone.
+out=$(run_hook block "$(bashpayload "git checkout -B do-work/issue-741 origin/main" "$WT")")
+assert_exit "$out" "0" "git checkout -B in linked worktree → allowed"
+
+# The #387 sanctioned corrective write (do-work's primary-checkout
+# branch-leak guard) runs `git -C <primary> checkout <default>` from the
+# orchestrator's OWN worktree cwd, never from cwd=primary itself. Assert that
+# shape stays allowed under the widened gate — the guard must key off cwd,
+# not off whether the command string merely mentions a write verb.
+out=$(run_hook block "$(bashpayload "git -C \"$PRIMARY\" checkout main 2>/dev/null && git -C \"$PRIMARY\" pull --ff-only 2>/dev/null || true" "$WT")")
+assert_exit "$out" "0" "#387 corrective 'git -C <primary> checkout' from a worktree cwd → allowed"
 
 # -----------------------------------------------------------------------------
 echo "== warn mode warns but does not block; off mode is a no-op"
