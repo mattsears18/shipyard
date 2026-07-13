@@ -35,6 +35,30 @@ fi
 
 The warning fires unconditionally of `--concurrency` (the steady-state leapfrog is worst at C≥2, but a C=1 operator who later raises concurrency benefits from having seen it once). The script's reads fold into the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) alongside step 1's reads — fire them in the same burst, not serially. The script fails safe on its own (any unreadable signal resolves toward `ungated`), so a transient read failure produces at worst an extra advisory line — never a hard failure on a diagnostic read.
 
+**Clamp the effective concurrency on `ungated` — a committed config default cannot silently win over the detector ([#733](https://github.com/mattsears18/shipyard/issues/733)).** The warning above is advisory-only by design (§1.3's opening line), which leaves a gap: a repo can commit `concurrency.default: 2` in `shipyard.config.json` while its own merge shape is `ungated`, and nothing stops a session that omits `--concurrency` from reading that committed default and dispatching two workers straight into the steady-state leapfrog the warning describes. Resolve the session's effective concurrency here, immediately after the verdict, and clamp it when the shape is `ungated`:
+
+```bash
+# Effective concurrency = explicit --concurrency CLI value if the operator
+# passed one, else this repo's committed concurrency.default (already loaded
+# into $EFFECTIVE_CONFIG by step 0.4), else the built-in default of 1.
+if [ -n "<--concurrency CLI value, if passed>" ]; then
+  EFFECTIVE_CONCURRENCY="<--concurrency CLI value>"
+else
+  EFFECTIVE_CONCURRENCY=$(printf '%s' "$EFFECTIVE_CONFIG" | jq -r '.concurrency.default // 1' 2>/dev/null)
+  [ -n "$EFFECTIVE_CONCURRENCY" ] && [ "$EFFECTIVE_CONCURRENCY" != "null" ] || EFFECTIVE_CONCURRENCY=1
+fi
+
+# The clamp only overrides a CONFIG-sourced value — an explicit CLI flag is
+# the operator asking for it by hand and always wins, even on an ungated
+# shape (they've seen the warning above; --concurrency is the override valve).
+if [ "$verdict" = "ungated" ] && [ -z "<--concurrency CLI value, if passed>" ] && [ "$EFFECTIVE_CONCURRENCY" -gt 1 ] 2>/dev/null; then
+  echo "[setup] concurrency clamped ${EFFECTIVE_CONCURRENCY} -> 1 (ungated merge shape)"
+  EFFECTIVE_CONCURRENCY=1
+fi
+```
+
+`EFFECTIVE_CONCURRENCY` is the value [step 1.5](#15-initialise-the-session-state-file) passes to `session-state.sh init --concurrency` — every downstream concurrency read (pool sizing, the parallel-vs-serial gates in [`00-config-worktree.md`'s C=1 index](00-config-worktree.md#lightweight-c1-path--whats-skipped-and-what-stays)) derives from that session-state value, so clamping here is sufficient; no other call site needs its own copy of this resolution. This clamp is deliberately narrow: it only downgrades a *config-sourced* default, never an explicit CLI flag, and it only fires on `ungated` — a `gated` repo's committed `concurrency.default: 2` (or higher) passes through unchanged, because on that shape `--auto` genuinely queues and the steady-state leapfrog this clamp exists to prevent cannot occur.
+
 **Where the behavioral gates actually are.** Every `gh pr merge --auto` call site in shipyard now branches on this same script's verdict — the split is by whether the caller can afford to block:
 
 | Call site | Runs on | On `ungated` |
@@ -60,9 +84,11 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" init \
   --session-id "<session-id>" \
   --repo "<owner/repo>" \
-  --concurrency <N from --concurrency arg> \
+  --concurrency "$EFFECTIVE_CONCURRENCY" \
   --soft-collision-concurrency <N from --soft-collision-concurrency arg>
 ```
+
+`$EFFECTIVE_CONCURRENCY` is resolved (and, on an `ungated` merge shape, clamped) by [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) — don't re-read `--concurrency` or `concurrency.default` independently here, or the clamp becomes bypassable by whichever read happens second.
 
 The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`). The default config above is the entire schema with empty queues + an `unknown` `main_ci` state — everything else gets filled in by later setup steps and the steady-state loop.
 
