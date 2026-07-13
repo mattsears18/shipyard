@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.9.6 — 2026-07-13
+
+`hooks/guard-primary-checkout.sh` — the primary-checkout guard hook — existed fully implemented but was never wired into `hooks.json`, making it dead code, and even once wired its Bash-scope gate only recognized `git commit`, letting `git checkout` / `switch` / `reset` / `branch -D` slip past uncaught. A dispatched issue-work worker's `git checkout -B` against the PRIMARY checkout during session `do-work-20260713T155328Z` (working #734) went completely unenforced as a result — the worker happened to self-correct, but the backstop that should have caught it wasn't running (closes #741).
+
+- `plugins/shipyard/hooks/hooks.json` — registers `guard-primary-checkout.sh` under both the `Edit|Write|MultiEdit|NotebookEdit` matcher and the `Bash` matcher, appended alongside the existing hooks on each (hooks compose).
+- `plugins/shipyard/hooks/guard-primary-checkout.sh` — widened the Bash-scope gate from `git commit` only to the full write-class git surface: `commit`, `checkout`, `switch`, `reset`, `branch -d`/`-D`/`-f` (deletion only), `merge`, `rebase`, `cherry-pick`, `stash`, `clean`. Read-class git (`status`, `log`, `show`, `diff`, `ls-remote`, `rev-parse`, `worktree list`, `fetch`) keeps falling through to exit 0, and the guard still keys off the calling `cwd` (not the command string alone) — the sanctioned `git -C <primary> checkout <default>` corrective write from [#387](https://github.com/mattsears18/shipyard/issues/387)'s branch-leak guard runs from the orchestrator's own worktree cwd and stays unaffected. The header/scope comments and the now-inaccurate "not registered in hooks.json" claims are updated to match.
+- `plugins/shipyard/commands/init.md` — the `/shipyard:init` opt-in flow (issue #482) now documents itself as a **user-level** wiring layered on top of the plugin-level default, not the exclusive registration path it used to be.
+- `plugins/shipyard/hooks/tests/hooks-json.test.sh` — new assertions that `guard-primary-checkout.sh` is registered under both matchers, and that the `Bash` matcher composes it alongside the pre-existing `refuse-escape-symlink-commit.sh` rather than replacing it.
+- `plugins/shipyard/hooks/tests/guard-primary-checkout.test.sh` — new deny-list / allow-list coverage for the widened write-class git surface, plus a regression case pinning the #387 sanctioned corrective write as unaffected.
+
 ### 2.9.5 — 2026-07-13
 
 #736's fix (PR #738) made issue-work.md's branch step collision-aware: on a worktree-name collision it falls back to a differently-named LOCAL branch (`do-work/issue-<N>-<timestamp>`) while still pushing to and opening the PR against the canonical REMOTE branch `do-work/issue-<N>`. That divergence was invisible to the orphan-triage sweep in `00-config-worktree.md`'s step 3c, which did an exact-match extraction and lookup on the local worktree's branch name — a suffixed branch would extract a garbage issue number, miss the real remote push, push a second spurious remote branch, and then open a duplicate PR (closes #739).

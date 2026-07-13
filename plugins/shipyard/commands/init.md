@@ -128,9 +128,11 @@ The command is intentionally a thin wrapper around `shipyard-config.sh`. The ass
 
 Issue [#482](https://github.com/mattsears18/shipyard/issues/482). This is **opt-in, default off** — do nothing unless the user picks `warn` or `block` (interactively, or via `--primary-guard`). When `--primary-guard off` (the default) or the user declines the prompt, skip this entire step.
 
+**As of issue [#741](https://github.com/mattsears18/shipyard/issues/741), `guard-primary-checkout.sh` is ALSO wired into the plugin's own `hooks.json` and runs by default (warn mode) for every session, regardless of this opt-in.** This step layers a **user-level** wiring on top of that plugin-level baseline — mainly useful for pinning `block` mode (the plugin-level default is `warn`, which never blocks) at a specific repo or globally. It does not newly enable a guard that was not already running.
+
 **The prompt (interactive).** Explain the tradeoff before asking:
 
-> shipyard isolates *background* `/do-work` workers in their own worktrees, but nothing protects your *interactive* sessions from colliding in this repo's primary checkout — two sessions sharing one working tree can switch the branch / dirty the index out from under each other. I can install a `PreToolUse` hook that fires when an `Edit` / `Write` / `git commit` runs in the primary checkout (not a linked worktree), nudging each editing session into its own `git worktree`. Pick a mode:
+> shipyard's plugin-level primary-checkout guard runs in `warn` mode by default — it prints guidance but doesn't block. I can install an additional `PreToolUse` hook entry in your own settings that pins a stricter mode: `warn` (unchanged, but explicit) or `block` (hard-blocks an `Edit` / `Write` / write-class `git` command until you're in a worktree). Pick a mode:
 >   - **off** (default) — don't install it.
 >   - **warn** — print guidance but don't block. Lowest friction; good for trying it out.
 >   - **block** — hard-block the edit/commit until you're in a worktree. Strongest protection.
@@ -166,7 +168,7 @@ Issue [#482](https://github.com/mattsears18/shipyard/issues/482). This is **opt-
 
 4. **Print a confirmation** naming both files touched and how to change/remove the guard later (edit `SHIPYARD_PRIMARY_GUARD` on the hook entry, or re-run `/shipyard:init --primary-guard off`).
 
-**Don't** hard-block by default, don't write the hook without the paired CLAUDE.md rule (the issue's carrot+stick refinement is explicit that init should offer both), and don't register this in the plugin's own `hooks.json` — it's a per-user opt-in that belongs in *their* `settings.json`, never in the plugin's always-on hook set.
+**Don't** hard-block by default, and don't write the hook without the paired CLAUDE.md rule (the issue's carrot+stick refinement is explicit that init should offer both). Note: this step's `settings.json` entry is a **user-level addition** layered on top of the plugin-level `hooks.json` wiring (issue #741) — it does not duplicate the "should this guard exist at all" decision, only "should this repo/user pin a stricter mode than the plugin default."
 
 ### 9.6 Optionally pre-authorize the worktree-reap commands
 
@@ -252,7 +254,7 @@ That second point is load-bearing and worth re-checking if this ever stops worki
 - Issue [#482](https://github.com/mattsears18/shipyard/issues/482) — the primary-checkout guard offered in [step 9.5](#95-optionally-install-the-primary-checkout-guard).
 - Issue [#714](https://github.com/mattsears18/shipyard/issues/714) — the worktree-reap allowlist offered in [step 9.6](#96-optionally-pre-authorize-the-worktree-reap-commands); follows [#712](https://github.com/mattsears18/shipyard/issues/712) / [#713](https://github.com/mattsears18/shipyard/issues/713), which made the reap non-force-first and made a denial visible.
 - [`plugins/shipyard/scripts/worktree-reap.sh`](../scripts/worktree-reap.sh) — the reap helper whose commands [step 9.6](#96-optionally-pre-authorize-the-worktree-reap-commands) pre-authorizes.
-- [`plugins/shipyard/hooks/guard-primary-checkout.sh`](../hooks/guard-primary-checkout.sh) — the reference guard hook (`off`/`warn`/`block` via `SHIPYARD_PRIMARY_GUARD`); shipped so init can wire it into the user's `settings.json` via `${CLAUDE_PLUGIN_ROOT}`. NOT registered in the plugin's `hooks.json`.
+- [`plugins/shipyard/hooks/guard-primary-checkout.sh`](../hooks/guard-primary-checkout.sh) — the guard hook (`off`/`warn`/`block` via `SHIPYARD_PRIMARY_GUARD`). Registered in the plugin's own `hooks.json` (default `warn`, issue [#741](https://github.com/mattsears18/shipyard/issues/741)); this init step additionally wires it into the user's `settings.json` via `${CLAUDE_PLUGIN_ROOT}` to let a user pin a stricter mode.
 - [`/shipyard:config`](./config.md) — show / get / set / edit subcommands for managing the config post-init.
 - [`plugins/shipyard/scripts/shipyard-config.sh`](../scripts/shipyard-config.sh) — the underlying loader / validator / writer.
 - [`plugins/shipyard/schemas/shipyard.config.schema.json`](../schemas/shipyard.config.schema.json) — the repo-config schema.
