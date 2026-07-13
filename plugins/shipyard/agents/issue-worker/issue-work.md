@@ -88,10 +88,39 @@ You're already in your isolated worktree (worktree discipline rule applies — s
 git fetch origin
 # Use the repo's default branch, not assumed 'main'
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-git checkout -B do-work/issue-<N> origin/$DEFAULT_BRANCH
+
+# REMOTE_BRANCH is the canonical name — orphan triage and the PR's head
+# always resolve to this, regardless of what this worktree's local branch
+# ends up being called (see the collision fallback below).
+REMOTE_BRANCH="do-work/issue-<N>"
+LOCAL_BRANCH="$REMOTE_BRANCH"
+
+if ! git checkout -B "$LOCAL_BRANCH" "origin/$DEFAULT_BRANCH" 2>/tmp/do-work-checkout-err.log; then
+  if grep -q "already used by worktree" /tmp/do-work-checkout-err.log; then
+    # Collision: a prior dispatch for this same issue (most often a reaped
+    # or crashed one) left its worktree on disk still holding the canonical
+    # branch name. Git enforces one-worktree-per-branch, so `checkout -B`
+    # hard-fails here — and a "locked" worktree looks identical whether it's
+    # a dead scaffold or a live concurrent worker's, so don't try to guess.
+    #
+    # Do NOT touch the other worktree — no `git worktree remove`, no
+    # `git worktree remove --force`, no `git branch -D` on its branch. Fall
+    # back to a collision-free LOCAL branch name for this worktree only;
+    # REMOTE_BRANCH stays the canonical `do-work/issue-<N>` so the pushed
+    # branch, the PR, and orphan triage all still resolve correctly.
+    LOCAL_BRANCH="do-work/issue-<N>-$(date +%s)"
+    git checkout -B "$LOCAL_BRANCH" "origin/$DEFAULT_BRANCH"
+  else
+    cat /tmp/do-work-checkout-err.log >&2
+    echo "blocked #<N> at branch-setup: git checkout -B failed for a reason other than a worktree name collision — $(cat /tmp/do-work-checkout-err.log)"
+    exit 0
+  fi
+fi
 ```
 
-Branch name comes from the orchestrator's dispatch prompt and must be exactly `do-work/issue-<N>`. The deterministic name lets the orchestrator's next-session orphan triage find your worktree if this session is killed.
+Branch name comes from the orchestrator's dispatch prompt and must be exactly `do-work/issue-<N>` — that constraint is on the **remote** branch (`$REMOTE_BRANCH`), not necessarily this worktree's local checkout. The deterministic *remote* name is what lets the orchestrator's next-session orphan triage find your PR if this session is killed; [step 5](#5-commit--push--pr) pushes to and opens the PR against `$REMOTE_BRANCH` explicitly, so the fallback case still produces a discoverable, canonically-named PR even when `$LOCAL_BRANCH` diverges.
+
+**When the fallback fires** (`$LOCAL_BRANCH != $REMOTE_BRANCH`), the collision means a *different* on-disk worktree — dead scaffold or live sibling, you genuinely cannot tell which without violating worktree discipline by `cd`-ing into it — is holding `$REMOTE_BRANCH` locally. Leave it strictly alone for the rest of this dispatch. Its own lifecycle (a live worker's own return, or the orchestrator's orphan-triage sweep) is responsible for cleaning it up — not you, and not this session.
 
 ### 4. Implement
 
@@ -218,9 +247,17 @@ Typecheck and lint are cheap, so workers reliably run them before pushing — bu
 ```bash
 git add <specific paths>   # never -A; avoid accidentally committing local junk
 git commit -m "<conventional commit title referencing the issue>"
-git push -u origin do-work/issue-<N>
+
+# Push to the canonical REMOTE branch name regardless of what this
+# worktree's local branch is called — `HEAD:refs/heads/<name>` pushes the
+# current commit under an explicit remote ref and sets it as this local
+# branch's upstream, so it's correct whether §3's collision fallback fired
+# or not. ${REMOTE_BRANCH:-do-work/issue-<N>} degrades to the plain literal
+# if this variable somehow didn't survive from step 3.
+git push -u origin "HEAD:refs/heads/${REMOTE_BRANCH:-do-work/issue-<N>}"
 
 gh pr create --repo <owner/repo> \
+  --head "${REMOTE_BRANCH:-do-work/issue-<N>}" \
   --label shipyard \
   --title "<conventional commit title>" \
   --body "$(cat <<'EOF'
@@ -235,7 +272,7 @@ EOF
 )"
 ```
 
-The body **must** include `Closes #<N>` (case-insensitive, on its own line) so the issue auto-closes on merge. The `--label shipyard` is required by the worker-preamble skill — see that skill for the rationale.
+The body **must** include `Closes #<N>` (case-insensitive, on its own line) so the issue auto-closes on merge. The `--label shipyard` is required by the worker-preamble skill — see that skill for the rationale. The explicit `--head` removes any ambiguity about which branch the PR is built from — load-bearing when `$LOCAL_BRANCH` (this worktree's checkout) diverges from `$REMOTE_BRANCH` (the pushed, canonical branch) per §3's collision fallback.
 
 **Use a closing keyword for the dispatched issue — never a bare reference ([#481](https://github.com/mattsears18/shipyard/issues/481)).** The resolving PR for your dispatched issue `#<N>` **is** the issue's resolution, so its body MUST reference `#<N>` with one of GitHub's [closing keywords](https://docs.github.com/en/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue) — `Closes #<N>`, `Fixes #<N>`, or `Resolves #<N>`. A **bare reference** — `Refs #<N>`, `Related to #<N>`, or a plain `#<N>` — does NOT register a closing link: GitHub leaves the issue OPEN forever after the PR merges, the work ships, the issue silently lingers, and `/do-work` can re-pick an already-resolved issue (polluting the "zero matching issues remain" termination signal). The bare-reference forms are reserved exclusively for *additional, non-resolving* issue mentions in the same body (e.g. "also touches #<other>" where `#<other>` is NOT being resolved by this PR).
 
@@ -576,6 +613,7 @@ When blocked → return:
 ## Don't
 
 - Don't open a duplicate PR. Pre-flight check (step 0) exists for this reason.
+- **Don't touch another worktree when `git checkout -B do-work/issue-<N>` fails on a name collision.** A "locked" worktree looks identical whether it's a dead scaffold from a reaped dispatch or a live concurrent worker's — you cannot tell without `cd`-ing into it, which worktree discipline forbids. No `git worktree remove` (with or without `--force`), no `git branch -D` on the other worktree's branch. Use the local-name/remote-name split in [§3](#3-sync--branch) instead: check out a collision-free local branch, but still push to and open the PR against the canonical `do-work/issue-<N>` remote name so orphan triage can still find it (issue [#736](https://github.com/mattsears18/shipyard/issues/736)).
 - Don't merge manually unless auto-merge is unavailable AND all checks are green AND the user has explicitly authorized it for this run. Otherwise leave the PR ready and report.
 - **Don't arm auto-merge when `originating_author_trust == "external"`.** That field is the dispatch-side auto-merge gate — defense in depth against external prompt-injection vectors riding `gh pr merge --auto` to `main` when both principal gates (author allowlist, intake auto-label) have failed simultaneously. The external branch in step 6 explicitly does NOT call `gh pr merge --auto`; it labels the PR `needs-human-review` and comments. If you see `external` and reflexively type `gh pr merge --auto` anyway because that's what you do in trusted mode, you've defeated the gate. When the dispatch prompt's trust field is missing or unparseable, do NOT blanket-default to either value — resolve the author's collaborator permission live per [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) (push-capable role ⇒ trusted, non-collaborator / API failure ⇒ external). A blanket `trusted` default would auto-merge a stranger's PR; a blanket `external` default reintroduces the owner-authored false positive from [#599](https://github.com/mattsears18/shipyard/issues/599).
 - Don't force-push to a shared/main branch. Force-pushing your own feature branch is OK only if necessary (e.g., a rebase).
