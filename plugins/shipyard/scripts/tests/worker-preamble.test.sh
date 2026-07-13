@@ -437,6 +437,33 @@ if [[ -f "$skill_path" ]]; then
   assert_contains "$skill_path" "This guard runs in every worker mode" \
     "SKILL.md states the cwd fail-fast runs in every worker mode (issue #486)"
 
+  # Issue #748 — "Mid-session cwd anchoring" section. The step-0 fail-fast
+  # above (#486) only asserts the cwd is correct once, at dispatch start —
+  # #748 found plain relative-path Bash calls intermittently resolving
+  # against the PRIMARY checkout LATER in the same dispatch, with no `cd`
+  # ever issued and step-0 having passed cleanly. The mitigation is
+  # anchoring every mutating command to an explicit, re-verified
+  # WORKTREE_PATH rather than trusting ambient cwd — mandatory before a
+  # write (git add/commit/push, gh pr create, file-destructive ops),
+  # recommended for reads. Removing the section (or its re-verify pattern)
+  # regresses the mid-session drift guard #748 exists to close.
+  assert_contains "$skill_path" "## Mid-session cwd anchoring" \
+    "SKILL.md covers the mid-session cwd anchoring guard (issue #748)"
+  assert_contains "$skill_path" "not a per-call guarantee" \
+    "SKILL.md frames step-0 as a one-shot, not a per-call, guarantee (issue #748)"
+  assert_contains "$skill_path" "WORKTREE_PATH" \
+    "SKILL.md names WORKTREE_PATH as the explicit anchor variable (issue #748)"
+  assert_contains "$skill_path" "cwd anchor drifted mid-session" \
+    "SKILL.md emits the 'cwd anchor drifted mid-session' bail message (issue #748)"
+  assert_contains "$skill_path" "Mandatory — anchor every mutating command" \
+    "SKILL.md makes anchoring mandatory before mutating commands (issue #748)"
+  assert_contains "$skill_path" "Recommended, not mandatory — anchor read-only commands" \
+    "SKILL.md makes anchoring recommended (not mandatory) for read-only commands (issue #748)"
+  # shellcheck disable=SC2016
+  # Literal grep needle — $WORKTREE_PATH is matched verbatim in the spec, not expanded.
+  assert_contains "$skill_path" 'git -C "$WORKTREE_PATH"' \
+    "SKILL.md prescribes git -C \"\$WORKTREE_PATH\" as the explicit anchoring pattern (issue #748)"
+
   # Issue #529 — "Run all work synchronously — NEVER arm a background process
   # and return" clause in the Return-contract discipline section. The clause
   # exists because a worker that arms a run_in_background waiter / Monitor and

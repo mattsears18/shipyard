@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.9.9 — 2026-07-13
+
+The `shipyard:worker-preamble` skill's step-0 cwd fail-fast (#486) only asserts a worker's cwd is anchored to its isolated worktree once, at dispatch start — but a session reproduced plain relative-path `Bash` calls resolving against the PRIMARY checkout *later* in the same dispatch, with no `cd` ever issued and step-0 having passed cleanly. Read-only misroutes only waste diagnostic budget (the repro burned real time chasing a test-count flip as flakiness before finding the cause), but a mutating command landing in the same misrouted slot would silently corrupt the user's primary checkout with nothing to catch it. The underlying cwd-persistence drift is a harness-level gap shipyard cannot fix at the source — the same class as #486's AC items 1/2 — so the fix is defensive anchoring in the worker's own commands rather than a root-cause patch (closes #748).
+
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — new "Mid-session cwd anchoring" section: cache `WORKTREE_PATH` once confirmed valid, then re-derive **and** re-verify it (the same git-dir/git-common-dir inequality check from the step-0 fail-fast) immediately before every mutating command — `git add`/`commit`/`push`, `gh` mutations, file-destructive ops — anchoring explicitly via `git -C "$WORKTREE_PATH"` rather than trusting ambient cwd. The same anchoring is recommended (not mandatory) for read-only commands, since a misrouted read is recoverable but wastes time. Documents the underlying harness limitation with a pointer to #748's repro rather than attempting to fix it.
+- `plugins/shipyard/scripts/tests/worker-preamble.test.sh` — new regression coverage asserting the section, its bail message, the mandatory-vs-recommended framing, and the `git -C "$WORKTREE_PATH"` anchoring pattern are all present.
+
 ### 2.9.8 — 2026-07-13
 
 #743's `flush --reconcile` (PR #744) let a re-entrant dispatch's tokens land in the cost ledger by REPLACING an existing session record with a freshly-projected one — but it replaced unconditionally, with no check that the incoming record was actually an improvement. A `--reconcile` flush against a degraded or freshly re-`init`'d session file (empty `tokens.totals`, empty `issues_worked`/`prs_created`) silently overwrote a complete, correct ledger record with zeros, exiting 0 both times with no warning. Reproduced live in session `do-work-20260713T155328Z-32780`: a real $2.67 / 889k-token record was destroyed and only recoverable because the numbers were still in working memory (closes #745).
