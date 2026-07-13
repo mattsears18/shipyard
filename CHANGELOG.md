@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.9.7 — 2026-07-13
+
+End-of-session friction-issue filing (the maintainer convention of filing follow-up issues for spec gaps a session hit, before declaring the session done) ran *after* [`cleanup-summary.md`](plugins/shipyard/commands/do-work/cleanup-summary.md)'s cost-ledger flush and session-state teardown — but a freshly-filed issue is, by construction, workable, so [`dont.md`](plugins/shipyard/commands/do-work/dont.md)'s "attempt-then-escalate" rule obligated the orchestrator to dispatch it anyway. That dispatch then ran with no durable session record to attribute its tokens to, so `~/.shipyard/cost-history.jsonl` silently under-reported the session by the cost of that last dispatch (closes #743).
+
+- `plugins/shipyard/commands/do-work/drain.md` — the termination assertion now states explicitly that any end-of-session friction/follow-up filing must happen *before* the four-step assertion runs, never during or after cleanup; the assertion's own step-4 fresh-fetch then picks up the newly-filed issue as a net-new candidate and loops back through dispatch instead of terminating around it.
+- `plugins/shipyard/commands/do-work/dont.md` — new rule codifying the filing-side corollary of "don't hand a workable issue to the human": don't file friction issues after the assertion has run.
+- `plugins/shipyard/commands/do-work/cleanup-summary.md` — documents the re-entrancy safety net for any other path that still dispatches post-cleanup: `bump-tokens --allow-degraded-init` already self-heals a missing session file under the same session id (no change needed there), but a second `cost-history.sh flush` for that id now needs `--reconcile` to actually land the update — the plain call hits the ledger's own idempotency dedupe gate and silently skips.
+- `plugins/shipyard/scripts/cost-history.sh` — `flush` gains a `--reconcile` flag: when the session id already has a ledger record, replace it with the freshly-projected cumulative one (via a temp-file + rename) instead of silently skipping. The routine, first-and-only flush call is unaffected — `--reconcile` is opt-in and reserved for a session's second flush.
+- `plugins/shipyard/scripts/tests/cost-history.test.sh` — new coverage: a plain re-flush still skips (unchanged behavior), and `--reconcile` replaces the record in place and picks up tokens bumped into the session between the two flushes.
+
 ### 2.9.6 — 2026-07-13
 
 `hooks/guard-primary-checkout.sh` — the primary-checkout guard hook — existed fully implemented but was never wired into `hooks.json`, making it dead code, and even once wired its Bash-scope gate only recognized `git commit`, letting `git checkout` / `switch` / `reset` / `branch -D` slip past uncaught. A dispatched issue-work worker's `git checkout -B` against the PRIMARY checkout during session `do-work-20260713T155328Z` (working #734) went completely unenforced as a result — the worker happened to self-correct, but the backstop that should have caught it wasn't running (closes #741).
