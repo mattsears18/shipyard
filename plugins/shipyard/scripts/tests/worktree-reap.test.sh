@@ -1803,6 +1803,114 @@ else
   fail=$((fail+1))
 fi
 
+# ==========================================================================
+# Issue #755 — `peer-alive-stale` second gate on classify-lock's peer-alive
+# verdict. PID-liveness alone can't distinguish a genuine live peer from a
+# dead prior-session PID the OS has since recycled onto an unrelated live
+# process — the production trace was ~25 accumulated agent-* worktrees from
+# prior crashed sessions, several classified peer-alive indefinitely and
+# never reaped automatically. The fix corroborates with the lock file's own
+# mtime: a lock past the staleness floor (default 60 min;
+# SHIPYARD_PEER_LOCK_STALE_MIN / --peer-stale-min) is treated as reapable.
+# ==========================================================================
+
+# Portable relative backdate: `touch -t <YYYYMMDDhhmm.ss>` accepts both GNU
+# and BSD forms once the timestamp string is computed. Deliberately LOCAL
+# time (no `-u`) on both branches — `touch -t` always interprets its
+# argument as local wall-clock time regardless of platform, so computing
+# the stamp in UTC while `touch -t` reads it as local silently shifts the
+# result by the host's UTC offset (observed: a UTC-computed "90 minutes
+# ago" landed 150 minutes in the FUTURE on a UTC-4 host). Local-to-local
+# keeps the two agreeing everywhere.
+backdate_minutes() {
+  local target="$1" minutes_ago="$2"
+  local stamp
+  stamp=$(date -v "-${minutes_ago}M" +%Y%m%d%H%M.%S 2>/dev/null \
+    || date --date="${minutes_ago} minutes ago" +%Y%m%d%H%M.%S)
+  touch -t "$stamp" "$target"
+}
+
+# --- (85) fresh peer lock + --peer-stale-min 0 → 'peer-alive-stale' ---
+# A staleness floor of 0 makes any lock "stale" regardless of true age —
+# the cheapest deterministic way to prove the override activates without
+# waiting on wall-clock time.
+(sleep 30) &
+sibling_pid=$!
+sleep 0.05
+if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
+  lock_stale0="$tmpdir/peer-stale0.lock"
+  printf 'claude agent agent-test-stale0 (pid %d)\n' "$sibling_pid" > "$lock_stale0"
+  result=$(run_classify_with_args "$lock_stale0" --peer-stale-min 0)
+  assert_equals "$result" "peer-alive-stale" \
+    "(85) fresh lock + --peer-stale-min 0 -> 'peer-alive-stale' (override activates)"
+
+  # --- (85a) same fresh lock, default floor (no flag) -> still 'peer-alive' ---
+  result=$(run_classify "$lock_stale0")
+  assert_equals "$result" "peer-alive" \
+    "(85a) fresh lock + default 60min floor -> 'peer-alive' (default behavior unchanged)"
+else
+  printf '  %sFAIL%s  (85) couldn'\''t spawn sibling process for peer-alive-stale test\n' \
+    "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+[ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+
+# --- (86) lock backdated 90min, default 60min floor -> 'peer-alive-stale' ---
+(sleep 30) &
+sibling_pid=$!
+sleep 0.05
+if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
+  lock_old="$tmpdir/peer-old.lock"
+  printf 'claude agent agent-test-old (pid %d)\n' "$sibling_pid" > "$lock_old"
+  backdate_minutes "$lock_old" 90
+  result=$(run_classify "$lock_old")
+  assert_equals "$result" "peer-alive-stale" \
+    "(86) 90min-old lock + default 60min floor -> 'peer-alive-stale' (issue #755 repro)"
+
+  # --- (86a) same 90min-old lock, --peer-stale-min 120 -> still 'peer-alive' ---
+  result=$(run_classify_with_args "$lock_old" --peer-stale-min 120)
+  assert_equals "$result" "peer-alive" \
+    "(86a) 90min-old lock + --peer-stale-min 120 -> 'peer-alive' (not stale vs a higher floor)"
+
+  # --- (87) SHIPYARD_PEER_LOCK_STALE_MIN env var honored ---
+  result=$(SHIPYARD_PEER_LOCK_STALE_MIN=120 bash "$helper" classify-lock "$lock_old" 2>/dev/null)
+  assert_equals "$result" "peer-alive" \
+    "(87) 90min-old lock + SHIPYARD_PEER_LOCK_STALE_MIN=120 env var -> 'peer-alive' (env var raises floor)"
+
+  # --- (87a) --peer-stale-min flag takes precedence over env var ---
+  # Mirrors test (12)'s --orchestrator-pid-over-env-var precedence pattern:
+  # env var says "not stale" (very high floor), flag says "definitely stale"
+  # (floor 0) — the flag should win.
+  result=$(SHIPYARD_PEER_LOCK_STALE_MIN=99999 bash "$helper" classify-lock "$lock_old" --peer-stale-min 0 2>/dev/null)
+  assert_equals "$result" "peer-alive-stale" \
+    "(87a) --peer-stale-min flag takes precedence over SHIPYARD_PEER_LOCK_STALE_MIN env var"
+else
+  printf '  %sFAIL%s  (86) couldn'\''t spawn sibling process for peer-alive-stale backdate test\n' \
+    "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+[ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+
+# --- (88) bad usage: --peer-stale-min missing value / non-integer -> exit 64 ---
+bash "$helper" classify-lock "$tmpdir/anything.lock" --peer-stale-min 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(88) --peer-stale-min with no value -> exit 64"
+
+bash "$helper" classify-lock "$tmpdir/anything.lock" --peer-stale-min notanumber 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(88a) --peer-stale-min notanumber -> exit 64"
+
+bash "$helper" classify-lock "$tmpdir/anything.lock" --peer-stale-min=notanumber 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(88b) --peer-stale-min=notanumber -> exit 64"
+
+# --- (89) bad env var: SHIPYARD_PEER_LOCK_STALE_MIN non-integer -> exit 64 ---
+SHIPYARD_PEER_LOCK_STALE_MIN=notanumber bash "$helper" classify-lock "$tmpdir/anything.lock" 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(89) SHIPYARD_PEER_LOCK_STALE_MIN=notanumber -> exit 64"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

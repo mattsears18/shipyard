@@ -488,7 +488,7 @@ gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after
 
 > **Background step.** This step runs inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. Stale-worktree reaping affects future dispatch slot availability, not the first batch. The canonical implementation lives in the background group above.
 
-The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting. Reap every agent worktree whose lock-holding PID is dead; skip ones owned by live PIDs (could be another active Claude Code instance):
+The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting. Reap every agent worktree whose lock-holding PID is dead; skip ones owned by live PIDs (could be another active Claude Code instance) — **unless the lock is stale enough that a live PID is more likely a recycled one than a genuine peer** (issue [#755](https://github.com/mattsears18/shipyard/issues/755); see [`worktree-reap.sh`'s `classify-lock` docstring](../../../scripts/worktree-reap.sh) for the full rationale). `classify-lock` applies this staleness corroboration itself — no separate check is needed here.
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
@@ -519,15 +519,24 @@ for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/n
     classify-lock "$wt_dir/locked")
 
   if [ "$classification" = "peer-alive" ]; then
-    # Lock-holding PID is alive AND not in our ancestor chain — likely
-    # another active Claude Code instance. Defer.
+    # Lock-holding PID is alive, not in our ancestor chain, AND the lock
+    # is fresh enough (within `classify-lock`'s staleness floor, default
+    # 60 min) that a genuine peer is plausible. Defer.
     deferred_stale=$((deferred_stale + 1))
     continue
   fi
 
-  # no-lock / dead / self-ancestor — safe to reap. (`self-ancestor` is
-  # rare at startup since by definition we just launched, but covers the
-  # PID-recycling edge case where a stale lock happens to name our PID.)
+  # no-lock / dead / self-ancestor / peer-alive-stale — safe to reap.
+  # (`self-ancestor` is rare at startup since by definition we just
+  # launched, but covers the PID-recycling edge case where a stale lock
+  # happens to name our PID. `peer-alive-stale` (#755) is the second-gate
+  # override: the lock-holding PID is alive but the lock file's mtime is
+  # past the staleness floor, so a genuine peer is implausible and the
+  # more likely explanation is a dead prior-session PID the OS has since
+  # recycled onto an unrelated live process — the exact failure mode that
+  # left prior-session `agent-*` worktrees deferred indefinitely and
+  # forced manual `git worktree unlock` + move-aside + `prune`
+  # intervention every session before this gate existed.)
   git worktree unlock "$worktree_path" 2>/dev/null
   # Issue #712 — route the remove through `worktree-reap.sh reap`, which
   # escalates plain `git worktree remove` → evidence-gated `--force` and emits a

@@ -44,27 +44,61 @@
 #
 #   classify-lock <lock-file-path> [--orchestrator-pid <N>]
 #     Emits one of (on stdout, single token, trailing newline):
-#       no-lock        — lock file doesn't exist (safe to reap)
-#       dead           — lock PID is dead (safe to reap, original semantics)
-#       self-ancestor  — lock PID is alive AND is either (a) the declared
-#                        orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`
-#                        env var or `--orchestrator-pid` flag) or (b) our
-#                        own / an ancestor of ours (safe to reap — orchestrator
-#                        owns this lock)
-#       peer-alive     — lock PID is alive AND is NOT the declared orchestrator
-#                        PID AND is NOT in our ancestor chain (defer — likely
-#                        a peer agent or other instance)
+#       no-lock          — lock file doesn't exist (safe to reap)
+#       dead             — lock PID is dead (safe to reap, original semantics)
+#       self-ancestor    — lock PID is alive AND is either (a) the declared
+#                          orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`
+#                          env var or `--orchestrator-pid` flag) or (b) our
+#                          own / an ancestor of ours (safe to reap —
+#                          orchestrator owns this lock)
+#       peer-alive-stale — lock PID is alive, is NOT self/ancestor, BUT the
+#                          lock file's mtime is older than the staleness
+#                          floor (default 60 min; `SHIPYARD_PEER_LOCK_STALE_MIN`
+#                          / `--peer-stale-min <N>`). Safe to reap — see
+#                          "Why a second gate" below (issue #755).
+#       peer-alive       — lock PID is alive, is NOT self/ancestor, AND the
+#                          lock file is within the staleness floor (defer —
+#                          likely a genuine peer agent or other instance
+#                          still running)
 #     Env vars:
 #       SHIPYARD_ORCHESTRATOR_PID — explicit orchestrator PID. Takes
 #                        precedence over the ancestor walk for the
 #                        self-ancestor check. Overridden by `--orchestrator-pid`
 #                        if both are set.
+#       SHIPYARD_PEER_LOCK_STALE_MIN — peer-alive staleness floor in minutes
+#                        (default 60). Overridden by `--peer-stale-min <N>`
+#                        if both are set.
 #     Exit codes:
 #       0  classification emitted
 #       64 bad usage (missing path, malformed flag value)
 #
-# Callers should reap on `no-lock` / `dead` / `self-ancestor`, defer on
-# `peer-alive`.
+# Why a second gate on `peer-alive` (issue #755). PID-liveness alone (`kill
+# -0 $pid`) cannot distinguish a genuinely-running peer from a dead
+# prior-session PID the OS has since recycled onto an unrelated live
+# process — the exact ambiguity issue #253 already documented for orphan
+# session files, which is why THAT sweep stacks a PID-liveness check with a
+# 30-minute mtime floor rather than trusting liveness alone. Agent-worktree
+# locks had no such second gate: a worktree from a long-dead crashed
+# session, misclassified `peer-alive` by PID recycling, stayed deferred
+# forever — setup.md step 3b only sweeps once at session start, and the
+# per-dispatch pre-dispatch reaps (`steady-state.md` §2d, `drain.md`'s
+# #370) call this SAME function, so they hit the SAME false-peer verdict on
+# every retry. The production trace (#755): ~25 stale `agent-*` worktrees
+# from prior crashed sessions, several still holding `do-work/issue-*`
+# branches a re-dispatched worker needed, required manual `git worktree
+# unlock` + move-aside + `prune` every session because no automated path
+# ever revisited the peer-alive verdict. The mtime floor is calibrated well
+# above this repo's observed worst-case single-dispatch duration (CI
+# watches typically settle in 5-20 min — see `fix-checks-only.md` §6.a) and
+# well below the hours-to-days staleness a genuinely-orphaned worktree
+# exhibits, so a still-legitimately-running peer is never force-reaped.
+#
+# Callers should reap on `no-lock` / `dead` / `self-ancestor` /
+# `peer-alive-stale`, defer on `peer-alive`. Every existing exact-string
+# `= "peer-alive"` check already defers ONLY on the fresh case and falls
+# through to "safe to reap" for anything else — so this new classification
+# flows through to every call site (setup 3b, steady-state §2d, drain
+# #370, step B, A.0.5, A.1, cleanup-summary) with no per-site change.
 #
 #   detect-orchestrator-pid [<comm-name>]
 #     Walks the process-ancestor chain and prints the PID of the nearest
@@ -344,7 +378,13 @@ Usage:
                         [--reaped-session-id <id>] [--phase <p>] \
                         [--skip-remove] [--force-evidence <reason>]
 
-classify-lock — Prints one of: no-lock | dead | self-ancestor | peer-alive
+classify-lock — Prints one of: no-lock | dead | self-ancestor |
+                          peer-alive-stale | peer-alive. peer-alive-stale
+                          (issue #755) is a lock whose PID is alive but NOT
+                          self/ancestor AND whose lock-file mtime exceeds
+                          the staleness floor (default 60 min;
+                          SHIPYARD_PEER_LOCK_STALE_MIN / --peer-stale-min)
+                          — treated as reapable, same as dead/self-ancestor.
 
 detect-orchestrator-pid — Walks the process-ancestor chain and prints the
                           PID of the nearest ancestor whose `comm` matches
@@ -567,11 +607,13 @@ detect_orchestrator_pid() {
 classify_lock() {
   local lock_file=""
   local orchestrator_pid="${SHIPYARD_ORCHESTRATOR_PID:-}"
+  local peer_stale_min="${SHIPYARD_PEER_LOCK_STALE_MIN:-60}"
 
   # Argv parsing: positional <lock-file-path> first, then optional
-  # --orchestrator-pid <N>. Flag-after-positional is the typical shape from
-  # the orchestrator's call sites (`classify-lock "$wt_dir/locked"
-  # --orchestrator-pid $$`); flag-before-positional also accepted.
+  # --orchestrator-pid <N> / --peer-stale-min <N>. Flag-after-positional is
+  # the typical shape from the orchestrator's call sites (`classify-lock
+  # "$wt_dir/locked" --orchestrator-pid $$`); flag-before-positional also
+  # accepted.
   while [ $# -gt 0 ]; do
     case "$1" in
       --orchestrator-pid)
@@ -589,6 +631,23 @@ classify_lock() {
           return 64
         fi
         orchestrator_pid="$val"
+        shift
+        ;;
+      --peer-stale-min)
+        if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
+          echo "classify-lock: --peer-stale-min requires a non-negative integer (got: ${2:-})" >&2
+          return 64
+        fi
+        peer_stale_min="$2"
+        shift 2
+        ;;
+      --peer-stale-min=*)
+        local stale_val="${1#--peer-stale-min=}"
+        if ! [[ "$stale_val" =~ ^[0-9]+$ ]]; then
+          echo "classify-lock: --peer-stale-min requires a non-negative integer (got: $stale_val)" >&2
+          return 64
+        fi
+        peer_stale_min="$stale_val"
         shift
         ;;
       --)
@@ -612,10 +671,15 @@ classify_lock() {
 
   # An env-var value that isn't a non-negative integer is a configuration
   # bug at the call site — better to surface it than silently drop into the
-  # ancestor-walk fallback. The --orchestrator-pid flag path already validates
-  # above; this guard catches malformed env-var values.
+  # ancestor-walk fallback. The --orchestrator-pid / --peer-stale-min flag
+  # paths already validate above; these guards catch malformed env-var
+  # values.
   if [ -n "$orchestrator_pid" ] && ! [[ "$orchestrator_pid" =~ ^[0-9]+$ ]]; then
     echo "classify-lock: SHIPYARD_ORCHESTRATOR_PID must be a non-negative integer (got: $orchestrator_pid)" >&2
+    return 64
+  fi
+  if ! [[ "$peer_stale_min" =~ ^[0-9]+$ ]]; then
+    echo "classify-lock: SHIPYARD_PEER_LOCK_STALE_MIN must be a non-negative integer (got: $peer_stale_min)" >&2
     return 64
   fi
 
@@ -661,6 +725,27 @@ classify_lock() {
   if is_self_ancestor "$lock_pid"; then
     echo "self-ancestor"
     return 0
+  fi
+
+  # Issue #755 — second gate before committing to `peer-alive`. PID
+  # liveness alone can't distinguish a genuine peer from a dead
+  # prior-session PID the OS has since recycled onto an unrelated live
+  # process (the same ambiguity #253 already solved for orphan session
+  # files with a PID-liveness + mtime "two gates" combo). Corroborate with
+  # the lock file's own mtime: a lock older than `peer_stale_min` (default
+  # 60 min — see the "Why a second gate" note at the top of this file) is
+  # treated as a stale/recycled-PID false positive and reaped; a fresher
+  # one still defers, since a genuine peer within that window is entirely
+  # plausible.
+  local lock_mtime now lock_age_min
+  lock_mtime=$(stat -c %Y "$lock_file" 2>/dev/null || stat -f %m "$lock_file" 2>/dev/null || echo "")
+  now=$(date +%s 2>/dev/null || echo "")
+  if [ -n "$lock_mtime" ] && [ -n "$now" ]; then
+    lock_age_min=$(( (now - lock_mtime) / 60 ))
+    if [ "$lock_age_min" -ge "$peer_stale_min" ] 2>/dev/null; then
+      echo "peer-alive-stale"
+      return 0
+    fi
   fi
 
   echo "peer-alive"
