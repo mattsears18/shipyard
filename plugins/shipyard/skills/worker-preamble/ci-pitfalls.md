@@ -52,10 +52,19 @@ The Claude Code harness runs a **stream watchdog** over each worker dispatch: if
 
 The watchdog is correct for foregrounded LLM work — 600s of genuine silence from the model *is* a stall. It misfires on worker modes (especially **fix-checks-only**, which is the canonical victim because its whole job is babysitting CI) that shell out to commands which legitimately run for 5–15 minutes with **no intervening stream output**:
 
-- `npm ci` / `npm install` against a cold cache,
+- `npm ci` / `npm install` against a cold cache — **especially on a large monorepo**, where a single app's install alone can run several minutes (issue [#757](https://github.com/mattsears18/shipyard/issues/757)),
+- `git commit` when the repo wires a slow pre-commit hook (typecheck + lint + prettier + a secret scan is a common combination that can itself run minutes with no output until the hook finishes — [#757](https://github.com/mattsears18/shipyard/issues/757)),
 - `gh run view <run-id> --log-failed > /tmp/log` (the redirect swallows all output — the watchdog sees zero stream bytes for the whole download),
-- a test suite run that buffers output (`npm run test:e2e:web`, `npx lhci autorun`, `pytest -q`),
+- a test suite run that buffers output (`npm run test:e2e:web`, `npx lhci autorun`, `pytest -q`, an emulator-backed `npm run test:unit`),
 - `gh pr checks <M> --watch --interval 30` parked on a long E2E shard.
+
+**A distinct, earlier trap on the same class of command: the Bash tool's own default timeout, not just the 600s harness watchdog.** The `Bash` tool itself defaults to a **120000ms (2-minute)** timeout per call, independent of and shorter than the 600s stream watchdog — a plain `npm ci` or a hook-wrapped `git commit` on a large repo can hit *this* wall well before the watchdog would ever engage. The fix is mechanical: **pass an explicit `timeout` parameter** (up to the tool's own cap, `600000` — 10 minutes) on the Bash call for any command from the bulleted list above, rather than accepting the 2-minute default and then reaching for a background/Monitor workaround when it trips:
+
+```
+Bash({ command: "npm ci --no-audit --no-fund --prefer-offline", timeout: 600000, description: "Install deps (large repo, bounded to 10 min)" })
+```
+
+If the command can plausibly run past even the 10-minute cap, that is what the heartbeat-loop pattern (pattern 3 below) is for — it turns an unboundedly-long, single silent Bash call into a foreground loop of short heartbeat-emitting calls, so neither the tool's own timeout nor the stream watchdog is ever the limiting factor.
 
 The watchdog keys on **stream output**, not on tool-call boundaries — a single Bash tool call that runs silently for 600s trips it even though the agent is making real progress. **The fix is to keep stream output flowing while a long-running command is in flight.** Three patterns, in order of preference:
 
@@ -80,7 +89,25 @@ The watchdog keys on **stream output**, not on tool-call boundaries — a single
    ```
    The `[heartbeat]` prefix is a convention, not a parsed sentinel — its only job is to be a stream write the watchdog can see. Keep the interval comfortably under the watchdog window (60s against a ~600s watchdog leaves a 10× margin); don't tighten it to the point of log spam.
 
-**Scope.** This applies to *every* worker mode, but the high-risk surface is fix-checks-only (CI babysitting on E2E/Lighthouse-heavy repos) and fix-main-ci / fix-failing-prs-batch (which run the target repo's full test suite locally). issue-work workers usually checkpoint at natural tool-call boundaries often enough to self-heartbeat; the rule still applies if you run a long silent build or test step. **Do NOT** add busy-work `echo`s to *fast* commands — the heartbeat pattern is reserved for commands that can plausibly exceed the watchdog window with no natural output. Reflexive heartbeating everywhere is log noise that costs context tokens for no liveness benefit.
+**Scope.** This applies to *every* worker mode, but the high-risk surface is fix-checks-only (CI babysitting on E2E/Lighthouse-heavy repos), fix-main-ci / fix-failing-prs-batch (which run the target repo's full test suite locally), **and issue-work's own local-verification chain — `npm ci` on a large monorepo, a slow pre-commit hook, and the local unit-test run mandated by [`issue-work.md` §4.6](../../agents/issue-worker/issue-work.md#46-pre-push-local-unit-test-gate-658) are exactly as watchdog-risky as a CI babysit and get the same treatment ([#757](https://github.com/mattsears18/shipyard/issues/757)).** Do NOT treat issue-work as low-risk here just because most of its steps checkpoint naturally — the install/hook/test steps specifically do not. **Do NOT** add busy-work `echo`s to *fast* commands — the heartbeat pattern is reserved for commands that can plausibly exceed the watchdog window with no natural output. Reflexive heartbeating everywhere is log noise that costs context tokens for no liveness benefit.
+
+**Never open a Monitor / background-wait for a local install, hook, or test run and end your turn — this is the local-step instance of the `shipyard:worker-preamble` § "Return-contract discipline" rule 1 ([#529](https://github.com/mattsears18/shipyard/issues/529), reproduced concretely by [#757](https://github.com/mattsears18/shipyard/issues/757)).** The #529 rule is usually illustrated with a CI test-waiter; #757's repro shows the identical failure mode against `npm ci` and a hook-wrapped `git commit` — a worker opened a `Monitor` mid-`npm ci` and ended its turn to "wait", and separately narrated *"the commit is running through the hook in the background… I'll continue when it resolves"* and stopped without pushing. Both are non-terminal narratives that report the dispatch complete while the actual work — the install, the commit, the push — is still in flight or (worse) already finished with nobody there to push it; in the #757 repro the orchestrator had to finish the commit + push by hand. The fix is the same as for any other long local command: **keep it in a single foreground call** — an explicit bounded `timeout` (above) for a command that streams its own progress, or the heartbeat loop (pattern 3 below) for one that's genuinely silent — and do not end your turn until that call returns.
+
+**If a long local step is interrupted anyway (killed, or you're resuming after a stall), verify actual state before re-running anything.** A killed `npm ci` may have finished installing before the kill; a killed `git commit` may have already landed the commit (git commits synchronously — the hook runs, then the commit either lands or it doesn't, so "the hook seemed to hang" often just means it finished and the process was killed on the way out). Blindly re-running `npm ci` or re-committing on top of an already-successful prior attempt wastes the same budget you're trying to conserve, and a duplicate commit attempt can produce a confusing state. Before retrying, cheaply check what already happened:
+
+```bash
+# Was node_modules actually populated by the last (possibly-killed) npm ci?
+[ -d node_modules ] && [ -n "$(ls -A node_modules 2>/dev/null)" ] && echo "node_modules present — install likely completed, don't re-run npm ci blind"
+
+# Did the commit actually land despite the turn ending mid-hook?
+git status --porcelain   # clean + HEAD advanced past the base branch ⇒ commit landed
+git log -1 --oneline
+
+# Was it already pushed?
+git log "origin/${LOCAL_BRANCH:-HEAD}..HEAD" --oneline 2>/dev/null   # empty ⇒ already pushed (or nothing to push)
+```
+
+If the state shows the step already succeeded, move straight to the next step (push, or open the PR) rather than repeating work that's already done.
 
 > **Not implementable from this repo: a tunable watchdog threshold.** Issue [#372](https://github.com/mattsears18/shipyard/issues/372) also floated a per-mode `stall_seconds` config knob (e.g. `workers.fix_checks_only.stall_seconds = 1200`). The 600s watchdog lives in the Claude Code **harness**, not in shipyard — shipyard can't read, raise, or disable it from a config file, so a config key would be an unenforceable no-op. The heartbeat contract above is the in-repo lever that actually moves the failure mode: it keeps the existing watchdog from firing rather than trying to change a threshold shipyard doesn't own.
 
