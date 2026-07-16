@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.10.4 — 2026-07-16
+
+A prior crashed `/do-work` session left ~25 stale `agent-*` worktrees behind; setup's step-3b orphan sweep reaps every one whose lock-holding PID is dead, but several stayed classified `peer-alive` indefinitely — PID liveness alone can't distinguish a genuine live peer from a dead prior-session PID the OS has since recycled onto an unrelated running process. Because the mid-session pre-dispatch reaps (`steady-state.md` §2d for fix-checks, `drain.md`'s #370 for fix-rebase) call the exact same classifier, they hit the identical false-peer verdict on every retry, so re-dispatched workers repeatedly bailed `head branch ... locked in another worktree` and the branch stayed locked until a human manually ran `git worktree unlock` + move-aside + `prune` (closes #755).
+
+- `plugins/shipyard/scripts/worktree-reap.sh` — `classify-lock` now applies a second, mtime-based gate before committing to `peer-alive` (mirroring the existing PID-liveness + 30-min-mtime "two gates" pattern already used for orphan session files, issue #253): a lock whose file is older than a staleness floor (default 60 min; `SHIPYARD_PEER_LOCK_STALE_MIN` env var or `--peer-stale-min <N>` flag) now classifies as the new `peer-alive-stale` value instead, which every existing exact-string `= "peer-alive"` check across the codebase already treats as safe-to-reap — no per-call-site changes needed, so setup 3b and both mid-session pre-dispatch reaps pick up the fix automatically.
+- `plugins/shipyard/commands/do-work/setup/01-repo-recovery.md` — step 3b's prose updated to document the staleness corroboration and the `peer-alive-stale` reap path.
+- `plugins/shipyard/scripts/tests/worktree-reap.test.sh` — new regression coverage for `peer-alive-stale`: fresh-lock override activation, the 90-minute #755 repro, floor precedence (flag over env var over default), and bad-usage/malformed-input cases.
+
 ### 2.10.3 — 2026-07-16
 
 Two `fix-checks-only` dispatches against the same PR returned success while the PR's required check rollup was still red: one fixed only `Lint & Typecheck`, saw `Unit Tests` (required) still `FAILURE`, and reasoned the other checks were "pre-existing/unrelated" before returning `green`; another ran the unit suite locally three times, all green, and returned `noop: already green` while CI's `Unit Tests` check stayed `FAILURE`. The orchestrator's trust-but-verify spot-check caught both, but the worker's own return contract shouldn't have allowed either claim. The pre-existing #416 gate already required "the overall rollup is all-green," but its parenthetical — "no *other* check regressed" — was ambiguous enough to read as "a check that was already broken before my dispatch doesn't count against me," which is exactly the reasoning both workers used (closes #754).
