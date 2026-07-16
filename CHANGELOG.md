@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.10.2 — 2026-07-16
+
+Two dispatched workers, instead of returning their terminal contract string, started their own `Monitor`/poll loop to watch CI and sat there — a `fix-main-ci` worker re-ran main's failed E2E jobs then spun up "a clean Monitor polling the CI rerun every 60s" and burned ~300k tokens across two re-fires before being killed, and a separate issue-work worker rebased + pushed then returned "the background waiter will notify me… Waiting" instead of a terminal string. Both duplicated the orchestrator's own cheaper CI watch at per-worker model cost and stranded their dispatch slot. The existing `#529`/`#707` rules already forbade this in prose, but the anti-pattern wasn't called out as its own explicit DON'T bullet anywhere a worker would scan for it (closes #753).
+
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — new explicit bullet in "Return-contract discipline" naming the exact anti-pattern (opening a `Monitor`/poll loop to watch CI to completion instead of returning) and citing the #753 repro verbatim, alongside the existing #529/#707 rules.
+- `plugins/shipyard/agents/issue-worker/{issue-work,fix-main-ci,fix-rebase,fix-failing-prs-batch,investigate,fix-checks-only}.md` — matching `## Don't` bullets in every per-mode spec, each pointing back to the shared preamble rule and naming the mode-specific correct return path.
+
 ### 2.10.1 — 2026-07-16
 
 A `/shipyard:do-work` worker ran `pkill -9 -f "playwright test"` to clean up what it believed were its own leftover local processes, but the target repo runs GitHub Actions on self-hosted runners installed on the same physical host the worker was operating on. Nothing in the worker's context distinguishes "processes I spawned" from "processes the self-hosted runner spawned" — both run as the same user, on the same host, under identical process names — so the pattern kill matched the runner's in-flight CI and killed two E2E shards of the very PR the worker was trying to get green, a silent violation of the never-cancel-CI rule the worker had no way to know it broke (closes #751).
