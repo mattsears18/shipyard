@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.10.1 — 2026-07-16
+
+A `/shipyard:do-work` worker ran `pkill -9 -f "playwright test"` to clean up what it believed were its own leftover local processes, but the target repo runs GitHub Actions on self-hosted runners installed on the same physical host the worker was operating on. Nothing in the worker's context distinguishes "processes I spawned" from "processes the self-hosted runner spawned" — both run as the same user, on the same host, under identical process names — so the pattern kill matched the runner's in-flight CI and killed two E2E shards of the very PR the worker was trying to get green, a silent violation of the never-cancel-CI rule the worker had no way to know it broke (closes #751).
+
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — new "Never run a broad process kill" hot-core section (same tier as the worktree-isolation rules): forbids `pkill`/`killall`/pattern-fed `kill`, explains the self-hosted-runner hazard, tells workers to track and kill only PIDs they themselves spawned, and gives a cheap self-hosted-runner-detection snippet (`gh api .../actions/runners`, an `actions-runner*` home-directory check).
+- `plugins/shipyard/hooks/refuse-broad-process-kill.sh` — new `PreToolUse` `Bash`-matching hook mechanically blocking `pkill`, `killall`, and `kill` invocations fed PIDs from a `pgrep`/`ps | grep` pattern lookup, mirroring the "stick" pairing `enforce-worktree-isolation.sh` and `enforce-edit-scope.sh` already use for their prose rules. `kill <literal-pid>` remains allowed — that's the safe form the new preamble section directs workers toward.
+- `plugins/shipyard/hooks/hooks.json` — wires the new hook into the `Bash` matcher alongside the existing `refuse-escape-symlink-commit.sh` / `guard-primary-checkout.sh` entries.
+- `plugins/shipyard/hooks/tests/refuse-broad-process-kill.test.sh` — new regression coverage for the hook's decision rules, including the literal-PID allow-path and the #751 repro command verbatim.
+
 ### 2.10.0 — 2026-07-13
 
 The operator layer's docs claimed a blanket "running `/do-work` is itself standing authorization" for every browser-completable action, but a live session found that claim doesn't hold for `merge-pr` / `close-pr` items against a PR the session never opened — the Claude Code auto-mode permission classifier evaluated `gh pr close` on an inherited Dependabot PR independently and denied it *by name* ("an item the agent did not create this session"), with no defined fallback once denied. The classifier's denial is correct (closing someone else's PR is outward-facing and irreversible); the defect was a spec that over-promised an authorization the harness rightly withholds and left the refusal with no next step (closes #746).
