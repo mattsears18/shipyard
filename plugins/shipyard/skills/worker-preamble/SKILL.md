@@ -7,7 +7,7 @@ description: Shared worktree-discipline + dispatch-contract preamble for every `
 
 The contract every dispatched worker — regardless of mode — operates under. The orchestrator's per-mode dispatch prompts in `commands/do-work.md` reference this skill by name (`shipyard:worker-preamble`) instead of repeating the language verbatim. Mode-specific rules (branch naming, return strings, scope-expansion rules) stay in the per-mode dispatch prompt and in the dispatched agent's per-mode file (`agents/issue-worker/<mode>.md` — loaded by the thin entry router `agents/issue-worker.md` from the `mode:` field). This file owns only the shared ground rules.
 
-**This `SKILL.md` is a thin always-loaded core.** It carries the rules every worker mode needs on every dispatch: worktree-isolation discipline, the step-0 cwd fail-fast, the mid-session cwd anchoring rule, the `--label shipyard` PR-creation contract, the return-contract scaffolding, the background-process-cleanup rule, the `--no-verify` prohibition, the classifier-denial posture, and the `gh` JSON discipline. The rarely-hit reference material — the auto-merge / snapshot categorization, the worktree-reaped escape hatch, the Node dependency-bootstrap and hook/test silent-pass guards, the CI/push pitfalls, the escape-symlink commit hygiene — lives in **on-demand fragments** in this same directory, loaded only by the worker modes that need them. See [On-demand fragments](#on-demand-fragments) below for the index. The split (issue [#617](https://github.com/mattsears18/shipyard/issues/617)) preserves every rule's semantics and reachability — it only changes whether a rule is loaded eagerly (here) or on demand (a fragment) — so no worker mode loses access to a rule it relies on.
+**This `SKILL.md` is a thin always-loaded core.** It carries the rules every worker mode needs on every dispatch: worktree-isolation discipline, the broad-process-kill prohibition, the step-0 cwd fail-fast, the mid-session cwd anchoring rule, the `--label shipyard` PR-creation contract, the return-contract scaffolding, the background-process-cleanup rule, the `--no-verify` prohibition, the classifier-denial posture, and the `gh` JSON discipline. The rarely-hit reference material — the auto-merge / snapshot categorization, the worktree-reaped escape hatch, the Node dependency-bootstrap and hook/test silent-pass guards, the CI/push pitfalls, the escape-symlink commit hygiene — lives in **on-demand fragments** in this same directory, loaded only by the worker modes that need them. See [On-demand fragments](#on-demand-fragments) below for the index. The split (issue [#617](https://github.com/mattsears18/shipyard/issues/617)) preserves every rule's semantics and reachability — it only changes whether a rule is loaded eagerly (here) or on demand (a fragment) — so no worker mode loses access to a rule it relies on.
 
 ## Worktree discipline (load-bearing)
 
@@ -18,6 +18,29 @@ Three rules, no exceptions:
 1. **Never `cd` outside your worktree.** Your tools (Bash, Edit, Read, Write) inherit cwd from your worktree. The moment you `cd` to anything else — including the user's primary checkout path — subsequent git/gh commands operate on whatever git directory is at that path, which can silently corrupt the user's checkout.
 2. **Never use `gh pr checkout <M>`.** That command resolves to the cwd at call time and switches whatever working tree is there. If your cwd has drifted (or the harness mis-set it), `gh pr checkout` will move the user's primary HEAD without warning. Always use `git fetch origin <branch>` followed by `git switch <branch>` — those operate on the cwd's git context predictably and won't escape it.
 3. **Never `git switch` to the repo's default branch (`main` / `master` / etc.) when your work is done.** The global "switch back to main when local work is done" rule is for the user's *primary* checkout, not your isolated worktree. Parking your worktree on `[main]` locks the user's primary out of `git switch main` (git enforces one-worktree-per-branch). Leave your worktree on your work branch — the orchestrator's cleanup phase handles the rest.
+
+## Never run a broad process kill ([#751](https://github.com/mattsears18/shipyard/issues/751))
+
+**Never run `pkill`, `killall`, `kill -9` against a name/pattern, or any "kill everything matching X" command.** A pattern-based kill cannot distinguish "processes I spawned this session" from "processes something else on this host spawned" — and on a repo whose CI runs on **self-hosted runners installed on the same physical host you're working on**, that "something else" can be an in-flight CI run. The worker's own Playwright/Metro/emulator processes and the runner's CI processes run as the same user, on the same host, often from paths under the same repo root, with identical names — so a pattern match hits both indiscriminately. Killing CI this way is a silent violation of the "never cancel an in-progress CI run" operating principle: the worker never touches a CI surface, never sees a cancellation notice, and has no way to know it just destroyed a run — possibly a *different* PR's, or `main`'s.
+
+The failure mode is fully reproduced, not hypothetical: a worker ran `pkill -9 -f "playwright test"` during local cleanup on a repo running three self-hosted macOS runners on the maintainer's own Mac. The pattern matched the runner's in-flight CI processes and killed two E2E shards of the very PR the worker was trying to get green (issue [#751](https://github.com/mattsears18/shipyard/issues/751)).
+
+**Track the PID of any process you spawn yourself, and kill only that PID** — `kill <pid>` (or `kill -9 <pid>`), never a name/pattern match. If you cannot establish that a PID belongs to a process you spawned this session, leave it alone and note the leftover process in your return string rather than guessing.
+
+**A cheap check tells you whether this host is also a CI executor** — worth running before any local process cleanup if you're unsure:
+
+```bash
+# Signal 1: the repo has self-hosted runners registered at all.
+gh api "repos/<owner>/<repo>/actions/runners" --jq '.total_count' 2>/dev/null
+
+# Signal 2: a runner agent installed under this user's home directory — the
+# strongest local signal that THIS host executes CI.
+find "$HOME" -maxdepth 3 \( -iname 'actions-runner*' -o -iname 'runner-homes' \) 2>/dev/null | head -1
+```
+
+If either signal is non-empty/non-zero, treat every process on the host as potentially CI's, not just your own, and never reach for a pattern-based kill.
+
+**This is mechanically enforced, not just documented.** The `refuse-broad-process-kill.sh` `PreToolUse` hook blocks any `Bash` call containing `pkill`, `killall`, or a `kill` invocation fed PIDs from a pattern lookup (`kill $(pgrep ...)`, `kill $(ps ... | grep ...)`) — the same "stick vs carrot" pairing `enforce-worktree-isolation.sh` and `enforce-edit-scope.sh` already use for their respective prose rules. There is no bypass flag; if you genuinely need to end a process you can't isolate to a known PID, return `blocked:` rather than routing around the hook.
 
 ## Step-0 cwd fail-fast — assert you're actually in your worktree ([#486](https://github.com/mattsears18/shipyard/issues/486))
 
