@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.13.0 — 2026-07-19
+
+Adds a new `shipyard:decompose-worker` agent — a first-class, model-pinned dispatch identity for the epic-decomposition logic that previously only ran as an anonymous `general-purpose` sub-agent inlining a copy of `/decompose-epic`'s Worker prompt template. This is the out-of-scope follow-up #767 explicitly named (closes #772): the agent points at `commands/decompose-epic.md`'s Worker prompt template as the single source of truth rather than forking the sharding logic, and — unlike the six worktree-isolated `issue-worker` modes — is deliberately dispatched **without** `isolation: "worktree"`, since decomposition only reads the codebase read-only and calls the GitHub API. No orchestrator runtime dispatch-integration is included; that's tracked separately in #774.
+
+- `plugins/shipyard/agents/decompose-worker.md` — new standalone agent (model: sonnet) documenting the no-worktree-isolation contract, the pointer to `decompose-epic.md`'s Worker prompt template, the untrusted-input discipline, and the `decomposed:` / `escalated:` / `blocked:` return contract.
+- `plugins/shipyard/scripts/tests/decompose-worker-agent.test.sh` — new regression suite pinning the agent's frontmatter, its no-fork pointer to the canonical spec, the no-worktree-isolation contract (including that `enforce-worktree-isolation.sh` must NOT guard this agent), and the return-string vocabulary.
+
 ### 2.12.1 — 2026-07-19
 
 `/do-work`'s pre-dispatch head-branch reap didn't reliably clear a completed worker's `.claude/worktrees/agent-<id>` worktree, so a re-dispatched fix-checks-only or fix-rebase worker against the same PR would bail with `blocked: head branch <head> locked in another worktree` — costing a wasted dispatch plus a manual `git worktree remove --force` each time, twice in one repro session (closes #771).
