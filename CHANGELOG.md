@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.12.0 — 2026-07-19
+
+`/do-work`'s scope pre-flight previously let "has open design decisions" pass as a legitimate `human-decision-required` defer reason, so epics, spikes, and design-needed issues were routinely parked as `needs-triage` / `needs-human-review` instead of worked — the repro was a `mattsears18/lightwork` session where three freshly-filed design/spike issues sat deferred until the maintainer manually overrode the orchestrator ("do the spikes, decompose the epics, do the designs... whatever needs to be done — YOU DO IT"). This is a phase-1 taxonomy-tightening slice: it extends the existing #661 "autonomous design/architecture decisions" default from in-worker implementation choices to issue *scoping* itself — a plain open design or architecture decision is no longer, by itself, a valid defer reason at any layer of the spec (closes #767).
+
+- `plugins/shipyard/commands/do-work/setup/06-scope-preflight.md` — new "Design/architecture/epic/spike decisions are in-scope by default, not a defer reason" callout; tightened the `human-decision-required` class definition, per-class evidence-shape table row, rejected-shapes list, scoping-agent prompt instruction, and validator prose to explicitly reject a design/architecture decision (specific or generic) as `human-decision-required` evidence, while keeping product/business/legal/policy decisions and the `confirmed-non-shippable-as-single-PR` epic-decomposition path unchanged.
+- `plugins/shipyard/commands/do-work.md` — extended the #661 overview bullet to state the default now covers issue scoping, cross-referencing the scope-preflight callout.
+- `plugins/shipyard/commands/do-work/dont.md` — new rule forbidding a defer on "has open design decisions" alone, naming the correct routing (ready + `phase_1_scope`, or `confirmed-non-shippable-as-single-PR` for a genuine non-mechanical epic).
+- `CLAUDE.md` — updated the `needs-human-review` "Naming note (#608)" to drop "design" from the genuine-human-decision category list and cross-reference the new scope-preflight callout.
+- Out of scope for this PR (filed as follow-ups): a first-class `shipyard:decompose-worker` agent mode, a first-class `shipyard:spike-worker` agent mode, and the orchestrator runtime dispatch-integration wiring for either.
+
 ### 2.11.0 — 2026-07-19
 
 During a long `/do-work` burndown a model tier can be briefly overloaded, failing a dispatch that would otherwise succeed on retry or on an adjacent tier. Claude Code (v2.1.166+) exposes `fallbackModel` in `settings.json` for exactly this — up to three fallback models tried in order — but shipyard's docs never mentioned it, so users had no guidance to adopt it and no way to compute a sensible per-family chain that complements the existing `models.<mode>` dispatch-tier resolution (closes #766).
