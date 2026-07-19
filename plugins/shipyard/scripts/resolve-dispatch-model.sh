@@ -52,6 +52,38 @@
 # or silently substitute a wrong-tier model; the frontmatter pin is a safe,
 # already-reviewed default. The warning goes to stderr so the orchestrator can
 # surface it without the value polluting stdout.
+#
+# Usage — advisory fallback-chain helper (issue #766, NOT wired into
+# dispatch — read the caveat below before reusing this elsewhere):
+#   bash resolve-dispatch-model.sh --fallback-chain <family-or-id>
+#     -> prints the recommended per-family degrade-on-overload chain as a
+#        comma-separated list of Agent-tool aliases, e.g. `sonnet,haiku` for
+#        `opus`. Empty output (exit 0) for the cheapest tier (`haiku`, which
+#        has nowhere lower to fall back to) or an unrecognized family.
+#
+# Why this is a *documentation* helper, not a dispatch-time resolver — read
+# this before wiring it into anything else
+# ---------------------------------------------------------------------------
+# `models.<mode>` (the rest of this script) is a DISPATCH-TIME override: its
+# output becomes the `Agent` tool's `model` parameter on every worker dispatch,
+# so setting it changes real behavior. Claude Code's own `fallbackModel`
+# setting (v2.1.166+) is a DIFFERENT axis entirely — it lives in the user's
+# `settings.json`, governs what the *session's own* CLI process retries when
+# a model request comes back overloaded, and has no equivalent parameter on
+# the `Agent` tool this script's live path feeds (the tool's `model` field is
+# a single enum value, not a list). There is no dispatch-time hook to wire a
+# fallback chain into, so `--fallback-chain` does NOT get consumed by
+# `dispatch-rules.md` / `setup/07-pool-fill.md` the way the live `<mode>` path
+# does — it exists purely so a human (or `do-work-RATIONALE.md`'s worked
+# example) can compute the recommended `fallbackModel` array for whichever
+# model a given `models.<mode>` entry resolves to, without hand-maintaining
+# the family-tier ordering in prose. Do NOT treat an unconsumed
+# `--fallback-chain` call site as the #727 dead-config-surface anti-pattern
+# repeating — #727's bug was a *config key* nothing read; this is a *pure
+# function* whose only "caller" is a human copying its output into their own
+# `settings.json`, which this repo cannot write on the user's behalf.
+# See `do-work-RATIONALE.md`'s "fallbackModel" section for the full
+# recommendation and worked settings.json example.
 
 set -uo pipefail
 
@@ -76,6 +108,33 @@ map_model() {
     *fable*)  printf 'fable\n' ;;
     *)
       echo "resolve-dispatch-model: '${id}' matches no known model family (opus/sonnet/haiku/fable) — omitting the Agent \`model\` parameter; the shim's frontmatter default applies" >&2
+      printf ''
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Advisory fallback-chain table (issue #766). Pure function of a model
+# FAMILY (already resolved via map_model, or a bare alias) — no I/O. Ordered
+# highest-tier-first, degrading toward cheaper/faster tiers so a session that
+# hits an overloaded top tier still completes the dispatch instead of failing
+# it outright. Capped at 3 entries (fable's chain) to mirror Claude Code's own
+# documented `fallbackModel` limit of three models.
+#
+# `haiku` is intentionally the floor — it's already the cheapest/fastest tier
+# shipyard dispatches on, so there is nothing lower to degrade to.
+# ---------------------------------------------------------------------------
+fallback_chain_for_family() {
+  local family="$1"
+  family="$(printf '%s' "$family" | tr '[:upper:]' '[:lower:]')"
+
+  case "$family" in
+    fable)  printf 'opus,sonnet,haiku\n' ;;
+    opus)   printf 'sonnet,haiku\n' ;;
+    sonnet) printf 'haiku\n' ;;
+    haiku)  printf '' ;;   # already the floor tier — nothing cheaper to fall back to
+    *)
+      echo "resolve-dispatch-model: '${family}' matches no known model family (opus/sonnet/haiku/fable) — no fallback-chain recommendation" >&2
       printf ''
       ;;
   esac
@@ -110,10 +169,24 @@ main() {
     exit 0
   fi
 
+  if [ "${1:-}" = "--fallback-chain" ]; then
+    if [ "$#" -ne 2 ]; then
+      echo "usage: $0 --fallback-chain <family-or-model-id>" >&2
+      exit 64
+    fi
+    # Accept either a bare family alias or a full model id (map_model resolves
+    # a full id like claude-opus-4-8 to its family first).
+    local resolved_family
+    resolved_family="$(map_model "$2" 2>/dev/null)"
+    fallback_chain_for_family "${resolved_family:-$2}"
+    exit 0
+  fi
+
   local mode="${1:-}"
   if [ -z "$mode" ]; then
     echo "usage: $0 <mode>" >&2
     echo "       $0 --map <model-id>" >&2
+    echo "       $0 --fallback-chain <family-or-model-id>" >&2
     echo "modes: issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch investigate" >&2
     exit 64
   fi
