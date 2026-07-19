@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.10.8 — 2026-07-19
+
+A `/do-work` burndown fans out deeply — a rolling worker pool, subagents nestable 5 levels deep, and any worker doing research can issue unbounded web searches — with nothing in the spec putting an explicit ceiling on either dimension. Claude Code exposes two harness-level env vars built exactly for this (`CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` / `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`, v2.1.212+, default 200 each), but nothing in the docs mentioned them — a gap that matters most on a host that also runs the target repo's CI as a self-hosted runner, where an unbounded fanout compounds into resource contention with in-flight CI (closes #764).
+
+- `plugins/shipyard/commands/do-work-RATIONALE.md` — new "Runaway guards — subagent + web-search session caps" section documenting both env vars, why the self-hosted-runner case makes them matter more, and recommended values (the 200 defaults are sane for a normal burndown; consider tightening for an unattended overnight run on a shared runner host).
+- `plugins/shipyard/commands/do-work.md` — cross-reference to the new RATIONALE section added alongside the existing "Recommended permission posture" callout.
+- `plugins/shipyard/commands/status.md` — new `Don't` bullet documenting that `/shipyard:status` does not (and currently cannot) render a live count against either cap, since the session state file has no visibility into the harness's internal counters — an honest gap rather than a fabricated number.
+
 ### 2.10.7 — 2026-07-19
 
 Claude Code's **Auto mode** (research preview week of 2026-03-27, since rolled to Pro and Bedrock/Vertex/Foundry) is a classifier-based middle ground between default-deny and full permission bypass — it still runs unattended, auto-approving routine tool calls, but hard-blocks destructive git (`reset --hard`, `clean -fd`, `stash drop`), infra-destroy commands (`terraform`/`pulumi`/`cdk destroy`), transcript tampering, and `rm -rf` on an unresolved variable. Shipyard's docs already assumed a live Auto-mode classifier throughout the dispatch/operator machinery (`dispatch_denials`, `operator_denials`, the worker-preamble "After a classifier denial" contract) but never stated the recommendation itself, leaving a gap between what the spec's failure-handling assumes and what a user is actually told to run `/do-work` under (closes #763).

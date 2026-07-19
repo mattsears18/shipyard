@@ -14,6 +14,30 @@ Run `/do-work` — and the workers it dispatches — under Claude Code's **Auto 
 
 **Full bypass remains a user choice, not a shipyard requirement.** Nothing in this spec depends on `--dangerously-skip-permissions` being set — every dispatch, every worker return, every hook fires identically under Auto mode. The loop's normal path (routine dispatch, edit, commit, push, PR-open) clears the Auto-mode classifier without a prompt; only the destructive class it exists to catch is denied.
 
+## Runaway guards — subagent + web-search session caps ([#764](https://github.com/mattsears18/shipyard/issues/764))
+
+A `/do-work` burndown fans out deeply: the orchestrator keeps up to `--concurrency` workers in flight, each dispatched worker can itself spawn subagents (`Agent` calls, now nestable up to 5 levels deep in the harness), and any worker doing research (a `WebFetch`/`WebSearch`-heavy investigate-mode dispatch, a fix-checks worker chasing a flaky-vs-real CI signature) can issue an unbounded number of web searches across a long session. Nothing in this spec today puts an explicit ceiling on either dimension — the practical backstops are the dispatch loop's own termination condition (see [`do-work.md`](./do-work.md)'s session-completion description in its opening paragraph) and human attention, neither of which fires *during* a session that's fanning out faster than intended.
+
+Claude Code exposes two harness-level environment variables that exist specifically as this class of circuit breaker:
+
+- **`CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION`** (v2.1.212+, default `200`) — caps the total number of subagents a single Claude Code session may spawn across its lifetime, at any nesting depth. Once the cap is hit, further `Agent` dispatches fail at the harness level rather than the orchestrator's own dispatch loop deciding to stop.
+- **`CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`** (v2.1.212+, default `200`) — the session-wide `WebSearch` cap, same mechanism.
+
+**Why this matters more on a self-hosted-runner host than elsewhere.** Several of shipyard's own operating assumptions already single out the case where the machine running `/do-work` also executes the target repo's CI as a self-hosted GitHub Actions runner (see `shipyard:worker-preamble` § "Never run a broad process kill" and the fix-checks-only infra-flake handling) — on that shape, the orchestrator's own resource consumption (CPU, memory, network) is *sharing a host* with in-flight CI, not running in an isolated sandbox. A session that fans out far beyond what a normal burndown needs (a scope-agent loop stuck re-dispatching, a research-heavy investigate-mode worker looping on searches) doesn't just waste tokens — it can also starve the CI runner processes on the same box, compounding into the exact "runner contention" false-CI-failure signature the fix-checks-only mode already has to disambiguate from a real regression. An explicit session cap turns an unbounded-fanout failure into a bounded, loud one (the harness denies further spawns/searches) instead of a silent resource fight with concurrent CI.
+
+**Recommendation, not an enforced default.** Shipyard does not — and cannot — set these itself: they are process-environment variables read by the Claude Code CLI at session start, not a repo-committed config file `/do-work` controls (unlike `shipyard.config.json`'s `concurrency.default`, which shapes *shipyard's own* dispatch pool size). Set them in whatever shell profile, systemd unit, or launchd plist starts the `claude` process on a host that runs `/do-work` unattended for extended burndowns — especially a self-hosted-runner host:
+
+```bash
+# ~/.zshrc / ~/.bashrc / the systemd unit's Environment= block for the
+# process that invokes `claude` to run /shipyard:do-work unattended.
+export CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION=200
+export CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION=200
+```
+
+The defaults (`200` each) are already sane for the vast majority of sessions — a `--concurrency 1` burndown with a handful of scope-preflight agents and no investigate-mode dispatches will never come close. The guidance here is awareness, not a lower recommended value: know the caps exist, know where to tighten them (a long unattended overnight run on a shared self-hosted-runner host is the case to consider dropping them below 200), and know that hitting one surfaces as a harness-level dispatch failure rather than a shipyard-side error — a worker or the orchestrator itself hitting the cap mid-session should be treated the same as any other harness denial (see `shipyard:worker-preamble` § "After a classifier denial" for the analogous posture toward harness-side refusals) rather than assumed to be a shipyard bug.
+
+**Not currently surfaced by [`/shipyard:status`](./status.md).** The per-session state file `session-state.sh` maintains (`~/.shipyard/sessions/<session-id>.json`) is shipyard's own bookkeeping — it has no visibility into the harness's internal subagent/web-search counters, and there is no documented way for a running session to read its own current count against either cap. `/shipyard:status` therefore does not attempt to render a live count against these limits; doing so without a real data source would fabricate a number that looks authoritative but isn't. If the harness ever exposes these counters (e.g. via the per-dispatch `usage` payload the same way token counts are already exposed — see [`do-work.md`'s Cost-tracking write-through](./do-work.md#cost-tracking-write-through)), wiring a running tally into the session state file and rendering it alongside the token total in `/shipyard:status`'s dashboard would be the natural follow-up.
+
 ## Session state file — why a file at all
 
 Three failure modes the prose-narrated state was prone to:
