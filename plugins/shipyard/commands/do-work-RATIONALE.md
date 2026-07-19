@@ -38,6 +38,41 @@ The defaults (`200` each) are already sane for the vast majority of sessions —
 
 **Not currently surfaced by [`/shipyard:status`](./status.md).** The per-session state file `session-state.sh` maintains (`~/.shipyard/sessions/<session-id>.json`) is shipyard's own bookkeeping — it has no visibility into the harness's internal subagent/web-search counters, and there is no documented way for a running session to read its own current count against either cap. `/shipyard:status` therefore does not attempt to render a live count against these limits; doing so without a real data source would fabricate a number that looks authoritative but isn't. If the harness ever exposes these counters (e.g. via the per-dispatch `usage` payload the same way token counts are already exposed — see [`do-work.md`'s Cost-tracking write-through](./do-work.md#cost-tracking-write-through)), wiring a running tally into the session state file and rendering it alongside the token total in `/shipyard:status`'s dashboard would be the natural follow-up.
 
+## `fallbackModel` — degrade gracefully under model-tier overload ([#766](https://github.com/mattsears18/shipyard/issues/766))
+
+A long `/do-work` burndown makes a lot of model requests over a long wall-clock window — the orchestrator's own turns, plus every dispatched worker's turns across every worker mode. During that window a given model tier can be **briefly overloaded** (a transient capacity/rate-limit condition on Anthropic's side, not a bug in shipyard or the target repo), and a request that hits it fails a dispatch that would otherwise have succeeded on retry — or on an adjacent, less-loaded tier.
+
+Claude Code (v2.1.166+) exposes `fallbackModel` in `settings.json` for exactly this: configure up to **three** models, tried in order, when a request to the primary model comes back overloaded. It's the same "circuit breaker the harness owns, not shipyard" shape as the [runaway-fanout guards above](#runaway-guards--subagent--web-search-session-caps-764) — a session-level resilience setting, not a repo-committed config file `/do-work` reads or writes.
+
+**Recommendation, not an enforced default — same posture as the runaway guards.** Shipyard cannot set `settings.json` on the user's behalf (this repo's own worker contract forbids editing a live settings file — see `shipyard:worker-preamble`), so this is guidance for whatever `settings.json` governs the `claude` process that runs `/shipyard:do-work` unattended — most valuable on a long overnight burndown, and doubly so on a self-hosted-runner host where the session is already sharing the box with in-flight CI and can least afford to stall a dispatch on a transient overload instead of degrading and continuing:
+
+```jsonc
+// ~/.claude/settings.json (or the repo's .claude/settings.json)
+{
+  "model": "opus",
+  "fallbackModel": ["sonnet", "haiku"]
+}
+```
+
+**Why `sonnet` → `haiku` and not the reverse.** The chain degrades from the primary model toward cheaper/faster tiers — the goal is "still complete the dispatch," not "still complete it at full fidelity." Falling back *up* in tier would defeat the point (an overloaded top tier is usually overloaded because everyone's requests landed there; falling back further up makes the retry land on the same congested tier).
+
+**How this differs from — and composes with — `models.<mode>`.** [`resolve-dispatch-model.sh`](../scripts/resolve-dispatch-model.sh) and its `models.<mode>` config key (see project `CLAUDE.md`'s Configuration section) are a **dispatch-time tier assignment**: they decide, per worker mode, which model family the orchestrator's `Agent` call targets, and that decision is baked into the call before it ever reaches the harness. `fallbackModel` is an **orthogonal, session-level resilience setting**: it doesn't change which tier a mode dispatches on, it only governs what the session's own CLI process retries when *whichever* model was requested — the orchestrator's own session model, or a dispatched mode's resolved tier — comes back overloaded. The two don't conflict: `models.<mode>` answers "which model should this mode use," `fallbackModel` answers "what do we try next when that model is temporarily unavailable."
+
+**A per-family default chain, computed by the same script that resolves `models.<mode>`.** Rather than hand-maintain the tier ordering in prose (and let it drift from `resolve-dispatch-model.sh`'s own family table), `resolve-dispatch-model.sh` exposes an advisory helper for exactly this:
+
+```bash
+bash plugins/shipyard/scripts/resolve-dispatch-model.sh --fallback-chain opus
+# -> sonnet,haiku
+bash plugins/shipyard/scripts/resolve-dispatch-model.sh --fallback-chain sonnet
+# -> haiku
+bash plugins/shipyard/scripts/resolve-dispatch-model.sh --fallback-chain fable
+# -> opus,sonnet,haiku   (caps at Claude Code's documented 3-model fallbackModel limit)
+```
+
+Feed it whichever model your primary session (or a given `models.<mode>` entry) resolves to, and copy the comma-separated output into `settings.json`'s `fallbackModel` array. `haiku` returns empty — it's already the cheapest/fastest tier shipyard dispatches on, so there's nowhere lower to degrade to.
+
+**This is a documentation helper, not a new dispatch-time hook — worth being explicit about, given [#727](https://github.com/mattsears18/shipyard/issues/727)'s history with dead `models.*` surfaces.** The `Agent` tool's `model` parameter is a single enum value (`opus`/`sonnet`/`haiku`/`fable`), not a list — there is no per-dispatch fallback-chain parameter to wire `--fallback-chain`'s output into, so it is intentionally **not** called from `dispatch-rules.md` or `setup/07-pool-fill.md` the way the live `models.<mode>` path is. Its only "caller" is a human (or this doc) computing a `settings.json` value once, by hand, outside the dispatch loop. That's a different shape of thing than a config key nothing reads — see the script's own header comment for the fuller distinction.
+
 ## Session state file — why a file at all
 
 Three failure modes the prose-narrated state was prone to:

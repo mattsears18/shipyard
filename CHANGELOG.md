@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.11.0 — 2026-07-19
+
+During a long `/do-work` burndown a model tier can be briefly overloaded, failing a dispatch that would otherwise succeed on retry or on an adjacent tier. Claude Code (v2.1.166+) exposes `fallbackModel` in `settings.json` for exactly this — up to three fallback models tried in order — but shipyard's docs never mentioned it, so users had no guidance to adopt it and no way to compute a sensible per-family chain that complements the existing `models.<mode>` dispatch-tier resolution (closes #766).
+
+- `plugins/shipyard/commands/do-work-RATIONALE.md` — new "`fallbackModel` — degrade gracefully under model-tier overload" section: what the setting is, why it matters most on an unattended overnight burndown (doubly so on a self-hosted-runner host), a worked `settings.json` example, and an explicit distinction between `fallbackModel` (session-level overload resilience) and `models.<mode>` (dispatch-time tier assignment) so the two aren't conflated.
+- `plugins/shipyard/commands/do-work.md` — cross-reference to the new RATIONALE section added alongside the existing "Recommended permission posture" and "Runaway-fanout guards" callouts.
+- `plugins/shipyard/scripts/resolve-dispatch-model.sh` — new advisory `--fallback-chain <family-or-model-id>` subcommand computing the recommended per-family degrade chain (opus → sonnet,haiku; sonnet → haiku; haiku → empty, already the floor tier; fable → opus,sonnet,haiku, capped at the documented 3-model limit). Explicitly documented as NOT wired into dispatch (the `Agent` tool has no fallback parameter) — a pure helper for computing a `settings.json` value, not a repeat of #727's dead-config-surface mistake.
+- `plugins/shipyard/scripts/tests/resolve-dispatch-model.test.sh` — new test group (H) covering the fallback-chain table, case-insensitivity, full-model-id resolution, and the fail-open/usage-error paths.
+
 ### 2.10.8 — 2026-07-19
 
 A `/do-work` burndown fans out deeply — a rolling worker pool, subagents nestable 5 levels deep, and any worker doing research can issue unbounded web searches — with nothing in the spec putting an explicit ceiling on either dimension. Claude Code exposes two harness-level env vars built exactly for this (`CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` / `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`, v2.1.212+, default 200 each), but nothing in the docs mentioned them — a gap that matters most on a host that also runs the target repo's CI as a self-hosted runner, where an unbounded fanout compounds into resource contention with in-flight CI (closes #764).

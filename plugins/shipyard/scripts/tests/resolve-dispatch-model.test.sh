@@ -39,6 +39,16 @@
 #       so honoring the config is a behavioral no-op on an unconfigured repo;
 #   (G) the orchestrator's dispatch spec actually CALLS the resolver and passes
 #       `model` on the Agent call — the "config is read by nothing" gap itself.
+#   (H) the advisory `--fallback-chain` helper (issue #766) — a per-family
+#       degrade-on-overload chain (opus->sonnet,haiku; sonnet->haiku;
+#       haiku->empty; fable->opus,sonnet,haiku), accepting either a bare
+#       family alias or a full model id, fail-open on an unrecognized family,
+#       and a usage error on a missing argument. This helper is NOT wired
+#       into dispatch (the `Agent` tool has no fallback parameter) — it exists
+#       so `do-work-RATIONALE.md`'s fallbackModel recommendation has a single
+#       source of truth for the chain ordering instead of hand-maintained
+#       prose. See the script's own header comment for why this doesn't
+#       repeat #727's dead-config-surface mistake.
 #
 # Run with:
 #   bash plugins/shipyard/scripts/tests/resolve-dispatch-model.test.sh
@@ -308,6 +318,38 @@ assert_contains "$DISPATCH_RULES_MD" "model: \"<dispatch_model>\"" \
 # resolution isn't mistaken for "pass an empty model".
 assert_contains "$DISPATCH_RULES_MD" "**omit** the ${BT}model${BT} parameter" \
   "dispatch-rules.md tells the caller to OMIT the model parameter when resolution is empty"
+
+echo
+echo "== (H) advisory --fallback-chain helper (#766) — NOT wired into dispatch"
+
+fallback() { bash "$RESOLVER" --fallback-chain "$1" 2>/dev/null; }
+
+assert_equals "$(fallback opus)"   "sonnet,haiku"      "opus family -> sonnet,haiku"
+assert_equals "$(fallback sonnet)" "haiku"              "sonnet family -> haiku"
+assert_equals "$(fallback haiku)"  ""                   "haiku family -> empty (already the floor tier)"
+assert_equals "$(fallback fable)"  "opus,sonnet,haiku"  "fable family -> opus,sonnet,haiku (caps at Claude Code's documented 3-model limit)"
+
+# Case-insensitive, and a full model id resolves through map_model first.
+assert_equals "$(fallback OPUS)"              "sonnet,haiku" "family match is case-insensitive"
+assert_equals "$(fallback claude-opus-4-8)"   "sonnet,haiku" "full model id (claude-opus-4-8) resolves via map_model then chains"
+assert_equals "$(fallback claude-sonnet-4-6)" "haiku"        "full model id (claude-sonnet-4-6) resolves via map_model then chains"
+
+# Fail-open: an unrecognized family warns on stderr and prints empty, never a
+# hard failure — same posture as the --map path in (C).
+assert_equals "$(fallback 'gpt-4o')" "" "unrecognized family (gpt-4o) -> empty, not a hard failure"
+bash "$RESOLVER" --fallback-chain 'gpt-4o' >/dev/null 2>&1
+assert_equals "$?" "0" "unrecognized family exits 0 (fail-open)"
+warn=$(bash "$RESOLVER" --fallback-chain 'gpt-4o' 2>&1 >/dev/null)
+if [[ "$warn" == *"no fallback-chain recommendation"* ]]; then
+  assert_pass "unrecognized family warns on stderr (not silent)"
+else
+  assert_fail "unrecognized family warns on stderr (not silent)"
+  printf '    stderr was: [%s]\n' "$warn"
+fi
+
+# Usage error on a missing argument.
+bash "$RESOLVER" --fallback-chain >/dev/null 2>&1
+assert_equals "$?" "64" "--fallback-chain with no argument exits 64 (usage error)"
 
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"
