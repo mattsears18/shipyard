@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.14.1 — 2026-07-19
+
+Shipyard tracks per-worker cost post-hoc (session-state pricing table + PR cost comments); the Claude API's beta "Task Budgets" feature (`output_config.task_budget`, beta flag `task-budgets-2026-03-13`) is pre-emptive instead — a token ceiling the model sees mid-generation and paces against, distinct from `max_tokens`'s silent cutoff. This is a spike/feasibility slice: it establishes whether shipyard's `Agent`-tool dispatch surface exposes Task Budgets and, since the answer is a confirmed no, documents the finding rather than adding dead config (closes #765).
+
+- `plugins/shipyard/commands/do-work-RATIONALE.md` — new "Task Budgets — not exposed on the Agent dispatch surface" section: dual-sourced negative finding (the Claude Platform docs state Task Budgets is unsupported on Claude Code/Cowork surfaces; the `Agent` tool's own `AgentDefinition` parameter surface has no budget/token-ceiling field), why the `Workflow` tool's `budget` primitive cited in the issue doesn't bridge the gap (harness-level userspace accounting, not plumbed to the Messages API's `task_budget`), and why no `budgets.<mode>` config surface follows — it would be dead config with nothing to enforce it, the same anti-pattern #727 already named for `models.*`.
+- `plugins/shipyard/commands/do-work.md` — cross-reference from the Cost-tracking write-through section to the new RATIONALE finding, framing the existing post-hoc accounting as staying post-hoc by design (not a gap shipyard can currently close).
+
 ### 2.13.0 — 2026-07-19
 
 Adds a new `shipyard:decompose-worker` agent — a first-class, model-pinned dispatch identity for the epic-decomposition logic that previously only ran as an anonymous `general-purpose` sub-agent inlining a copy of `/decompose-epic`'s Worker prompt template. This is the out-of-scope follow-up #767 explicitly named (closes #772): the agent points at `commands/decompose-epic.md`'s Worker prompt template as the single source of truth rather than forking the sharding logic, and — unlike the six worktree-isolated `issue-worker` modes — is deliberately dispatched **without** `isolation: "worktree"`, since decomposition only reads the codebase read-only and calls the GitHub API. No orchestrator runtime dispatch-integration is included; that's tracked separately in #774.
