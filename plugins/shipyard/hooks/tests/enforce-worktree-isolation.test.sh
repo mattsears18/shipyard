@@ -126,7 +126,8 @@ for shim in \
   shipyard:fix-checks-worker \
   shipyard:fix-rebase-worker \
   shipyard:fix-main-ci-worker \
-  shipyard:fix-pr-batch-worker
+  shipyard:fix-pr-batch-worker \
+  shipyard:spike-worker
 do
   out=$(run_hook "$(mkpayload_no_isolation "$shim")")
   assert_blocked_with "$out" "BLOCKED" "$shim without isolation → blocked"
@@ -145,7 +146,8 @@ for shim in \
   shipyard:fix-checks-worker \
   shipyard:fix-rebase-worker \
   shipyard:fix-main-ci-worker \
-  shipyard:fix-pr-batch-worker
+  shipyard:fix-pr-batch-worker \
+  shipyard:spike-worker
 do
   out=$(run_hook "$(mkpayload_isolated "$shim")")
   assert_exit "$out" "0" "$shim with isolation=worktree → allowed"
@@ -192,6 +194,7 @@ for other in \
   shipyard:dx-auditor \
   shipyard:a11y-auditor \
   shipyard:security-auditor \
+  shipyard:decompose-worker \
   some-third-party-agent
 do
   out=$(run_hook "$(mkpayload_no_isolation "$other")")

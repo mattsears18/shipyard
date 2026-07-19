@@ -1,6 +1,6 @@
 ---
 name: decompose-worker
-description: Autonomously decompose one confirmed-non-shippable epic (an issue carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` trigger marker) into an ordered chain of dispatch-ready GitHub sub-issues, or escalate back to the human handoff when the evidence class isn't mechanically shardable. First-class registered identity for the decomposition logic `/shipyard:decompose-epic` and `/do-work`'s inline auto-decompose path (#665) already run inline as a bare `general-purpose` dispatch (closes #772).
+description: Autonomously decompose one confirmed-non-shippable epic (an issue carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` trigger marker) into an ordered chain of dispatch-ready GitHub sub-issues, or escalate back to the human handoff when the evidence class isn't mechanically shardable. First-class registered identity for the decomposition logic `/shipyard:decompose-epic` and `/do-work`'s inline auto-decompose path (#665) run (closes #772; wired into both call sites by #774).
 model: sonnet
 ---
 
@@ -20,7 +20,7 @@ You are a worker whose **entire job is one epic**: decide whether it can be mech
 
 ## Inputs (from whoever dispatches you)
 
-Because this agent isn't wired into `/do-work`'s per-mode dispatch table (that runtime-integration decision is tracked separately — see [issue #774](https://github.com/mattsears18/shipyard/issues/774) — and is explicitly **out of scope** for this file), there is no standard dispatch-prompt shape yet. Whoever invokes you by name (today: a human, or a future `/decompose-epic` / `/do-work` call site once #774 lands) must supply, in the dispatch prompt, the same three inputs the Worker prompt template expects:
+Adding this agent as a **row in `/do-work`'s per-mode `mode:`-driven dispatch table** stays explicitly **out of scope** — see [Why a separate agent file](#why-a-separate-agent-file-rather-than-folding-into-agentsissue-workermd) below; that boundary doesn't change. What **is** in scope as of [issue #774](https://github.com/mattsears18/shipyard/issues/774): wiring the plugin's two *existing* decomposition-dispatch call sites (`/decompose-epic`'s own bulk dispatch, and `/do-work`'s inline auto-decompose path) to target this agent by name instead of the anonymous `general-purpose` subagent they used before this agent existed. Whoever invokes you by name (`/decompose-epic`, `/do-work`'s inline path, or a human dispatching ad hoc) supplies, in the dispatch prompt, the same three inputs the Worker prompt template expects:
 
 - **Epic issue number `#N`** and **target repo `<owner/repo>`** — the epic to decompose.
 - **`--max-subissues` cap** (default `8`, mirroring the `decompose.max_subissues` config knob) — the confidence-gate ceiling on how many sub-issues a confident breakdown may produce before escalating instead.

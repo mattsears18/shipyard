@@ -14,8 +14,11 @@ The dispatch decision tree consulted by the [steady-state loop](./steady-state.m
 | `fix-main-ci`            | `shipyard:fix-main-ci-worker`    | `sonnet`            | No PR context to anchor; broader investigation than fix-checks.   |
 | `fix-failing-prs-batch`  | `shipyard:fix-pr-batch-worker`   | `sonnet`            | Cross-PR pattern-spotting across ≤5 representative failures.      |
 | `investigate`            | `shipyard:investigate-worker`    | `sonnet`            | Investigate untriaged/bot-authored crash reports; disposition into binary backlog. |
+| `spike`                  | `shipyard:spike-worker`          | default (Opus)      | Feasibility judgment + design-doc authorship — same reasoning tier as issue-work, no cheaper pin. |
 
 The frontmatter column is the **default**, not the last word — the merged config's `models.<mode>` overrides it per the model-resolution rule below.
+
+**`shipyard:decompose-worker` is intentionally absent from this table.** It doesn't take a `mode:` value at all, is dispatched without `isolation: "worktree"`, and isn't reached through this per-issue routing tree — see [Wiring `shipyard:decompose-worker` into the existing inline auto-decompose dispatch](#wiring-shipyarddecompose-worker-into-the-existing-inline-auto-decompose-dispatch-774) below for where it's actually invoked.
 
 Every shim agent forwards to the same per-mode spec under [`agents/issue-worker/<mode>.md`](../../agents/issue-worker/) — the model pin is the only behavioral difference between dispatching via the shim vs the original `shipyard:issue-worker` entry router (which still handles every mode for forward-compat, just on Opus). When in doubt about a mode's behavioral contract, read the per-mode file, not the shim.
 
@@ -35,7 +38,7 @@ dispatch_model=$("${CLAUDE_PLUGIN_ROOT}/scripts/resolve-dispatch-model.sh" <mode
 
 **Don't fail a dispatch on a model-resolution problem.** The resolver's posture is fail-open: an unreadable config or a typo'd model id resolves to empty, and the dispatch proceeds on the frontmatter default. A missing override must never block work.
 
-**Every dispatch in the table above MUST set `isolation: "worktree"` on the `Agent` tool call**, regardless of which shim is being invoked. The Claude Code agent-definition frontmatter format doesn't support an `isolation:` default, so the requirement falls on the caller. The [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) `PreToolUse` hook hard-fails dispatches of any guarded shim that omit the parameter (#293 — the original hook only matched `shipyard:issue-worker` exactly, silently passing through the five model-pinned shims; `shipyard:investigate-worker` was added to the guarded set when the shim shipped with #514 — no hook change needed here). When adding a new worker shim to this table, update the hook's guarded-set in lockstep.
+**Every dispatch in the table above MUST set `isolation: "worktree"` on the `Agent` tool call**, regardless of which shim is being invoked. The Claude Code agent-definition frontmatter format doesn't support an `isolation:` default, so the requirement falls on the caller. The [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) `PreToolUse` hook hard-fails dispatches of any guarded shim that omit the parameter (#293 — the original hook only matched `shipyard:issue-worker` exactly, silently passing through the five model-pinned shims; `shipyard:investigate-worker` was added to the guarded set when the shim shipped with #514 — no hook change needed here; `shipyard:spike-worker` was added to the guarded set as part of wiring this table's `spike` row in #774). When adding a new worker shim to this table, update the hook's guarded-set in lockstep.
 
 When filling a slot, walk this decision tree:
 
@@ -458,7 +461,27 @@ When filling a slot, walk this decision tree:
 
    **The `version_cursor` is what makes a *batch* of simultaneous dispatches monotonic ([#437](https://github.com/mattsears18/shipyard/issues/437)).** The per-dispatch `session_prs` walk above is correct for *sequential* dispatch (C=1, or step C re-fills that fire after a sibling PR has already opened): by the time worker N+1 is dispatched, worker N's PR is open and its version is visible in the walk. It is **not** sufficient for a *batch* dispatch — the initial pool fill at [setup.md step 7](./setup/07-pool-fill.md#7-initial-pool-fill) and any step C multi-fill fire N `Agent` calls in one message, before *any* of those N PRs exist. All N walks see the identical floor and compute the identical `next_available_version`. The cursor fixes this because the orchestrator runs the computation block **N times in sequence** when composing the batch's N prompts (once per slot) — each run reads the cursor the previous run advanced, so slot 1 gets `main+1` and sets the cursor to `main+1`, slot 2 reads the cursor and gets `main+2`, … slot N gets `main+N`. The `Agent` calls still fire simultaneously, but the *version assignment* that feeds each prompt was computed serially against the shared cursor. The cursor is session-local working memory (not the session-state file) — it is consulted and advanced **only** when `vc_enabled == "true"` and `vc_manifest` is non-empty; on a non-coordinated repo it is never touched, and the existing `session_prs`-walk-only behavior is unchanged. It does not need to outlive the session: a fresh session re-seeds the floor from `origin/<default-branch>`'s manifest on its first dispatch, and any in-flight PRs from a prior session are picked up by the `session_prs` walk's open-PR scan.
 
-   Use `subagent_type: "shipyard:issue-worker"` (default model — Opus). Prompt template:
+   **Spike-shape detection — before composing the worker prompt ([#774](https://github.com/mattsears18/shipyard/issues/774)).** Check whether the candidate is **spike-shaped**, using the `labels` and `title` already fetched for this candidate (no extra `gh` round-trip needed):
+
+   - Carries a `spike` label, **or**
+   - Its title matches a recognizable feasibility/research framing prefix, case-insensitive: `spike:`, `spike on`, `investigate:`, `feasibility:`, `research:`, `design spike:`. This mirrors the framing [`agents/issue-worker/spike.md`](../../agents/issue-worker/spike.md) itself documents as the mode's shape signal — title/body framing like "investigate", "feasibility", "research", "spike on".
+
+   **If spike-shaped** → dispatch `mode: spike` instead of `mode: issue-work`. Use `subagent_type: "shipyard:spike-worker"` (default model — Opus, same tier as issue-work; see [`spike-worker.md`'s "Why no model pin"](../../agents/spike-worker.md#why-no-model-pin)). Read the fan-out cap from the merged config:
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+   decompose_max_subissues=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get decompose.max_subissues 2>/dev/null || echo "8")
+   ```
+
+   Prompt template:
+
+   > **`mode: spike`** — Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating. Fan-out cap for follow-on sub-issues: **`<decompose_max_subissues>`** (default 8). **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/spike.md`.** Branch: `do-work/issue-<N>`.
+   >
+   > Return values: `spiked+shipped #<N> via PR #<M> (...)`, `spiked+needs-human-review #<N> (label applied)`, or `blocked: <reason>` (full vocabulary in spike.md step 11).
+
+   The `next_available_version` paragraph computed above still appends verbatim when non-empty — a spike's optional directly-committable slice ([spike.md step 7](../../agents/issue-worker/spike.md#7-implement-the-directly-committable-slice-if-any)) can cut a release under the same coordination contract as any other PR. Skip the rest of this step (the `mode: issue-work` prompt below, its `user-feedback` preamble, and the phase-1 slice augmentation) — those are issue-work-specific and don't apply to a spike dispatch.
+
+   **If not spike-shaped (the common case)** → use `subagent_type: "shipyard:issue-worker"` (default model — Opus). Prompt template:
 
    > **`mode: issue-work`** — Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating in step 6 of the per-mode spec. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/issue-work.md`.** Branch: `do-work/issue-<N>`. Open a PR that closes the issue.
    >
@@ -489,6 +512,17 @@ When filling a slot, walk this decision tree:
 Dispatch is via **background agents**: `run_in_background: true`, `isolation: "worktree"`, the `subagent_type` matching the worker's `mode:` per the routing table at the top of this section, and — when [`resolve-dispatch-model.sh <mode>`](../../scripts/resolve-dispatch-model.sh) returns non-empty — the `model` it resolved from `models.<mode>` (omit the parameter when it returns empty, per the per-dispatch model-resolution rule above). The harness will notify you on completion — that drives the next iteration of the steady-state loop.
 
 **Write the `.in_flight` slot only AFTER the `Agent` call is accepted.** The [per-slot dispatch metadata write-through](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) needs the harness-assigned `agent_id`, which does not exist until the tool call returns — so the write-through is strictly *post*-dispatch, never speculative. This ordering is what makes the denied-dispatch branch below well-defined: a dispatch the harness refused leaves **no** `.in_flight` slot behind, so there is no phantom slot to reap and no completion notification to wait for.
+
+## Wiring `shipyard:decompose-worker` into the existing inline auto-decompose dispatch ([#774](https://github.com/mattsears18/shipyard/issues/774))
+
+Epic-decomposition doesn't get a **new** dispatch branch in the decision tree above — it already has one, dating to [#665](https://github.com/mattsears18/shipyard/issues/665): [setup.md step 6's Recording path, sub-step 5](./setup/06-scope-preflight.md#6-initial-scope-pre-flight) (and the [drain 5.a/5.b re-validation](./drain.md#5a--re-validate-orchestrator-judgment-entries)) inline-invokes [`/decompose-epic`'s Worker prompt template](../decompose-epic.md#worker-prompt-template) against a confirmed, mechanically-decomposable epic. Before [`agents/decompose-worker.md`](../../agents/decompose-worker.md) existed (#772), that dispatch had no first-class agent identity to target and used `subagent_type: "general-purpose"` with the template inlined into the prompt. **Both of that dispatch's call sites now use `subagent_type: "shipyard:decompose-worker"` instead of `"general-purpose"`** — the template, the `--max-subissues` argument, the confidence gate, and the `decomposed:`/`escalated:`/`blocked:` return contract are all unchanged; only the `subagent_type` name changed, from an anonymous agent running an inlined copy of the template to a registered, by-name agent whose own file *is* a thin pointer at the same template (per [`decompose-worker.md`](../../agents/decompose-worker.md)'s "single source of truth" framing):
+
+- [`setup/06-scope-preflight.md`](./setup/06-scope-preflight.md#handling-each-returned-entry-fires-as-each-background-agent-completes)'s inline auto-decompose dispatch (Recording path step 5).
+- [`decompose-epic.md`](../decompose-epic.md#dispatch)'s own bulk-dispatch `Agent` call (the standalone `/decompose-epic` command).
+
+**`isolation: "worktree"` is still omitted at both call sites** — that never changes, regardless of `subagent_type`. `shipyard:decompose-worker` is deliberately excluded from `enforce-worktree-isolation.sh`'s guarded set (see that hook's own comment) precisely because it never touches code; passing `isolation: "worktree"` here would be wasted worktree setup/teardown for a job that only reads the codebase read-only and calls the GitHub API.
+
+**Why this isn't a new row in the per-mode routing table above.** `shipyard:decompose-worker` doesn't take a `mode:` value, isn't dispatched from the per-issue `ready_issues` / `divert_queue` / `investigate_candidates` decision tree, and runs a categorically different job shape (one epic in, sub-issues + a decomposed/escalated/blocked verdict out — no PR, no worktree, no CI to reconcile). Folding it into the table would suggest it's reached the same way the seven `mode:`-driven workers are; it isn't. See [`agents/issue-worker.md`'s Worktree isolation contract section](../../agents/issue-worker.md#worktree-isolation-contract) for the same point made from the routing-table side.
 
 ## Dispatch denied by the harness permission classifier ([#718](https://github.com/mattsears18/shipyard/issues/718))
 
