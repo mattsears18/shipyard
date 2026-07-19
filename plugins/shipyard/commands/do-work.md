@@ -207,6 +207,8 @@ The hook is observational and write-only — `bump-tokens` never affects dispatc
 
 The persistent cross-session ledger at `~/.shipyard/cost-history.jsonl` is [#163](https://github.com/mattsears18/shipyard/issues/163)'s scope — out of scope here. This section covers the per-session in-memory accounting only; the artifact comments posted on the issue/PR are the durable export.
 
+**This accounting is post-hoc, not pre-emptive — and stays that way.** The Claude API's beta "Task Budgets" feature (`output_config.task_budget`) gives a dispatch a token ceiling it's aware of *while running*; shipyard has no equivalent because the feature is not exposed on the `Agent`-tool dispatch surface this section's write-through attributes *after the fact* — confirmed unsupported on Claude Code, dual-sourced against both the platform docs and the `Agent` tool's own parameter surface. See [RATIONALE → Task Budgets](./do-work-RATIONALE.md#task-budgets--not-exposed-on-the-agent-dispatch-surface-spiked-and-closed-negative-765) for the full investigation and why no `budgets.<mode>` config surface follows from it.
+
 ## Phase routing
 
 This file is the **thin entry**: it carries the [args](#args), the [orchestrator-state struct list](#orchestrator-state), the [session state file schema + helper subcommands](#session-state-file), and the routing table below. The actual phase semantics live in [`commands/do-work/`](./do-work/) — load **only** the file(s) you need for the current invocation.
