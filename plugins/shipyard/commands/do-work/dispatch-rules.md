@@ -202,32 +202,28 @@ When filling a slot, walk this decision tree:
      lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
      [ -z "$lock_pid" ] && lock_pid="null"
 
-     if [ "$classification" = "peer-alive" ]; then
-       # A genuinely-live non-orchestrator PID holds the lock. Don't yank it.
-       # Defer; the fresh worker will bail with `blocked #<M> at fix-checks:
-       # head branch <HEAD_REF> locked in another worktree` and the PR is
-       # surfaced for the next session — same outcome as pre-#368, but only
-       # for the truly-unsafe case rather than the common self-PID case.
-       "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-         --action deferred \
-         --worktree-path "$worktree_path" \
-         --worktree-name "$name" \
-         --session-id "<session-id>" \
-         --reason "peer-alive" \
-         --lock-pid "$lock_pid" \
-         --phase "steady-state-pre-dispatch" 2>/dev/null || true
-       break
-     fi
-
-     # no-lock / dead / self-ancestor — safe to reap. The helper does the
-     # `git worktree unlock` + `git worktree remove --force` AND the audit-log
-     # write in one transaction (issue #284).
+     # no-lock / dead / self-ancestor / peer-alive — all safe to reap here
+     # (issue #771). This dispatch site only ever fires against a PR already
+     # in `failed_prs` / `D_dirty` — i.e. its ORIGINATING worker has already
+     # returned and been reconciled at step A, so any worktree still holding
+     # `$head_ref` is logically done by definition, exactly like the A.1
+     # `shipped` path (#576) and the drain #370 pre-dispatch reap. Force-
+     # reaping here closes the residual gap #576 left open: this site
+     # previously stayed "intentionally conservative" and deferred on
+     # `peer-alive` unconditionally, with no override at all — the exact
+     # failure this issue's #2598 repro hit (a re-dispatched fix-checks
+     # worker bailing on a completed prior worker's worktree, twice in a
+     # row, because neither completion left a force-reap here to catch it).
+     # Audit with classification "peer-alive-force" so the override stays
+     # traceable in ~/.shipyard/reap-audit.jsonl.
+     local_classification="$classification"
+     [ "$classification" = "peer-alive" ] && local_classification="peer-alive-force"
      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
        --action reaped \
        --worktree-path "$worktree_path" \
        --worktree-name "$name" \
        --session-id "<session-id>" \
-       --classification "$classification" \
+       --classification "$local_classification" \
        --lock-pid "$lock_pid" \
        --phase "steady-state-pre-dispatch" 2>/dev/null || true
 
@@ -239,7 +235,7 @@ When filling a slot, walk this decision tree:
    git worktree prune 2>/dev/null || true
    ```
 
-   This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or `|| true`) so a filesystem race can't abort the steady-state loop. It runs **once per PR per dispatch**, immediately before the `Agent` dispatch for that PR. The `peer-alive` defer is intentionally conservative: it preserves the exact pre-#368 behavior for the genuinely-unsafe case (a live non-orchestrator process holding the lock), narrowing the worker bail to only the truly-unsafe locks rather than removing the safety entirely. Audit entries carry `"phase":"steady-state-pre-dispatch"` so an operator can distinguish steady-state fix-checks pre-dispatch reaps from setup-3b (session start), steady-state-A1-shipped (#282 immediate-reap), reconcile-A.0.5 (#358 crash-recovery), and drain-pre-dispatch (#370) in `~/.shipyard/reap-audit.jsonl`.
+   This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or `|| true`) so a filesystem race can't abort the steady-state loop. It runs **once per PR per dispatch**, immediately before the `Agent` dispatch for that PR. **`peer-alive` is force-reaped, not deferred (issue [#771](https://github.com/mattsears18/shipyard/issues/771)).** This dispatch site only ever fires against a PR whose originating worker has already returned and been reconciled at step A — the same "agent is done by definition" precedent the A.1 `shipped` path (#576) and the drain #370 pre-dispatch reap already apply — so a `peer-alive` classification here is a transient harness artifact, not a genuinely-live conflicting worker. The pre-#771 behavior deferred unconditionally with no override at all (unlike A.1/drain, which already had one), which is exactly the gap that let a re-dispatched fix-checks worker bail on a completed prior worker's still-locked worktree. Audit entries carry `"phase":"steady-state-pre-dispatch"` and classification `"peer-alive-force"` (for the force-reap path) so an operator can distinguish steady-state fix-checks pre-dispatch reaps from setup-3b (session start), steady-state-A1-shipped (#282 immediate-reap), reconcile-A.0.5 (#358 crash-recovery), and drain-pre-dispatch (#370) in `~/.shipyard/reap-audit.jsonl`.
 
    After 2a, 2b, and 2d clear (or the cost-discipline keys are at their defaults), dispatch a fix-checks-only worker (`subagent_type: "shipyard:fix-checks-worker"` — Haiku-pinned per the table above).
 
