@@ -196,9 +196,15 @@ assert_contains "$steady_state_path" \
 
 # 13) The recovery check runs BEFORE the actual reap call — ordering is
 #     load-bearing (can't recover from a reaped worktree).
+#
+# Anchor text updated for issue #771: step B now force-reaps `peer-alive`
+# too (it no longer defers), so the "Crash-aware reap:" comment above the
+# reap call was reworded to stop claiming a "step B defers" contrast that
+# no longer holds. The ordering invariant this test guards — recovery
+# before reap — is unchanged; only the marker string moved with the prose.
 assert_section_ordering "$steady_state_path" \
   "Pre-reap recovery check" \
-  "Crash-aware reap: unlike step B" \
+  "Crash-aware reap: A.0.5 reaps on every classification" \
   "recovery check precedes reap call in document order"
 
 # 14) The zero-commits-ahead case is handled — when count == 0, the spec

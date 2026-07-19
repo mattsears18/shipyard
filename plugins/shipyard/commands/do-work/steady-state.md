@@ -218,7 +218,7 @@ Once A.0 has fired (or its skip has been logged), proceed to A.0.5.
 
 Closes [#358](https://github.com/mattsears18/shipyard/issues/358). The reap path in [step B](#b-release-the-slot) (added in [#334](https://github.com/mattsears18/shipyard/issues/334)) covers every clean completion — but on a **crash return** (the worker's `claude` subprocess died with an API socket error, an internal harness error, or any other abnormal termination), two failure modes can let the worktree linger:
 
-1. The agent's `claude` subprocess **remained alive after the harness reported completion** — observed verbatim in `mattsears18/lightwork` dogfooding session `20260525-191841-15e73`'s `a23a91d566bd9304e` (PR #1277, "API Error: The socket connection was closed unexpectedly" after 17 tool uses; subprocess visible via `ps` for several minutes after the `task-notification`'s `status: completed`). When the lock PID is the still-alive agent subprocess (not the orchestrator), `classify-lock` returns `peer-alive` and step B's defensive defer fires — leaving the worktree locked until end-of-session.
+1. The agent's `claude` subprocess **remained alive after the harness reported completion** — observed verbatim in `mattsears18/lightwork` dogfooding session `20260525-191841-15e73`'s `a23a91d566bd9304e` (PR #1277, "API Error: The socket connection was closed unexpectedly" after 17 tool uses; subprocess visible via `ps` for several minutes after the `task-notification`'s `status: completed`). When the lock PID is the still-alive agent subprocess (not the orchestrator), `classify-lock` returns `peer-alive`. (Historical: prior to [#771](https://github.com/mattsears18/shipyard/issues/771), step B's per-completion reap deferred conservatively on this classification, leaving the worktree locked until end-of-session; step B now force-reaps `peer-alive` too, same as this step. A.0.5 still matters independently of that fix — it fires *before* A.1, closing the window sooner, and it performs the crash-specific committed-but-unpushed recovery salvage in the section below, which step B's reap never attempts.)
 2. The orchestrator may skim past step B's reap block when the return string is unparseable narrative ("API Error: ...", "Routine progress.", "shard 3/3 passes") — treating the whole turn as "errored, record and continue" without exercising the reap. The spec calls step B's reap unconditional, but the in-context "this turn was a crash, the reconcile path is degenerate" signal can easily override the discipline.
 
 Both failure modes leave the worktree path unreusable for the remainder of the session; the next setup-3b pass at session start eventually reaps, but the cost in the interim is one stuck slot per crash. This step is the in-session safety net: a **crash-aware reap that fires before A.1** explicitly because the agent is non-recoverable and the lingering subprocess (if any) is dead weight — `peer-alive` does not justify deferring on a crash return the way it does on a clean completion.
@@ -265,7 +265,7 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 **The reap.** Derive the worktree path from the slot's `agent_id` (still in `.in_flight.<slot-id>.agent_id` at this point — slot release is step B, which runs later). Classify the lock, then:
 
 - `no-lock` / `dead` / `self-ancestor` → reap normally. Same shape as step B but with `--phase reconcile-A.0.5` so the audit log distinguishes the crash-recovery reap from the per-completion sweep.
-- `peer-alive` → **still reap.** This is the load-bearing difference from step B's behavior: on a crash return the agent is non-recoverable by definition (the API call failed, the harness already declared completion, the return string is not a contract-compliant terminal). Letting a still-alive subprocess hold the lock until end-of-session is the failure mode #358 documented. The reap fires anyway and the audit-log entry records `classification: "peer-alive"` so the operator can see the override happened. The actual `git worktree unlock` + `git worktree remove --force` will succeed regardless of subprocess state (the lockfile is just metadata; the worktree directory removal proceeds even with a process holding open files inside it — those handles become orphans but don't block the dir removal).
+- `peer-alive` → **still reap.** (Historically the load-bearing difference from step B's behavior — step B now force-reaps `peer-alive` too, per [#771](https://github.com/mattsears18/shipyard/issues/771) — but this step's own force-reap remains independently load-bearing: it fires *before* A.1/step B even run, closing the window sooner on a crash return.) On a crash return the agent is non-recoverable by definition (the API call failed, the harness already declared completion, the return string is not a contract-compliant terminal). Letting a still-alive subprocess hold the lock until step B's later pass runs is the failure mode #358 documented. The reap fires anyway and the audit-log entry records `classification: "peer-alive"` so the operator can see the override happened. The actual `git worktree unlock` + `git worktree remove --force` will succeed regardless of subprocess state (the lockfile is just metadata; the worktree directory removal proceeds even with a process holding open files inside it — those handles become orphans but don't block the dir removal).
 
 **Skip silently on clean terminal returns** — when the prefix check passes (`shipped` / `green` / `noop:` / `blocked` / `rebased` / `reaped:`), do NOT run this step. Step B's per-completion reap is the right path for clean returns; running A.0.5 too would double-call into `classify-lock` for the common case and waste tool calls. The skip is a no-op — proceed directly to A.1.
 
@@ -566,12 +566,13 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
     [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
     [ -z "$SESSION_ID" ] && echo "[session-id-derive] empty — A.0.5 reap audit-log entry will lack session-id; check for #477 cwd-leak (#548)"
 
-    # Crash-aware reap: unlike step B's `peer-alive → defer` branch, A.0.5
-    # reaps on every classification including peer-alive. The agent is
-    # non-recoverable by definition (it crashed or violated the return
-    # contract); a still-alive subprocess holding the lock is exactly the
-    # failure mode #358 documents, not a signal to wait. The audit-log
-    # entry records the actual classification so the override is traceable.
+    # Crash-aware reap: A.0.5 reaps on every classification including
+    # peer-alive (step B now does too, per #771, but A.0.5 fires earlier —
+    # before A.1/step B even run). The agent is non-recoverable by
+    # definition (it crashed or violated the return contract); a
+    # still-alive subprocess holding the lock is exactly the failure mode
+    # #358 documents, not a signal to wait. The audit-log entry records
+    # the actual classification so the override is traceable.
     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
       --action reaped \
       --worktree-path "$worktree_path" \
@@ -610,7 +611,7 @@ fi
 
 **Session-id derive in reap blocks (issue [#548](https://github.com/mattsears18/shipyard/issues/548)).** Each reap block additionally derives `SESSION_ID` cwd-independently *after* the `STABLE_DIR` cd anchor. This is a **separate** concern from the filesystem anchor: the cwd anchor prevents `git worktree remove` from corrupting the shell's cwd; the session-id derive prevents the reap's `--session-id` from coming up empty when cwd leaked to an agent worktree (which has no `.shipyard-session-id` stash). The reap blocks pass `--session-id "${SESSION_ID:-unknown}"` so the audit-log entry still lands (with the `unknown` sentinel visible in the log) even when the derive fails, rather than cascading an exit-64 that reads as silent success.
 
-**Interaction with step B.** Step B still fires on every completion path — A.0.5 does NOT replace it. The duplicate-reap is harmless: the `reap` helper's `git worktree remove --force` against a path A.0.5 already removed is a silent no-op. The point of A.0.5 is to take the reap action *earlier in the turn* on crash-like returns (closing the window where step B's `peer-alive` defer leaks the worktree), not to remove the per-completion sweep.
+**Interaction with step B.** Step B still fires on every completion path — A.0.5 does NOT replace it. The duplicate-reap is harmless: the `reap` helper's `git worktree remove --force` against a path A.0.5 already removed is a silent no-op. The point of A.0.5 is to take the reap action *earlier in the turn* on crash-like returns — closing the window sooner than waiting for step B's own pass (which, per [#771](https://github.com/mattsears18/shipyard/issues/771), now also force-reaps `peer-alive` rather than deferring it) — not to remove the per-completion sweep.
 
 **Audit-log shape.** Entries this step writes carry `"phase":"reconcile-A.0.5"` so an operator inspecting `~/.shipyard/reap-audit.jsonl` can distinguish crash-recovery reaps from step B's per-completion sweep (`"phase":"steady-state-B-completion"`), the A.1 shipped-immediate reap (`"phase":"steady-state-A1-shipped"`), the setup-3b stale-worktree pass (no `phase`), and the cleanup-summary end-of-session sweep (no `phase`). Recovery log lines carry `[reconcile-A.0.5-recovery]` prefix (stdout, not the audit JSONL) so a session transcript search surfaces them independently of the reap audit.
 
@@ -734,7 +735,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   **Then reap the agent's worktree immediately — don't wait for end-of-session cleanup.** Closes [#282](https://github.com/mattsears18/shipyard/issues/282): the worker's local branch `do-work/issue-<N>` and worktree directory lingering until end-of-session cleanup is what locks subsequent same-session fix-rebase dispatches out of `git switch <head>` (git enforces one-worktree-per-branch). Reaping immediately on `shipped` frees the PR's head branch right when the merge train might next want to rebase it. The worker has already returned (this is what `shipped` IS), so its worktree is no-longer-live by definition — the classify-lock pass still runs as defensive belt-and-suspenders, but the expected classification is `dead` (process gone) or `self-ancestor` (lock held the orchestrator's PID per the harness convention).
 
-  **Force-reap even on `peer-alive` here.** This is a critical difference from step B's general-purpose reap (which defers on `peer-alive` as a conservative safety measure for unknown returns). A `shipped` return is the worker's terminal contract: the agent subprocess has exited, the PR is on the remote, the worktree has no further purpose. The `peer-alive` classification at this call site means the lock PID is some process that the orchestrator's SHIPYARD_ORCHESTRATOR_PID bootstrap (above) did not short-circuit to `self-ancestor` — most likely a transient harness subprocess that was still alive milliseconds after the agent returned. Deferring on `peer-alive` here causes the very drain-phase `blocked: branch locked in another worktree` failures documented in [#576](https://github.com/mattsears18/shipyard/issues/576): the A.1 defer leaves the worktree locked, the drain's pre-dispatch reap checks the same classification and also defers, and the fix-checks / fix-rebase worker bails. Force-reap closes the window by applying the same posture A.0.5 uses for crash returns (see [§A.0.5](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1)): when the terminal return string is in hand, the agent is non-recoverable by definition, and the `peer-alive` classification does not justify keeping the head branch locked. Audit the reap with `--classification peer-alive-force` so the override is visible in `~/.shipyard/reap-audit.jsonl`.
+  **Force-reap even on `peer-alive` here.** (Historical note: this paragraph originally documented a difference from step B's general-purpose reap, which deferred on `peer-alive` at the time — that gap was closed in [#771](https://github.com/mattsears18/shipyard/issues/771); step B now force-reaps identically, so this A.1 path and step B's are consistent, not divergent.) A `shipped` return is the worker's terminal contract: the agent subprocess has exited, the PR is on the remote, the worktree has no further purpose. The `peer-alive` classification at this call site means the lock PID is some process that the orchestrator's SHIPYARD_ORCHESTRATOR_PID bootstrap (above) did not short-circuit to `self-ancestor` — most likely a transient harness subprocess that was still alive milliseconds after the agent returned. Deferring on `peer-alive` here causes the very drain-phase `blocked: branch locked in another worktree` failures documented in [#576](https://github.com/mattsears18/shipyard/issues/576): the A.1 defer leaves the worktree locked, the drain's pre-dispatch reap checks the same classification and also defers, and the fix-checks / fix-rebase worker bails. Force-reap closes the window by applying the same posture A.0.5 uses for crash returns (see [§A.0.5](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1)): when the terminal return string is in hand, the agent is non-recoverable by definition, and the `peer-alive` classification does not justify keeping the head branch locked. Audit the reap with `--classification peer-alive-force` so the override is visible in `~/.shipyard/reap-audit.jsonl`.
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
@@ -1098,6 +1099,8 @@ Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
 The single-point reap below covers every one of these. The A.1 `shipped #<N>` path is **not** removed — it remains the load-bearing same-turn reap for the issue-work merge-train coordination case (per #282's rationale), and the duplicate-reap is harmless: the helper's `git worktree remove --force` against a path the A.1 pass already removed is a silent no-op.
 
+**Force-reap even on `peer-alive` here — closes the general-reap gap #576 left open (issue [#771](https://github.com/mattsears18/shipyard/issues/771)).** [#576](https://github.com/mattsears18/shipyard/issues/576) taught the A.1 `shipped`-only path and the drain pre-dispatch reap to force-reap on `peer-alive`, but **this** per-completion reap — the one that actually covers `green`/`rebased`/the synthetic-divert `shipped` variants/`blocked <mode>` — was left deferring conservatively, exactly like the pre-#576 A.1 path. By the time step B runs, step A has already parsed this turn's **terminal** return string (every mode's completion contract: `shipped` / `green` / `noop` / `rebased` / `blocked`), so the agent is done by definition regardless of which mode produced the release — the same reasoning A.1 and drain's #370 already apply. A `peer-alive` classification at this call site means the lock PID is a transient harness subprocess that outlived the agent's own return by milliseconds, not a genuine still-working peer. Deferring on it left the just-completed worker's head branch locked into the exact window a re-dispatched fix-checks-only or fix-rebase worker needs it, producing the `blocked ...: head branch <head> locked in another worktree` bails documented in #771 (repro: PRs #2598 and #2701, each requiring a manual `git worktree remove --force` before the re-dispatch would take — twice in the #2598 case, because the *next* re-dispatch's own worktree hit the same deferred-peer-alive gap on its own completion). Force-reap and audit with classification `peer-alive-force` (same token A.1 uses — the `phase` field, already `steady-state-B-completion`, is what distinguishes the two call sites in `~/.shipyard/reap-audit.jsonl`).
+
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
 # Capture the agent id BEFORE the in-memory slot removal — the path
@@ -1138,33 +1141,32 @@ if [ -d "$wt_dir" ]; then
   lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
   [ -z "$lock_pid" ] && lock_pid="null"
 
-  if [ "$classification" = "peer-alive" ]; then
-    # Defensive: peer-alive on our own just-returned agent shouldn't
-    # happen — the worker has returned, so its harness PID is dead or a
-    # self-ancestor. If we see it anyway, defer; end-of-session cleanup
-    # is the safety net and we don't risk yanking a worktree out from
-    # under a still-live process.
-    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-      --action deferred \
-      --worktree-path "$worktree_path" \
-      --worktree-name "agent-${completed_agent_id}" \
-      --session-id "<session-id>" \
-      --reason "peer-alive" \
-      --lock-pid "$lock_pid" \
-      --phase "steady-state-B-completion" 2>/dev/null || true
-  else
-    # no-lock / dead / self-ancestor — safe to reap. The `reap` helper
-    # performs the `git worktree unlock` + `git worktree remove --force`
-    # AND writes the audit-log line in one transaction (issue #284).
-    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-      --action reaped \
-      --worktree-path "$worktree_path" \
-      --worktree-name "agent-${completed_agent_id}" \
-      --session-id "<session-id>" \
-      --classification "$classification" \
-      --lock-pid "$lock_pid" \
-      --phase "steady-state-B-completion" 2>/dev/null || true
-  fi
+  # no-lock / dead / self-ancestor / peer-alive — all safe to reap here.
+  # Step A has already parsed THIS dispatch's terminal return string by the
+  # time step B runs (shipped / green / noop / rebased / blocked — every
+  # mode's completion contract), so the agent is done by definition. Unlike
+  # the pre-#771 posture (which deferred on peer-alive as a blanket
+  # defensive measure), a peer-alive classification here is treated the
+  # same way A.1's shipped-path and drain's #370 pre-dispatch reap already
+  # treat it: the lock PID is a transient harness subprocess outliving the
+  # agent's own return, not a genuine still-working peer. Force-reap closes
+  # the general-reap gap #576 left open — that fix only covered the A.1
+  # issue-work `shipped` special case, leaving every other return shape
+  # (fix-checks `green`, fix-rebase `rebased`, the synthetic-divert
+  # `shipped` variants, any mode's `blocked`) still deferring here and
+  # producing the "branch locked in another worktree" re-dispatch bails
+  # documented in issue #771. Audit with classification "peer-alive-force"
+  # so the override stays traceable in ~/.shipyard/reap-audit.jsonl.
+  local_classification="$classification"
+  [ "$classification" = "peer-alive" ] && local_classification="peer-alive-force"
+  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+    --action reaped \
+    --worktree-path "$worktree_path" \
+    --worktree-name "agent-${completed_agent_id}" \
+    --session-id "<session-id>" \
+    --classification "$local_classification" \
+    --lock-pid "$lock_pid" \
+    --phase "steady-state-B-completion" 2>/dev/null || true
   git worktree prune 2>/dev/null || true
 fi
 ```
