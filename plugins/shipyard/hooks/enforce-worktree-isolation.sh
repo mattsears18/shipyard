@@ -23,9 +23,14 @@
 #   shipyard:fix-main-ci-worker         (mode: fix-main-ci — sonnet)
 #   shipyard:fix-pr-batch-worker        (mode: fix-failing-prs-batch — sonnet)
 #   shipyard:investigate-worker         (mode: investigate — sonnet)
+#   shipyard:spike-worker               (mode: spike — opus, added #774)
 #
 # Also guards the colon-namespaced form `shipyard:issue-worker:*` as
 # defense-in-depth in case a future shim ever uses that scheme.
+#
+# Deliberately NOT guarded: the decomposition agent (see its own file under
+# agents/ for why) — it never touches code and must never be dispatched with
+# isolation: "worktree".
 #
 # Contract: read PreToolUse JSON from stdin, exit 2 + stderr to block.
 # Exit 0 for any call we don't care about (different tool, different subagent).
@@ -51,6 +56,7 @@ case "$subagent" in
   shipyard:fix-main-ci-worker | \
   shipyard:fix-pr-batch-worker | \
   shipyard:investigate-worker | \
+  shipyard:spike-worker | \
   shipyard:issue-worker:* )
     ;;
   *)

@@ -14,17 +14,19 @@
 # enough from a normal bug/feature issue to deserve its own per-mode spec
 # rather than a branch inside issue-work.
 #
-# This is a **plugin-source-only** slice — creating the agent mode. It does
-# NOT wire orchestrator dispatch-site routing (spike detection heuristics,
-# commands/do-work/dispatch-rules.md / steady-state.md dispatch branches,
-# agents/issue-worker.md's mode-routing table) — that is tracked separately
-# in #774 and deliberately out of scope here.
+# #773 itself was a **plugin-source-only** slice — creating the agent mode.
+# It deliberately did NOT wire orchestrator dispatch-site routing (spike
+# detection heuristics, commands/do-work/dispatch-rules.md / steady-state.md
+# dispatch branches, agents/issue-worker.md's mode-routing table) — that was
+# tracked separately as #774. #774 has since landed and wired that routing;
+# section (K) below now asserts the wiring is present (updated from its
+# original "must NOT reference" assertions, which pinned #773's boundary
+# before #774 existed).
 #
 # This test is the regression guard: if anyone deletes the shim, deletes the
 # per-mode spec, breaks the shim -> spec cross-reference, drops the
 # design-doc / decomposition / sub-issue-leak-verification guards from the
-# spec, or accidentally wires live dispatch routing into this PR's scope
-# (which belongs to #774, not #773), the test fails.
+# spec, or the #774 dispatch-site wiring, the test fails.
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -203,25 +205,31 @@ assert_contains "$spec_path" "481" \
   "spec cites issue #481 (the stuck-open closing-keyword hazard) for the dispatched issue's own Closes #<N>"
 
 echo
-echo "== (K) SCOPE GUARD — #773 does not wire orchestrator dispatch-site routing (that's #774)"
+echo "== (K) DISPATCH-SITE WIRING — #774 routes spike-shaped issues to this mode"
 
-# The spec and shim must be explicit that dispatch-site routing is deferred,
-# not silently absent.
+# #773 (this test's original scope) deliberately left orchestrator dispatch-site
+# routing unwired. #774 is the follow-up that wires it — this section now
+# asserts the wiring actually landed, rather than asserting its absence.
 assert_contains "$spec_path" "774" \
-  "spec cites #774 as the separate dispatch-integration follow-up"
+  "spec cites #774 as the dispatch-integration follow-up"
 assert_contains "$shim_path" "774" \
-  "shim cites #774 as the separate dispatch-integration follow-up"
+  "shim cites #774 as the dispatch-integration follow-up"
 
-# The orchestrator's own dispatch-routing files must NOT yet reference this
-# new mode — if they do, dispatch-site wiring leaked into this PR's scope
-# and #774 would have nothing left to do (and would deserve its own review
-# per the issue's explicit scoping instruction).
-assert_not_contains "$dispatch_rules_path" "spike-worker" \
-  "dispatch-rules.md does not yet reference spike-worker (routing wiring belongs to #774)"
-assert_not_contains "$steady_state_path" "mode: spike" \
-  "steady-state.md does not yet dispatch mode: spike (routing wiring belongs to #774)"
-assert_not_contains "$hook_path" "spike-worker" \
-  "enforce-worktree-isolation.sh's guarded-set does not yet include spike-worker (added when #774 wires live dispatch)"
+# The orchestrator's dispatch-routing files must now reference this mode —
+# the whole point of #774 is that spike-shaped issues get routed here instead
+# of parked or dispatched as a plain issue-work candidate.
+assert_contains "$dispatch_rules_path" "shipyard:spike-worker" \
+  "dispatch-rules.md routes to shipyard:spike-worker (#774)"
+assert_contains "$dispatch_rules_path" "mode: spike" \
+  "dispatch-rules.md's spike prompt template names mode: spike (#774)"
+assert_contains "$dispatch_rules_path" "Spike-shape detection" \
+  "dispatch-rules.md documents the spike-shape detection check (#774)"
+assert_contains "$steady_state_path" "spiked+shipped" \
+  "steady-state.md's A.1 reconcile handles the spiked+shipped return (#774)"
+assert_contains "$steady_state_path" "spiked+needs-human-review" \
+  "steady-state.md's A.1 reconcile handles the spiked+needs-human-review return (#774)"
+assert_contains "$hook_path" "shipyard:spike-worker" \
+  "enforce-worktree-isolation.sh's guarded-set includes shipyard:spike-worker (#774)"
 
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"

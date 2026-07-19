@@ -1,6 +1,6 @@
 ---
 name: spike-worker
-description: Use only via /shipyard:do-work spike dispatch — run a feasibility/research issue to completion (investigate → design doc → decompose → optional implement). No model pin (full reasoning required for design-doc authorship and feasibility judgment, same tier as issue-work). Dispatch-site routing is not yet wired — see #774 (closes #773).
+description: Use only via /shipyard:do-work spike dispatch — run a feasibility/research issue to completion (investigate → design doc → decompose → optional implement). No model pin (full reasoning required for design-doc authorship and feasibility judgment, same tier as issue-work). Dispatch-site routing wired in #774 (closes #773).
 ---
 
 You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: spike`. This shim is the dedicated agent for spike/feasibility/research issues: same worktree-isolation and return-contract discipline as `shipyard:issue-worker`, a distinct per-mode spec.
@@ -32,13 +32,13 @@ and exit.
 
 The five cost-optimized shims (`fix-checks-worker`, `fix-rebase-worker`, `fix-main-ci-worker`, `fix-pr-batch-worker`, `investigate-worker`) pin to Haiku or Sonnet because their tasks are narrow and pattern-matchable — repair a known CI failure, rebase onto a fresh base, restore a known-green state. Spike work is the opposite shape: it requires the same caliber of open-ended reasoning `issue-work` requires for code authorship and test design — evaluating tradeoffs between real alternatives, writing a design doc a maintainer will actually read and trust, and judging when a "not viable" conclusion is correct rather than a shortcut. This shim intentionally carries no `model:` frontmatter field, inheriting the session's model exactly as the base `shipyard:issue-worker` entry does for `mode: issue-work` — mirroring that mode's rationale rather than the cheaper five.
 
-## Dispatch-site routing is not yet wired (#774)
+## Dispatch-site routing (#774)
 
-Detecting that a given issue is spike-shaped (label `spike`, or title/body framing like "investigate", "feasibility", "research", "spike on") and choosing this shim over `shipyard:issue-worker` at dispatch time is orchestrator-runtime work tracked separately in [#774](https://github.com/mattsears18/shipyard/issues/774) — `commands/do-work/dispatch-rules.md` and `commands/do-work/steady-state.md` don't yet reference this shim or `mode: spike`. Until #774 lands, this shim is reachable only via a manual, explicit dispatch naming `mode: spike` for a specific issue — it will not be picked automatically by a `/shipyard:do-work` session's normal pool-fill.
+Detecting that a given issue is spike-shaped (label `spike`, or title/body framing like "investigate", "feasibility", "research", "spike on") and choosing this shim over `shipyard:issue-worker` at dispatch time is wired into the `ready_issues` dispatch site in [`commands/do-work/dispatch-rules.md`](../commands/do-work/dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) (step 3's spike-shape check, ahead of the normal `mode: issue-work` prompt composition) — see [issue #774](https://github.com/mattsears18/shipyard/issues/774). `commands/do-work/steady-state.md`'s step A.1 reconciles this shim's return-string vocabulary (`spiked+shipped` / `spiked+needs-human-review`) alongside the other modes'.
 
 ## Worktree isolation contract
 
-Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call — agent-definition frontmatter doesn't support an `isolation:` default, so the caller is responsible. Once #774 wires live dispatch, its guarded-set update to [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) must add this shim's name alongside the other six.
+Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call — agent-definition frontmatter doesn't support an `isolation:` default, so the caller is responsible. [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh)'s guarded set includes this shim's name alongside the other six.
 
 ## Why a separate shim file
 

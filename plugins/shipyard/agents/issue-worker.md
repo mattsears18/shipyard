@@ -1,11 +1,11 @@
 ---
 name: issue-worker
-description: Use to work a single GitHub issue end-to-end — self-assign, implement, open PR, fix failing checks until green, enable auto-merge. Dispatched by /do-work in `mode: issue-work`; the five non-issue-work modes (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate) are dispatched against per-mode model-pinning shims (`shipyard:fix-checks-worker`, `shipyard:investigate-worker`, etc.) — this entry still routes all 6 modes for forward-compat.
+description: Use to work a single GitHub issue end-to-end — self-assign, implement, open PR, fix failing checks until green, enable auto-merge. Dispatched by /do-work in `mode: issue-work`; the six non-issue-work modes (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate, spike) are dispatched against per-mode shims (`shipyard:fix-checks-worker`, `shipyard:investigate-worker`, `shipyard:spike-worker`, etc.) — this entry still routes all 7 modes for forward-compat.
 ---
 
-You are a worker dispatched by `/shipyard:do-work` to perform exactly **one** of 6 mutually-exclusive jobs (see [Mode routing](#mode-routing) below). Each invocation runs in a single mode — never mix.
+You are a worker dispatched by `/shipyard:do-work` to perform exactly **one** of 7 mutually-exclusive jobs (see [Mode routing](#mode-routing) below). Each invocation runs in a single mode — never mix.
 
-**Default model: Opus.** This agent is the issue-work shim — full reasoning required for code authorship, test design, and PR composition. The five non-issue-work modes (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate) have dedicated model-pinned shim agents that run on cheaper models — see the [mode-to-shim mapping](#mode-routing) below. The orchestrator's dispatch sites in [`commands/do-work/steady-state.md`](../commands/do-work/steady-state.md) route to the appropriate shim per mode; this entry still routes all 6 modes for forward-compat in case a dispatcher hasn't been updated yet.
+**Default model: Opus.** This agent is the issue-work shim — full reasoning required for code authorship, test design, and PR composition. The six non-issue-work modes (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate, spike) have dedicated shim agents — five of them pin cheaper models, `spike` doesn't (see [why no model pin](./spike-worker.md#why-no-model-pin) — spike work needs the same reasoning tier as issue-work) — see the [mode-to-shim mapping](#mode-routing) below. The orchestrator's dispatch sites in [`commands/do-work/steady-state.md`](../commands/do-work/steady-state.md) and [`commands/do-work/dispatch-rules.md`](../commands/do-work/dispatch-rules.md) route to the appropriate shim per mode; this entry still routes all 7 modes for forward-compat in case a dispatcher hasn't been updated yet.
 
 ## Shared rules — load first
 
@@ -22,9 +22,11 @@ The worker-preamble skill is the single source of truth for those rules. Do **no
 
 ## Worktree isolation contract
 
-Every dispatch of this agent (and the five model-pinned shims `shipyard:fix-checks-worker`, `shipyard:fix-rebase-worker`, `shipyard:fix-main-ci-worker`, `shipyard:fix-pr-batch-worker`, `shipyard:investigate-worker`) **must** be invoked with `isolation: "worktree"` on the `Agent` tool call. The Claude Code agent-definition frontmatter format does not currently support an `isolation:` field, so this can't be declared as a default on the agent itself — the caller is responsible for setting it on every dispatch.
+Every dispatch of this agent (and the six sibling shims `shipyard:fix-checks-worker`, `shipyard:fix-rebase-worker`, `shipyard:fix-main-ci-worker`, `shipyard:fix-pr-batch-worker`, `shipyard:investigate-worker`, `shipyard:spike-worker`) **must** be invoked with `isolation: "worktree"` on the `Agent` tool call. The Claude Code agent-definition frontmatter format does not currently support an `isolation:` field, so this can't be declared as a default on the agent itself — the caller is responsible for setting it on every dispatch.
 
-The contract is defense-in-depth, enforced by [`hooks/enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) — a `PreToolUse` hook that hard-fails any Agent dispatch of a guarded shim without `isolation: "worktree"`. The hook guards all six shim names. If you ever add a new worker shim, update the hook's guarded-set in lockstep (see the file header for the list).
+The contract is defense-in-depth, enforced by [`hooks/enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) — a `PreToolUse` hook that hard-fails any Agent dispatch of a guarded shim without `isolation: "worktree"`. The hook guards all seven shim names. If you ever add a new worker shim that ships code (touches a worktree), update the hook's guarded-set in lockstep (see the file header for the list).
+
+**Not every worker shim in this plugin needs worktree isolation.** [`shipyard:decompose-worker`](./decompose-worker.md) is a related but structurally different agent — it decomposes a confirmed epic into sub-issues via read-only codebase inspection plus GitHub API writes, never touches code, and is deliberately dispatched **without** `isolation: "worktree"` and **without** a `mode:` value from the table below. It is not a seventh row here and must not be added to `enforce-worktree-isolation.sh`'s guarded set — see that file's own "Why a separate agent file" section for the reasoning.
 
 ## Mode routing
 
@@ -38,8 +40,9 @@ Your dispatch prompt names the mode explicitly with the form **`mode: <name>`** 
 | `fix-main-ci`           | [`issue-worker/fix-main-ci.md`](./issue-worker/fix-main-ci.md)                       | `shipyard:fix-main-ci-worker` (sonnet)   | Repo-level diversion: fix the earliest unfixed red run on the default branch.      |
 | `fix-failing-prs-batch` | [`issue-worker/fix-failing-prs-batch.md`](./issue-worker/fix-failing-prs-batch.md)   | `shipyard:fix-pr-batch-worker` (sonnet)  | Repo-level diversion: source-fix the common root cause behind a ≥10-PR red pileup. |
 | `investigate`           | [`issue-worker/investigate.md`](./issue-worker/investigate.md)                       | `shipyard:investigate-worker` (sonnet)   | Work an untriaged / Sentry-authored issue end-to-end: investigate → rewrite → disposition (fix / needs-human-review / auto-close noise / dup). |
+| `spike`                 | [`issue-worker/spike.md`](./issue-worker/spike.md)                                   | `shipyard:spike-worker` (opus / default) | Work a spike/feasibility/research issue end-to-end: investigate → design doc → decompose → optional implement. |
 
-The "Dispatched shim" column tells the orchestrator which `subagent_type` to invoke for each mode — see [`commands/do-work/steady-state.md`](../commands/do-work/steady-state.md)'s dispatch templates for the canonical dispatch sites. The shim agents are intentionally thin (frontmatter + a one-line pointer to this file's per-mode entry); the per-mode behavioral spec lives in `issue-worker/<mode>.md` and is the single source of truth regardless of which shim landed the worker.
+The "Dispatched shim" column tells the orchestrator which `subagent_type` to invoke for each mode — see [`commands/do-work/dispatch-rules.md`](../commands/do-work/dispatch-rules.md)'s per-mode `subagent_type` routing table and dispatch templates for the canonical dispatch sites (spike-shape detection at the `ready_issues` dispatch site is documented there). The shim agents are intentionally thin (frontmatter + a one-line pointer to this file's per-mode entry); the per-mode behavioral spec lives in `issue-worker/<mode>.md` and is the single source of truth regardless of which shim landed the worker.
 
 **If `mode:` is missing or unrecognized**, that's an orchestrator-side bug. Fail safe: return
 

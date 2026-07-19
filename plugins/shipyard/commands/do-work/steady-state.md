@@ -1080,7 +1080,17 @@ For **investigate work** (`investigated+fixed` / `investigated+needs-human-revie
 
 - **blocked #<N>** (from investigate mode) — apply the same `blocked` classification logic as issue-work above (dependency-wait → no label, body-ref filter; refuse → `needs-human-review`; soft → `blocked:agent-soft`). Additionally remove `needs-triage` only on the refuse path (the issue is no longer a triage candidate once a human-review gate has been applied): `gh issue edit <N> --repo <owner/repo> --remove-label needs-triage --add-label needs-human-review 2>/dev/null || true`. Reap the agent's worktree via step B.
 
-`session_prs` is the set of PR numbers this orchestrator session opened (issue-worker shipped, fix-main-ci shipped, fix-failing-prs-batch shipped) plus any pre-existing `@me` PRs that fix-checks touched. It is read by the end-of-session drain to decide what to watch and when to exit. A PR enters `session_prs` exactly once — re-touches don't re-add. Started empty at step 7's initial pool fill.
+For **spike work** (`spiked+shipped` / `spiked+needs-human-review` / `blocked` / `reaped`) — [#774](https://github.com/mattsears18/shipyard/issues/774), dispatched per [`dispatch-rules.md`'s spike-shape detection](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c):
+
+- **spiked+shipped #<N> via PR #<M> (auto-merge: ..., checks: ..., sub-issues: ...)** — the worker concluded the spike (viable / viable-with-caveats / **or** not-viable — all three are `spiked+shipped`, per [spike.md step 11](../../agents/issue-worker/spike.md#11-return)) and opened a PR carrying the committed design doc plus, optionally, a decomposition and/or an implemented slice. Treat this identically to an issue-work `shipped #<N> via PR #<M>` return: **Append `<M>` to `session_prs`.** Run the standard `shipped` cost-tracking comment and immediate worktree reap for `do-work/issue-<N>` (same mechanics as the [issue-work `shipped` handler](#a1-parse-the-return-string) above — auto-merge/checks parsing, cost comment, force-reap-even-on-`peer-alive`). The issue auto-closes when PR `<M>` merges (the worker's PR body includes `Closes #<N>`). Any follow-on sub-issues the worker filed (per spike.md step 6) are fresh `shipyard`-labelled issues with no gate label — they re-enter the normal dispatch loop via the next backlog fetch, exactly like a `/decompose-epic` shard.
+
+- **spiked+needs-human-review #<N> (label applied)** — the investigation surfaced a genuine human-only decision (product/business/legal call, access the worker lacks, or a question no amount of investigation could narrow). The worker already applied `needs-human-review`. Record. No auto-retry — `/my-turn` will surface it. Reap the agent's worktree via step B.
+
+- **reaped:** (from spike mode) — same handling as issue-work `reaped:` above: re-enqueue `<N>` back into the ready pool (deduped), remove `@me` assignee, log the event. The worker's worktree is already gone; no reap needed.
+
+- **blocked #<N>** (from spike mode) — apply the same `blocked` classification logic as issue-work above (dependency-wait → no label, body-ref filter; refuse → `needs-human-review`; soft → `blocked:agent-soft`). Reap the agent's worktree via step B.
+
+`session_prs` is the set of PR numbers this orchestrator session opened (issue-worker shipped, fix-main-ci shipped, fix-failing-prs-batch shipped, spike-worker shipped) plus any pre-existing `@me` PRs that fix-checks touched. It is read by the end-of-session drain to decide what to watch and when to exit. A PR enters `session_prs` exactly once — re-touches don't re-add. Started empty at step 7's initial pool fill.
 
 #### A.5. (removed — [#521](https://github.com/mattsears18/shipyard/issues/521))
 

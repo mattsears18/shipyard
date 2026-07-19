@@ -94,7 +94,7 @@ If `--issue N` flags were passed, restrict the candidate set to just those numbe
 
 ## Dispatch
 
-For each remaining candidate, dispatch a **decomposition worker** in parallel — one message, N background `Agent` calls with `subagent_type: "general-purpose"`, **no `isolation: "worktree"`** (these workers don't touch code; they only read the codebase read-only and call the GitHub API). Cap at `--concurrency` in flight; refill as they return.
+For each remaining candidate, dispatch a **decomposition worker** in parallel — one message, N background `Agent` calls with `subagent_type: "shipyard:decompose-worker"` ([#772](https://github.com/mattsears18/shipyard/issues/772) gave this dispatch a first-class agent identity in place of the anonymous `general-purpose` name this command used previously — same worker, same template, same contract), **no `isolation: "worktree"`** (these workers don't touch code; they only read the codebase read-only and call the GitHub API). Cap at `--concurrency` in flight; refill as they return.
 
 ### Worker prompt template
 
@@ -219,7 +219,7 @@ Omit sub-blocks whose count is zero.
 
 ## The auto path (inside `/do-work`)
 
-**Built and default-on for the mechanical classes as of [#665](https://github.com/mattsears18/shipyard/issues/665).** `/do-work`'s scope-preflight/defer path ([`do-work/setup/06-scope-preflight.md` Recording-path step 5](./do-work/setup/06-scope-preflight.md#handling-each-returned-entry-fires-as-each-background-agent-completes), plus the [drain 5.a/5.b re-validation](./do-work/drain.md#5a--re-validate-orchestrator-judgment-entries)) inline-invokes **this command's [Worker prompt template](#worker-prompt-template) verbatim** when a scope agent returns `confirmed-non-shippable-as-single-PR` with a mechanically-decomposable `evidence_pointer` (`Multi-PR sequence:` / `Missing dependency:`). The worker is the **single source of truth** for the sharding — the inline path re-derives nothing; it just dispatches the same `general-purpose` decomposition worker (no worktree) with `--max-subissues <decompose.max_subissues>`. This is the same reuse posture as `/refine-issues` being the single source of truth for the refinement logic that `/do-work` step 3.5 invokes.
+**Built and default-on for the mechanical classes as of [#665](https://github.com/mattsears18/shipyard/issues/665).** `/do-work`'s scope-preflight/defer path ([`do-work/setup/06-scope-preflight.md` Recording-path step 5](./do-work/setup/06-scope-preflight.md#handling-each-returned-entry-fires-as-each-background-agent-completes), plus the [drain 5.a/5.b re-validation](./do-work/drain.md#5a--re-validate-orchestrator-judgment-entries)) inline-invokes **this command's [Worker prompt template](#worker-prompt-template) verbatim** when a scope agent returns `confirmed-non-shippable-as-single-PR` with a mechanically-decomposable `evidence_pointer` (`Multi-PR sequence:` / `Missing dependency:`). The worker is the **single source of truth** for the sharding — the inline path re-derives nothing; it just dispatches the same `shipyard:decompose-worker` decomposition worker (no worktree) with `--max-subissues <decompose.max_subissues>`. This is the same reuse posture as `/refine-issues` being the single source of truth for the refinement logic that `/do-work` step 3.5 invokes.
 
 **What gates it (config).**
 
