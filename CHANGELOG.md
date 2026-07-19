@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.10.7 — 2026-07-19
+
+Claude Code's **Auto mode** (research preview week of 2026-03-27, since rolled to Pro and Bedrock/Vertex/Foundry) is a classifier-based middle ground between default-deny and full permission bypass — it still runs unattended, auto-approving routine tool calls, but hard-blocks destructive git (`reset --hard`, `clean -fd`, `stash drop`), infra-destroy commands (`terraform`/`pulumi`/`cdk destroy`), transcript tampering, and `rm -rf` on an unresolved variable. Shipyard's docs already assumed a live Auto-mode classifier throughout the dispatch/operator machinery (`dispatch_denials`, `operator_denials`, the worker-preamble "After a classifier denial" contract) but never stated the recommendation itself, leaving a gap between what the spec's failure-handling assumes and what a user is actually told to run `/do-work` under (closes #763).
+
+- `plugins/shipyard/commands/do-work.md` — new "Recommended permission posture" section (right after the intro, before `## Args`) recommending Auto mode over `--dangerously-skip-permissions`, explaining why the existing classifier-denial machinery throughout the spec already assumes it, and verifying (with citations, not assumption) that it composes cleanly with shipyard's own `PreToolUse` hooks (`enforce-worktree-isolation.sh`, `enforce-edit-scope.sh`, `refuse-broad-process-kill.sh`, `refuse-escape-symlink-commit.sh`, `guard-primary-checkout.sh`) — the hooks are a separate deterministic layer that fires regardless of permission mode, so switching from full bypass to Auto mode neither weakens nor duplicates them.
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — "After a classifier denial" now leads with a cross-reference to the new recommendation (a classifier denial is the recommended posture working as intended, not a misconfiguration) and a paragraph distinguishing the classifier layer from shipyard's own `PreToolUse` hooks, so a worker hitting either doesn't conflate the two.
+
+Deliberately left the full bypass posture available as a user choice rather than deprecating it — nothing in the spec's dispatch, worker-return, or hook behavior depends on which posture is active; only the classifier-denial branches go permanently dormant under full bypass.
+
 ### 2.10.6 — 2026-07-19
 
 The 10 auditor agents that carried no `model:` frontmatter (`api`, `docs`, `dx`, `functional-qa`, `mobile-ux`, `observability`, `security`, `tech-debt`, `testing`, `web-ux`) inherited the session's top model (Opus) on every `/shipyard:audit` run. They are now pinned to the `sonnet` family alias (current Sonnet = Sonnet 5 — near-Opus quality at a fraction of the cost), a global plugin default that trades some audit depth on the judgment-heavy dimensions (`security`, `functional-qa`, `testing`, `tech-debt`) for cost. Deliberately-pinned auditors (`haiku` / `sonnet`) are untouched (closes #761).
