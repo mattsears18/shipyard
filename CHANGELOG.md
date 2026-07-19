@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 2.10.6 — 2026-07-19
+
+The 10 auditor agents that carried no `model:` frontmatter (`api`, `docs`, `dx`, `functional-qa`, `mobile-ux`, `observability`, `security`, `tech-debt`, `testing`, `web-ux`) inherited the session's top model (Opus) on every `/shipyard:audit` run. They are now pinned to the `sonnet` family alias (current Sonnet = Sonnet 5 — near-Opus quality at a fraction of the cost), a global plugin default that trades some audit depth on the judgment-heavy dimensions (`security`, `functional-qa`, `testing`, `tech-debt`) for cost. Deliberately-pinned auditors (`haiku` / `sonnet`) are untouched (closes #761).
+
+- `plugins/shipyard/agents/{api,docs,dx,functional-qa,mobile-ux,observability,security,tech-debt,testing,web-ux}-auditor.md` — add `model: sonnet` frontmatter to each of the 10 previously-unpinned auditors.
+
 ### 2.10.5 — 2026-07-16
 
 On a large React-Native monorepo, individual worker steps legitimately exceeded the harness's ~600s stream-watchdog window (and, more immediately, the `Bash` tool's own 120s default per-call timeout) with no intervening output: `npm ci` on the app workspace stalled a worker into opening a `Monitor` and ending its turn to "wait"; a slow pre-commit hook (typecheck + lint + prettier + secret-scan) stalled another worker mid-`git commit`, which narrated "I'll continue when it resolves" and stopped without pushing — the orchestrator had to finish the commit + push by hand; and three separate workers were killed outright running a full emulator-backed `npm run test:unit`. Distinct from #753 (CI-*watching* monitor loops) — this is the worker's own *local* verification chain stranding it before it ever gets to CI (closes #757).
