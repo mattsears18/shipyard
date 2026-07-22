@@ -9,6 +9,7 @@ Full issue → PR lifecycle. Self-assign, implement, open a PR with a `Closes #<
 - Issue number `#N`.
 - Target repo `<owner/repo>`.
 - `originating_author_trust` — `trusted` or `external`. **Load-bearing for step 6**: it gates auto-merge. The dispatch prompt names it explicitly with the form *"the originating issue's author trust is **`trusted`**"* (or `external`). If you can't find the field in the dispatch prompt, **don't hard-default to `external`** — resolve the issue author's collaborator permission live as a fallback (`repos/{owner}/{repo}/collaborators/{author}/permission`; `admin`/`maintain`/`write` ⇒ trusted, anything else ⇒ external). See [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) for the full fallback and [#599](https://github.com/mattsears18/shipyard/issues/599) for why the old hard-`external` default was wrong on owner-authored issues. See [do-work's author-trust computation](../../commands/do-work/dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) for how the field itself is derived.
+- `verify_gate` — `on`, or absent. **Opt-in** (default off). When the dispatch prompt carries **`verify_gate: on`**, run the independent adversarial-verification gate in [step 5.9](#59-independent-adversarial-verification-opt-in-gate) *before* arming auto-merge in step 6. When the field is absent (the default), skip step 5.9 entirely and go straight to step 6 — behavior is unchanged. The orchestrator only sets `verify_gate: on` when `verify_gate.enabled == true` in the merged config **and** `originating_author_trust == "trusted"` (an `external` PR is already gated to `needs-human-review` in step 6, so verification would be redundant).
 
 ## Process
 
@@ -449,9 +450,45 @@ fi
 
 This step runs **after** §5.8 (the dispatched-issue closing-link verification) and **before** §6 arms auto-merge, so a protected epic can never ride an armed auto-merge to a silent close. It runs unconditionally regardless of `originating_author_trust` whenever a protected epic is in scope.
 
+### 5.9 Independent adversarial verification (opt-in gate)
+
+**Run this step only when the dispatch prompt carries `verify_gate: on`. When the field is absent (the default), skip directly to step 6 — the rest of this section does not apply and behavior is byte-for-byte unchanged.**
+
+The PR is open and every mechanical guard (§5.7 / §5.8 / §5.85) has passed, but auto-merge is **not yet armed**. This is the "verify" in find → implement → **verify** → merge: before you arm the merge, an *independent* agent adversarially checks that your change actually and completely resolves the issue. You believe it does — that's exactly why the check has to come from a skeptic that isn't you.
+
+Dispatch the verifier as a nested subagent via the `Agent` tool. It is the one sanctioned nested dispatch in the do-work loop:
+
+- `subagent_type: "shipyard:verify-worker"` (pinned to Opus in its shim)
+- `isolation: "worktree"` (**mandatory** — the isolation hook hard-fails the dispatch otherwise; the verifier reads the PR via `gh`, so an empty worktree is fine)
+- prompt naming `mode: verify` and carrying: the PR number `<M>`, the issue number `<N>`, `<owner/repo>`, and the acceptance criteria / reproduction summary you read in step 2.
+
+> **`mode: verify`** — Adversarially verify that PR #`<M>` in `<owner/repo>` correctly and completely resolves issue #`<N>` before it auto-merges. Acceptance criteria / reproduction to check the diff against: `<AC summary from step 2>`. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/verify.md`.** Return a single verdict line: `verified: <basis>` or `not-verified: <specific refutation>`.
+
+Read the verifier's single-line verdict and branch:
+
+- **Verdict starts with `verified:`** → the change cleared independent review. **Proceed to step 6** and arm auto-merge exactly as normal.
+- **Verdict starts with `not-verified:`** → do **NOT** arm auto-merge. Gate the PR for a human, carrying the verifier's reasoning verbatim so the maintainer sees *why*:
+
+  ```bash
+  gh pr edit <M> --repo <owner/repo> --add-label needs-human-review
+
+  gh pr comment <M> --repo <owner/repo> --body "$(cat <<EOF
+  Independent verification did not pass — this PR will not auto-merge until a maintainer reviews it.
+
+  **Verifier verdict:** <the not-verified reason, verbatim>
+
+  This is the do-work adversarial-verify gate (\`verify_gate.enabled\`): an independent agent judged the change against the issue's acceptance criteria before merge and could not confirm it. A human should confirm or correct.
+  EOF
+  )"
+  ```
+
+  Then return the step-8 blocked string: `blocked #<N> at verify: <the not-verified reason>`. The orchestrator's step-A reconcile classifies a `blocked … at verify:` return into `needs-human-review` per [#521](https://github.com/mattsears18/shipyard/issues/521), so no new reconcile branch is needed.
+
+**Fail open — never let the gate strand a PR.** If the nested dispatch is *refused* by the harness (nested spawning is off by default: `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` must be `≥1` — see [`verify-worker.md`](../verify-worker.md) § "Nested-dispatch prerequisite"), or the verifier returns a `not-verified:` line whose reason is `verifier worktree reaped mid-run` (a non-verdict, not a real refutation), do **not** silently arm auto-merge as if verified, and do **not** hard-block the loop. Instead label `needs-human-review`, comment that the gate could not run (`Verify gate could not run: <reason>; a maintainer should review before merge`), and return `blocked #<N> at verify: gate could not run — <reason>`. This keeps the safety posture (unverified never auto-merges) without letting a misconfigured depth setting wedge the session — the operator fixes the env var and re-runs. A dispatch that *succeeds* but yields no parseable `verified:`/`not-verified:` prefix is treated the same way (non-verdict → human review).
+
 ### 6. Enable auto-merge (gated on `originating_author_trust`)
 
-Branch on the `originating_author_trust` field the orchestrator put in your dispatch prompt.
+Branch on the `originating_author_trust` field the orchestrator put in your dispatch prompt. (When step 5.9 ran and returned `verified`, continue here as normal; when it returned `not-verified` you already gated the PR and returned in step 5.9 — you never reach this step.)
 
 **When `originating_author_trust == "trusted"`:**
 

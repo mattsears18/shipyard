@@ -94,6 +94,14 @@
         "_comment": { "type": "string" }
       }
     },
+    "verify_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "_comment": { "type": "string" }
+      }
+    },
     "models": {
       "type": "object",
       "additionalProperties": false,

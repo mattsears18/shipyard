@@ -140,6 +140,9 @@ DEFAULTS_JQ='{
     "max_body_chars": 200,
     "patterns": ["typo", "dep-bump", "doc-only", "comment-only", "config-tweak"]
   },
+  "verify_gate": {
+    "enabled": false
+  },
   "models": {
     "issue_work": "claude-opus-4-7",
     "fix_checks_only": "claude-haiku-4-5",
