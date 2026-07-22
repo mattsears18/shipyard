@@ -350,6 +350,20 @@
         "_comment": { "type": "string" }
       }
     },
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Selects the substrate the /shipyard:do-work dispatch loop runs on (issue #787, phase 1 of the #782 Dynamic Workflows epic). Phase 1 is additive scaffolding only: the `workflow` substrate script (plugins/shipyard/workflows/do-work-dispatch.workflow.js) and the structured-return schema (plugins/shipyard/schemas/worker-return.schema.json) are committed alongside — not replacing — the hand-rolled `Agent`-tool orchestrator, and NO worker mode is dispatched through the workflow script yet. Wiring a mode to the new substrate, and any change to the default value, are deferred to the later #782 phases (#790+). At the `agent` default this knob is inert — /do-work dispatches exactly as before.",
+      "properties": {
+        "substrate": {
+          "type": "string",
+          "enum": ["agent", "workflow"],
+          "default": "agent",
+          "description": "Which dispatch substrate /shipyard:do-work uses. `agent` (default): the existing hand-rolled orchestrator that dispatches each worker one-by-one via the `Agent` tool with `subagent_type` / `isolation: \"worktree\"` / `model` (commands/do-work/dispatch-rules.md + steady-state.md) — the free-text worker return-string contract applies. `workflow`: the native Claude Code Dynamic Workflows substrate (the `Workflow` tool) — the do-work inner loop authored as a JavaScript orchestration script (`select → pipeline(implement, verify, open-PR/arm-merge)` with a `parallel()` concurrency pool) whose workers return schema-validated structured results (schemas/worker-return.schema.json) instead of free text. As of phase 1 (#787) the `workflow` value is RESERVED scaffolding: selecting it does NOT yet change dispatch — no mode is wired to the script until a later #782 phase. Leave at `agent` until the cutover phase ships."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "flake_registry": {
       "type": "object",
       "additionalProperties": false,

@@ -134,6 +134,14 @@ assert_equals "$("$helper" get concurrency.default)" "1" "get concurrency.defaul
 # prevents an accidental flip to conservative pinning.
 assert_equals "$("$helper" get dependencies.new_dep_version)" "latest-stable" "get dependencies.new_dep_version returns latest-stable (issue #694)"
 
+# dispatch.substrate — issue #787: phase-1 scaffolding of the Dynamic Workflows
+# substrate. The built-in default is "agent" (the existing hand-rolled Agent-tool
+# orchestrator); "workflow" is reserved scaffolding not yet wired to any mode.
+# Asserting the literal default here guards against an accidental cutover flip
+# before the later #782 phases ship.
+assert_equals "$("$helper" get dispatch.substrate)" "agent" "get dispatch.substrate returns agent (issue #787)"
+assert_equals "$("$helper" get dispatch.substrate --with-source | cut -f2)" "defaults" "dispatch.substrate default comes from the built-in layer"
+
 # get on an unknown path
 "$helper" get nonexistent.path 2>/dev/null
 assert_exit_code "$?" 3 "get unknown path exits 3"
@@ -329,6 +337,36 @@ assert_exit_code "$?" 70 "main_ci.max_fix_attempts rejects 0 (below minimum)"
 echo '{"version":1,"main_ci":{"max_fix_attempts":5}}' > "$repo/shipyard.config.json"
 "$helper" validate --layer repo
 assert_exit_code "$?" 0 "main_ci.max_fix_attempts accepts a valid integer >= 1"
+
+# Reset to valid
+echo '{"version":1}' > "$repo/shipyard.config.json"
+
+# --------------------------------------------------------------------------
+echo "== dispatch.substrate — Dynamic Workflows substrate flag (#787)"
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
+# Repo-level override to the reserved "workflow" value round-trips and validates.
+out=$("$helper" set dispatch.substrate workflow --repo 2>&1)
+assert_contains "$out" "wrote dispatch.substrate" "set --repo writes dispatch.substrate"
+assert_equals "$("$helper" get dispatch.substrate)" "workflow" "repo override returns workflow"
+assert_equals "$("$helper" get dispatch.substrate --with-source | cut -f2)" "repo" "override source is repo"
+
+# Schema rejects an unknown substrate value (enum: agent | workflow).
+echo '{"version":1,"dispatch":{"substrate":"magic"}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "dispatch.substrate rejects a value outside the enum"
+
+# Schema rejects an unknown sibling key under dispatch (additionalProperties:false).
+echo '{"version":1,"dispatch":{"substrate":"agent","turbo":true}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "unknown dispatch.* key rejected by additionalProperties:false"
+
+# Both enum members validate.
+echo '{"version":1,"dispatch":{"substrate":"agent"}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "dispatch.substrate accepts agent"
+echo '{"version":1,"dispatch":{"substrate":"workflow"}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "dispatch.substrate accepts workflow"
 
 # Reset to valid
 echo '{"version":1}' > "$repo/shipyard.config.json"
