@@ -71,6 +71,22 @@ As of the [#790](https://github.com/mattsears18/shipyard/issues/790) substrate c
 
 The upshot: the cutover is invisible to this dashboard by construction. A regression that reverts `dispatch.substrate` to `"agent"` (the instant-revert override) is equally invisible — `/shipyard:status` renders both the same because both write the same file. The `dispatch-substrate-cutover-790.test.sh` suite asserts a synthetic `Workflow`-dispatched session file renders correctly through all three output modes.
 
+## Relationship to Agent View ([#785](https://github.com/mattsears18/shipyard/issues/785))
+
+Claude Code's native [Agent View](https://code.claude.com/docs/en/agent-view) (`claude agents`) is a harness-level dashboard for **every** detached background session on the machine — whatever spawned them, `/shipyard:do-work` or otherwise. It's not a competitor to `/shipyard:status`; the two sit at different layers and answer different questions, so the decision here is **complement, not defer** — neither dashboard re-implements the other:
+
+| | Agent View | `/shipyard:status` |
+|---|---|---|
+| Scope | Every background session/subagent on this machine | Only this repo's `/shipyard:do-work` session(s) |
+| Granularity | One row per session/subagent (process-level) | One row per in-flight worker *and* its shipyard-specific semantics |
+| Fields | Status (needs-input / working / completed), one-line Haiku-generated summary, PR label when a session opens one | `mode` (issue / fix-checks / fix-rebase / …), `target` (issue or PR number), elapsed, token usage, staleness | 
+| Best for | Attaching to a specific worker's live transcript, peeking at its last output, or stepping in mid-task | Answering "what is shipyard's dispatch loop doing *right now*, and is any of it stuck?" across the whole session at a glance |
+| Data source | The harness's own supervisor process | `~/.shipyard/sessions/<id>.json`, written by [`session-state.sh`](../scripts/session-state.sh) |
+
+Agent View has no visibility into shipyard's own concepts — which issue a worker was dispatched against, its `blocked-by` chain, per-worker token budget, or the mode taxonomy (`issue-work` vs `fix-checks-only` vs `fix-main-ci`, etc.) — because those live in shipyard's session-state file, not in anything the harness tracks. Conversely, `/shipyard:status` has no transcript access and can't attach to or steer a worker; that's what Agent View is for. **When a worker looks stale in `/shipyard:status`, attach to it via Agent View to see its live transcript and confirm whether it's actually stuck** — the two tools are meant to be used together, not as alternatives.
+
+This holds regardless of `dispatch.substrate`: under `agent`, each worker is literally the kind of `isolation: "worktree"` subagent Agent View surfaces as its own row; under the default `workflow` substrate, the `Workflow` tool's `agent()` calls are a distinct harness mechanism that Agent View does not enumerate the same way — but `/shipyard:status` renders identically either way (see the "Substrate-agnostic" section above), so this dashboard's own reliability doesn't depend on which substrate is active.
+
 ## Privacy
 
 Same as the cost-tracking ledger: the session state files at `~/.shipyard/sessions/` are local-only — shipyard never uploads them anywhere. They contain session IDs, repo names, issue/PR numbers, and token counts — no secrets, no message bodies, no code diffs. The files are reaped at end-of-session cleanup.
