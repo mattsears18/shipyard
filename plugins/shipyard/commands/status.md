@@ -61,6 +61,16 @@ Batch-style workers (e.g. a refiner processing N issues per dispatch) can publis
 
 The `progress_current` / `progress_total` fields live on the per-slot record inside the session state file's `.in_flight[<slot>]` block. Individual issue-work / fix-checks-only dispatches typically don't set progress — the kind alone is informative enough — but the helper is available to any worker that wants to surface batch progress.
 
+## Substrate-agnostic — works under both `agent` and `workflow` dispatch (#790)
+
+As of the [#790](https://github.com/mattsears18/shipyard/issues/790) substrate cutover, `/shipyard:do-work` dispatches its workers through the [Dynamic Workflows substrate](../workflows/README.md) (the `Workflow` tool) **by default** (`dispatch.substrate: "workflow"`), rather than the legacy `Agent` tool. `/shipyard:status` keeps reporting accurate live rows across that change **without any code path of its own that branches on the substrate** — and here is why that holds:
+
+- The dashboard reads only the per-session state file at `~/.shipyard/sessions/<id>.json`. It never talks to the `Agent` tool or the `Workflow` tool directly.
+- The orchestrator writes each in-flight worker's `.in_flight[<slot>]` record (`kind` / `target` / `started_at` / progress trio) **identically regardless of substrate** — see [dispatch-rules.md's workflow-substrate section, step 5](./do-work/dispatch-rules.md#workflow-substrate-dispatch-for-every-worker-mode-opt-in-via-dispatchsubstrate-workflow--789-phase-3-of-782): *"Write the `.in_flight` slot exactly as the `Agent`-tool path does."* A `Workflow`-dispatched worker's slot has the same shape as an `Agent`-dispatched one, so text, `--json`, and `--stale` all render it the same way.
+- Token counts (the `TOKENS` column) come from `.tokens.per_issue` / `.tokens.per_pr`, bumped by the orchestrator's step-A reconcile **after** the structured `Workflow` return has been translated back into the free-text vocabulary — so cost attribution is unaffected by substrate too (see [`/shipyard:cost`](./cost.md)).
+
+The upshot: the cutover is invisible to this dashboard by construction. A regression that reverts `dispatch.substrate` to `"agent"` (the instant-revert override) is equally invisible — `/shipyard:status` renders both the same because both write the same file. The `dispatch-substrate-cutover-790.test.sh` suite asserts a synthetic `Workflow`-dispatched session file renders correctly through all three output modes.
+
 ## Privacy
 
 Same as the cost-tracking ledger: the session state files at `~/.shipyard/sessions/` are local-only — shipyard never uploads them anywhere. They contain session IDs, repo names, issue/PR numbers, and token counts — no secrets, no message bodies, no code diffs. The files are reaped at end-of-session cleanup.

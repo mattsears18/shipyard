@@ -212,7 +212,7 @@ DEFAULTS_JQ='{
     "new_dep_version": "latest-stable"
   },
   "dispatch": {
-    "substrate": "agent"
+    "substrate": "workflow"
   }
 }'
 
