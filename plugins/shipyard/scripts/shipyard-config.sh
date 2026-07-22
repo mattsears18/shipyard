@@ -210,6 +210,9 @@ DEFAULTS_JQ='{
   },
   "dependencies": {
     "new_dep_version": "latest-stable"
+  },
+  "dispatch": {
+    "substrate": "agent"
   }
 }'
 
