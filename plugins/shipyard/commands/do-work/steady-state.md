@@ -684,6 +684,8 @@ Once A.0.6 has run, proceed to A.1.
 
 #### A.1. Parse the return string
 
+**Workflow-substrate `issue-work` dispatches are translated before reaching this step, not parsed here directly ([#788](https://github.com/mattsears18/shipyard/issues/788)).** When a candidate was dispatched via the `Workflow` tool (`dispatch.substrate: "workflow"`, `issue-work` mode only — see [dispatch-rules.md's substrate section](./dispatch-rules.md#workflow-substrate-dispatch-for-mode-issue-work-opt-in-via-dispatchsubstrate-workflow--788-phase-2-of-782)), the dispatch step already converted the structured result (`schemas/worker-return.schema.json`) into the exact free-text terminal string the corresponding `Agent`-tool outcome would have produced, using that section's translation table. By the time control reaches this step, there is no behavioral difference between an `agent`-substrate and a `workflow`-substrate `issue-work` return — every branch below reads the same free-text vocabulary either way. Don't special-case the workflow substrate here; the translation already happened.
+
 For **issue work** (`shipped` / `blocked` / `errored`):
 
 - **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. **Append `<M>` to `session_prs`** (the set the [end-of-session drain](./drain.md#end-of-session-drain) watches). Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.
