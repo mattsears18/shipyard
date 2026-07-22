@@ -24,6 +24,7 @@
 #   shipyard:fix-pr-batch-worker        (mode: fix-failing-prs-batch — sonnet)
 #   shipyard:investigate-worker         (mode: investigate — sonnet)
 #   shipyard:spike-worker               (mode: spike — opus, added #774)
+#   shipyard:verify-worker              (mode: verify — opus, added #783)
 #
 # Also guards the colon-namespaced form `shipyard:issue-worker:*` as
 # defense-in-depth in case a future shim ever uses that scheme.
@@ -57,6 +58,7 @@ case "$subagent" in
   shipyard:fix-pr-batch-worker | \
   shipyard:investigate-worker | \
   shipyard:spike-worker | \
+  shipyard:verify-worker | \
   shipyard:issue-worker:* )
     ;;
   *)
