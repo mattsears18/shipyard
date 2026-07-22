@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 3.1.2 — 2026-07-22
+
+Fixes `/shipyard:status` rendering a raw target string and a 0-token count for `investigate` and `spike` worker kinds, instead of the `#N` target and joined per-issue token totals every other issue-numbered kind gets (closes #797). Surfaced while working #790 (the substrate cutover), which made `dispatch.substrate: "workflow"` the default — under which all seven modes dispatch, including `investigate` and `spike` — but the gap predates that cutover and is substrate-independent. Both kinds target an issue number (`#N`) exactly like `issue`, so `scripts/status.sh` now treats `investigate` / `spike` identically to `issue` for target formatting and the per-issue token join, and the `in_flight` schema enum in `commands/do-work.md` documents both as first-class `kind` values.
+
+- `plugins/shipyard/scripts/status.sh` — the `target_str` case in `render_text` now matches `investigate`/`spike` alongside `issue` (renders `#N`); both jq token-join passes (`render_text`'s `slots_json` projection and `render_json`'s augmentation pass) now route `investigate`/`spike` kinds into the `.tokens.per_issue` bucket instead of falling through to the zeroed default; the header-comment kind list is updated to match.
+- `plugins/shipyard/commands/do-work.md` — the `in_flight` schema's `kind` enum now lists `investigate` and `spike` alongside the five prior kinds, with a note that both are treated like `issue` by `/shipyard:status`.
+- `plugins/shipyard/scripts/tests/status.test.sh` — new test block asserting text, `--json` rendering for `investigate`/`spike` slots (target formatting + non-zero per-issue token join), mirroring the synthetic-session render check in `dispatch-substrate-cutover-790.test.sh`.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `3.1.1` → `3.1.2`.
+
 ### 3.1.1 — 2026-07-22
 
 Fixes a dispatch-prep flaw where the orchestrator could compose a false "not blocked" / "genuinely untested" confidence claim into an `issue-work` dispatch prompt from the issue's body/title alone, contradicted by its own comment thread (closes #781). The repro: a dispatch prompt asserted four checklist items were "genuinely untested (not blocked by anything cited)" when the target issue's first two comments already documented two prior QA passes reproducing all four as blocked on a still-open infra issue — a signal a plain `comments` read would have surfaced before the worker ever ran. The worker's own verification-first step 2 caught the false premise this time, but the mitigation now stops the false claim at composition time instead of relying on the worker to re-derive it.

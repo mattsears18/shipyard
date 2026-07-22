@@ -13,7 +13,7 @@
 # and the `--history` flag is deferred to a follow-up. The fields this
 # script reads off each in-flight slot are:
 #
-#   .in_flight[<slot>].kind                    — issue / fix-checks / fix-rebase / fix-main-ci / fix-failing-prs-batch
+#   .in_flight[<slot>].kind                    — issue / fix-checks / fix-rebase / fix-main-ci / fix-failing-prs-batch / investigate / spike
 #   .in_flight[<slot>].target                  — #N or "main" or "pr-pileup"
 #   .in_flight[<slot>].started_at              — ISO-8601 UTC, set on dispatch
 #   .in_flight[<slot>].progress_current        — optional batch counter (from set-progress)
@@ -214,7 +214,7 @@ render_json() {
         . as $slot
         | $state[0].tokens as $tok
         | (
-            if $slot.kind == "issue" then
+            if ($slot.kind == "issue" or $slot.kind == "investigate" or $slot.kind == "spike") then
               ($tok.per_issue[$slot.target | tostring] // null)
             elif ($slot.kind | test("^fix-")) then
               ($tok.per_pr[$slot.target | tostring] // null)
@@ -341,7 +341,7 @@ render_text() {
               progress_total: (.value.progress_total // null),
               progress_updated_at: (.value.progress_updated_at // null),
               tokens: (
-                if .value.kind == "issue" then
+                if (.value.kind == "issue" or .value.kind == "investigate" or .value.kind == "spike") then
                   ($tok.per_issue[.value.target | tostring] // {input:0,output:0,cache_read:0,cache_creation:0,estimated_usd:0})
                 elif (.value.kind | test("^fix-")) then
                   ($tok.per_pr[.value.target | tostring] // {input:0,output:0,cache_read:0,cache_creation:0,estimated_usd:0})
@@ -419,7 +419,7 @@ render_text() {
 
       local target_str
       case "$kind" in
-        issue)                     target_str="#$target" ;;
+        issue|investigate|spike)   target_str="#$target" ;;
         fix-checks*)               target_str="PR #$target" ;;
         fix-rebase)                target_str="PR #$target" ;;
         fix-main-ci)               target_str="main" ;;
