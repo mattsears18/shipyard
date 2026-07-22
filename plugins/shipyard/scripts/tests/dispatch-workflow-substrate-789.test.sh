@@ -98,8 +98,11 @@ else
   echo "  SKIP  node not on PATH — skipping syntax check"
 fi
 
-assert_contains "$workflow_js_path" "PHASE 3 (issue #789" \
-  "header comment declares phase 3 (#789) status"
+# The header's leading phase marker advanced to PHASE 4 (#790, the cutover) — but
+# the phase-3 (#789) contribution this suite guards must still be cited in the
+# lineage. Assert both: the current phase-4 marker AND the #789 wired-six lineage.
+assert_contains "$workflow_js_path" "Phase 3 (#789) wired the REMAINING SIX" \
+  "header comment still cites phase 3 (#789) wiring the remaining six in its lineage"
 assert_contains "$workflow_js_path" "all seven \`mode:\`-driven workers dispatch" \
   "header comment declares every mode is wired"
 
@@ -225,8 +228,8 @@ for mode in "fix-checks-only" "fix-rebase" "fix-main-ci" "fix-failing-prs-batch"
   assert_contains "$config_schema_path" "$mode" \
     "dispatch.substrate description names ${mode} among the affected modes"
 done
-assert_contains "$config_schema_path" '"default": "agent"' \
-  "dispatch.substrate default is still agent (unchanged by #789)"
+assert_contains "$config_schema_path" '"default": "workflow"' \
+  "dispatch.substrate default is workflow (cutover flipped it in #790; #789 wired the modes that made the cutover safe)"
 
 if command -v jq >/dev/null 2>&1; then
   if jq empty "$config_schema_path" >/dev/null 2>&1; then

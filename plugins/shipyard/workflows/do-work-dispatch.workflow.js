@@ -2,29 +2,28 @@
  * do-work-dispatch.workflow.js — Dynamic Workflows scaffold for /shipyard:do-work
  * ==============================================================================
  *
- * PHASE 3 (issue #789, part of the #782 epic). Phase 1 (#787) committed this file
- * as an inert reference scaffold alongside the existing hand-rolled `Agent`-tool
- * orchestrator (commands/do-work/dispatch-rules.md + steady-state.md). Phase 2
- * (#788) wired ONE mode — `issue-work` — to actually run through this script.
- * Phase 3 (this state) wires the REMAINING SIX modes — `fix-checks-only`,
+ * PHASE 4 (issue #790, the substrate cutover — part of the #782 epic; carries the
+ * 2.x -> 3.0.0 major bump). Phase 1 (#787) committed this file as an inert
+ * reference scaffold alongside the existing hand-rolled `Agent`-tool orchestrator
+ * (commands/do-work/dispatch-rules.md + steady-state.md). Phase 2 (#788) wired ONE
+ * mode — `issue-work`. Phase 3 (#789) wired the REMAINING SIX — `fix-checks-only`,
  * `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`, `investigate`, `spike` —
- * against the same script, so that when a repo opts in with
- * `dispatch.substrate: "workflow"`, all seven `mode:`-driven workers dispatch
- * through the `Workflow` tool with schema-validated returns. `dispatch.substrate`
- * itself still defaults to `"agent"` — see dispatch-rules.md's "Workflow-substrate
- * dispatch for every worker mode" section for the mixed-substrate-operation
- * callout and the full per-mode call-site walkthrough.
+ * against this script. Phase 4 (this state) FLIPS THE DEFAULT: `dispatch.substrate`
+ * now defaults to `"workflow"`, so all seven `mode:`-driven workers dispatch
+ * through the `Workflow` tool with schema-validated returns by default, with no
+ * config. See dispatch-rules.md's "Workflow-substrate dispatch for every worker
+ * mode" section for the full per-mode call-site walkthrough.
  *
- * STATUS as of #789:
- *   - `dispatch.substrate` still defaults to "agent" (unchanged from #787/#788) —
- *     a session that never sets the config knob dispatches exactly as before.
- *   - Selecting `dispatch.substrate: "workflow"` now changes real behavior for
- *     EVERY mode: dispatch-rules.md's per-mode dispatch branches all invoke the
- *     `Workflow` tool against this script instead of the `Agent` tool's
- *     mode-specific `subagent_type`.
- *   - The orchestrator's cutover to `"workflow"` as the DEFAULT remains out of
- *     scope (deferred to #790+), as does removing any part of the `Agent`-tool
- *     path — both are later #782 phases this issue explicitly excludes.
+ * STATUS as of #790:
+ *   - `dispatch.substrate` now DEFAULTS to "workflow" — a session that never sets
+ *     the config knob dispatches every mode through this script.
+ *   - The legacy `Agent`-tool path is RETAINED, fully working, for one release as
+ *     the instant-revert override: `/shipyard:config set dispatch.substrate agent`
+ *     restores the pre-#790 dispatch behavior for every mode. Regression? That one
+ *     line reverts it; the path is not removed until the final #782 phase.
+ *   - Removing any part of the `Agent`-tool path remains out of scope — it is the
+ *     final #782 phase, gated on this substrate proving itself under the flipped
+ *     default across a release.
  *
  * WHY SCAFFOLD IT NOW. Moving the dispatch plan "into code" is the durable win the
  * epic is after: zero routing-token overhead, fixed cost/latency, and an auditable

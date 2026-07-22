@@ -135,14 +135,23 @@ assert_equals "$("$helper" get concurrency.default)" "1" "get concurrency.defaul
 assert_equals "$("$helper" get dependencies.new_dep_version)" "latest-stable" "get dependencies.new_dep_version returns latest-stable (issue #694)"
 
 # dispatch.substrate — issue #787 scaffolded the Dynamic Workflows substrate;
-# #788 wired the first mode (issue-work) to it as phase 2. The built-in default
-# stays "agent" (the existing hand-rolled Agent-tool orchestrator) — selecting
-# "workflow" is opt-in and mixed-mode (issue-work only as of #788; every other
-# mode still dispatches via the Agent-tool path regardless of this setting).
-# Asserting the literal default here guards against an accidental cutover flip
-# before the later #782 phases ship.
-assert_equals "$("$helper" get dispatch.substrate)" "agent" "get dispatch.substrate returns agent (issue #787)"
+# #788/#789 wired all seven modes to it. As of phase 4 (#790 — the substrate
+# cutover carrying the 3.0.0 major bump) the built-in default flipped to
+# "workflow": every mode now dispatches through the Dynamic Workflows script by
+# default. The legacy "agent" (hand-rolled Agent-tool orchestrator) is retained
+# for one release as a fully-working override (instant revert). Asserting the
+# literal default here guards against an accidental revert of the cutover.
+assert_equals "$("$helper" get dispatch.substrate)" "workflow" "get dispatch.substrate returns workflow (issue #790 cutover)"
 assert_equals "$("$helper" get dispatch.substrate --with-source | cut -f2)" "defaults" "dispatch.substrate default comes from the built-in layer"
+
+# Instant-revert path (#790): setting the knob back to "agent" fully restores the
+# legacy Agent-tool substrate. This is the safety valve the cutover promises —
+# assert the override round-trips and wins over the flipped built-in default.
+rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
+"$helper" set dispatch.substrate agent --repo >/dev/null 2>&1
+assert_equals "$("$helper" get dispatch.substrate)" "agent" "instant-revert: repo override to agent restores the legacy substrate (#790)"
+assert_equals "$("$helper" get dispatch.substrate --with-source | cut -f2)" "repo" "instant-revert: the agent override is sourced from the repo layer, winning over the workflow default"
+rm -rf "$repo/shipyard.config.json"
 
 # get on an unknown path
 "$helper" get nonexistent.path 2>/dev/null

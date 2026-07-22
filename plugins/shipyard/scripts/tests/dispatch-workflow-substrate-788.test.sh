@@ -220,8 +220,8 @@ echo "== (E) shipyard.config.schema.json — dispatch.substrate description refl
 
 assert_contains "$config_schema_path" 'issue-work' \
   "dispatch.substrate description names issue-work among the affected modes"
-assert_contains "$config_schema_path" '"default": "agent"' \
-  "dispatch.substrate default is still agent (unchanged by #788/#789)"
+assert_contains "$config_schema_path" '"default": "workflow"' \
+  "dispatch.substrate default is workflow (the #790 cutover flipped it; #788 wired the first mode that made the cutover possible)"
 
 if command -v jq >/dev/null 2>&1; then
   if jq empty "$config_schema_path" >/dev/null 2>&1; then

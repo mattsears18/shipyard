@@ -60,6 +60,16 @@ TOTALS
 Want more detail? Try '/shipyard:cost report --by-issue --top 20'.
 ```
 
+## Substrate-agnostic — no cost gap under the `workflow` dispatch default (#790)
+
+The [#790](https://github.com/mattsears18/shipyard/issues/790) substrate cutover made the [Dynamic Workflows substrate](../workflows/README.md) (`dispatch.substrate: "workflow"`) the default dispatch mechanism for every worker mode. `/shipyard:cost` is **unaffected** — there is no silent cost-tracking gap — because token attribution never depended on how a worker was dispatched:
+
+- Per-session and per-issue/per-PR token totals live in `.tokens.*` on the session-state file, written by the orchestrator's step-A reconcile via `session-state.sh bump-tokens`.
+- Under the `workflow` substrate the structured worker return is translated back into the free-text vocabulary **before** it reaches step-A reconcile ([dispatch-rules.md's translation table](./do-work/dispatch-rules.md#workflow-substrate-dispatch-for-every-worker-mode-opt-in-via-dispatchsubstrate-workflow--789-phase-3-of-782)), so the reconcile — and the `bump-tokens` call inside it — runs identically regardless of substrate.
+- The end-of-session cleanup flushes the same rolled-up record into the persistent ledger (`cost-history.jsonl`) either way.
+
+So a session running on the flipped default records cost exactly as an `agent`-substrate session did, and the instant-revert (`/shipyard:config set dispatch.substrate agent`) is equally invisible to cost tracking. The one caveat is orthogonal to the substrate: a model id missing from the pricing table is still flagged as a LOWER BOUND (next section) — that gate fires the same under both substrates.
+
 ## Unpriced models — when the totals are a LOWER BOUND
 
 The USD figures come from a hand-maintained pricing table (`PRICING_JQ` in `scripts/session-state.sh`), which goes stale every time Anthropic ships a model. A model the table has never heard of is reported, **not** silently priced at zero ([#728](https://github.com/mattsears18/shipyard/issues/728)) — `$0.00` is a legitimate value and must never double as the "I don't know what to charge" sentinel.
