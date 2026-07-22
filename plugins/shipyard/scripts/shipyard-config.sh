@@ -144,12 +144,13 @@ DEFAULTS_JQ='{
     "enabled": false
   },
   "models": {
-    "issue_work": "claude-opus-4-7",
+    "issue_work": "claude-sonnet-5",
     "fix_checks_only": "claude-haiku-4-5",
     "fix_rebase": "claude-haiku-4-5",
-    "fix_main_ci": "claude-sonnet-4-6",
-    "fix_failing_prs_batch": "claude-sonnet-4-6",
-    "investigate": "claude-sonnet-4-6"
+    "fix_main_ci": "claude-sonnet-5",
+    "fix_failing_prs_batch": "claude-sonnet-5",
+    "investigate": "claude-sonnet-5",
+    "verify": "claude-opus-4-8"
   },
   "triage": {
     "auto_close": "confident-only",

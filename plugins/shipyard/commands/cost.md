@@ -87,7 +87,8 @@ $ /shipyard:cost report --last 7d --by-model --by-mode --by-issue --top 5 --tren
 ... TOTALS block (last 7d) ...
 
 BY MODEL
-  claude-opus-4-7  $42.10
+  claude-sonnet-5  $18.40
+  claude-opus-4-8  $23.70
   claude-haiku-4-5  $3.50
 
 BY MODE

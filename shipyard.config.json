@@ -42,7 +42,7 @@
     ]
   },
   "models": {
-    "issue_work": "claude-sonnet-4-6"
+    "issue_work": "claude-sonnet-5"
   },
   "version_coordination": {
     "enabled": true,
