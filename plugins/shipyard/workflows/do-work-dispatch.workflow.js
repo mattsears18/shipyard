@@ -2,28 +2,29 @@
  * do-work-dispatch.workflow.js — Dynamic Workflows scaffold for /shipyard:do-work
  * ==============================================================================
  *
- * PHASE 2 (issue #788, part of the #782 epic). Phase 1 (#787) committed this file
+ * PHASE 3 (issue #789, part of the #782 epic). Phase 1 (#787) committed this file
  * as an inert reference scaffold alongside the existing hand-rolled `Agent`-tool
  * orchestrator (commands/do-work/dispatch-rules.md + steady-state.md). Phase 2
- * WIRES ONE MODE — `issue-work` — to actually run through this script when the
- * merged config sets `dispatch.substrate: "workflow"`. Every other mode
- * (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate,
- * spike) is UNCHANGED scaffolding here and still dispatches exclusively through
- * the `Agent`-tool path documented in dispatch-rules.md, regardless of the
- * `dispatch.substrate` setting — see that file's "Workflow-substrate dispatch for
- * `mode: issue-work`" section for the mixed-mode-operation callout.
+ * (#788) wired ONE mode — `issue-work` — to actually run through this script.
+ * Phase 3 (this state) wires the REMAINING SIX modes — `fix-checks-only`,
+ * `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`, `investigate`, `spike` —
+ * against the same script, so that when a repo opts in with
+ * `dispatch.substrate: "workflow"`, all seven `mode:`-driven workers dispatch
+ * through the `Workflow` tool with schema-validated returns. `dispatch.substrate`
+ * itself still defaults to `"agent"` — see dispatch-rules.md's "Workflow-substrate
+ * dispatch for every worker mode" section for the mixed-substrate-operation
+ * callout and the full per-mode call-site walkthrough.
  *
- * STATUS as of #788:
- *   - `dispatch.substrate` still defaults to "agent" (unchanged from #787) — a
- *     session that never sets the config knob dispatches exactly as before.
+ * STATUS as of #789:
+ *   - `dispatch.substrate` still defaults to "agent" (unchanged from #787/#788) —
+ *     a session that never sets the config knob dispatches exactly as before.
  *   - Selecting `dispatch.substrate: "workflow"` now changes real behavior for
- *     `issue-work` candidates ONLY: dispatch-rules.md's "not spike-shaped" branch
- *     invokes the `Workflow` tool against this script instead of the `Agent`
- *     tool's `subagent_type: "shipyard:issue-worker"`. Every other mode is
- *     unaffected by the flag until later #782 phases migrate them.
+ *     EVERY mode: dispatch-rules.md's per-mode dispatch branches all invoke the
+ *     `Workflow` tool against this script instead of the `Agent` tool's
+ *     mode-specific `subagent_type`.
  *   - The orchestrator's cutover to `"workflow"` as the DEFAULT remains out of
  *     scope (deferred to #790+), as does removing any part of the `Agent`-tool
- *     path.
+ *     path — both are later #782 phases this issue explicitly excludes.
  *
  * WHY SCAFFOLD IT NOW. Moving the dispatch plan "into code" is the durable win the
  * epic is after: zero routing-token overhead, fixed cost/latency, and an auditable
@@ -62,12 +63,12 @@
  * the current single-unit-per-run wiring; relevant once a future phase exercises
  * parallel() for real.
  *
- * Concurrency model (issue-work, phase 2)
+ * Concurrency model (all modes, phase 3)
  * ----------------------------------------
  * The orchestrator's `--concurrency N` rolling worker pool (steady-state.md step C
  * / setup.md step 7) is UNCHANGED by this phase. Under `dispatch.substrate:
  * "workflow"`, each pool slot still corresponds to exactly one dispatch — the only
- * change is that filling an `issue-work` slot invokes the `Workflow` tool against
+ * change is that filling a slot for ANY mode invokes the `Workflow` tool against
  * this script (one work unit in `args.issues`) instead of the `Agent` tool. The
  * orchestrator's own pool is still what bounds how many of these are in flight
  * simultaneously — this script's own `parallel()` is not asked to manage a
@@ -76,7 +77,7 @@
  * translating the structured return back into the free-text vocabulary
  * steady-state.md's step A.1 already parses).
  *
- * Worktree isolation (issue-work, phase 2) — GENUINE GAP, closed by the caller
+ * Worktree isolation (all modes, phase 3) — GENUINE GAP, closed by the caller
  * -------------------------------------------------------------------------------
  * The `Agent` tool's `isolation: "worktree"` parameter has the harness
  * auto-provision and cwd-pin an isolated worktree for the dispatched subagent
@@ -89,15 +90,31 @@
  * surface. This script therefore CANNOT auto-provision worker isolation the way
  * the `Agent`-tool path does — that responsibility shifts to the CALLER (the
  * orchestrator session, which still has full shell access, unlike this script):
- *   1. Before invoking this script, the orchestrator runs `git worktree add
- *      <path> -b <branch> origin/<default-branch>` itself (the same mechanism the
- *      harness performs invisibly for `isolation: "worktree"`) and passes the
- *      resulting absolute path as `unit.worktreePath`.
- *   2. `buildIssueWorkPrompt` below makes the worker's FIRST instruction an
- *      explicit `cd`/anchor into that path — the inverse of the `Agent`-tool
- *      path's worker-preamble rule ("never cd — the harness already pinned your
- *      cwd"). A Workflow-dispatched worker's cwd is NOT pre-pinned, so it must
- *      anchor itself before doing anything else.
+ *   1. Before invoking this script, the orchestrator provisions the isolated
+ *      worktree itself and passes the resulting absolute path as
+ *      `unit.worktreePath`. The exact git-worktree invocation depends on the
+ *      mode's branch shape:
+ *        - `issue-work` / `investigate` / `spike`: `git worktree add <path> -b
+ *          do-work/issue-<N> origin/<default-branch>` — a fresh branch off
+ *          default, same as the `Agent`-tool path's `isolation: "worktree"`.
+ *        - `fix-checks-only` / `fix-rebase`: `git worktree add <path> -B
+ *          <headRefName> origin/<headRefName>` — checked out directly onto the
+ *          EXISTING PR branch being fixed/rebased, not a fresh branch off
+ *          default. This mirrors what fix-checks-only.md's own Setup step
+ *          (`git fetch origin "$HEAD_REF" && git switch "$HEAD_REF"`) would have
+ *          done inside an `Agent`-tool `isolation: "worktree"` dispatch's
+ *          placeholder worktree — pre-provisioning it this way makes that fetch/
+ *          switch step a no-op safety net rather than required additional setup.
+ *        - `fix-main-ci` / `fix-failing-prs-batch`: `git worktree add <path> -b
+ *          do-work/fix-main-ci-<short-sha>` / `do-work/fix-pr-pileup-<timestamp>
+ *          origin/<default-branch>` — synthetic-divert branch naming, same
+ *          fresh-off-default shape as issue-work.
+ *   2. Every per-mode prompt builder below makes the worker's FIRST instruction
+ *      an explicit `cd`/anchor into that path (via the shared `worktreeAnchorLines`
+ *      helper) — the inverse of the `Agent`-tool path's worker-preamble rule
+ *      ("never cd — the harness already pinned your cwd"). A Workflow-dispatched
+ *      worker's cwd is NOT pre-pinned, so it must anchor itself before doing
+ *      anything else.
  *   3. The worker then re-applies the SAME step-0 fail-fast verification
  *      (`shipyard:worker-preamble` § "Step-0 cwd fail-fast") to confirm the `cd`
  *      landed on an isolated worktree (git-dir != git-common-dir) rather than
@@ -109,13 +126,15 @@
  *
  * WHAT STAYS OUT OF THIS SCRIPT (shipyard's durable policy edge, kept as the
  * workflow's control flow / injected via `args`, NOT re-derived here):
- *   - WHICH issues to pick (backlog fetch + gate-label exclusion + author trust +
- *     blocked-by sequencing) — commands/do-work/setup/* + dispatch-rules.md.
+ *   - WHICH issues/PRs/diverts to pick (backlog fetch + gate-label exclusion +
+ *     author trust + blocked-by sequencing + divert-queue priority + collision
+ *     tiering) — commands/do-work/setup/* + dispatch-rules.md.
  *   - Priority scoring, path-collision tiering, phase-1 slice augmentation, the
- *     verify-gate opt-in, the user-feedback extra-scrutiny preamble, and
+ *     verify-gate opt-in, the user-feedback extra-scrutiny preamble, the
+ *     triage.auto_close policy, the decompose.max_subissues fan-out cap, and
  *     next-available-version coordination — all computed by the orchestrator
  *     exactly as they are for the `Agent`-tool path, then passed through
- *     `args.issues[]` fields consumed by `buildIssueWorkPrompt` below.
+ *     `args.issues[]` fields consumed by the per-mode builders below.
  *   - Worktree provisioning, per-mode model resolution, version coordination — the
  *     orchestrator computes/performs these and passes the results in.
  * The script's job is the ORCHESTRATION shape (select → pipeline → parallel), not
@@ -125,14 +144,16 @@
 export const meta = {
   name: 'do-work-dispatch',
   description:
-    'The /shipyard:do-work dispatch loop expressed as a Dynamic Workflow. Phase 2 ' +
-    '(#788): `issue-work` dispatches run through this script — building the same ' +
-    'prompt the Agent-tool path builds (author-trust gate, verify-gate opt-in, ' +
-    'user-feedback preamble, phase-1 slice, version coordination) and validating ' +
-    'the worker return against a structured schema — whenever dispatch.substrate ' +
-    'is set to "workflow". Every other mode is still scaffolding, dispatched via ' +
-    'the legacy Agent-tool path regardless of the substrate flag. Inert (default ' +
-    'dispatch.substrate stays "agent") until an operator opts a repo in.',
+    'The /shipyard:do-work dispatch loop expressed as a Dynamic Workflow. Phase 3 ' +
+    '(#789, completing the #782 epic\'s dispatch-migration phases): every ' +
+    '`mode:`-driven worker — issue-work, fix-checks-only, fix-rebase, fix-main-ci, ' +
+    'fix-failing-prs-batch, investigate, spike — runs through this script, ' +
+    'building the same prompt the Agent-tool path builds for that mode ' +
+    '(author-trust gate, verify-gate opt-in, user-feedback preamble, phase-1 ' +
+    'slice, version coordination, triage policy, decompose fan-out cap) and ' +
+    'validating the worker return against a structured schema, whenever ' +
+    'dispatch.substrate is set to "workflow". Inert (default dispatch.substrate ' +
+    'stays "agent") until an operator opts a repo in.',
 }
 
 // ---------------------------------------------------------------------------
@@ -216,25 +237,41 @@ const workerReturnSchema = {
 
 // ---------------------------------------------------------------------------
 // STAGE 1 — SELECT.
-// The orchestrator pre-computes the selection (including, for issue-work, the
+// The orchestrator pre-computes the selection (including, per mode, the
 // author-trust resolution, spike-shape exclusion, phase-1 slice, verify-gate
-// flag, user-feedback flag, and version-coordination paragraph) and injects it
-// via `args.issues`; this stage normalizes it into the unit-of-work list the
-// pipeline fans out over. Selection POLICY itself stays in the orchestrator, not
-// this script — see the file-header "What stays out of this script" note.
+// flag, user-feedback flag, version-coordination paragraph, triage.auto_close
+// policy, and decompose.max_subissues cap) and injects it via `args.issues`;
+// this stage normalizes it into the unit-of-work list the pipeline fans out
+// over. Selection POLICY itself stays in the orchestrator, not this script —
+// see the file-header "What stays out of this script" note.
 // ---------------------------------------------------------------------------
 const workUnits = selectedIssues.map((it) => ({
-  number: it.number,
+  number: it.number ?? null, // null for synthetic diverts (fix-main-ci, fix-failing-prs-batch)
   mode: it.mode ?? 'issue-work',
   model: it.model ?? models[it.mode ?? 'issue-work'],
   trust: it.trust ?? 'external', // conservative default; orchestrator normally sets this
-  branch: it.branch ?? `do-work/issue-${it.number}`,
-  worktreePath: it.worktreePath ?? null, // REQUIRED for issue-work — see header note
+  branch: it.branch ?? (it.number != null ? `do-work/issue-${it.number}` : null),
+  worktreePath: it.worktreePath ?? null, // REQUIRED for every mode — see header note
+  // issue-work-only augmentations
   verifyGate: it.verifyGate === true,
   userFeedback: it.userFeedback === true,
   phase1Scope: it.phase1Scope ?? null,
   nextAvailableVersion: it.nextAvailableVersion ?? null,
   changelogPath: it.changelogPath ?? null,
+  // fix-checks-only / fix-rebase — target an EXISTING PR's branch, not a fresh one
+  pr: it.pr ?? null,
+  headRefName: it.headRefName ?? null,
+  versionCoordinationParagraph: it.versionCoordinationParagraph ?? null, // fix-rebase §4.6 carve-out
+  // fix-main-ci — synthetic divert, no originating issue
+  earliestRedRunUrl: it.earliestRedRunUrl ?? null,
+  earliestRedSha: it.earliestRedSha ?? null,
+  // fix-failing-prs-batch — synthetic divert, no originating issue
+  failingPrCountAll: it.failingPrCountAll ?? null,
+  failingPrNumbers: it.failingPrNumbers ?? null,
+  // investigate
+  triageAutoClose: it.triageAutoClose ?? 'confident-only',
+  // spike
+  decomposeMaxSubissues: it.decomposeMaxSubissues ?? 8,
 }))
 
 // ---------------------------------------------------------------------------
@@ -243,13 +280,13 @@ const workUnits = selectedIssues.map((it) => ({
 // Each worker runs the SAME per-mode lifecycle it runs today (implement → verify →
 // open-PR / arm-merge), driven by the per-mode spec in agents/issue-worker/<mode>.md
 // via the worker-preamble skill. The workflow's contribution is the schema-validated
-// return + (for issue-work) building the exact same dispatch prompt the Agent-tool
-// path builds — see `buildIssueWorkPrompt` below.
+// return + building the exact same dispatch prompt the Agent-tool path builds for
+// that mode — see the per-mode `build<Mode>Prompt` helpers below.
 //
 // `parallel(tasks, { concurrency })` is the rolling worker pool primitive — but as
-// documented in the "Concurrency model" file-header note, the current issue-work
-// wiring is invoked ONCE PER WORK UNIT by the orchestrator (mirroring one `Agent`
-// call per pool slot), so `workUnits` is a one-element array on the live path. The
+// documented in the "Concurrency model" file-header note, the current wiring is
+// invoked ONCE PER WORK UNIT by the orchestrator (mirroring one `Agent` call per
+// pool slot), so `workUnits` is a one-element array on the live path. The
 // `parallel()`/`pipeline()` branch below is preserved so a future batch-dispatch
 // phase can widen `args.issues` to a real multi-unit list without touching this
 // stage's shape — it is exercised today only when a caller (e.g. a manual dry run)
@@ -257,7 +294,9 @@ const workUnits = selectedIssues.map((it) => ({
 // ---------------------------------------------------------------------------
 const dispatchWorker = (unit) =>
   agent(buildWorkerPrompt(unit, repo), {
-    label: `${unit.mode} #${unit.number}`,
+    // Synthetic diverts (fix-main-ci, fix-failing-prs-batch) have no issue number —
+    // fall back to the target PR (fix-checks-only/fix-rebase) or a bare mode label.
+    label: unit.number != null ? `${unit.mode} #${unit.number}` : unit.pr != null ? `${unit.mode} PR#${unit.pr}` : unit.mode,
     model: unit.model, // per-mode tier from resolve-dispatch-model.sh, injected via args
     schema: workerReturnSchema, // structured return validated at the stage boundary
   })
@@ -283,30 +322,294 @@ return results.filter(Boolean)
 
 // ===========================================================================
 // Helper — build the per-worker dispatch prompt. Routes to a mode-specific
-// builder; only `issue-work` has a real implementation as of #788. Every other
-// mode keeps the generic placeholder because no other mode is wired to this
-// substrate yet (dispatch-rules.md never routes them here — this fallback only
-// matters for a manual dry run of the script against a non-issue-work unit).
+// builder; all seven `mode:` values have a real implementation as of #789
+// (phase 3). An unrecognized mode falls through to a defensive placeholder —
+// that branch should be unreachable via dispatch-rules.md's routing and only
+// matters for a manual dry run of the script against a malformed unit.
 // ===========================================================================
 function buildWorkerPrompt(unit, repoSlug) {
-  if (unit.mode === 'issue-work') {
-    return buildIssueWorkPrompt(unit, repoSlug)
+  switch (unit.mode) {
+    case 'issue-work':
+      return buildIssueWorkPrompt(unit, repoSlug)
+    case 'fix-checks-only':
+      return buildFixChecksOnlyPrompt(unit, repoSlug)
+    case 'fix-rebase':
+      return buildFixRebasePrompt(unit, repoSlug)
+    case 'fix-main-ci':
+      return buildFixMainCiPrompt(unit, repoSlug)
+    case 'fix-failing-prs-batch':
+      return buildFixFailingPrsBatchPrompt(unit, repoSlug)
+    case 'investigate':
+      return buildInvestigatePrompt(unit, repoSlug)
+    case 'spike':
+      return buildSpikePrompt(unit, repoSlug)
+    default:
+      return [
+        `mode: ${unit.mode}`,
+        ``,
+        `CALLER BUG: "${unit.mode}" is not a recognized do-work worker mode for the`,
+        `workflow substrate. This branch should be unreachable via dispatch-rules.md's`,
+        `routing — if you're reading this, either a new mode was added to the routing`,
+        `table without a matching builder here, or this is a manual dry run against a`,
+        `malformed unit. Return a STRUCTURED result immediately:`,
+        `{ "mode": "${unit.mode}", "outcome": "blocked",`,
+        `"blocked_reason": "unrecognized mode passed to do-work-dispatch.workflow.js" }.`,
+        `Do not proceed past this line.`,
+      ].join('\n')
+  }
+}
+
+// ===========================================================================
+// Shared helper — the worktree-anchor preamble every per-mode builder below
+// (except buildIssueWorkPrompt, which carries its own copy predating this
+// helper) opens with. Identical mechanics to buildIssueWorkPrompt's inline
+// version: a CALLER BUG guard when `worktreePath` is missing, otherwise the
+// explicit `cd` + git-dir-vs-git-common-dir re-verification (the same check
+// `shipyard:worker-preamble`'s step-0 fail-fast uses for the Agent-tool path).
+// Centralized here (rather than copy-pasted six more times) purely to keep
+// this file's size down — the six modes below did not exist as separate
+// builders in phase 2, so there was nothing yet to extract from.
+// ===========================================================================
+function worktreeAnchorLines(unit, mode) {
+  if (!unit.worktreePath) {
+    return [
+      `CALLER BUG: no worktreePath was supplied for this ${mode} dispatch. A Dynamic-` +
+        `Workflows-dispatched agent's cwd is NOT pre-pinned to an isolated worktree the ` +
+        `way an Agent-tool "isolation: worktree" dispatch's is (see do-work-dispatch.` +
+        `workflow.js's header comment). Return a STRUCTURED result immediately: ` +
+        `{ "mode": "${mode}", "outcome": "blocked", ` +
+        `"blocked_stage": "worktree-anchor", "blocked_reason": "workflow dispatch supplied ` +
+        `no worktreePath — refusing to operate from an unpinned cwd" }. Do not proceed ` +
+        `past this line.`,
+    ]
   }
   return [
-    `mode: ${unit.mode}`,
+    `**Anchor to your isolated worktree FIRST, before anything else.** Run:`,
+    '```bash',
+    `cd "${unit.worktreePath}"`,
+    // Same git-dir != git-common-dir check worker-preamble's step-0 fail-fast
+    // uses for the Agent-tool path — re-applied here because a Workflow-
+    // dispatched agent's cwd is not pre-verified by the harness the way an
+    // Agent-tool isolation: "worktree" dispatch's is.
+    `TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"`,
+    `GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"`,
+    `COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"`,
+    `if [ -z "$TOPLEVEL" ] || [ "$(cd "$GIT_DIR" 2>/dev/null && pwd -P)" = "$(cd "$COMMON_DIR" 2>/dev/null && pwd -P)" ]; then`,
+    `  echo "blocked: worktree anchor at ${unit.worktreePath} did not resolve to an isolated worktree — refusing to proceed"`,
+    `fi`,
+    '```',
+    `If that check prints a \`blocked:\` line, stop and return a STRUCTURED result with`,
+    `outcome "blocked", blocked_stage "worktree-anchor", and that line as blocked_reason.`,
+    `Otherwise every "never cd outside your worktree" / "never git switch to the default`,
+    `branch" rule in \`shipyard:worker-preamble\` applies exactly as it does under the`,
+    `Agent-tool substrate from this point on.`,
+  ]
+}
+
+// ===========================================================================
+// Helper — build the fix-checks-only dispatch prompt. Mirrors dispatch-rules.md's
+// `mode: fix-checks-only` template. Targets an EXISTING PR's head branch — the
+// caller pre-provisions the worktree checked out directly onto that branch (see
+// the file-header "Worktree isolation" note), so no NEW branch is created here.
+// ===========================================================================
+function buildFixChecksOnlyPrompt(unit, repoSlug) {
+  const lines = [`mode: fix-checks-only`, ``, ...worktreeAnchorLines(unit, 'fix-checks-only')]
+  if (!unit.worktreePath) return lines.join('\n')
+
+  lines.push(
+    ``,
+    `The worktree above was pre-provisioned already checked out on PR #${unit.pr}'s head`,
+    `branch \`${unit.headRefName}\` — the \`git fetch origin && git switch\` step in`,
+    `fix-checks-only.md's own Setup section is a no-op safety net here, not additional`,
+    `required work.`,
+    ``,
+    `Fix failing CI checks on PR #${unit.pr} in ${repoSlug} (head branch \`${unit.headRefName}\`).`,
+    `Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/fix-checks-only.md\`.`,
+    `Existing PR — do NOT open a new one, do NOT change scope, do NOT modify title/body/labels.`,
+    ``,
+    `Return a STRUCTURED result matching schemas/worker-return.schema.json — e.g.`,
+    `{ "mode": "fix-checks-only", "outcome": "green", "pr": ${unit.pr}, "checks": "green" },`,
+    `{ "mode": "fix-checks-only", "outcome": "noop", "pr": ${unit.pr}, "summary": "already green" },`,
+    `{ "mode": "fix-checks-only", "outcome": "green", "pr": ${unit.pr}, "checks": "pending",`,
+    `"summary": "flake: re-ran failed jobs (<signature>)" } (the infra-flake re-run —`,
+    `there is no separate schema outcome for it; the "flake: " summary prefix is what the`,
+    `orchestrator's translation table keys on to reconstruct the free-text \`flake #<M>: ...\``,
+    `form), or { "mode": "fix-checks-only", "outcome": "blocked", "pr": ${unit.pr},`,
+    `"blocked_reason": "<last failing check> — <last error excerpt>" }. This is the`,
+    `workflow-substrate return contract — NOT the free-text return string the Agent-tool`,
+    `path uses.`,
+  )
+  return lines.join('\n')
+}
+
+// ===========================================================================
+// Helper — build the fix-rebase dispatch prompt (drain-phase only). Mirrors
+// dispatch-rules.md's `mode: fix-rebase` template, including the optional
+// version-coordination paragraph (pre-formatted by the orchestrator and passed
+// as `unit.versionCoordinationParagraph` — the vc_* config reads + manifest
+// lookups stay orchestrator-side, exactly as for every other augmentation).
+// ===========================================================================
+function buildFixRebasePrompt(unit, repoSlug) {
+  const lines = [`mode: fix-rebase`, ``, ...worktreeAnchorLines(unit, 'fix-rebase')]
+  if (!unit.worktreePath) return lines.join('\n')
+
+  lines.push(
+    ``,
+    `The worktree above was pre-provisioned already checked out on PR #${unit.pr}'s head`,
+    `branch \`${unit.headRefName}\`.`,
+    ``,
+    `Rebase PR #${unit.pr} in ${repoSlug} (head branch \`${unit.headRefName}\`) onto current`,
+    `default branch. Drain-phase snapshot found this PR \`mergeStateStatus: DIRTY\` with no`,
+    `failing checks — stale relative to advanced main, auto-merge blocked until rebased.`,
+    `Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/fix-rebase.md\`.`,
+    `Do NOT touch PR title/body/labels. Do NOT manually \`gh pr merge\` — auto-merge was armed`,
+    `at PR creation and rebasing doesn't un-arm it.`,
+  )
+
+  if (unit.versionCoordinationParagraph) {
+    lines.push(``, unit.versionCoordinationParagraph)
+  }
+
+  lines.push(
+    ``,
+    `Return a STRUCTURED result matching schemas/worker-return.schema.json — e.g.`,
+    `{ "mode": "fix-rebase", "outcome": "rebased", "pr": ${unit.pr} },`,
+    `{ "mode": "fix-rebase", "outcome": "noop", "pr": ${unit.pr}, "summary": "not dirty (<reason>)" },`,
+    `or { "mode": "fix-rebase", "outcome": "blocked", "pr": ${unit.pr}, "blocked_reason": "<reason>" }.`,
+    `This is the workflow-substrate return contract — NOT the free-text return string the`,
+    `Agent-tool path uses.`,
+  )
+  return lines.join('\n')
+}
+
+// ===========================================================================
+// Helper — build the fix-main-ci dispatch prompt (synthetic divert; no
+// originating issue). Mirrors dispatch-rules.md's `mode: fix-main-ci` template.
+// ===========================================================================
+function buildFixMainCiPrompt(unit, repoSlug) {
+  const lines = [`mode: fix-main-ci`, ``, ...worktreeAnchorLines(unit, 'fix-main-ci')]
+  if (!unit.worktreePath) return lines.join('\n')
+
+  lines.push(
+    ``,
+    `Restore green main on ${repoSlug}. Earliest unfixed red run on the default branch:`,
+    `${unit.earliestRedRunUrl} at SHA ${unit.earliestRedSha} — triage that run's failure`,
+    `logs first. Load the \`shipyard:worker-preamble\` skill, then`,
+    `\`agents/issue-worker/fix-main-ci.md\`. Branch: ${unit.branch}. Synthetic divert — no`,
+    `\`Closes #N\` line.`,
+    ``,
+    `Return a STRUCTURED result matching schemas/worker-return.schema.json — e.g.`,
+    `{ "mode": "fix-main-ci", "outcome": "shipped", "pr": <M> },`,
+    `{ "mode": "fix-main-ci", "outcome": "noop", "summary": "main already green" }, or`,
+    `{ "mode": "fix-main-ci", "outcome": "blocked", "blocked_reason": "<reason>" }.`,
+    `This is the workflow-substrate return contract — NOT the free-text return string the`,
+    `Agent-tool path uses.`,
+  )
+  return lines.join('\n')
+}
+
+// ===========================================================================
+// Helper — build the fix-failing-prs-batch dispatch prompt (synthetic divert;
+// no originating issue). Mirrors dispatch-rules.md's `mode: fix-failing-prs-batch`
+// template.
+// ===========================================================================
+function buildFixFailingPrsBatchPrompt(unit, repoSlug) {
+  const lines = [`mode: fix-failing-prs-batch`, ``, ...worktreeAnchorLines(unit, 'fix-failing-prs-batch')]
+  if (!unit.worktreePath) return lines.join('\n')
+
+  lines.push(
+    ``,
+    `Investigate the failing-PR pileup on ${repoSlug}. ${unit.failingPrCountAll} open PRs`,
+    `across all authors currently failing: ${unit.failingPrNumbers}. Load the`,
+    `\`shipyard:worker-preamble\` skill, then \`agents/issue-worker/fix-failing-prs-batch.md\`.`,
+    `Branch: ${unit.branch}. Synthetic divert — no \`Closes #N\` line.`,
+    ``,
+    `Return a STRUCTURED result matching schemas/worker-return.schema.json — e.g.`,
+    `{ "mode": "fix-failing-prs-batch", "outcome": "shipped", "pr": <M> },`,
+    `{ "mode": "fix-failing-prs-batch", "outcome": "noop", "summary": "pileup already cleared" },`,
+    `or { "mode": "fix-failing-prs-batch", "outcome": "blocked", "blocked_reason": "no common`,
+    `root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)" }. This is`,
+    `the workflow-substrate return contract — NOT the free-text return string the Agent-tool`,
+    `path uses.`,
+  )
+  return lines.join('\n')
+}
+
+// ===========================================================================
+// Helper — build the investigate dispatch prompt. Mirrors dispatch-rules.md's
+// `mode: investigate` template — fresh `do-work/issue-<N>` branch off default,
+// same shape as issue-work's worktree provisioning.
+// ===========================================================================
+function buildInvestigatePrompt(unit, repoSlug) {
+  const lines = [`mode: investigate`, ``, ...worktreeAnchorLines(unit, 'investigate')]
+  if (!unit.worktreePath) return lines.join('\n')
+
+  lines.push(
+    ``,
+    `Work untriaged issue #${unit.number} in ${repoSlug} end-to-end. You are already`,
+    `self-assigned. The originating issue's author trust is **${unit.trust}** — load-bearing`,
+    `for auto-merge gating on the fixable-disposition path. \`triage.auto_close\` policy:`,
+    `**${unit.triageAutoClose}**. Load the \`shipyard:worker-preamble\` skill, then`,
+    `\`agents/issue-worker/investigate.md\`. Branch: ${unit.branch}.`,
+    ``,
+    `Return a STRUCTURED result matching schemas/worker-return.schema.json — e.g.`,
+    `{ "mode": "investigate", "outcome": "shipped", "issue": ${unit.number}, "pr": <M>,`,
+    `"auto_merge": "enabled", "checks": "green" } (investigated+fixed),`,
+    `{ "mode": "investigate", "outcome": "disposition", "issue": ${unit.number},`,
+    `"disposition": "needs-human-review" },`,
+    `{ "mode": "investigate", "outcome": "disposition", "issue": ${unit.number},`,
+    `"disposition": "auto-close-noise" },`,
+    `{ "mode": "investigate", "outcome": "disposition", "issue": ${unit.number},`,
+    `"disposition": "duplicate", "summary": "duplicate of #<K>" }, or`,
+    `{ "mode": "investigate", "outcome": "blocked", "issue": ${unit.number},`,
+    `"blocked_reason": "<reason>" }. This is the workflow-substrate return contract — NOT`,
+    `the free-text return string the Agent-tool path uses.`,
+  )
+  return lines.join('\n')
+}
+
+// ===========================================================================
+// Helper — build the spike dispatch prompt. Mirrors dispatch-rules.md's
+// `mode: spike` template — fresh `do-work/issue-<N>` branch off default, same
+// shape as issue-work's worktree provisioning, plus the optional directly-
+// committable-slice version-coordination paragraph (spike.md step 7).
+// ===========================================================================
+function buildSpikePrompt(unit, repoSlug) {
+  const lines = [`mode: spike`, ``, ...worktreeAnchorLines(unit, 'spike')]
+  if (!unit.worktreePath) return lines.join('\n')
+
+  lines.push(
+    ``,
     `Work issue #${unit.number} in ${repoSlug} to completion. You are already self-assigned.`,
-    `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge gating.`,
-    `Branch: ${unit.branch}. Open a PR that closes the issue.`,
+    `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge`,
+    `gating. Fan-out cap for follow-on sub-issues: **${unit.decomposeMaxSubissues}** (default 8).`,
+    `Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/spike.md\`.`,
+    `Branch: ${unit.branch}.`,
+  )
+
+  if (unit.nextAvailableVersion) {
+    lines.push(
+      ``,
+      `**Next-available version (orchestrator-supplied):** the manifest's version row is`,
+      `coordination-managed across this session's in-flight PRs. The next available`,
+      `version is **${unit.nextAvailableVersion}**. Use this exact value when bumping the`,
+      `manifest${unit.changelogPath ? ` and add a fresh entry above the highest existing entry in \`${unit.changelogPath}\`` : ''} — do NOT compute your own version from`,
+      `\`origin/<default-branch>\`.`,
+    )
+  }
+
+  lines.push(
     ``,
-    `Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/${unit.mode}.md\`.`,
-    ``,
-    `NOT YET MIGRATED (#788 wired issue-work only): this mode is not expected to reach`,
-    `this script via dispatch-rules.md's routing yet. If you're reading this from a`,
-    `manual dry run, treat the prompt below as a placeholder, not the mode's real contract.`,
-    ``,
-    `Return a STRUCTURED result matching schemas/worker-return.schema.json`,
-    `(this is the workflow-substrate return contract — NOT the free-text return string).`,
-  ].join('\n')
+    `Return a STRUCTURED result matching schemas/worker-return.schema.json — e.g.`,
+    `{ "mode": "spike", "outcome": "shipped", "issue": ${unit.number}, "pr": <M>,`,
+    `"auto_merge": "enabled", "checks": "green" } (spiked+shipped),`,
+    `{ "mode": "spike", "outcome": "disposition", "issue": ${unit.number},`,
+    `"disposition": "needs-human-review" } (spiked+needs-human-review), or`,
+    `{ "mode": "spike", "outcome": "blocked", "issue": ${unit.number}, "blocked_reason": "<reason>" }.`,
+    `This is the workflow-substrate return contract — NOT the free-text return string the`,
+    `Agent-tool path uses.`,
+  )
+  return lines.join('\n')
 }
 
 // ===========================================================================

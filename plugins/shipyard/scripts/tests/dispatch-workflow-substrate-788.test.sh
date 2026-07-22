@@ -7,10 +7,22 @@
 # #787 (phase 1) committed workflows/do-work-dispatch.workflow.js and
 # schemas/worker-return.schema.json as INERT scaffolding: no worker mode
 # dispatched through the script, and dispatch-rules.md never mentioned the
-# `Workflow` tool at all. This is the #788 slice: it wires ONE mode —
-# `issue-work` — to actually run through the script when the merged config
-# sets `dispatch.substrate: "workflow"`, while every other mode keeps
-# dispatching via the unchanged `Agent`-tool path regardless of the flag.
+# `Workflow` tool at all. #788 (phase 2) wired ONE mode — `issue-work` — to
+# actually run through the script when the merged config sets
+# `dispatch.substrate: "workflow"`.
+#
+# SUPERSEDED IN PART BY #789 (phase 3): the remaining six modes are now wired
+# too, so a handful of assertions below that originally asserted "ONLY
+# issue-work is affected" were updated to their phase-3-accurate wording (the
+# substrate section's heading generalized from "for `mode: issue-work`" to
+# "for every worker mode", and the config-schema description no longer singles
+# out issue-work as the sole affected mode). See
+# dispatch-workflow-substrate-789.test.sh for the phase-3-specific coverage
+# (the six new prompt builders, the per-mode `args.issues[]` shapes, and the
+# extended translation table). This file is kept — rather than deleted — as
+# the regression guard for the issue-work-specific mechanics phase 2 shipped
+# (the `buildIssueWorkPrompt` builder itself, its augmentations, and the
+# worktree-anchor verification), which are all still present unmodified.
 #
 # This test is the regression guard — if anyone reverts the issue-work
 # prompt builder back to a placeholder, drops dispatch-rules.md's substrate
@@ -102,11 +114,11 @@ else
   echo "  SKIP  node not on PATH — skipping syntax check"
 fi
 
-assert_contains "$workflow_js_path" "PHASE 2 (issue #788" \
-  "header comment declares phase 2 (#788) status"
+assert_contains "$workflow_js_path" "#788" \
+  "header comment still cites #788 (phase 2, issue-work wiring)"
 assert_contains "$workflow_js_path" "function buildIssueWorkPrompt(unit, repoSlug)" \
   "a real buildIssueWorkPrompt function exists"
-assert_contains "$workflow_js_path" "unit.mode === 'issue-work'" \
+assert_contains "$workflow_js_path" "case 'issue-work':" \
   "buildWorkerPrompt routes issue-work to buildIssueWorkPrompt"
 assert_contains "$workflow_js_path" "unit.worktreePath" \
   "issue-work prompt builder consumes a worktreePath field"
@@ -122,7 +134,7 @@ assert_contains "$workflow_js_path" "unit.nextAvailableVersion" \
   "issue-work prompt builder consumes a nextAvailableVersion field"
 assert_contains "$workflow_js_path" "GENUINE GAP, closed by the caller" \
   "header comment documents the worktree-isolation gap against the Dynamic Workflows docs"
-assert_contains "$workflow_js_path" "the orchestrator runs \`git worktree add" \
+assert_contains "$workflow_js_path" "the orchestrator provisions the isolated" \
   "header comment documents the caller-side git worktree add mitigation"
 
 echo
@@ -172,8 +184,11 @@ assert_contains "$worker_return_schema_path" '"issue-work"' \
 
 echo
 echo "== (C) dispatch-rules.md — substrate branch at the mode: issue-work dispatch site"
+echo "   (NOTE: as of #789 phase 3, this section now covers every mode — a handful of"
+echo "   assertions below were updated from their phase-2-only wording; see"
+echo "   dispatch-workflow-substrate-789.test.sh for the phase-3-specific coverage.)"
 
-assert_contains "$dispatch_rules_path" "Workflow-substrate dispatch for \`mode: issue-work\`" \
+assert_contains "$dispatch_rules_path" "Workflow-substrate dispatch for every worker mode" \
   "dispatch-rules.md has the workflow-substrate dispatch section"
 assert_contains "$dispatch_rules_path" 'dispatch_substrate == "workflow"' \
   "dispatch-rules.md branches on dispatch_substrate == workflow"
@@ -189,24 +204,24 @@ assert_contains "$dispatch_rules_path" "Translate the structured result back int
   "dispatch-rules.md documents the structured-to-free-text translation step"
 assert_contains "$dispatch_rules_path" "One work unit per \`Workflow\` call — not a batch" \
   "dispatch-rules.md documents the one-unit-per-call concurrency model"
-assert_contains "$dispatch_rules_path" "Only \`issue-work\` candidates change mechanism" \
-  "dispatch-rules.md is explicit that only issue-work is affected by the flag"
 
 echo
 echo "== (D) steady-state.md — A.1 documents the translation shim, doesn't re-parse structured returns"
 
-assert_contains "$steady_state_path" "Workflow-substrate \`issue-work\` dispatches are translated before reaching this step" \
+assert_contains "$steady_state_path" "Workflow-substrate dispatches" \
   "steady-state.md's A.1 documents the workflow-substrate translation shim"
+assert_contains "$steady_state_path" "translated before reaching this step, not parsed here directly" \
+  "steady-state.md's A.1 documents the translation happens before this step"
 assert_contains "$steady_state_path" "#788" \
   "steady-state.md's A.1 note cites #788"
 
 echo
 echo "== (E) shipyard.config.schema.json — dispatch.substrate description reflects mixed-mode operation"
 
-assert_contains "$config_schema_path" 'issue-work` candidates' \
-  "dispatch.substrate description names issue-work as the affected mode"
+assert_contains "$config_schema_path" 'issue-work' \
+  "dispatch.substrate description names issue-work among the affected modes"
 assert_contains "$config_schema_path" '"default": "agent"' \
-  "dispatch.substrate default is still agent (unchanged by #788)"
+  "dispatch.substrate default is still agent (unchanged by #788/#789)"
 
 if command -v jq >/dev/null 2>&1; then
   if jq empty "$config_schema_path" >/dev/null 2>&1; then

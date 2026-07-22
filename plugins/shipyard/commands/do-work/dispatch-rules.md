@@ -487,7 +487,7 @@ When filling a slot, walk this decision tree:
    >
    > Return values: `shipped #<N> via PR #<M> (...)` or `blocked: <reason>` (full vocabulary in issue-work.md step 8).
 
-   **Substrate check — this template is the `agent` path (the default).** Every augmentation below (verify-gate, user-feedback preamble, phase-1 slice, next-available-version) is computed identically regardless of `dispatch.substrate`; what changes when the merged config sets `dispatch.substrate: "workflow"` is the dispatch *mechanism* the candidate ultimately goes through. Compute the augmentations below exactly as documented, then check the substrate flag once **after** they're all resolved — see [Workflow-substrate dispatch for `mode: issue-work`](#workflow-substrate-dispatch-for-mode-issue-work-opt-in-via-dispatchsubstrate-workflow--788-phase-2-of-782) below, which is the only place the two substrates diverge.
+   **Substrate check — this template is the `agent` path (the default).** Every augmentation below (verify-gate, user-feedback preamble, phase-1 slice, next-available-version) is computed identically regardless of `dispatch.substrate`; what changes when the merged config sets `dispatch.substrate: "workflow"` is the dispatch *mechanism* the candidate ultimately goes through. Compute the augmentations below exactly as documented, then check the substrate flag once **after** they're all resolved — see [Workflow-substrate dispatch for every worker mode](#workflow-substrate-dispatch-for-every-worker-mode-opt-in-via-dispatchsubstrate-workflow--789-phase-3-of-782) below, which is the only place the two substrates diverge.
 
    **Verify-gate augmentation (opt-in via `verify_gate.enabled`).** Before composing the prompt, read the flag from the merged config:
 
@@ -528,77 +528,156 @@ Dispatch is via **background agents**: `run_in_background: true`, `isolation: "w
 
 **Write the `.in_flight` slot only AFTER the `Agent` call is accepted.** The [per-slot dispatch metadata write-through](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) needs the harness-assigned `agent_id`, which does not exist until the tool call returns — so the write-through is strictly *post*-dispatch, never speculative. This ordering is what makes the denied-dispatch branch below well-defined: a dispatch the harness refused leaves **no** `.in_flight` slot behind, so there is no phantom slot to reap and no completion notification to wait for.
 
-## Workflow-substrate dispatch for `mode: issue-work` (opt-in via `dispatch.substrate: "workflow"` — #788, phase 2 of #782)
+## Workflow-substrate dispatch for every worker mode (opt-in via `dispatch.substrate: "workflow"` — #789, phase 3 of #782)
 
-The decision tree above (steps 1–6) is the **same decision tree regardless of substrate** — spike-shape detection, collision tiering, priority scoring, author-trust resolution, the verify-gate / user-feedback / phase-1-slice / version-coordination augmentations are all computed by the orchestrator identically either way. This section is the ONE place the two substrates diverge: the mechanism used to actually run an `issue-work` candidate once step 3 ("not spike-shaped") has built its prompt.
+The decision tree above (steps 1–6) is the **same decision tree regardless of substrate** — divert-queue priority, spike-shape detection, collision tiering, priority scoring, author-trust resolution, the verify-gate / user-feedback / phase-1-slice / version-coordination / triage-policy / decompose-cap augmentations are all computed by the orchestrator identically either way. This section is the ONE place the two substrates diverge: the mechanism used to actually run a candidate — of ANY mode — once the decision tree above has built its prompt.
 
-**Read the flag once per `issue-work` candidate**, after every augmentation in step 3 above has been resolved:
+**Phase 2 (#788) wired ONE mode — `issue-work`.** Phase 3 (#789, this section) extends the same mechanism to the remaining six: `fix-checks-only`, `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`, `investigate`, `spike`. As of this phase, selecting `dispatch.substrate: "workflow"` changes real behavior for **every** `mode:`-driven dispatch site in the decision tree above — there is no longer a subset of modes still pinned to the `Agent` tool while the flag is set.
+
+**Read the flag once per candidate**, after every mode-specific augmentation above has been resolved:
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
 dispatch_substrate=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get dispatch.substrate 2>/dev/null || echo "agent")
 ```
 
-**`dispatch_substrate == "agent"` (the built-in default)** → dispatch exactly as step 3 documents above — `Agent` tool, `subagent_type: "shipyard:issue-worker"`, `isolation: "worktree"`, the free-text prompt template with its augmentations. Nothing below in this section applies.
+**`dispatch_substrate == "agent"` (the built-in default)** → dispatch exactly as the decision tree documents above — `Agent` tool, the mode's `subagent_type` from the routing table, `isolation: "worktree"`, the free-text prompt template with its augmentations. Nothing below in this section applies. This remains the shipped default; #789 is purely additive (see this issue's out-of-scope list — flipping the default is a later, still-blocked #790 phase).
 
-**`dispatch_substrate == "workflow"`** → dispatch via the `Workflow` tool against the plugin's `workflows/do-work-dispatch.workflow.js` script instead of the `Agent` tool. **Only `issue-work` candidates change mechanism.** A sibling `fix-checks-only` / `fix-rebase` / `fix-main-ci` / `fix-failing-prs-batch` / `investigate` / `spike` dispatch in the SAME session still uses the `Agent` tool unconditionally, because #788 wires `issue-work` only — the other six modes aren't reachable through the workflow script yet regardless of this flag. Don't read `dispatch.substrate: "workflow"` as "the whole session is on the new substrate" — it's a per-candidate, per-mode gate, and today only one mode passes it.
+**`dispatch_substrate == "workflow"`** → dispatch via the `Workflow` tool against the plugin's `workflows/do-work-dispatch.workflow.js` script instead of the `Agent` tool, for **every** mode. Blocked-by sequencing, divert-queue priority, and the one-diverted-worker-per-kind rule are unaffected — they gate *which* candidate reaches this section, not the mechanism this section applies once a candidate has cleared them.
 
-1. **Pre-provision the isolated worktree yourself — do NOT rely on an `isolation` option on the `Workflow` tool's `agent()` primitive.** As of the current Dynamic Workflows docs (code.claude.com/docs/en/workflows), `agent()` documents no worktree/isolation/sandboxing option — the harness auto-provisions an isolated, cwd-pinned worktree for an `Agent`-tool `isolation: "worktree"` dispatch, but a Dynamic Workflow script has no filesystem/shell access of its own ("Agents read, write, and run commands. The script coordinates the agents") and nothing in its documented `agent(prompt, opts)` option surface (`label`/`model`/`schema`) closes that gap. The orchestrator session — unlike the workflow script — still has full shell access at this point, so it closes the gap itself, the same way the harness would have:
+1. **Pre-provision the isolated worktree yourself — do NOT rely on an `isolation` option on the `Workflow` tool's `agent()` primitive.** As of the current Dynamic Workflows docs (code.claude.com/docs/en/workflows), `agent()` documents no worktree/isolation/sandboxing option — the harness auto-provisions an isolated, cwd-pinned worktree for an `Agent`-tool `isolation: "worktree"` dispatch, but a Dynamic Workflow script has no filesystem/shell access of its own ("Agents read, write, and run commands. The script coordinates the agents") and nothing in its documented `agent(prompt, opts)` option surface (`label`/`model`/`schema`) closes that gap. The orchestrator session — unlike the workflow script — still has full shell access at this point, so it closes the gap itself, the same way the harness would have. **The exact invocation depends on the mode's branch shape:**
 
-   ```bash
-   WORKTREE_ID="agent-workflow-$(date +%s)-$$"
-   WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_ID}"
-   DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-   git worktree add "$WORKTREE_PATH" -b "do-work/issue-<N>" "origin/${DEFAULT_BRANCH}"
-   ```
+   - **`issue-work` / `investigate` / `spike`** — fresh branch off default, identical to the phase-2 shape:
+
+     ```bash
+     WORKTREE_ID="agent-workflow-$(date +%s)-$$"
+     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_ID}"
+     DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+     git worktree add "$WORKTREE_PATH" -b "do-work/issue-<N>" "origin/${DEFAULT_BRANCH}"
+     ```
+
+   - **`fix-checks-only` / `fix-rebase`** — checked out directly onto the **existing** PR branch being fixed/rebased, not a fresh branch off default (mirrors what `fix-checks-only.md`'s own Setup step — `git fetch origin "$HEAD_REF" && git switch "$HEAD_REF"` — would have done inside an `Agent`-tool placeholder worktree; pre-provisioning it this way makes that fetch/switch step a no-op safety net rather than required additional setup):
+
+     ```bash
+     WORKTREE_ID="agent-workflow-$(date +%s)-$$"
+     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_ID}"
+     git worktree add "$WORKTREE_PATH" -B "<headRefName>" "origin/<headRefName>"
+     ```
+
+   - **`fix-main-ci` / `fix-failing-prs-batch`** — synthetic-divert branch naming, same fresh-off-default shape as issue-work:
+
+     ```bash
+     WORKTREE_ID="agent-workflow-$(date +%s)-$$"
+     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_ID}"
+     DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+     git worktree add "$WORKTREE_PATH" -b "<synthetic-divert-branch>" "origin/${DEFAULT_BRANCH}"
+     # <synthetic-divert-branch> = do-work/fix-main-ci-<short-sha> or do-work/fix-pr-pileup-<short-timestamp>
+     ```
 
    This is the exact worktree convention every other mode already uses (`.claude/worktrees/agent-<id>`), so the existing per-completion reap (step B / A.0.5 / A.1's post-`shipped` reap) and the drain-phase pre-dispatch reap apply to it unmodified — they key off the path shape and the branch name, not off which tool created the worktree.
 
-2. **Resolve the model exactly as the per-dispatch model-resolution rule above** — `resolve-dispatch-model.sh issue-work` — the same Agent-tool alias (`opus`/`sonnet`/`haiku`/`fable`) feeds both substrates identically; the workflow script's `agent()` call takes the resolved alias as its own `model` option.
+2. **Resolve the model exactly as the per-dispatch model-resolution rule above** — `resolve-dispatch-model.sh <mode>` — the same Agent-tool alias (`opus`/`sonnet`/`haiku`/`fable`) feeds both substrates identically; the workflow script's `agent()` call takes the resolved alias as its own `model` option. This preserves every mode's model pin from the routing table at the top of this file (Haiku for `fix-checks-only`/`fix-rebase`, Sonnet for `fix-main-ci`/`fix-failing-prs-batch`/`investigate`/(default)`issue-work`, Opus/session-default for `spike`) — the resolver is mode-parameterized, so nothing here re-derives or overrides those pins.
 
-3. **Invoke the `Workflow` tool** against `${CLAUDE_PLUGIN_ROOT}/workflows/do-work-dispatch.workflow.js`, passing `args`:
+3. **Invoke the `Workflow` tool** against `${CLAUDE_PLUGIN_ROOT}/workflows/do-work-dispatch.workflow.js`, passing `args`. The shared envelope is the same across every mode (`repo`, `concurrency`, `models`); the single `issues[0]` entry's fields vary by mode — only the fields each mode's builder consumes need be present, everything else may be omitted:
+
+   **`issue-work`** (unchanged from phase 2):
 
    ```jsonc
-   {
-     "repo": "<owner/repo>",
-     "concurrency": 1,
-     "models": { "issue-work": "<resolved-model-or-omit>" },
-     "issues": [{
-       "number": <N>,
-       "mode": "issue-work",
-       "trust": "<originating_author_trust>",
-       "branch": "do-work/issue-<N>",
-       "worktreePath": "<WORKTREE_PATH from step 1>",
-       "verifyGate": <true if verify_gate.enabled && trusted, else false>,
-       "userFeedback": <true if the candidate carries the user-feedback label>,
-       "phase1Scope": "<phase_1_scope field, or omit>",
-       "nextAvailableVersion": "<computed value, or omit>",
-       "changelogPath": "<changelog_path, or omit>"
-     }]
-   }
+   { "number": <N>, "mode": "issue-work", "trust": "<originating_author_trust>",
+     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>",
+     "verifyGate": <bool>, "userFeedback": <bool>,
+     "phase1Scope": "<phase_1_scope, or omit>",
+     "nextAvailableVersion": "<computed value, or omit>", "changelogPath": "<or omit>" }
+   ```
+
+   **`fix-checks-only`**:
+
+   ```jsonc
+   { "pr": <M>, "mode": "fix-checks-only", "headRefName": "<headRefName>",
+     "worktreePath": "<WORKTREE_PATH>" }
+   ```
+
+   **`fix-rebase`**:
+
+   ```jsonc
+   { "pr": <M>, "mode": "fix-rebase", "headRefName": "<headRefName>",
+     "worktreePath": "<WORKTREE_PATH>",
+     "versionCoordinationParagraph": "<pre-formatted §259-263 paragraph, or omit>" }
+   ```
+
+   **`fix-main-ci`** (no originating issue):
+
+   ```jsonc
+   { "mode": "fix-main-ci", "branch": "do-work/fix-main-ci-<short-sha>",
+     "worktreePath": "<WORKTREE_PATH>",
+     "earliestRedRunUrl": "<earliest_red_run_url>", "earliestRedSha": "<earliest_red_sha>" }
+   ```
+
+   **`fix-failing-prs-batch`** (no originating issue):
+
+   ```jsonc
+   { "mode": "fix-failing-prs-batch", "branch": "do-work/fix-pr-pileup-<short-timestamp>",
+     "worktreePath": "<WORKTREE_PATH>",
+     "failingPrCountAll": <int>, "failingPrNumbers": "<comma-separated list>" }
+   ```
+
+   **`investigate`**:
+
+   ```jsonc
+   { "number": <N>, "mode": "investigate", "trust": "<originating_author_trust>",
+     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>",
+     "triageAutoClose": "<triage.auto_close policy>" }
+   ```
+
+   **`spike`**:
+
+   ```jsonc
+   { "number": <N>, "mode": "spike", "trust": "<originating_author_trust>",
+     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>",
+     "decomposeMaxSubissues": <decompose.max_subissues, default 8>,
+     "nextAvailableVersion": "<computed value, or omit>", "changelogPath": "<or omit>" }
    ```
 
    **One work unit per `Workflow` call — not a batch.** This mirrors the existing one-`Agent`-call-per-pool-slot shape exactly: the orchestrator's own `--concurrency N` rolling pool (unchanged by this section) is still what bounds how many of these run simultaneously, by issuing multiple `Workflow` calls the same way it issues multiple `Agent` calls today. The script's own `parallel()` fan-out is reserved for a future batch-dispatch phase and is not exercised by this wiring (see the script's own header comment).
 
 4. **Translate the structured result back into the existing free-text vocabulary before handing it to [steady-state.md's step A.1](./steady-state.md#a1-parse-the-return-string).** The `Workflow` tool's return value is the array `do-work-dispatch.workflow.js` returns — one element for a single-unit call, a structured object matching [`schemas/worker-return.schema.json`](../../schemas/worker-return.schema.json). Map it onto the exact terminal string the corresponding free-text outcome would have produced, so every downstream reconcile branch (labeling, auto-merge bookkeeping, cost-tracking, [#521](https://github.com/mattsears18/shipyard/issues/521) blocked-reason classification) runs completely unchanged:
 
-   | Structured field(s) | Equivalent free-text terminal string |
-   |---|---|
-   | `{outcome:"shipped", issue:N, pr:M, auto_merge:"enabled", checks:"green"}` | `shipped #N via PR #M (auto-merge: enabled, checks: green)` |
-   | `{outcome:"shipped", issue:N, pr:M, auto_merge:"gated-manual", checks:"green"}` | `shipped #N via PR #M (auto-merge: gated-manual, checks: green)` |
-   | `{outcome:"shipped", issue:N, pr:M, auto_merge:"merged-direct", checks:"green"}` | `shipped #N via PR #M (auto-merge: merged-direct, checks: green)` |
-   | `{outcome:"shipped", issue:N, pr:M, auto_merge:"merged-direct-ungated", checks:"pending"}` | `shipped #N via PR #M (auto-merge: merged-direct-ungated, checks: pending)` |
-   | `{outcome:"shipped", issue:N, pr:M, auto_merge:"unavailable", checks:"pending"}` | `shipped #N via PR #M (auto-merge: unavailable — needs manual merge, checks: pending)` |
-   | `{outcome:"shipped", issue:N, pr:M, auto_merge:"gated-external", checks:"pending"}` | `shipped #N via PR #M (auto-merge: gated — external-author origin, needs-human-review label applied, checks: pending)` |
-   | `{outcome:"blocked", issue:N, blocked_stage:"pre-push", blocked_reason:"local unit suite failing"}` | `blocked #N at pre-push: local unit suite failing` |
-   | `{outcome:"reaped", last_push:"a1b2c3d"}` | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: a1b2c3d)` |
-   | `{outcome:"reaped", last_push:null}` | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: none)` |
+   | Mode(s) | Structured field(s) | Equivalent free-text terminal string |
+   |---|---|---|
+   | `issue-work` | `{outcome:"shipped", issue:N, pr:M, auto_merge:"enabled", checks:"green"}` | `shipped #N via PR #M (auto-merge: enabled, checks: green)` |
+   | `issue-work` | `{outcome:"shipped", issue:N, pr:M, auto_merge:"gated-manual", checks:"green"}` | `shipped #N via PR #M (auto-merge: gated-manual, checks: green)` |
+   | `issue-work` | `{outcome:"shipped", issue:N, pr:M, auto_merge:"merged-direct", checks:"green"}` | `shipped #N via PR #M (auto-merge: merged-direct, checks: green)` |
+   | `issue-work` | `{outcome:"shipped", issue:N, pr:M, auto_merge:"merged-direct-ungated", checks:"pending"}` | `shipped #N via PR #M (auto-merge: merged-direct-ungated, checks: pending)` |
+   | `issue-work` | `{outcome:"shipped", issue:N, pr:M, auto_merge:"unavailable", checks:"pending"}` | `shipped #N via PR #M (auto-merge: unavailable — needs manual merge, checks: pending)` |
+   | `issue-work` | `{outcome:"shipped", issue:N, pr:M, auto_merge:"gated-external", checks:"pending"}` | `shipped #N via PR #M (auto-merge: gated — external-author origin, needs-human-review label applied, checks: pending)` |
+   | `issue-work` / `investigate` / `spike` / `fix-*` | `{outcome:"blocked", issue:N, blocked_stage:"pre-push", blocked_reason:"local unit suite failing"}` | `blocked #N at pre-push: local unit suite failing` (issue-work-style) or `blocked <mode>: <reason>` (synthetic diverts — `issue` is null) |
+   | any | `{outcome:"reaped", last_push:"a1b2c3d"}` | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: a1b2c3d)` |
+   | any | `{outcome:"reaped", last_push:null}` | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: none)` |
+   | `fix-checks-only` | `{outcome:"green", pr:M, checks:"green"}` | `green #M` |
+   | `fix-checks-only` | `{outcome:"noop", pr:M, summary:"already green"}` | `noop: already green` |
+   | `fix-checks-only` | `{outcome:"green", pr:M, checks:"pending", summary:"flake: re-ran failed jobs (<sig>)"}` | `flake #M: re-ran failed jobs (<sig>)` — the `"flake: "` summary prefix is the discriminator; there is no separate schema `outcome` value for the infra-flake re-run |
+   | `fix-checks-only` | `{outcome:"blocked", pr:M, blocked_reason:"<check> — <excerpt>"}` | `blocked: <last failing check> — <last error excerpt>` |
+   | `fix-rebase` | `{outcome:"rebased", pr:M}` | `rebased #M` |
+   | `fix-rebase` | `{outcome:"noop", pr:M, summary:"not dirty (<reason>)"}` | `noop: not dirty (<reason>)` |
+   | `fix-rebase` | `{outcome:"blocked", pr:M, blocked_reason:"<reason>"}` | `blocked rebase #M: <reason>` |
+   | `fix-main-ci` | `{outcome:"shipped", pr:M}` | `shipped main-ci-fix via PR #M` |
+   | `fix-main-ci` | `{outcome:"noop", summary:"main already green"}` | `noop: main already green` |
+   | `fix-main-ci` | `{outcome:"blocked", blocked_reason:"<reason>"}` | `blocked main-ci-fix: <reason>` |
+   | `fix-failing-prs-batch` | `{outcome:"shipped", pr:M}` | `shipped pr-batch-fix via PR #M` |
+   | `fix-failing-prs-batch` | `{outcome:"noop", summary:"pileup already cleared"}` | `noop: pileup already cleared` |
+   | `fix-failing-prs-batch` | `{outcome:"blocked", blocked_reason:"no common root cause — ..."}` | `blocked pr-batch-fix: no common root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)` |
+   | `investigate` | `{outcome:"shipped", issue:N, pr:M, auto_merge:"enabled", checks:"green"}` | `investigated+fixed #N via PR #M (auto-merge: enabled, checks: green)` |
+   | `investigate` | `{outcome:"disposition", issue:N, disposition:"needs-human-review"}` | `investigated+needs-human-review #N (label applied)` |
+   | `investigate` | `{outcome:"disposition", issue:N, disposition:"auto-close-noise"}` | `investigated+closed-noise #N` |
+   | `investigate` | `{outcome:"disposition", issue:N, disposition:"duplicate", summary:"duplicate of #K"}` | `investigated+duplicate #N of #K` |
+   | `spike` | `{outcome:"shipped", issue:N, pr:M, auto_merge:"enabled", checks:"green"}` | `spiked+shipped #N via PR #M (auto-merge: enabled, checks: green)` |
+   | `spike` | `{outcome:"disposition", issue:N, disposition:"needs-human-review"}` | `spiked+needs-human-review #N (label applied)` |
 
    If the `Workflow` tool call itself fails (schema validation rejected the worker's result, the run errored before returning, the nested `agent()` dispatch was refused) rather than the worker returning a documented `blocked`/`reaped` outcome, treat it the same as any other dispatch-refused case: leave no `.in_flight` slot behind and let the next turn's slot-fill retry the candidate.
 
-5. **Write the `.in_flight` slot exactly as the `Agent`-tool path does** (the write-through rule above still applies unmodified) — the only addition is recording `WORKTREE_PATH` from step 1 alongside the usual `agent_id`/`mode`/`issue`/`branch` fields, so the existing reap logic can find and remove it without special-casing how the worktree was created.
+5. **Write the `.in_flight` slot exactly as the `Agent`-tool path does** (the write-through rule above still applies unmodified) — the only addition is recording `WORKTREE_PATH` from step 1 alongside the usual `agent_id`/`mode`/`issue`/`branch` fields, so the existing reap logic can find and remove it without special-casing how the worktree was created. **Stash the failing signature for `fix-main-ci` diverts** exactly as the `Agent`-tool path does (see the divert-queue step 1 note above) — this is unchanged by substrate.
 
-**Everything else is unchanged.** Author-trust resolution, priority scoring, path-collision tiering, the verify-gate/user-feedback/phase-1-slice/version-coordination computations, and the `.in_flight` write-through contract are all computed by the orchestrator exactly as documented above for the `agent` substrate — this section changes only the dispatch *mechanism* (`Workflow` tool + pre-provisioned worktree + structured-to-free-text translation) for `issue-work` candidates when the flag is set.
+**Everything else is unchanged.** Author-trust resolution, priority scoring, path-collision tiering, divert-queue priority, blocked-by sequencing, and every mode-specific augmentation (verify-gate/user-feedback/phase-1-slice/version-coordination/triage-policy/decompose-cap) are all computed by the orchestrator exactly as documented above for the `agent` substrate — this section changes only the dispatch *mechanism* (`Workflow` tool + pre-provisioned worktree + structured-to-free-text translation) once a candidate of any mode is ready to dispatch.
 
 ## Wiring `shipyard:decompose-worker` into the existing inline auto-decompose dispatch ([#774](https://github.com/mattsears18/shipyard/issues/774))
 
