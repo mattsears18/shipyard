@@ -134,9 +134,11 @@ assert_equals "$("$helper" get concurrency.default)" "1" "get concurrency.defaul
 # prevents an accidental flip to conservative pinning.
 assert_equals "$("$helper" get dependencies.new_dep_version)" "latest-stable" "get dependencies.new_dep_version returns latest-stable (issue #694)"
 
-# dispatch.substrate — issue #787: phase-1 scaffolding of the Dynamic Workflows
-# substrate. The built-in default is "agent" (the existing hand-rolled Agent-tool
-# orchestrator); "workflow" is reserved scaffolding not yet wired to any mode.
+# dispatch.substrate — issue #787 scaffolded the Dynamic Workflows substrate;
+# #788 wired the first mode (issue-work) to it as phase 2. The built-in default
+# stays "agent" (the existing hand-rolled Agent-tool orchestrator) — selecting
+# "workflow" is opt-in and mixed-mode (issue-work only as of #788; every other
+# mode still dispatches via the Agent-tool path regardless of this setting).
 # Asserting the literal default here guards against an accidental cutover flip
 # before the later #782 phases ship.
 assert_equals "$("$helper" get dispatch.substrate)" "agent" "get dispatch.substrate returns agent (issue #787)"
