@@ -336,8 +336,18 @@ if grep -A40 '### 3.0.0' "$changelog" | grep -qF 'dispatch.substrate agent'; the
 else
   assert_fail "the CHANGELOG 3.0.0 entry documents the one-line instant-revert"
 fi
-assert_eq "$(jq -r '.version' "$plugin_json")" "3.0.0" \
-  "plugin.json version bumped to 3.0.0 (major — the substrate cutover)"
+# Assert the major bump to 3.x LANDED AND PERSISTS, rather than pinning the
+# exact "3.0.0" string — a later release (e.g. #785) legitimately bumps past
+# 3.0.0 in its own PR, and a literal-equality assertion here would otherwise
+# permanently red every subsequent release's CI for a version this test
+# doesn't actually care about (it only cares that the cutover's major bump
+# happened, not that no further release ever occurs).
+current_version="$(jq -r '.version' "$plugin_json")"
+if [[ "$(printf '%s\n%s\n' "3.0.0" "$current_version" | sort -V | head -n1)" == "3.0.0" ]]; then
+  assert_pass "plugin.json version is at or past 3.0.0 (major — the substrate cutover), currently ${current_version}"
+else
+  assert_fail "plugin.json version is at or past 3.0.0 (major — the substrate cutover), currently ${current_version}"
+fi
 
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"

@@ -30,6 +30,17 @@ gh issue view <N> --repo <owner/repo> \
 gh pr list --repo <owner/repo> --state open --limit 200 \
   --json number,closingIssuesReferences \
   --jq "[.[] | select(.closingIssuesReferences[]?.number == <N>) | {number}]"
+
+# Also cross-check the CANONICAL head branch name (do-work/issue-<N>), independent
+# of closingIssuesReferences. This catches a PR that Claude Code's native
+# background-subagent auto-commit/push/draft-PR behavior opened on a prior,
+# interrupted dispatch (§3's push landed but the worker bailed before reaching
+# `gh pr create`) — that PR carries no closing keyword, so the check above
+# is blind to it. See `shipyard:worker-preamble` § "Native background-subagent
+# auto-PR reconciliation" (issue #785) for why this can happen and what it means.
+gh pr list --repo <owner/repo> --state open --limit 200 \
+  --json number,headRefName,labels \
+  --jq "[.[] | select(.headRefName == \"do-work/issue-<N>\") | {number, labels: [.labels[].name]}]"
 ```
 
 The `--jq` projection on the issue view keeps every field this step consumes — `state` (workable check), `title`/`body` (untrusted-input read in step 2), `labels[].name` (block-label check), `assignees[].login` (concurrent-claim check), `author.login` (trust-walk anchor in step 2), `comments[].{author.login, body, url, createdAt}` (trusted-author comment-thread walk + permalink citation in step 2) — and drops every field the worker doesn't read (label `id` / `description` / `color`, assignee `id` / `name`, comment `id` / `updatedAt`, author `id` / `name`). Same call count, smaller objects. Worker-preamble §"`gh` JSON discipline" covers the convention.
@@ -40,6 +51,7 @@ Bail with `blocked` if any of:
 - Issue has an assignee that isn't the authenticated `gh` user (someone else picked it up).
 - Issue carries `blocked` / `wontfix` / `needs-human-review` / `needs-triage` / `discussion` labels. (The former `needs-design` design-gate was folded into `needs-human-review` per [#515](https://github.com/mattsears18/shipyard/issues/515).)
 - **Any open PR references this issue with a closing keyword** — don't open a duplicate. Return: `blocked: PR #<M> already open for this issue`.
+- **Any open PR already has head branch `do-work/issue-<N>`** (the second query above), even without a closing keyword. This is almost always either a live sibling worktree mid-dispatch, or a native-auto-opened draft PR left over from a worker that pushed then bailed before `gh pr create` (see the worker-preamble cross-reference above). Don't open a second PR against the same branch — return `blocked: PR #<M> already open on canonical branch do-work/issue-<N> — verify it carries --label shipyard and a closing keyword before retrying` so a human (or a fresh dispatch once the branch is free) can patch or replace it rather than racing it.
 
 ### 1. Self-assign (soft lock)
 
