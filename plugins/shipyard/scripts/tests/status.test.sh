@@ -238,6 +238,43 @@ assert_contains "$out" "PR #99" "session sB fix-checks PR #99 rendered"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== investigate / spike kinds render like issue (issue #797)"
+# --------------------------------------------------------------------------
+# investigate and spike dispatches target an issue number (#N), same as
+# issue-work — status.sh must render the #N target (not a raw target string)
+# and join per-issue tokens (not fall through to the 0-token default).
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$state_helper" init --session-id "s5" --repo "owner/repo" --concurrency 2 >/dev/null
+
+ts=$(past_ts 30)
+SHIPYARD_HOME="$tmphome" bash "$state_helper" update --session-id "s5" \
+  --set ".in_flight.slot1 = {kind: \"investigate\", target: 300, claimed_paths: {hard: [], soft: []}, agent_id: \"inv\", started_at: \"$ts\"}" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$state_helper" update --session-id "s5" \
+  --set ".in_flight.slot2 = {kind: \"spike\", target: 301, claimed_paths: {hard: [], soft: []}, agent_id: \"spk\", started_at: \"$ts\"}" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$state_helper" bump-tokens --session-id "s5" \
+  --issue 300 --input 4000 --output 800 --mode investigate --model claude-sonnet-4-5 >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$state_helper" bump-tokens --session-id "s5" \
+  --issue 301 --input 6000 --output 1200 --mode spike --model claude-opus-4-7 >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper")
+assert_contains "$out" "#300" "investigate kind renders #300 (not raw target)"
+assert_contains "$out" "#301" "spike kind renders #301 (not raw target)"
+# 4000+800=4800 input+output tokens for the investigate slot; 6000+1200=7200
+# for the spike slot — non-zero, confirming the per_issue token join fired
+# instead of falling through to the kind-mismatch 0-token default.
+assert_contains "$out" "4.8k" "investigate slot's token column reflects the joined per_issue bucket (not 0)"
+assert_contains "$out" "7.2k" "spike slot's token column reflects the joined per_issue bucket (not 0)"
+
+out_json=$(SHIPYARD_HOME="$tmphome" bash "$helper" --json)
+inv_target=$(echo "$out_json" | jq -r '[.[0].in_flight[] | select(.kind=="investigate")][0].target')
+assert_equals "$inv_target" "300" "--json carries investigate slot's target 300"
+inv_input=$(echo "$out_json" | jq -r '[.[0].in_flight[] | select(.kind=="investigate")][0].tokens.input')
+assert_equals "$inv_input" "4000" "--json joins investigate tokens from per_issue bucket (not zeroed)"
+spike_input=$(echo "$out_json" | jq -r '[.[0].in_flight[] | select(.kind=="spike")][0].tokens.input')
+assert_equals "$spike_input" "6000" "--json joins spike tokens from per_issue bucket (not zeroed)"
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== usage errors"
 # --------------------------------------------------------------------------
 out=$(bash "$helper" --bogus-flag 2>&1; echo "rc=$?")
