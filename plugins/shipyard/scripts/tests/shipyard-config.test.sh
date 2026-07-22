@@ -116,10 +116,11 @@ out=$("$helper" load 2>&1)
 assert_contains "$out" '"version": 1'                   "load emits version"
 assert_contains "$out" '"policy": "trusted-only"'       "load emits default auto_merge.policy"
 assert_contains "$out" '"session_stamp": "shipyard"'    "load emits default labels.session_stamp"
-assert_contains "$out" '"issue_work": "claude-opus-4-7"' "load emits default models.issue_work"
+assert_contains "$out" '"issue_work": "claude-sonnet-5"' "load emits default models.issue_work"
 
 assert_equals "$("$helper" get auto_merge.policy)" "trusted-only" "get auto_merge.policy returns default"
-assert_equals "$("$helper" get models.issue_work)" "claude-opus-4-7" "get models.issue_work returns default"
+assert_equals "$("$helper" get models.issue_work)" "claude-sonnet-5" "get models.issue_work returns default"
+assert_equals "$("$helper" get models.verify)" "claude-opus-4-8" "get models.verify returns the Opus 4.8 verify-gate default (#784)"
 
 # concurrency.default — issue #268: built-in default is 1 (sequential) because
 # most repos that follow the "cut a release per PR" convention hard-collide on
@@ -230,7 +231,7 @@ assert_equals "$("$helper" get auto_merge.policy --with-source | cut -f2)" "user
 assert_equals "$("$helper" get models.issue_work)" "claude-test-model" "default_models.issue_work remaps to models.issue_work"
 assert_equals "$("$helper" get models.fix_rebase)" "claude-rebase-model" "default_models.fix_rebase remaps to models.fix_rebase"
 # A mode NOT named in default_models still falls through to the built-in default.
-assert_equals "$("$helper" get models.fix_main_ci)" "claude-sonnet-4-6" "unset mode falls through to built-in default model"
+assert_equals "$("$helper" get models.fix_main_ci)" "claude-sonnet-5" "unset mode falls through to built-in default model"
 assert_equals "$("$helper" get cost_tracking.enabled)" "false" "cost_tracking_enabled remaps to cost_tracking.enabled"
 assert_equals "$("$helper" get cost_tracking.enabled --with-source | cut -f2)" "user" "remapped cost_tracking.enabled sourced to user layer"
 

@@ -458,7 +458,14 @@ The PR is open and every mechanical guard (§5.7 / §5.8 / §5.85) has passed, b
 
 Dispatch the verifier as a nested subagent via the `Agent` tool. It is the one sanctioned nested dispatch in the do-work loop:
 
-- `subagent_type: "shipyard:verify-worker"` (pinned to Opus in its shim)
+- `subagent_type: "shipyard:verify-worker"` — pinned to **Opus 4.8** in its shim frontmatter (the strong, harder-to-fool tier this gate reserves for its highest-stakes judgment — [#784](https://github.com/mattsears18/shipyard/issues/784)). The tier is overridable per-role via `models.verify`: resolve it the same way the orchestrator resolves every dispatch's model, and pass it as the `Agent` call's `model` parameter (omit `model` when the resolution is empty so the Opus 4.8 frontmatter default applies):
+
+  ```bash
+  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+  verify_model=$("${CLAUDE_PLUGIN_ROOT}/scripts/resolve-dispatch-model.sh" verify 2>/dev/null)
+  # verify_model non-empty (opus/sonnet/haiku/fable) → set model: "<verify_model>" on the Agent call;
+  # empty → omit the model parameter so verify-worker.md's opus frontmatter default applies.
+  ```
 - `isolation: "worktree"` (**mandatory** — the isolation hook hard-fails the dispatch otherwise; the verifier reads the PR via `gh`, so an empty worktree is fine)
 - prompt naming `mode: verify` and carrying: the PR number `<M>`, the issue number `<N>`, `<owner/repo>`, and the acceptance criteria / reproduction summary you read in step 2.
 

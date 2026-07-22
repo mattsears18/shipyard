@@ -1,10 +1,10 @@
 ---
 name: fix-pr-batch-worker
-description: Use only via /shipyard:do-work fix-failing-prs-batch dispatch — source-fix the common root cause behind a ≥10-PR red pileup. Pinned to Sonnet 4.5 for cost (closes #157).
+description: Use only via /shipyard:do-work fix-failing-prs-batch dispatch — source-fix the common root cause behind a ≥10-PR red pileup. Pinned to Sonnet 5 for cost (closes #157).
 model: sonnet
 ---
 
-You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-failing-prs-batch`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, mid-tier model, ~5x lower cost per dispatch (Sonnet 4.5 vs Opus 4.7). See [issue #157](https://github.com/mattsears18/shipyard/issues/157) for the rationale.
+You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-failing-prs-batch`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, mid-tier model (Sonnet 5) — cross-PR pattern-spotting that doesn't warrant the Opus 4.8 reasoning tier reserved for the verify gate. See [issue #157](https://github.com/mattsears18/shipyard/issues/157) for the rationale.
 
 ## Shared rules — load first
 

@@ -130,6 +130,7 @@ echo "== (B) model-id -> Agent-tool alias mapping"
 
 assert_equals "$(map claude-opus-4-8)"   "opus"   "claude-opus-4-8 -> opus"
 assert_equals "$(map claude-opus-4-7)"   "opus"   "claude-opus-4-7 -> opus"
+assert_equals "$(map claude-sonnet-5)"   "sonnet" "claude-sonnet-5 -> sonnet (the implementation-default id)"
 assert_equals "$(map claude-sonnet-4-6)" "sonnet" "claude-sonnet-4-6 -> sonnet (the #727 repro value)"
 assert_equals "$(map claude-haiku-4-5)"  "haiku"  "claude-haiku-4-5 -> haiku"
 assert_equals "$(map claude-fable-5)"    "fable"  "claude-fable-5 -> fable"
@@ -178,6 +179,19 @@ assert_equals "$?" "64" "unknown mode exits 64 (usage error)"
 
 bash "$RESOLVER" >/dev/null 2>&1
 assert_equals "$?" "64" "missing mode arg exits 64"
+
+# The per-role verify tier (#784) and the spike role are recognized modes —
+# they must NOT be rejected as unknown. verify resolves to its built-in
+# opus-tier default; spike has no built-in pin (unpinned, Fable-5-opt-in) so it
+# resolves to EMPTY, i.e. the shim's session-model default applies.
+bash "$RESOLVER" verify >/dev/null 2>&1
+assert_equals "$?" "0" "verify is a recognized mode (exit 0, not 64)"
+bash "$RESOLVER" spike >/dev/null 2>&1
+assert_equals "$?" "0" "spike is a recognized mode (exit 0, not 64)"
+assert_equals "$(resolve_in "$tmp_root" "$tmp_home" verify)" "opus" \
+  "verify resolves to the opus tier by default (Opus 4.8 verify gate, #784)"
+assert_equals "$(resolve_in "$tmp_root" "$tmp_home" spike)" "" \
+  "spike has no built-in pin — resolves to empty (unpinned, session-model default; Fable-5 opt-in)"
 
 echo
 echo "== (E) REGRESSION GUARD — a configured models.<mode> is the effective dispatch model"
@@ -264,6 +278,7 @@ shim_pairs=(
   "fix_main_ci:fix-main-ci-worker.md"
   "fix_failing_prs_batch:fix-pr-batch-worker.md"
   "investigate:investigate-worker.md"
+  "verify:verify-worker.md"
 )
 
 # The built-in defaults are what an unconfigured consumer repo gets, so read
@@ -287,12 +302,21 @@ for pair in "${shim_pairs[@]}"; do
 done
 
 # issue-work pins no frontmatter model (it inherits the session model), and its
-# built-in default is the Opus tier — the config default must not silently
-# down-tier the one mode that intentionally runs on the big model.
+# built-in default is the Sonnet 5 implementation tier (#784) — the cheap,
+# 1M-context agent-runner that shipyard defaults implementation to. The Opus
+# 4.8 reasoning tier is reserved for the verify gate, not implementation.
 issue_work_default=$(SHIPYARD_REPO_ROOT="$defaults_root" SHIPYARD_HOME="$defaults_home" \
   bash "$CONFIG_HELPER" get models.issue_work 2>/dev/null)
-assert_equals "$(map "$issue_work_default")" "opus" \
-  "built-in models.issue_work ($issue_work_default) resolves to the opus tier (matches the unpinned issue-worker's intent)"
+assert_equals "$(map "$issue_work_default")" "sonnet" \
+  "built-in models.issue_work ($issue_work_default) resolves to the sonnet tier (Sonnet 5 implementation default, #784)"
+
+# The verify gate pins the Opus 4.8 reasoning tier — the strong, harder-to-fool
+# model reserved for the highest-stakes judgment in the loop (#784). Its
+# built-in default must resolve to opus, mirroring verify-worker.md's frontmatter.
+verify_default=$(SHIPYARD_REPO_ROOT="$defaults_root" SHIPYARD_HOME="$defaults_home" \
+  bash "$CONFIG_HELPER" get models.verify 2>/dev/null)
+assert_equals "$(map "$verify_default")" "opus" \
+  "built-in models.verify ($verify_default) resolves to the opus tier (Opus 4.8 verify gate, #784)"
 
 rm -rf "$defaults_root" "$defaults_home"
 

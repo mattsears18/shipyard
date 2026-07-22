@@ -150,7 +150,7 @@ normalize_mode() {
   mode="$(printf '%s' "$mode" | tr '[:upper:]-' '[:lower:]_')"
 
   case "$mode" in
-    issue_work|fix_checks_only|fix_rebase|fix_main_ci|fix_failing_prs_batch|investigate)
+    issue_work|fix_checks_only|fix_rebase|fix_main_ci|fix_failing_prs_batch|investigate|verify|spike)
       printf '%s\n' "$mode"
       ;;
     *)
@@ -187,14 +187,14 @@ main() {
     echo "usage: $0 <mode>" >&2
     echo "       $0 --map <model-id>" >&2
     echo "       $0 --fallback-chain <family-or-model-id>" >&2
-    echo "modes: issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch investigate" >&2
+    echo "modes: issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch investigate verify spike" >&2
     exit 64
   fi
 
   local key
   if ! key="$(normalize_mode "$mode")"; then
     echo "resolve-dispatch-model: unknown mode '${mode}'" >&2
-    echo "modes: issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch investigate" >&2
+    echo "modes: issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch investigate verify spike" >&2
     exit 64
   fi
 

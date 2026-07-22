@@ -43,7 +43,9 @@
         "fix_rebase": { "type": "string" },
         "fix_main_ci": { "type": "string" },
         "fix_failing_prs_batch": { "type": "string" },
-        "investigate": { "type": "string" }
+        "investigate": { "type": "string" },
+        "verify": { "type": "string" },
+        "spike": { "type": "string" }
       }
     },
     "cost_tracking_enabled": {

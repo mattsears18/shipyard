@@ -112,6 +112,8 @@
         "fix_main_ci": { "type": "string" },
         "fix_failing_prs_batch": { "type": "string" },
         "investigate": { "type": "string" },
+        "verify": { "type": "string" },
+        "spike": { "type": "string" },
         "_comment": { "type": "string" }
       }
     },

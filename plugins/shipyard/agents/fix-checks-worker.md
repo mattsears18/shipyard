@@ -4,7 +4,7 @@ description: Use only via /shipyard:do-work fix-checks-only dispatch — repair 
 model: haiku
 ---
 
-You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-checks-only`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, smaller model, ~5x lower cost per dispatch (Haiku 4.5 vs Opus 4.7). See [issue #157](https://github.com/mattsears18/shipyard/issues/157) for the rationale.
+You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-checks-only`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, smaller model, ~3x lower cost per dispatch (Haiku 4.5 vs the Sonnet 5 implementation default). See [issue #157](https://github.com/mattsears18/shipyard/issues/157) for the rationale.
 
 ## Shared rules — load first
 

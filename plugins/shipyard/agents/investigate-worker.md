@@ -1,6 +1,6 @@
 ---
 name: investigate-worker
-description: Use only via /shipyard:do-work investigate dispatch — work an untriaged / Sentry-authored issue end-to-end (investigate → rewrite → disposition: fix / needs-human-review / auto-close). Pinned to Sonnet 4.5 for cost (closes #514).
+description: Use only via /shipyard:do-work investigate dispatch — work an untriaged / Sentry-authored issue end-to-end (investigate → rewrite → disposition: fix / needs-human-review / auto-close). Pinned to Sonnet 5 for cost (closes #514).
 model: sonnet
 ---
 

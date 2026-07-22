@@ -4,19 +4,19 @@ The dispatch decision tree consulted by the [steady-state loop](./steady-state.m
 
 ## Dispatch rules (used by step 7 and step C)
 
-**Per-mode `subagent_type` routing.** The orchestrator picks the `Agent`-tool `subagent_type` based on the worker's `mode:`. The shim agents pin smaller models for the modes whose workload doesn't need Opus 4.7 — cutting per-dispatch inference cost ~5x for CI-repair work that's mostly pattern-matching against failing logs. See [#157](https://github.com/mattsears18/shipyard/issues/157) for the cost rationale.
+**Per-mode `subagent_type` routing.** The orchestrator picks the `Agent`-tool `subagent_type` based on the worker's `mode:`. Model tiering is **role-based** ([#784](https://github.com/mattsears18/shipyard/issues/784)): implementation defaults to the cheap **Sonnet 5** agent-runner, the mechanical fix modes pin **Haiku** (cheaper still — mostly pattern-matching against failing logs), and the strong, harder-to-fool **Opus 4.8** tier is reserved for the verify gate, where the highest-stakes judgment earns its price. Vantage's cost analysis makes tiering a top cost lever (~50–70% claimed savings vs all-Opus) *and* a quality win (Opus 4.8 is ~4× less likely than 4.7 to silently pass flawed code). See [#157](https://github.com/mattsears18/shipyard/issues/157) for the original cost rationale and [#784](https://github.com/mattsears18/shipyard/issues/784) for the tier-by-role refresh.
 
-| `mode:`                  | `subagent_type`                  | Model (frontmatter **default**) | Reason for the model choice                                       |
+| `mode:`                  | `subagent_type`                  | Model (effective **default**) | Reason for the model choice                                       |
 |--------------------------|----------------------------------|---------------------|-------------------------------------------------------------------|
-| `issue-work`             | `shipyard:issue-worker`          | default (Opus)      | Full code authorship, test design, PR composition — Opus stays.   |
+| `issue-work`             | `shipyard:issue-worker`          | `sonnet` (Sonnet 5 — `models.issue_work` default) | Code authorship, test design, PR composition — Sonnet 5 is the cheap 1M-context implementation tier. |
 | `fix-checks-only`        | `shipyard:fix-checks-worker`     | `haiku`             | Pattern-match the failing log, apply targeted fix.                |
 | `fix-rebase`             | `shipyard:fix-rebase-worker`     | `haiku`             | Git mechanics — fetch + rebase + force-with-lease.                |
 | `fix-main-ci`            | `shipyard:fix-main-ci-worker`    | `sonnet`            | No PR context to anchor; broader investigation than fix-checks.   |
 | `fix-failing-prs-batch`  | `shipyard:fix-pr-batch-worker`   | `sonnet`            | Cross-PR pattern-spotting across ≤5 representative failures.      |
 | `investigate`            | `shipyard:investigate-worker`    | `sonnet`            | Investigate untriaged/bot-authored crash reports; disposition into binary backlog. |
-| `spike`                  | `shipyard:spike-worker`          | default (Opus)      | Feasibility judgment + design-doc authorship — same reasoning tier as issue-work, no cheaper pin. |
+| `spike`                  | `shipyard:spike-worker`          | default (session model / Opus) — Fable 5 opt-in via `models.spike` | Feasibility judgment + design-doc authorship — same reasoning tier as issue-work, no cheaper pin. |
 
-The frontmatter column is the **default**, not the last word — the merged config's `models.<mode>` overrides it per the model-resolution rule below.
+For `issue-work`, `sonnet` is the **effective** default via the built-in `models.issue_work` config value, not a frontmatter pin (the `shipyard:issue-worker` shim carries no `model:`). The **verify gate** is dispatched *by the issue-work worker* (not by this orchestrator table) and pins **Opus 4.8** via `verify-worker.md`'s frontmatter, overridable through `models.verify` — see [`issue-worker/verify.md`](../../agents/issue-worker/verify.md) and the model-resolution rule below. Every value here is the **default**, not the last word — the merged config's `models.<mode>` overrides it per the model-resolution rule below.
 
 **`shipyard:decompose-worker` is intentionally absent from this table.** It doesn't take a `mode:` value at all, is dispatched without `isolation: "worktree"`, and isn't reached through this per-issue routing tree — see [Wiring `shipyard:decompose-worker` into the existing inline auto-decompose dispatch](#wiring-shipyarddecompose-worker-into-the-existing-inline-auto-decompose-dispatch-774) below for where it's actually invoked.
 
