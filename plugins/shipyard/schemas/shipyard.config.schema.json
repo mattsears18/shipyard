@@ -350,6 +350,26 @@
         "_comment": { "type": "string" }
       }
     },
+    "worktree_reap": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls the setup step-3b cross-session sweep of stale `agent-*` worktrees (issue #836). The sweep reaps at most `max_per_session` reap-eligible worktrees per session, oldest-first, via `worktree-reap.sh reap-stale` — the on-disk backlog itself is the checkpoint, so a session that can't clear the whole backlog still makes forward progress and a later session continues from where it left off. `warn_threshold` gates a one-time session-start advisory when the `agent-*` count is high enough that the backlog is worth a human's attention regardless of the per-session cap.",
+      "properties": {
+        "max_per_session": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10,
+          "description": "Maximum number of stale `agent-*` worktrees the step-3b sweep will actually remove in a single session, oldest-first by worktree-directory mtime. Peer-alive worktrees (a live, non-self process still holds the lock) are always deferred and do NOT count against this cap. Worktrees beyond the cap are left untouched on disk — never partially removed — so a subsequent session's sweep continues the backlog from where this one stopped. Set to 0 to disable removal entirely (classification/reporting still runs); raise it on a repo with fast local disk and few concurrent CI-relevant worktrees."
+        },
+        "warn_threshold": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 20,
+          "description": "When the number of `agent-*` worktrees still on disk at session start meets or exceeds this threshold, the setup step prints a one-time advisory naming the count and the reclaimable disk size, so a backlog large enough to matter (each worktree can carry its own `node_modules/`, easily 1+ GB) is visible even though the per-session reap cap means it won't all clear in one session. Set to 0 to always warn when any `agent-*` worktree exists; set very high to effectively disable the warning."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "flake_registry": {
       "type": "object",
       "additionalProperties": false,
