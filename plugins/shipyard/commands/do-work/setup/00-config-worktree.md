@@ -188,6 +188,8 @@ esac
 
 **Before any other setup, the orchestrator MUST relocate every write into a dedicated worktree.** The user's primary checkout is strictly read-only for the rest of the session. The hard rule: every *write* (`Edit`, `Write`, `git commit`, `git reset`, `git branch <new>`, label setup, README/CHANGELOG/CLAUDE.md tweaks, `plugin.json` version bumps, etc.) goes through the orchestrator worktree. Read-only operations (`git status`, `gh issue list`, `gh pr view`, `find`, `grep`, `git worktree list`, `gh run list`, label-existence checks via `gh label list`, etc.) MAY run in either checkout.
 
+**Primary path — call `EnterWorktree`, not raw `git worktree add` ([#844](https://github.com/mattsears18/shipyard/issues/844)).** A raw `git worktree add "$ORCH_WT" "origin/$DEFAULT_BRANCH"` plus a `cd`/`-C "$ORCH_WT"` convention satisfies `Bash` — the shell genuinely operates inside the new directory — but it does **not** register the session as isolated with the harness. When `/shipyard:do-work` runs as a **background job**, the harness's write guard gates every `Edit`/`Write` call on the session having isolated via the `EnterWorktree` tool specifically; a raw `git worktree add` never flips that flag. The result is that every subsequent `Edit`/`Write` in the orchestrator's own session gets refused — including this repo's own per-PR release bump to `plugin.json` and the matching `CHANGELOG.md` entry — and the failure surfaces late, at the first `Edit` call, only *after* the rest of setup has already run. **This rationale is load-bearing — without it, a future editor will "simplify" this back to raw git and reintroduce the bug.** This is the **orchestrator-side** instance of the harness-isolation gap [#825](https://github.com/mattsears18/shipyard/issues/825) documented on the **worker** side (fixed there by dispatching workers with `Agent`-tool `isolation: "worktree"`, restored as the default dispatch shape in [#830](https://github.com/mattsears18/shipyard/issues/830)) — the orchestrator has no dispatcher to hand isolation to, so it has to call the isolating tool itself.
+
 **Timing instrumentation (issue #238).** Bracket this step with `setup-timing.sh start` / `end` calls. Both are fire-and-forget (`2>/dev/null || true`) — never let a timing failure abort setup.
 
 ```bash
@@ -196,7 +198,27 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
   --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
 ```
 
-Create (or reuse) the orchestrator's worktree under `.claude/worktrees/orchestrator-<session-id>` from the tip of the default branch. `<session-id>` is the current Claude Code session identifier — stable across the run, distinct from each dispatched agent's `<id>`:
+Create (or reuse) the orchestrator's worktree under `.claude/worktrees/orchestrator-<session-id>` from the tip of the default branch. `<session-id>` is the current Claude Code session identifier — stable across the run, distinct from each dispatched agent's `<id>`.
+
+**New worktree — call the `EnterWorktree` tool directly (not `Bash`):**
+
+- `EnterWorktree` with `name: "orchestrator-<session-id>"`.
+- The tool's default `worktree.baseRef` setting (`fresh`) branches from `origin/<default-branch>` — the same tip-of-default-branch starting point the raw-git form below targets, so no extra configuration is needed for the common case.
+
+**Reusing an existing worktree** (a prior session already created `.claude/worktrees/orchestrator-<session-id>` under this exact session id — the resume/retry case): `EnterWorktree` with `path: ".claude/worktrees/orchestrator-<session-id>"` — the tool's documented path-entry form for switching into a worktree that already exists, rather than creating a second one. `EnterWorktree` only relocates the session into the directory; it does not refresh stale content, so immediately after entering, still fetch and hard-reset to origin's tip exactly as the fallback form below does:
+
+```bash
+DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+git fetch origin "$DEFAULT_BRANCH"
+git checkout "$DEFAULT_BRANCH"
+git reset --hard "origin/$DEFAULT_BRANCH"
+```
+
+Both `EnterWorktree` forms resolve to the same path, `.claude/worktrees/orchestrator-<session-id>`, so every downstream consumer that keys off that path is unaffected by which mechanism created it — `worktree-reap.sh derive-session-id`'s newest-by-mtime `orchestrator-*` glob ([#513](https://github.com/mattsears18/shipyard/issues/513)), the [step-1.6.5 orphan-orchestrator sweep](01-repo-recovery.md#165-reap-orphan-orchestrator-worktrees) ([#280](https://github.com/mattsears18/shipyard/issues/280)), the [`.shipyard-session-id` stash convention](#055-session-id-storage-per-worktree-not-tmp) ([#365](https://github.com/mattsears18/shipyard/issues/365)), and [cleanup-summary's step-6 reap](../cleanup-summary.md#end-of-session-cleanup) of the orchestrator's own worktree all still resolve correctly.
+
+**One deliberate behavioral difference — branch, not detached HEAD.** `EnterWorktree` creates the new worktree **on a branch** (`worktree-orchestrator-<session-id>`), whereas the raw-git fallback below produces a **detached HEAD**. Call this out explicitly rather than let it be an accident of mechanism: the branch is harmless for how the orchestrator actually uses the worktree (every write still lands as an explicit commit the orchestrator controls) and is arguably an improvement — the orchestrator has a branch to commit to if it ever needs one. This file adopts the branch as the documented default rather than fighting the tool's shape; a reader relying on the orchestrator worktree being detached (it never was, under this primary path) should update that assumption.
+
+**Fallback — raw `git worktree add`, only for environments where `EnterWorktree` is unavailable.** Not every invocation shape has the tool (e.g. an older Claude Code build, or a harness variant that only exposes `Bash`). This form satisfies `Bash`'s cwd but, per the rationale above, does **not** register isolation with the harness — on a background-job session, expect `Edit`/`Write` calls to be refused after using this path. Use it only when `EnterWorktree` is genuinely not offered as a tool this session:
 
 ```bash
 # Run this once from the user's primary checkout (the only write to .git/worktrees/ that the primary will see this session)
@@ -215,7 +237,7 @@ else
 fi
 ```
 
-**From this point on, every subsequent `Bash` / `Edit` / `Write` tool call in the orchestrator's session runs with `<repo-root>/.claude/worktrees/orchestrator-<session-id>` as cwd.** Prepend `cd "$ORCH_WT" && ` (or pass `-C "$ORCH_WT"` to git) for any command whose effect lands on disk or on a branch ref. The user's primary checkout's HEAD MUST NOT change during this session — if you find yourself running a write-class command in the primary checkout, back up, switch to the orchestrator worktree, retry. See [RATIONALE → Why a dedicated worktree](../../do-work-RATIONALE.md#step-05--why-a-dedicated-orchestrator-worktree) for the failure modes this prevents.
+**From this point on, every subsequent `Bash` / `Edit` / `Write` tool call in the orchestrator's session runs with `<repo-root>/.claude/worktrees/orchestrator-<session-id>` as cwd.** Under the primary `EnterWorktree` path this is automatic — the tool relocates the session's cwd as part of entering. Under the raw-git fallback, prepend `cd "$ORCH_WT" && ` (or pass `-C "$ORCH_WT"` to git) for any command whose effect lands on disk or on a branch ref. Either way, the user's primary checkout's HEAD MUST NOT change during this session — if you find yourself running a write-class command in the primary checkout, back up, switch to the orchestrator worktree, retry. See [RATIONALE → Why a dedicated worktree](../../do-work-RATIONALE.md#step-05--why-a-dedicated-orchestrator-worktree) for the failure modes this prevents.
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
