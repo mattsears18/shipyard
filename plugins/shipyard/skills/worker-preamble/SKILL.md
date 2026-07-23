@@ -55,7 +55,32 @@ The three rules above assume your working directory **is** the isolated worktree
 
 **Why shipyard can't fix the root cause.** The cwd is set by the harness's dispatch machinery, not by anything in this repo — shipyard cannot force an `isolation: "worktree"` dispatch's process cwd to the created worktree, nor pin the orchestrator session's cwd to its `orchestrator-<session-id>` worktree. Those are AC items (1) and (2) of [#486](https://github.com/mattsears18/shipyard/issues/486), and they are **harness-level, out of shipyard's control**. (The `Workflow` substrate has the mirror-image problem — no isolation primitive at all — which shipyard *does* close, by pre-provisioning the worktree orchestrator-side and making Rule 0's `cd` the worker's first instruction. The verification below is what proves that `cd` landed.) The in-repo mitigation is the same in both cases: **fail fast at step 0** so a mispinned dispatch returns immediately instead of after a full wasted run — this guard, plus a regression test, are the shipyard-implementable slice.
 
-**The check — run these as three separate, plain `Bash` calls, not one compound script ([#802](https://github.com/mattsears18/shipyard/issues/802)).** The worktree-isolation guard refuses a single call built from command substitutions, `cd` subshells, and an inline `if` — exactly the shape a one-shot version of this check takes, and exactly the shape this section used to prescribe. Issue each command below as its **own** `Bash` tool call; do not paste them together and chain them with `&&`, a subshell, or an `if` — that compound shape is what gets refused:
+**The check — one script invocation, not a compound `if` + command-substitution snippet ([#826](https://github.com/mattsears18/shipyard/issues/826)).** The worktree-isolation guard refuses a single call built from command substitutions, `cd` subshells, and an inline `if` — exactly the shape a one-shot version of this check takes. [#802](https://github.com/mattsears18/shipyard/issues/802) first fixed that by splitting the check into three separate plain `git rev-parse` calls with the worker doing the comparison itself; [#826](https://github.com/mattsears18/shipyard/issues/826) finishes the job by extracting the comparison into [`scripts/assert-worktree-cwd.sh`](../../scripts/assert-worktree-cwd.sh) — the **single executable source of truth** for this predicate, shared with [Mid-session cwd anchoring](#mid-session-cwd-anchoring--the-step-0-check-is-not-a-per-call-guarantee-748) below so the rule can no longer drift between the two call sites the way [#716](https://github.com/mattsears18/shipyard/issues/716)'s ungated-merge rule drifted before `detect-ungated-admin-direct-merge.sh` fixed it. The predicate itself is unchanged: a linked worktree has a *separate* per-worktree git dir (`<common>/worktrees/<name>`) distinct from the common dir, so `git rev-parse --git-dir` and `git rev-parse --git-common-dir` differ there. The PRIMARY checkout has git-dir == git-common-dir (both resolve to the same `.git`) — that equality is the load-bearing signal: true **only** for a primary checkout and false for every linked worktree, regardless of where under the tree the cwd sits.
+
+Resolve `CLAUDE_PLUGIN_ROOT` first, as its own plain `Bash` call — `${CLAUDE_PLUGIN_ROOT}` is not reliably set in Bash-tool subprocesses (issue [#354](https://github.com/mattsears18/shipyard/issues/354)), so a bare reference to it in the script call below can silently resolve to nothing. This is the canonical idempotent re-export preamble used everywhere else in this plugin that invokes a `scripts/*.sh` helper:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+```
+
+Then run the guard as one plain `Bash` call:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/assert-worktree-cwd.sh"
+```
+
+Read what it printed on stdout (full diagnostics, including `toplevel=<TOPLEVEL>`, are on stderr):
+
+- **`worktree` (exit 0)** — this cwd is a correctly-isolated linked worktree. No-op; proceed with the dispatch normally.
+- **`primary` (exit 1)** — this cwd is a primary checkout, NOT an isolated worktree — the dispatch-isolation cwd override is wrong. Read `toplevel=<TOPLEVEL>` off the stderr diagnostic, stop here, and return, verbatim (substituting your actual `TOPLEVEL`):
+
+  > `blocked: dispatch-isolation cwd override is wrong — my cwd (<TOPLEVEL>) is a PRIMARY checkout, not an isolated worktree. An isolation: "worktree" dispatch was pinned to the primary checkout root (see #486). Every git-mutating command here would target the user's primary checkout and the enforce-worktree hook will block my final commit. Failing fast at step 0 instead of burning the full run. Re-dispatch required.`
+
+- **`error` (exit 2)** — the script couldn't resolve *any* git working tree from this cwd, a stranger failure than a mispin. Treat this as blocked too, using the script's stderr diagnostic in place of `<TOPLEVEL>`:
+
+  > `blocked: dispatch-isolation cwd override is wrong — my cwd does not resolve to any git working tree at all (see #486). Re-dispatch required.`
+
+**If the script can't be located** (an installed plugin predating [#826](https://github.com/mattsears18/shipyard/issues/826), or the `CLAUDE_PLUGIN_ROOT` resolution above comes back empty), fall back to the pre-#826 three-plain-calls form — issue each as its **own** `Bash` tool call; do not paste them together and chain them with `&&`, a subshell, or an `if`:
 
 ```bash
 git rev-parse --show-toplevel
@@ -69,17 +94,11 @@ git rev-parse --git-dir
 git rev-parse --git-common-dir
 ```
 
-Call the three outputs `TOPLEVEL`, `GIT_DIR`, and `COMMON_DIR` in your own reasoning — there's no shell variable to assign, since each call is independent. **Compare `GIT_DIR` and `COMMON_DIR` yourself, by reading the two outputs — don't script the comparison.** A linked worktree has a *separate* per-worktree git dir (`<common>/worktrees/<name>`) distinct from the common dir, so the two outputs differ there. The PRIMARY checkout has git-dir == git-common-dir (both resolve to the same `.git`) — that equality is the load-bearing signal: true **only** for a primary checkout and false for every linked worktree, regardless of where under the tree the cwd sits, so it catches the mispin without hard-coding the primary's absolute path or assuming a `.claude/worktrees/` layout.
-
-If `GIT_DIR` and `COMMON_DIR` are the same path, this cwd is a primary checkout, NOT an isolated worktree — the dispatch-isolation cwd override is wrong. Stop here and return, verbatim (substituting your actual `TOPLEVEL`):
-
-> `blocked: dispatch-isolation cwd override is wrong — my cwd (<TOPLEVEL>) is a PRIMARY checkout, not an isolated worktree. An isolation: "worktree" dispatch was pinned to the primary checkout root (see #486). Every git-mutating command here would target the user's primary checkout and the enforce-worktree hook will block my final commit. Failing fast at step 0 instead of burning the full run. Re-dispatch required.`
-
-If `GIT_DIR` and `COMMON_DIR` differ, this cwd is a correctly-isolated worktree — proceed with the dispatch normally; the check is a no-op on the healthy path.
+Call the three outputs `TOPLEVEL`, `GIT_DIR`, and `COMMON_DIR` in your own reasoning — there's no shell variable to assign, since each call is independent. Compare `GIT_DIR` and `COMMON_DIR` yourself, by reading the two outputs — don't script the comparison. Same signal (git-dir == git-common-dir ⇒ primary), same `blocked:` wording as above.
 
 **Return `blocked:`, not `reaped:`.** The mispin is a deterministic property of *this* dispatch's cwd — re-running the identical dispatch could land the same wrong cwd, so it is not the retryable-infrastructure-noise case `reaped:` is reserved for. `blocked:` is correct: the orchestrator's reconcile classifies it as a refuse and applies `needs-human-review` (per [#521](https://github.com/mattsears18/shipyard/issues/521)), surfacing the harness-level misroute for a human (or a future harness fix) rather than silently re-enqueueing a dispatch that may misfire the same way. **This guard runs in every worker mode** — the catastrophic-wasted-run failure mode is identical whether the dispatch was issue-work, fix-checks-only, fix-rebase, fix-main-ci, or fix-failing-prs-batch, so it lives in the shared preamble rather than per-mode.
 
-**When NOT to fire.** A correctly-pinned dispatch (cwd under `.claude/worktrees/agent-*` or `orchestrator-*`) has git-dir ≠ git-common-dir and sails through — the guard is a no-op on the normal path, three cheap `git rev-parse` reads. Running outside any orchestrated session (a human invoking a worker spec by hand in the primary checkout for testing) would trip it, which is correct: a worker spec is not meant to mutate the primary checkout.
+**When NOT to fire.** A correctly-pinned dispatch (cwd under `.claude/worktrees/agent-*` or `orchestrator-*`) has git-dir ≠ git-common-dir and sails through — the guard is a no-op on the normal path, one cheap script invocation. Running outside any orchestrated session (a human invoking a worker spec by hand in the primary checkout for testing) would trip it, which is correct: a worker spec is not meant to mutate the primary checkout.
 
 ## Mid-session cwd anchoring — the step-0 check is not a per-call guarantee ([#748](https://github.com/mattsears18/shipyard/issues/748))
 
@@ -93,7 +112,23 @@ The step-0 fail-fast above only asserts your cwd is correct **once, at the start
 git rev-parse --show-toplevel
 ```
 
-That output is your `WORKTREE_PATH`. Re-verify it hasn't drifted, using that literal path in place of `$WORKTREE_PATH`:
+That output is your `WORKTREE_PATH`. Re-verify it hasn't drifted using the same [`scripts/assert-worktree-cwd.sh`](../../scripts/assert-worktree-cwd.sh) predicate the step-0 guard uses ([#826](https://github.com/mattsears18/shipyard/issues/826)) — it accepts a directory argument, so it can assert against `WORKTREE_PATH` directly without a `cd`. Re-resolve `CLAUDE_PLUGIN_ROOT` first (it does not persist from step-0's call — see the same [#354](https://github.com/mattsears18/shipyard/issues/354) note there):
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+```
+
+Then, using the literal `WORKTREE_PATH` value from the first call in place of `$WORKTREE_PATH` (not a live shell variable):
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/assert-worktree-cwd.sh" "$WORKTREE_PATH"
+```
+
+Read the stdout verdict exactly as in step-0. **`worktree` (exit 0)** — the anchor holds, proceed below. **`primary` or `error` (exit 1 / 2)** — your cwd anchor has drifted mid-session (or `WORKTREE_PATH` came back empty) — stop and return, verbatim:
+
+> `blocked: cwd anchor drifted mid-session — my cwd is no longer the isolated worktree immediately before a mutating command (see #748). Refusing to run it against a possibly-wrong git context.`
+
+**If the script can't be located**, fall back to the pre-#826 form — issue each as its own plain `Bash` call, using the literal `WORKTREE_PATH` in place of `$WORKTREE_PATH`:
 
 ```bash
 git -C "$WORKTREE_PATH" rev-parse --git-dir
@@ -103,11 +138,9 @@ git -C "$WORKTREE_PATH" rev-parse --git-dir
 git -C "$WORKTREE_PATH" rev-parse --git-common-dir
 ```
 
-Compare the two outputs by inspection, exactly as in step-0. If they're the same path (or `WORKTREE_PATH` came back empty), your cwd anchor has drifted mid-session — stop and return, verbatim:
+Compare the two outputs by inspection, exactly as in step-0's fallback. If they're the same path, the anchor has drifted — same `blocked:` wording as above.
 
-> `blocked: cwd anchor drifted mid-session — my cwd is no longer the isolated worktree immediately before a mutating command (see #748). Refusing to run it against a possibly-wrong git context.`
-
-If they differ, the anchor holds — proceed, anchoring explicitly rather than relying on ambient cwd:
+If the anchor holds — proceed, anchoring explicitly rather than relying on ambient cwd:
 
 ```bash
 git -C "$WORKTREE_PATH" add <specific paths>

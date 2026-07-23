@@ -558,12 +558,67 @@ function buildWorkerPrompt(unit, repoSlug) {
 }
 
 // ===========================================================================
+// Shared helper — the worktree-anchor CHECK block itself (the `cd` plus the
+// git-dir-vs-git-common-dir verification). Extracted to its own function so
+// BOTH `worktreeAnchorLines` (below) and `buildIssueWorkPrompt` emit the
+// SAME text instead of each hand-maintaining its own copy — the exact
+// "prose/generated-text duplicated in two places drifts" problem issue #826
+// closed for `shipyard:worker-preamble`'s two markdown sections, applied here
+// to this script's two JS call sites (buildIssueWorkPrompt used to carry its
+// own separate copy predating this extraction).
+//
+// Runs the SAME script-based predicate `shipyard:worker-preamble`'s step-0
+// fail-fast now uses (scripts/assert-worktree-cwd.sh) rather than inlining
+// the compound `TOPLEVEL`/`GIT_DIR`/`COMMON_DIR`/`if` snippet as ONE fenced
+// code block the way this helper used to. That compound shape is exactly
+// what the harness's Auto Mode classifier refuses to run as a single Bash
+// tool call ("too complex to verify that it stays inside the worktree; break
+// it into plain, separate commands" — #826's repro) — and because this text
+// is literally the FIRST instruction a Workflow-dispatched worker reads, a
+// worker that pasted the old single fenced block into one Bash call would
+// hit that refusal before doing anything else. Each command below is now its
+// OWN fenced block, mirroring the three-separate-plain-calls discipline
+// `shipyard:worker-preamble` documents for its own step-0 / mid-session
+// sections (issue #802).
+// ===========================================================================
+function worktreeAnchorCheckLines(worktreePath) {
+  return [
+    `**Anchor to your isolated worktree FIRST, before anything else.** Run each of the`,
+    `following as its OWN separate command — do not chain them with \`&&\`, a subshell,`,
+    `or an inline \`if\` (that compound shape is refused — issue #826):`,
+    '```bash',
+    `cd "${worktreePath}"`,
+    '```',
+    '```bash',
+    `export CLAUDE_PLUGIN_ROOT="\${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "\${M:-$R/plugins/shipyard}"; fi; fi)}"`,
+    '```',
+    '```bash',
+    `bash "\${CLAUDE_PLUGIN_ROOT}/scripts/assert-worktree-cwd.sh"`,
+    '```',
+    `Read the last command's stdout. \`worktree\` (exit 0) means the anchor landed`,
+    `correctly — every "never cd outside your worktree" / "never git switch to the`,
+    `default branch" rule in \`shipyard:worker-preamble\` applies unmodified from this`,
+    `point on. \`primary\` or \`error\` (exit 1 / 2) means the anchor at ${worktreePath}`,
+    `did NOT resolve to an isolated worktree (git-dir == git-common-dir, or no git`,
+    `working tree at all) — stop and return a STRUCTURED result with outcome "blocked",`,
+    `blocked_stage "worktree-anchor", and blocked_reason "worktree anchor at`,
+    `${worktreePath} did not resolve to an isolated worktree — refusing to proceed".`,
+    ``,
+    `If \`scripts/assert-worktree-cwd.sh\` can't be located (an installed plugin`,
+    `predating #826, or the \`CLAUDE_PLUGIN_ROOT\` resolution above comes back empty),`,
+    `fall back to three separate plain calls: \`TOPLEVEL="$(git rev-parse --show-toplevel`,
+    `2>/dev/null)"\`, \`GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"\`, and`,
+    `\`COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"\` as three separate`,
+    `\`Bash\` calls. If GIT_DIR and COMMON_DIR canonicalize to the same path (or TOPLEVEL`,
+    `came back empty), treat that as the same primary-checkout failure as above.`,
+  ]
+}
+
+// ===========================================================================
 // Shared helper — the worktree-anchor preamble every per-mode builder below
-// (except buildIssueWorkPrompt, which carries its own copy predating this
-// helper) opens with. Identical mechanics to buildIssueWorkPrompt's inline
-// version: a CALLER BUG guard when `worktreePath` is missing, otherwise the
-// explicit `cd` + git-dir-vs-git-common-dir re-verification (the same check
-// `shipyard:worker-preamble`'s step-0 fail-fast uses for the Agent-tool path).
+// (including buildIssueWorkPrompt — both now delegate the check itself to
+// `worktreeAnchorCheckLines`) opens with: a CALLER BUG guard when
+// `worktreePath` is missing, otherwise the anchor-check block above.
 // Centralized here (rather than copy-pasted six more times) purely to keep
 // this file's size down — the six modes below did not exist as separate
 // builders in phase 2, so there was nothing yet to extract from.
@@ -581,26 +636,7 @@ function worktreeAnchorLines(unit, mode) {
         `past this line.`,
     ]
   }
-  return [
-    `**Anchor to your isolated worktree FIRST, before anything else.** Run:`,
-    '```bash',
-    `cd "${unit.worktreePath}"`,
-    // Same git-dir != git-common-dir check worker-preamble's step-0 fail-fast
-    // uses for the Agent-tool path — re-applied here because a Workflow-
-    // dispatched agent's cwd is not pre-verified by the harness the way an
-    // Agent-tool isolation: "worktree" dispatch's is.
-    `TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"`,
-    `GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"`,
-    `COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"`,
-    `if [ -z "$TOPLEVEL" ] || [ "$(cd "$GIT_DIR" 2>/dev/null && pwd -P)" = "$(cd "$COMMON_DIR" 2>/dev/null && pwd -P)" ]; then`,
-    `  echo "blocked: worktree anchor at ${unit.worktreePath} did not resolve to an isolated worktree — refusing to proceed"`,
-    `fi`,
-    '```',
-    `If that check prints a \`blocked:\` line, stop and return a STRUCTURED result with`,
-    `outcome "blocked", blocked_stage "worktree-anchor", and that line as blocked_reason.`,
-    `Otherwise every "never cd outside your worktree" / "never git switch to the default`,
-    `branch" rule in \`shipyard:worker-preamble\` applies unmodified from this point on.`,
-  ]
+  return worktreeAnchorCheckLines(unit.worktreePath)
 }
 
 // ===========================================================================
@@ -845,24 +881,7 @@ function buildIssueWorkPrompt(unit, repoSlug) {
   }
 
   lines.push(
-    `**Anchor to your isolated worktree FIRST, before anything else.** Run:`,
-    '```bash',
-    `cd "${unit.worktreePath}"`,
-    // Same git-dir != git-common-dir check worker-preamble's step-0 fail-fast
-    // uses for the Agent-tool path — re-applied here because a Workflow-
-    // dispatched agent's cwd is not pre-verified by the harness the way an
-    // Agent-tool isolation: "worktree" dispatch's is.
-    `TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"`,
-    `GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"`,
-    `COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"`,
-    `if [ -z "$TOPLEVEL" ] || [ "$(cd "$GIT_DIR" 2>/dev/null && pwd -P)" = "$(cd "$COMMON_DIR" 2>/dev/null && pwd -P)" ]; then`,
-    `  echo "blocked: worktree anchor at ${unit.worktreePath} did not resolve to an isolated worktree — refusing to proceed"`,
-    `fi`,
-    '```',
-    `If that check prints a \`blocked:\` line, stop and return a STRUCTURED result with`,
-    `outcome "blocked", blocked_stage "worktree-anchor", and that line as blocked_reason.`,
-    `Otherwise every "never cd outside your worktree" / "never git switch to the default`,
-    `branch" rule in \`shipyard:worker-preamble\` applies unmodified from this point on.`,
+    ...worktreeAnchorCheckLines(unit.worktreePath),
     ``,
     `Work issue #${unit.number} in ${repoSlug} to completion. You are already self-assigned.`,
     `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge`,
