@@ -59,17 +59,31 @@ trap 'rm -f "$setup_path"' EXIT
 # hooks folded into do-work/operate.md, keeping the steady-state hot path under
 # the 256KB single-file Read limit). `steady_state_router_path` is the hot-path
 # file itself; `steady_state_path` is a concatenation of the hot path + the
-# dispatch-rules reference + operate.md, so the many
-# `assert_contains "$steady_state_path" …` content assertions below keep finding
-# the loop/dispatch/operator content regardless of which file it now lives in.
+# dispatch-rules reference + operate.md (+ its own on-demand bodies), so the
+# many `assert_contains "$steady_state_path" …` content assertions below keep
+# finding the loop/dispatch/operator content regardless of which file it now
+# lives in.
 # The do-work-phase-file-size.test.sh guard (added by #611) enforces the
 # per-file size cap; this test only cares that the content survived the split.
+#
+# operate.md was itself split into a thin router (browser-backend selection +
+# preflight, which run every session) + on-demand bodies under operate/
+# (issue #808 — the operator layer's queue/authorization/playbook/error-
+# handling/safety machinery only fires when operator_queue is non-empty, so it
+# moved out of the always-loaded surface). `operate_router_path` is the thin
+# router alone; `operate_path` is a concatenation of the router + every
+# operate/*.md sub-file (mirroring the setup_path pattern above), so the many
+# `assert_contains "$operate_path" …` content assertions below keep finding
+# operator-phase content regardless of which operate/ sub-file it now lives in.
 steady_state_router_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
-operate_path="$repo_root/plugins/shipyard/commands/do-work/operate.md"
+operate_router_path="$repo_root/plugins/shipyard/commands/do-work/operate.md"
+operate_dir="$repo_root/plugins/shipyard/commands/do-work/operate"
+operate_path="$(mktemp -t do-work-operate-concat.XXXXXX)"
+cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
 steady_state_path="$(mktemp -t do-work-steady-concat.XXXXXX)"
 cat "$steady_state_router_path" "$dispatch_rules_path" "$operate_path" > "$steady_state_path" 2>/dev/null
-trap 'rm -f "$setup_path" "$steady_state_path"' EXIT
+trap 'rm -f "$setup_path" "$operate_path" "$steady_state_path"' EXIT
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 cleanup_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
 dont_path="$repo_root/plugins/shipyard/commands/do-work/dont.md"
