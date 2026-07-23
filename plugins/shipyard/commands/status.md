@@ -61,15 +61,15 @@ Batch-style workers (e.g. a refiner processing N issues per dispatch) can publis
 
 The `progress_current` / `progress_total` fields live on the per-slot record inside the session state file's `.in_flight[<slot>]` block. Individual issue-work / fix-checks-only dispatches typically don't set progress — the kind alone is informative enough — but the helper is available to any worker that wants to surface batch progress.
 
-## Substrate-agnostic — works under both `agent` and `workflow` dispatch (#790)
+## Substrate-agnostic by construction (#790 / #791)
 
-As of the [#790](https://github.com/mattsears18/shipyard/issues/790) substrate cutover, `/shipyard:do-work` dispatches its workers through the [Dynamic Workflows substrate](../workflows/README.md) (the `Workflow` tool) **by default** (`dispatch.substrate: "workflow"`), rather than the legacy `Agent` tool. `/shipyard:status` keeps reporting accurate live rows across that change **without any code path of its own that branches on the substrate** — and here is why that holds:
+`/shipyard:do-work` dispatches every `mode:`-driven worker through the [Dynamic Workflows substrate](../workflows/README.md) (the `Workflow` tool) — the default since the [#790](https://github.com/mattsears18/shipyard/issues/790) cutover, and the *only* path since [#791](https://github.com/mattsears18/shipyard/issues/791) retired the legacy `Agent`-tool dispatch and the `dispatch.substrate` knob. `/shipyard:status` reported accurate live rows across both changes **without any code path of its own that branches on the substrate** — and here is why that holds:
 
-- The dashboard reads only the per-session state file at `~/.shipyard/sessions/<id>.json`. It never talks to the `Agent` tool or the `Workflow` tool directly.
-- The orchestrator writes each in-flight worker's `.in_flight[<slot>]` record (`kind` / `target` / `started_at` / progress trio) **identically regardless of substrate** — see [dispatch-rules.md's workflow-substrate section, step 5](./do-work/dispatch-rules.md#workflow-substrate-dispatch-for-every-worker-mode-opt-in-via-dispatchsubstrate-workflow--789-phase-3-of-782): *"Write the `.in_flight` slot exactly as the `Agent`-tool path does."* A `Workflow`-dispatched worker's slot has the same shape as an `Agent`-dispatched one, so text, `--json`, and `--stale` all render it the same way.
-- Token counts (the `TOKENS` column) come from `.tokens.per_issue` / `.tokens.per_pr`, bumped by the orchestrator's step-A reconcile **after** the structured `Workflow` return has been translated back into the free-text vocabulary — so cost attribution is unaffected by substrate too (see [`/shipyard:cost`](./cost.md)).
+- The dashboard reads only the per-session state file at `~/.shipyard/sessions/<id>.json`. It never talks to a dispatch tool directly.
+- The orchestrator writes each in-flight worker's `.in_flight[<slot>]` record (`kind` / `target` / `started_at` / progress trio) with the same shape it always has — see [dispatch-rules.md's workflow-substrate section, step 5](./do-work/dispatch-rules.md#workflow-substrate-dispatch--the-dispatch-mechanism-for-every-worker-mode-791). Text, `--json`, and `--stale` all render it the same way. (#791 added one field, the pre-provisioned `worktree_path`, which this dashboard doesn't read.)
+- Token counts (the `TOKENS` column) come from `.tokens.per_issue` / `.tokens.per_pr`, bumped by the orchestrator's step-A reconcile **after** the structured `Workflow` return has been translated back into the free-text vocabulary — so cost attribution is unaffected too (see [`/shipyard:cost`](./cost.md)).
 
-The upshot: the cutover is invisible to this dashboard by construction. A regression that reverts `dispatch.substrate` to `"agent"` (the instant-revert override) is equally invisible — `/shipyard:status` renders both the same because both write the same file. The `dispatch-substrate-cutover-790.test.sh` suite asserts a synthetic `Workflow`-dispatched session file renders correctly through all three output modes.
+The upshot: the whole migration was invisible to this dashboard by construction, because the state file is the only contract between them. The `dispatch-substrate-cutover-790.test.sh` suite asserts a synthetic `Workflow`-dispatched session file renders correctly through all three output modes.
 
 ## Relationship to Agent View ([#785](https://github.com/mattsears18/shipyard/issues/785))
 
@@ -85,7 +85,7 @@ Claude Code's native [Agent View](https://code.claude.com/docs/en/agent-view) (`
 
 Agent View has no visibility into shipyard's own concepts — which issue a worker was dispatched against, its `blocked-by` chain, per-worker token budget, or the mode taxonomy (`issue-work` vs `fix-checks-only` vs `fix-main-ci`, etc.) — because those live in shipyard's session-state file, not in anything the harness tracks. Conversely, `/shipyard:status` has no transcript access and can't attach to or steer a worker; that's what Agent View is for. **When a worker looks stale in `/shipyard:status`, attach to it via Agent View to see its live transcript and confirm whether it's actually stuck** — the two tools are meant to be used together, not as alternatives.
 
-This holds regardless of `dispatch.substrate`: under `agent`, each worker is literally the kind of `isolation: "worktree"` subagent Agent View surfaces as its own row; under the default `workflow` substrate, the `Workflow` tool's `agent()` calls are a distinct harness mechanism that Agent View does not enumerate the same way — but `/shipyard:status` renders identically either way (see the "Substrate-agnostic" section above), so this dashboard's own reliability doesn't depend on which substrate is active.
+Note that the `Workflow` tool's `agent()` calls are a distinct harness mechanism that Agent View does not necessarily enumerate the way it enumerated the pre-#791 `isolation: "worktree"` subagents — but `/shipyard:status` renders the same regardless (see the "Substrate-agnostic" section above), so this dashboard's reliability doesn't depend on Agent View's coverage of the dispatch mechanism.
 
 ## Privacy
 

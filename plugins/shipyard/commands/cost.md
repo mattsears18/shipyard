@@ -60,15 +60,15 @@ TOTALS
 Want more detail? Try '/shipyard:cost report --by-issue --top 20'.
 ```
 
-## Substrate-agnostic — no cost gap under the `workflow` dispatch default (#790)
+## Substrate-agnostic — no cost gap from the dispatch migration (#790 / #791)
 
-The [#790](https://github.com/mattsears18/shipyard/issues/790) substrate cutover made the [Dynamic Workflows substrate](../workflows/README.md) (`dispatch.substrate: "workflow"`) the default dispatch mechanism for every worker mode. `/shipyard:cost` is **unaffected** — there is no silent cost-tracking gap — because token attribution never depended on how a worker was dispatched:
+The [#790](https://github.com/mattsears18/shipyard/issues/790) cutover made the [Dynamic Workflows substrate](../workflows/README.md) the default dispatch mechanism for every worker mode, and [#791](https://github.com/mattsears18/shipyard/issues/791) made it the only one (retiring the legacy `Agent`-tool path and the `dispatch.substrate` knob). `/shipyard:cost` was **unaffected by both** — there is no silent cost-tracking gap — because token attribution never depended on how a worker was dispatched:
 
 - Per-session and per-issue/per-PR token totals live in `.tokens.*` on the session-state file, written by the orchestrator's step-A reconcile via `session-state.sh bump-tokens`.
-- Under the `workflow` substrate the structured worker return is translated back into the free-text vocabulary **before** it reaches step-A reconcile ([dispatch-rules.md's translation table](./do-work/dispatch-rules.md#workflow-substrate-dispatch-for-every-worker-mode-opt-in-via-dispatchsubstrate-workflow--789-phase-3-of-782)), so the reconcile — and the `bump-tokens` call inside it — runs identically regardless of substrate.
+- The structured worker return is translated back into the free-text vocabulary **before** it reaches step-A reconcile ([dispatch-rules.md's translation table](./do-work/dispatch-rules.md#workflow-substrate-dispatch--the-dispatch-mechanism-for-every-worker-mode-791)), so the reconcile — and the `bump-tokens` call inside it — is unchanged from the pre-migration shape.
 - The end-of-session cleanup flushes the same rolled-up record into the persistent ledger (`cost-history.jsonl`) either way.
 
-So a session running on the flipped default records cost exactly as an `agent`-substrate session did, and the instant-revert (`/shipyard:config set dispatch.substrate agent`) is equally invisible to cost tracking. The one caveat is orthogonal to the substrate: a model id missing from the pricing table is still flagged as a LOWER BOUND (next section) — that gate fires the same under both substrates.
+The one caveat is orthogonal to dispatch: a model id missing from the pricing table is still flagged as a LOWER BOUND (next section). Note that per-mode model *tiering* — which does move the numbers — is resolved by [`resolve-dispatch-model.sh`](../scripts/resolve-dispatch-model.sh) from `models.<mode>` and is likewise unchanged by the migration.
 
 ## Unpriced models — when the totals are a LOWER BOUND
 

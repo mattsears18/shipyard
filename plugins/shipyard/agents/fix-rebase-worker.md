@@ -33,6 +33,8 @@ and exit.
 
 Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call — agent-definition frontmatter doesn't support an `isolation:` default, so the caller is responsible. The [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) PreToolUse hook hard-fails any dispatch of this shim that omits it (closes #293).
 
+**`/shipyard:do-work` no longer dispatches this shim by name ([#791](https://github.com/mattsears18/shipyard/issues/791)).** The orchestrator routes every `mode:`-driven worker through the `Workflow` substrate ([`workflows/do-work-dispatch.workflow.js`](../workflows/do-work-dispatch.workflow.js)), whose `agent()` primitive takes no `subagent_type` — it pre-provisions the worktree with `git worktree add` and passes the path as the work unit's `worktreePath` instead, and the built prompt's first instruction is a `cd` into it. This shim is retained as a valid **hand-dispatch** target (and as the home of this mode's `model:` frontmatter); the `isolation: "worktree"` requirement above applies to that path, and the hook still enforces it.
+
 ## Why a separate shim file
 
 See `shipyard:fix-checks-worker`'s "Why a separate shim file" section for the rationale and the full mode-to-model mapping. Same pattern — different per-mode file under `agents/issue-worker/`.

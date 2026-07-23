@@ -51,6 +51,7 @@ workflow_readme_path="$repo_root/plugins/shipyard/workflows/README.md"
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 config_schema_path="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
+worker_return_schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
 enforce_isolation_hook_path="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
 
 pass=0
@@ -67,6 +68,16 @@ assert_file_exists() {
   else
     assert_fail "$label"
     printf '    missing: %s\n' "$path"
+  fi
+}
+
+assert_not_contains() {
+  local file="$1" needle="$2" label="$3"
+  if [[ ! -f "$file" ]] || ! grep -qF -- "$needle" "$file" 2>/dev/null; then
+    assert_pass "$label"
+  else
+    assert_fail "$label"
+    printf '    did NOT expect to find in %s:\n    %s\n' "$file" "$needle"
   fi
 }
 
@@ -103,8 +114,8 @@ fi
 # lineage. Assert both: the current phase-4 marker AND the #789 wired-six lineage.
 assert_contains "$workflow_js_path" "Phase 3 (#789) wired the REMAINING SIX" \
   "header comment still cites phase 3 (#789) wiring the remaining six in its lineage"
-assert_contains "$workflow_js_path" "all seven \`mode:\`-driven workers dispatch" \
-  "header comment declares every mode is wired"
+assert_contains "$workflow_js_path" "ONLY way a \`mode:\`-driven /do-work worker is dispatched" \
+  "header comment declares this script is the only dispatch path for every mode"
 
 echo
 echo "== (B) do-work-dispatch.workflow.js — a real builder for each of the six new modes"
@@ -170,12 +181,14 @@ assert_contains "$workflow_js_path" "worktreeAnchorLines(unit, 'spike')" \
 echo
 echo "== (E) dispatch-rules.md — the workflow-substrate section now covers every mode"
 
-assert_contains "$dispatch_rules_path" "Workflow-substrate dispatch for every worker mode" \
+assert_contains "$dispatch_rules_path" "Workflow-substrate dispatch — the dispatch mechanism for every worker mode" \
   "dispatch-rules.md's substrate section heading covers every mode"
 assert_contains "$dispatch_rules_path" "#789" \
   "dispatch-rules.md's substrate section cites #789"
-assert_contains "$dispatch_rules_path" "changes real behavior for **every** \`mode:\`-driven dispatch site" \
-  "dispatch-rules.md is explicit that every mode is affected by the flag, not just issue-work"
+# #791 removed the flag entirely — the substrate section is now unconditional,
+# so the guard is that it claims ALL SEVEN modes follow it, with no branch.
+assert_contains "$dispatch_rules_path" "for all seven \`mode:\` values" \
+  "dispatch-rules.md is explicit that every mode dispatches through the substrate"
 
 for mode in "fix-checks-only" "fix-rebase" "fix-main-ci" "fix-failing-prs-batch" "investigate" "spike"; do
   assert_contains "$dispatch_rules_path" "\"mode\": \"${mode}\"" \
@@ -216,20 +229,23 @@ done
 echo
 echo "== (G) steady-state.md — A.1 generalized to every mode, not issue-work-only"
 
-assert_contains "$steady_state_path" "for every mode, as of phase 3" \
+assert_contains "$steady_state_path" "Every \`mode:\`-driven worker is dispatched through the \`Workflow\` substrate" \
   "steady-state.md's A.1 note generalizes the translation shim to every mode"
 assert_contains "$steady_state_path" "#789" \
   "steady-state.md's A.1 note cites #789"
 
 echo
-echo "== (H) shipyard.config.schema.json — dispatch.substrate description names all seven modes"
+echo "== (H) worker-return.schema.json — the structured contract names all seven modes"
 
+# #789 pinned these mode names in the dispatch.substrate config description;
+# #791 deleted that knob, so the surviving cross-mode contract that must name
+# every wired mode is the structured-return schema's `mode` enum.
 for mode in "fix-checks-only" "fix-rebase" "fix-main-ci" "fix-failing-prs-batch" "investigate" "spike"; do
-  assert_contains "$config_schema_path" "$mode" \
-    "dispatch.substrate description names ${mode} among the affected modes"
+  assert_contains "$worker_return_schema_path" "\"$mode\"" \
+    "worker-return.schema.json's mode enum includes ${mode}"
 done
-assert_contains "$config_schema_path" '"default": "workflow"' \
-  "dispatch.substrate default is workflow (cutover flipped it in #790; #789 wired the modes that made the cutover safe)"
+assert_not_contains "$config_schema_path" '"substrate"' \
+  "shipyard.config.schema.json no longer declares the dispatch.substrate knob (#791)"
 
 if command -v jq >/dev/null 2>&1; then
   if jq empty "$config_schema_path" >/dev/null 2>&1; then

@@ -134,24 +134,13 @@ assert_equals "$("$helper" get concurrency.default)" "1" "get concurrency.defaul
 # prevents an accidental flip to conservative pinning.
 assert_equals "$("$helper" get dependencies.new_dep_version)" "latest-stable" "get dependencies.new_dep_version returns latest-stable (issue #694)"
 
-# dispatch.substrate — issue #787 scaffolded the Dynamic Workflows substrate;
-# #788/#789 wired all seven modes to it. As of phase 4 (#790 — the substrate
-# cutover carrying the 3.0.0 major bump) the built-in default flipped to
-# "workflow": every mode now dispatches through the Dynamic Workflows script by
-# default. The legacy "agent" (hand-rolled Agent-tool orchestrator) is retained
-# for one release as a fully-working override (instant revert). Asserting the
-# literal default here guards against an accidental revert of the cutover.
-assert_equals "$("$helper" get dispatch.substrate)" "workflow" "get dispatch.substrate returns workflow (issue #790 cutover)"
-assert_equals "$("$helper" get dispatch.substrate --with-source | cut -f2)" "defaults" "dispatch.substrate default comes from the built-in layer"
-
-# Instant-revert path (#790): setting the knob back to "agent" fully restores the
-# legacy Agent-tool substrate. This is the safety valve the cutover promises —
-# assert the override round-trips and wins over the flipped built-in default.
-rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
-"$helper" set dispatch.substrate agent --repo >/dev/null 2>&1
-assert_equals "$("$helper" get dispatch.substrate)" "agent" "instant-revert: repo override to agent restores the legacy substrate (#790)"
-assert_equals "$("$helper" get dispatch.substrate --with-source | cut -f2)" "repo" "instant-revert: the agent override is sourced from the repo layer, winning over the workflow default"
-rm -rf "$repo/shipyard.config.json"
+# dispatch.substrate — RETIRED (#791). #787 scaffolded the Dynamic Workflows
+# substrate, #788/#789 wired all seven modes to it, and #790 flipped the built-in
+# default to "workflow" while retaining the legacy "agent" path for one release
+# as an instant-revert override. #791 removed that legacy path, so the knob is
+# dead config: it is gone from the built-in defaults AND from the schema.
+"$helper" get dispatch.substrate >/dev/null 2>&1
+assert_exit_code "$?" 3 "get dispatch.substrate exits 3 — the knob was retired (#791)"
 
 # get on an unknown path
 "$helper" get nonexistent.path 2>/dev/null
@@ -353,31 +342,23 @@ assert_exit_code "$?" 0 "main_ci.max_fix_attempts accepts a valid integer >= 1"
 echo '{"version":1}' > "$repo/shipyard.config.json"
 
 # --------------------------------------------------------------------------
-echo "== dispatch.substrate — Dynamic Workflows substrate flag (#787)"
+echo "== dispatch.substrate — retired knob is rejected, not ignored (#791)"
 rm -rf "$repo/shipyard.config.json" "$repo/.shipyard" "$home/config.json"
-# Repo-level override to the reserved "workflow" value round-trips and validates.
+# `set` on the retired key must fail schema validation rather than write a key
+# nothing reads.
 out=$("$helper" set dispatch.substrate workflow --repo 2>&1)
-assert_contains "$out" "wrote dispatch.substrate" "set --repo writes dispatch.substrate"
-assert_equals "$("$helper" get dispatch.substrate)" "workflow" "repo override returns workflow"
-assert_equals "$("$helper" get dispatch.substrate --with-source | cut -f2)" "repo" "override source is repo"
+assert_contains "$out" "unknown field dispatch" "set dispatch.substrate is rejected — the knob was retired (#791)"
 
-# Schema rejects an unknown substrate value (enum: agent | workflow).
-echo '{"version":1,"dispatch":{"substrate":"magic"}}' > "$repo/shipyard.config.json"
-"$helper" validate --layer repo 2>/dev/null
-assert_exit_code "$?" 70 "dispatch.substrate rejects a value outside the enum"
-
-# Schema rejects an unknown sibling key under dispatch (additionalProperties:false).
-echo '{"version":1,"dispatch":{"substrate":"agent","turbo":true}}' > "$repo/shipyard.config.json"
-"$helper" validate --layer repo 2>/dev/null
-assert_exit_code "$?" 70 "unknown dispatch.* key rejected by additionalProperties:false"
-
-# Both enum members validate.
+# A stale config carrying the retired block is rejected outright
+# (additionalProperties:false at the root), so an upgrading repo is told to
+# delete it instead of silently running with dead config. This is the breaking
+# change behind #791's major version bump.
 echo '{"version":1,"dispatch":{"substrate":"agent"}}' > "$repo/shipyard.config.json"
-"$helper" validate --layer repo
-assert_exit_code "$?" 0 "dispatch.substrate accepts agent"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "a stale dispatch.substrate: agent config is rejected (#791)"
 echo '{"version":1,"dispatch":{"substrate":"workflow"}}' > "$repo/shipyard.config.json"
-"$helper" validate --layer repo
-assert_exit_code "$?" 0 "dispatch.substrate accepts workflow"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "a stale dispatch.substrate: workflow config is rejected (#791)"
 
 # Reset to valid
 echo '{"version":1}' > "$repo/shipyard.config.json"

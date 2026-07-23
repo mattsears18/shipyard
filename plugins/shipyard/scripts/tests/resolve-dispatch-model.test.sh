@@ -332,16 +332,18 @@ assert_contains "$DISPATCH_RULES_MD" "727" \
 assert_contains "$POOL_FILL_MD" "resolve-dispatch-model.sh" \
   "setup/07-pool-fill.md (the initial-pool-fill dispatch site) resolves the model too"
 
-# The whole point: the resolved value must reach the Agent call's `model` param.
+# The whole point: the resolved value must reach the dispatched worker's `model`.
+# Since #791 that is the `model` field on the Workflow call's args.issues[] work
+# unit, which the workflow script forwards to that unit's agent() stage.
 # (BT keeps the markdown backticks out of a single-quoted literal — SC2016.)
 BT=$'\x60'
-assert_contains "$DISPATCH_RULES_MD" "model: \"<dispatch_model>\"" \
-  "dispatch-rules.md passes the resolved value as the Agent tool's model parameter"
+assert_contains "$DISPATCH_RULES_MD" "model\` field in the \`Workflow\` call" \
+  "dispatch-rules.md passes the resolved value through to the dispatched worker's model"
 
 # And the fail-open contract must be spelled out at the call site, so an empty
 # resolution isn't mistaken for "pass an empty model".
-assert_contains "$DISPATCH_RULES_MD" "**omit** the ${BT}model${BT} parameter" \
-  "dispatch-rules.md tells the caller to OMIT the model parameter when resolution is empty"
+assert_contains "$DISPATCH_RULES_MD" "**omit** the ${BT}model${BT} field" \
+  "dispatch-rules.md tells the caller to OMIT the model field when resolution is empty"
 
 echo
 echo "== (H) advisory --fallback-chain helper (#766) — NOT wired into dispatch"

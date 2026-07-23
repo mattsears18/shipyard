@@ -126,12 +126,17 @@ assert_not_contains "$hook_path" "shipyard:decompose-worker" \
   "hook never names shipyard:decompose-worker (must not be guarded)"
 
 echo
-echo "== (C) dispatch-rules.md — spike routing table row + subagent_type"
+echo "== (C) dispatch-rules.md — spike routing table row"
 
-assert_contains "$dispatch_rules_path" "shipyard:spike-worker" \
-  "per-mode subagent_type table references shipyard:spike-worker"
+# #791 retired the Agent-tool `subagent_type` column from this table (the
+# Workflow substrate's agent() primitive takes no subagent_type), so the spike
+# row now identifies its per-mode SPEC rather than a shim name. The guard is
+# unchanged in substance: dispatch-rules.md must carry a spike row that routes
+# to the spike spec and justifies its model tier.
+assert_contains "$dispatch_rules_path" "issue-worker/spike.md" \
+  "per-mode routing table's spike row points at the spike per-mode spec"
 assert_contains "$dispatch_rules_path" "Feasibility judgment + design-doc authorship" \
-  "per-mode subagent_type table gives a model-choice rationale for the spike row"
+  "per-mode routing table gives a model-choice rationale for the spike row"
 
 echo
 echo "== (D) dispatch-rules.md — spike-shape detection at the ready_issues dispatch site"
