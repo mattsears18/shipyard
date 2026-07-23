@@ -45,6 +45,13 @@ reaped_path="$wp_dir/reaped-escape-hatch.md"
 node_bootstrap_path="$wp_dir/node-bootstrap.md"
 ci_pitfalls_path="$wp_dir/ci-pitfalls.md"
 commit_hygiene_path="$wp_dir/commit-hygiene.md"
+# Issue #808 (Finding 2) — three more rarely-hit sections moved out of
+# SKILL.md into on-demand fragments: classifier-denial.md, native-background-
+# subagent.md, and gh-json-discipline.md (the latter owns only the field-
+# scoping cookbook — the one-sentence rule itself stays in SKILL.md).
+classifier_denial_path="$wp_dir/classifier-denial.md"
+native_background_subagent_path="$wp_dir/native-background-subagent.md"
+gh_json_discipline_path="$wp_dir/gh-json-discipline.md"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
 # The dispatch prompts live in the steady-state phase after the issue #154
 # split, and the divert/fix-checks/issue-work prompt templates moved again into
@@ -149,6 +156,9 @@ if [[ -f "$skill_path" ]]; then
   assert_file_exists "$node_bootstrap_path" "worker-preamble fragment node-bootstrap.md exists (issue #617)"
   assert_file_exists "$ci_pitfalls_path" "worker-preamble fragment ci-pitfalls.md exists (issue #617)"
   assert_file_exists "$commit_hygiene_path" "worker-preamble fragment commit-hygiene.md exists (issue #617)"
+  assert_file_exists "$classifier_denial_path" "worker-preamble fragment classifier-denial.md exists (issue #808)"
+  assert_file_exists "$native_background_subagent_path" "worker-preamble fragment native-background-subagent.md exists (issue #808)"
+  assert_file_exists "$gh_json_discipline_path" "worker-preamble fragment gh-json-discipline.md exists (issue #808)"
   assert_contains "$skill_path" "## On-demand fragments" \
     "SKILL.md has an On-demand fragments index section (issue #617)"
   assert_contains "$skill_path" "(./auto-merge.md)" \
@@ -161,6 +171,12 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md fragment-index links ci-pitfalls.md (issue #617)"
   assert_contains "$skill_path" "(./commit-hygiene.md)" \
     "SKILL.md fragment-index links commit-hygiene.md (issue #617)"
+  assert_contains "$skill_path" "(./classifier-denial.md)" \
+    "SKILL.md fragment-index links classifier-denial.md (issue #808)"
+  assert_contains "$skill_path" "(./native-background-subagent.md)" \
+    "SKILL.md fragment-index links native-background-subagent.md (issue #808)"
+  assert_contains "$skill_path" "(./gh-json-discipline.md)" \
+    "SKILL.md fragment-index links gh-json-discipline.md (issue #808)"
   # The thin core must stay thin: SKILL.md is the always-loaded file, so its
   # line count is the per-dispatch context tax #617 set out to cut. Assert it
   # stays well under half the pre-split ~593 lines.
@@ -186,16 +202,32 @@ if [[ -f "$skill_path" ]]; then
   assert_contains "$skill_path" "--label shipyard" \
     "SKILL.md covers the shipyard label requirement"
 
-  # Issue #158 — `gh` JSON discipline convention section.
-  # The convention exists so every worker mode consistently scopes
-  # `gh ... --json` responses to the fields it actually consumes; removing
-  # the section regresses the per-call token-cost contract.
+  # Issue #158 — `gh` JSON discipline convention section. The one-sentence
+  # rule stays in SKILL.md (issue #808 split); the field-scoping cookbook
+  # (which subcommands take --json <fields>, the common-projections table)
+  # moved to gh-json-discipline.md. Removing either half regresses the
+  # per-call token-cost contract.
   assert_contains "$skill_path" "## \`gh\` JSON discipline" \
     "SKILL.md covers the gh JSON discipline convention (issue #158)"
-  assert_contains "$skill_path" "--json <fields>" \
-    "SKILL.md names the --json <fields> pattern"
   assert_contains "$skill_path" "--jq" \
     "SKILL.md names the --jq projection flag"
+  assert_contains "$gh_json_discipline_path" "--json <fields>" \
+    "gh-json-discipline.md names the --json <fields> pattern (issue #808)"
+
+  # Issue #808 (Finding 2) — "After a classifier denial" and "Native
+  # background-subagent auto-PR reconciliation" moved out of SKILL.md
+  # entirely (heading and all), matching the full-move pattern already used
+  # by reaped-escape-hatch.md. Assert each fragment owns its section heading
+  # and a load-bearing content marker, so a future edit can't silently drop
+  # the section during a merge/rebase.
+  assert_contains "$classifier_denial_path" "## After a classifier denial" \
+    "classifier-denial.md covers the After a classifier denial section (issue #808)"
+  assert_contains "$classifier_denial_path" "blocked: classifier denied" \
+    "classifier-denial.md names the blocked: classifier denied return string (issue #808)"
+  assert_contains "$native_background_subagent_path" "## Native background-subagent auto-PR reconciliation" \
+    "native-background-subagent.md covers the Native background-subagent section (issue #808)"
+  assert_contains "$native_background_subagent_path" "auto-commits, pushes its own branch, and opens a draft pull request" \
+    "native-background-subagent.md names the harness-native auto-PR behavior (issue #808)"
 
   # Issue #297 — "Stop background processes before returning" section.
   # The section exists so workers don't leak Monitor sub-tasks /
