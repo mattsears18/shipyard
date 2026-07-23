@@ -18,8 +18,21 @@
 # resolved at A.0.5 (before A.1 ever runs), that resumes the SAME worker
 # in place (bounded by a retry cap) rather than mislabeling it `blocked`.
 #
+# Extended by issues #838 / #833: the same underlying gap — a worker stops
+# without a terminal return and the orchestrator's completion handling reaps
+# its worktree, destroying the only copy of the work — recurred via two more
+# triggers (a `status: completed` return with unrecognized free text, and a
+# harness-reported `status: failed` stall-watchdog kill). The fix folds both
+# into this same A.0.5 flow: `status: failed` routes through unconditionally
+# regardless of return text, the resume mechanism prefers `SendMessage` to
+# the stalled agent's own `agent_id` (carrying the orchestrator's own
+# verified git reading rather than the worker's self-report), the retry cap
+# tightens from 2 to 1, and every occurrence is recorded in a new
+# `stalled_dispatches` ledger surfaced in the end-of-session summary.
+#
 # This test is the regression guard: if the `stalled` branch, its
-# worktree-state check, its resume mechanics, its retry cap, or the
+# worktree-state check, its resume mechanics, its retry cap, its
+# `stalled_dispatches` ledger, its `harness_status: failed` trigger, or the
 # worker-preamble's self-suspension prohibition are removed or lose their
 # load-bearing semantics, the test fails.
 #
@@ -147,27 +160,81 @@ assert_contains "$steady_state_path" \
   "pending intent" \
   "A.0.5 names the pending-intent detection signal"
 
-# 5) The resume path — foreground re-run, never re-arm the background wait.
+# 5) The resume path — re-run in the foreground, never re-arm the background
+#    wait, and prefer resuming the SAME agent (SendMessage) over a fresh
+#    dispatch when one is live and addressable (#838/#833).
 assert_contains "$steady_state_path" \
-  "re-run the blocking command in the FOREGROUND, never re-arm the same background wait" \
-  "A.0.5 documents the resume path's foreground-rerun contract"
+  "never re-arm the same background wait" \
+  "A.0.5 documents the resume path's never-re-arm-the-background-wait contract"
 assert_contains "$steady_state_path" \
-  "re-dispatch into the SAME worktree" \
+  "re-run the blocking command (the test suite, the long-running check) synchronously in the foreground" \
+  "A.0.5 documents the resume message's foreground-rerun instruction"
+assert_contains "$steady_state_path" \
+  "re-enter the SAME worktree with a fresh call" \
   "A.0.5 documents resuming into the same worktree (not a fresh one)"
 assert_contains "$steady_state_path" \
   "do not \`git worktree add\` again and do not create a new branch" \
   "A.0.5 documents that resume reuses the existing worktree and branch"
-
-# 6) The resume path is bounded by a retry cap of 2.
 assert_contains "$steady_state_path" \
-  "Bound it first — retry cap 2" \
+  "send a follow-up message to that exact agent via \`SendMessage\` targeting its \`agent_id\`" \
+  "A.0.5 documents SendMessage-based resume for a live Agent-tool subagent (#838/#833)"
+assert_contains "$steady_state_path" \
+  "the orchestrator's own verified reading from step 2" \
+  "A.0.5 documents the resume message carrying the orchestrator's own git reading, not the worker's self-report"
+
+# 6) The resume path is bounded by a retry cap of 1 (tightened from 2 by
+#    #838/#833) — a second stall hands back rather than looping.
+assert_contains "$steady_state_path" \
+  "Bound it first — retry cap 1 per target per session" \
   "A.0.5 documents the retry cap"
 assert_contains "$steady_state_path" \
   "stalled_resume_counts" \
   "A.0.5 documents the per-target resume counter"
 assert_contains "$steady_state_path" \
-  "fall through to the crash-recovery path below instead, so a genuinely wedged worker" \
-  "A.0.5 documents falling through to blocked/crash-recovery once the cap is exhausted"
+  "Hand it back" \
+  "A.0.5 documents handing back once the cap is exhausted, rather than looping"
+assert_contains "$steady_state_path" \
+  "falling through to the crash-recovery path below" \
+  "A.0.5 documents falling through to crash-recovery once the cap is exhausted"
+
+# 7) Every occurrence — resumed, handed-back, or dropped-clean — is recorded
+#    in the session-local stalled_dispatches ledger (#838/#833), mirroring
+#    dispatch_denials (#718) / operator_denials (#746).
+assert_contains "$steady_state_path" \
+  "stalled_dispatches" \
+  "A.0.5 documents the stalled_dispatches ledger"
+assert_contains "$steady_state_path" \
+  "outcome: \"resumed\"" \
+  "A.0.5 documents the resumed outcome"
+assert_contains "$steady_state_path" \
+  "outcome: \"handed-back\"" \
+  "A.0.5 documents the handed-back outcome"
+assert_contains "$steady_state_path" \
+  "\"dropped-clean\"" \
+  "A.0.5 documents the dropped-clean outcome"
+orchestrator_state_ref_path="$repo_root/plugins/shipyard/commands/do-work/orchestrator-state-reference.md"
+assert_file_exists "$orchestrator_state_ref_path" "orchestrator-state-reference.md exists"
+assert_contains "$orchestrator_state_ref_path" \
+  "\`stalled_dispatches\`" \
+  "orchestrator-state-reference.md documents the stalled_dispatches struct (#838/#833)"
+cleanup_summary_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
+assert_contains "$cleanup_summary_path" \
+  "Stalled dispatches (#838/#833)" \
+  "cleanup-summary.md surfaces a Stalled dispatches line in the end-of-session summary"
+dont_path="$repo_root/plugins/shipyard/commands/do-work/dont.md"
+assert_contains "$dont_path" \
+  "Don't reap a worker's worktree on a non-terminal or \`failed\` stop without first inspecting it for unpushed work" \
+  "dont.md forbids reaping on a non-terminal or failed stop without first inspecting (#838/#833)"
+
+# 8) A harness-reported status: failed (the #833 stall-watchdog trigger)
+#    routes through the same inspect-before-reap flow UNCONDITIONALLY,
+#    regardless of what the accompanying return text says.
+assert_contains "$steady_state_path" \
+  "harness_status" \
+  "A.0.5 documents the harness_status signal"
+assert_contains "$steady_state_path" \
+  "the harness status is \`failed\`" \
+  "A.0.5's detection prose names status: failed as an independent non-terminal trigger"
 
 # 7) Cross-reference from A.1 to A.0.5 is present and correctly ordered:
 #    A.0.5's stalled check must precede A.1 in document order (it must run
