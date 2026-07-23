@@ -177,6 +177,47 @@
  * JavaScript). None are present as of #809; the test suite above covers `meta`
  * specifically, and the nondeterminism/TS constraints are documented here so a
  * later edit does not reintroduce them.
+ *
+ * `args` HANDLING MUST FAIL LOUDLY, NEVER FAIL OPEN (issue #817)
+ * -------------------------------------------------------------------------------
+ * The original input guards were written to "keep the script runnable in isolation
+ * for a dry read" and fell open to empty on anything unexpected:
+ *
+ *   const input = typeof args === 'object' && args !== null ? args : {}
+ *   const selectedIssues = Array.isArray(input.issues) ? input.issues : []
+ *   const workUnits = selectedIssues.map(...)      // pure map, no filter
+ *
+ * That is reasonable for a bare dry read and actively harmful on the live dispatch
+ * path. `args` is UNTYPED at the tool boundary, and the `Workflow` tool's own docs
+ * warn that passing a stringified payload is easy to do by accident ("Pass arrays/
+ * objects as actual JSON values in the tool call, NOT as a JSON-encoded string").
+ * When `args` arrived as a JSON STRING, `typeof args === 'object'` was false, so
+ * `input` became `{}`, `selectedIssues` became `[]`, `workUnits` became `[]`,
+ * `parallel([])` resolved instantly, and the run reported SUCCESS with
+ * `agent_count: 0` in 37ms — no error, no warning, and (because the script emitted
+ * no `log()`/`phase()` at all) nothing in `/workflows` or the transcript either. A
+ * malformed real dispatch was byte-for-byte indistinguishable from a healthy one.
+ *
+ * Three properties are now load-bearing and must be preserved by any future edit:
+ *   1. A JSON-STRING `args` is tolerated — parsed via a guarded `JSON.parse` before
+ *      the object check, so the most likely caller mistake dispatches correctly
+ *      instead of silently no-op'ing.
+ *   2. `args` PRESENT AND NON-EMPTY but yielding ZERO work units THROWS, naming the
+ *      received shape (`typeof args`, whether `issues` was an array, its length,
+ *      and any JSON-parse failure). A dispatch asked to do work that resolves to
+ *      zero units is a caller bug and must surface as an error. The harmless
+ *      no-args dry read is preserved: the distinction is "no args at all" (fine)
+ *      vs "args given but unusable" (throw).
+ *   3. Dispatch emits a `log()` naming the unit count and each unit's mode/target,
+ *      so an empty or unexpected run is visible in `/workflows` and the transcript
+ *      rather than invisible.
+ *
+ * NOTE ON VERIFICATION — a zero-unit probe cannot prove this file works. An
+ * `args.issues: []` smoke test returned `[]` on BOTH the healthy and the broken
+ * path, which is exactly how #817 survived the post-#809 verification. Any future
+ * check of this file must exercise a NON-EMPTY unit list and a STRING-shaped
+ * `args`; `scripts/tests/workflow-args-fail-loud-817.test.sh` executes the script
+ * under a harness that does both.
  */
 
 export const meta = {
@@ -188,11 +229,62 @@ export const meta = {
 // Invocation input (injected by the orchestrator via the `args` global).
 // The orchestrator — NOT this script — decides these, applying shipyard's
 // prioritization + gate-label exclusion + author-trust + blocked-by sequencing.
-// Defaults keep the script runnable in isolation for a dry read.
+//
+// The defaults below keep the script runnable in isolation for a BARE dry read
+// (no `args` at all) and nothing more. Anything that looks like a real dispatch
+// but cannot be turned into work units is a caller bug and throws — see the
+// file-header "`args` HANDLING MUST FAIL LOUDLY" note (issue #817).
 // ---------------------------------------------------------------------------
-const input = typeof args === 'object' && args !== null ? args : {}
+
+// `typeof args` is the only safe way to touch `args` — a bare reference to an
+// undeclared identifier is a ReferenceError, and a manual dry read may not
+// declare it at all.
+const rawArgsSupplied = typeof args === 'undefined' ? null : args
+
+// (1) Tolerate a JSON-STRING `args`. The `Workflow` tool's docs explicitly warn
+// that a stringified payload is an easy caller mistake, and `args` is untyped at
+// the tool boundary, so this is a realistic and recurring shape — not an exotic
+// one. Guarded: a parse failure is REMEMBERED (and reported in the throw below)
+// rather than swallowed.
+let argsJsonParseError = null
+let normalizedArgs = rawArgsSupplied
+if (typeof normalizedArgs === 'string') {
+  const trimmedArgs = normalizedArgs.trim()
+  if (trimmedArgs === '') {
+    normalizedArgs = null
+  } else {
+    try {
+      normalizedArgs = JSON.parse(trimmedArgs)
+    } catch (parseErr) {
+      argsJsonParseError = parseErr && parseErr.message ? parseErr.message : String(parseErr)
+      normalizedArgs = null
+    }
+  }
+}
+
+// Was a real dispatch attempted at all? "No args" (or an explicitly empty
+// object/string) is the harmless dry read; anything else is a dispatch that MUST
+// resolve to at least one work unit.
+const argsWereSupplied = rawArgsSupplied !== null && rawArgsSupplied !== undefined
+const argsAreNonEmpty =
+  argsWereSupplied &&
+  (typeof rawArgsSupplied === 'string'
+    ? rawArgsSupplied.trim() !== ''
+    : typeof rawArgsSupplied === 'object'
+      ? Object.keys(rawArgsSupplied).length > 0
+      : true)
+
+const input = typeof normalizedArgs === 'object' && normalizedArgs !== null ? normalizedArgs : {}
 const repo = input.repo ?? '<owner/repo>'
 const concurrency = Math.max(1, Number(input.concurrency ?? 1)) // --concurrency N; runtime caps at 16
+
+// (3) `log` is a workflow-runtime global. Guard it the same way `parallel` is
+// guarded below, so a manual dry read (or a runtime that doesn't expose it)
+// degrades to a no-op instead of a ReferenceError.
+const emit = (message) => {
+  // eslint-disable-next-line no-undef -- `log` is a workflow-runtime global (see header)
+  if (typeof log === 'function') log(message)
+}
 
 // Per-work-unit shape (issue-work fields documented alongside the builder below):
 //   { number, mode, model, trust, branch, worktreePath,
@@ -303,6 +395,50 @@ const workUnits = selectedIssues.map((it) => ({
 }))
 
 // ---------------------------------------------------------------------------
+// (2) FAIL LOUDLY, NEVER FAIL OPEN (issue #817). A dispatch that was ASKED to do
+// work but resolved to zero work units is a caller bug — it must never be
+// reported as an empty success. The harmless bare dry read (no `args` at all) is
+// deliberately preserved as the one zero-unit path that does not throw.
+// ---------------------------------------------------------------------------
+if (workUnits.length === 0) {
+  if (argsAreNonEmpty) {
+    const receivedShape = [
+      `typeof args = ${typeof rawArgsSupplied}`,
+      argsJsonParseError
+        ? `JSON.parse of the string-shaped args FAILED: ${argsJsonParseError}`
+        : typeof rawArgsSupplied === 'string'
+          ? 'the string-shaped args parsed successfully'
+          : 'args was not string-shaped (no JSON.parse attempted)',
+      `args.issues is ${Array.isArray(input.issues) ? 'an array' : `NOT an array (typeof ${typeof input.issues})`}`,
+      `args.issues length = ${Array.isArray(input.issues) ? input.issues.length : 'n/a'}`,
+      `top-level keys = ${
+        typeof input === 'object' && input !== null ? JSON.stringify(Object.keys(input)) : 'n/a'
+      }`,
+    ].join('; ')
+
+    throw new Error(
+      `do-work-dispatch: refusing to report an empty dispatch as success — args were supplied but resolved to ZERO work units. ` +
+        `Received: ${receivedShape}. ` +
+        `Expected args.issues to be a NON-EMPTY array of work units (or args itself to be a JSON string encoding one). ` +
+        `Pass arrays/objects as actual JSON values in the Workflow tool call, not as a JSON-encoded string. See issue #817.`,
+    )
+  }
+
+  // No args at all — the harmless dry read. Say so, so even this path is visible.
+  emit('do-work-dispatch: no args supplied — dry read, dispatching 0 workers.')
+}
+
+// (3) Make the dispatch visible in /workflows and the transcript. The script
+// previously emitted NO log()/phase() at all, which is precisely why the empty
+// run in #817 was invisible everywhere.
+if (workUnits.length > 0) {
+  emit(
+    `do-work-dispatch: dispatching ${workUnits.length} work unit(s) against ${repo} ` +
+      `(concurrency ${concurrency}): ${workUnits.map(unitLabel).join(', ')}`,
+  )
+}
+
+// ---------------------------------------------------------------------------
 // STAGE 2 — DISPATCH one worker per unit, bounded by the concurrency pool.
 //
 // Each worker runs the SAME per-mode lifecycle it runs today (implement → verify →
@@ -322,9 +458,7 @@ const workUnits = selectedIssues.map((it) => ({
 // ---------------------------------------------------------------------------
 const dispatchWorker = (unit) =>
   agent(buildWorkerPrompt(unit, repo), {
-    // Synthetic diverts (fix-main-ci, fix-failing-prs-batch) have no issue number —
-    // fall back to the target PR (fix-checks-only/fix-rebase) or a bare mode label.
-    label: unit.number != null ? `${unit.mode} #${unit.number}` : unit.pr != null ? `${unit.mode} PR#${unit.pr}` : unit.mode,
+    label: unitLabel(unit),
     model: unit.model, // per-mode tier from resolve-dispatch-model.sh, injected via args
     schema: workerReturnSchema, // structured return validated at the stage boundary
   })
@@ -347,6 +481,19 @@ const results =
 // substrate section for the translation table.
 // ---------------------------------------------------------------------------
 return results.filter(Boolean)
+
+// ===========================================================================
+// Helper — the human-readable "mode/target" name for one work unit. Used both
+// as the `agent()` label in the /workflows progress view AND in the dispatch
+// `log()` line (issue #817), so the two can never drift apart. Synthetic diverts
+// (fix-main-ci, fix-failing-prs-batch) have no issue number — fall back to the
+// target PR (fix-checks-only/fix-rebase) or a bare mode name.
+// ===========================================================================
+function unitLabel(unit) {
+  if (unit.number != null) return `${unit.mode} #${unit.number}`
+  if (unit.pr != null) return `${unit.mode} PR#${unit.pr}`
+  return unit.mode
+}
 
 // ===========================================================================
 // Helper — build the per-worker dispatch prompt. Routes to a mode-specific
