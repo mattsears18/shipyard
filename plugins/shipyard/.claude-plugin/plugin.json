@@ -1,6 +1,6 @@
 {
   "name": "shipyard",
-  "version": "4.1.0",
+  "version": "4.1.1",
   "description": "Autonomous engineering loop: audits surface work, /do-work refines and dispatches, parallel workers in isolated worktrees ship the fixes.",
   "author": {
     "name": "Matt Sears",
