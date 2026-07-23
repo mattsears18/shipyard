@@ -513,6 +513,43 @@ if [[ -f "$skill_path" ]]; then
   assert_contains "$skill_path" "block your own turn on a foreground call" \
     "SKILL.md prescribes blocking on a foreground call as the correct wait mechanism (issue #529)"
 
+  # Issue #829 — "A foreground call the harness auto-backgrounds past 600s"
+  # section. The section exists because the Bash tool's own 600s foreground
+  # cap silently moves an overrunning command to the background and hands
+  # control back — putting a worker that was correctly blocking on a long
+  # test run into the exact state the #529 rule forbids, through no choice of
+  # its own. Without this section a worker reads its own situation as a #529
+  # breach and improvises a non-compliant workaround (a narrative return, a
+  # bare sleep-then-tail retry, or reaching for Monitor because the harness's
+  # own guard text suggests it). The section must: (1) name the state as
+  # sanctioned rather than a violation, (2) prescribe the re-block
+  # until-loop pattern verbatim, (3) name the three anti-patterns explicitly,
+  # and (4) note the optional pre-split caveat without treating runtime
+  # estimation as reliable. Removing any of the four regresses the
+  # sanctioned-re-block contract #829 exists to close.
+  assert_contains "$skill_path" \
+    "## A foreground call the harness auto-backgrounds past 600s" \
+    "SKILL.md covers the harness-auto-backgrounded-600s-call section (issue #829)"
+  assert_contains "$skill_path" "sanctioned harness behavior, not a #529 breach" \
+    "SKILL.md names the auto-backgrounded state as sanctioned, not a #529 breach (issue #829)"
+  # shellcheck disable=SC2016
+  # Literal grep needle — the re-block pattern is matched verbatim, not expanded.
+  assert_contains "$skill_path" \
+    'until [ -s "<output-file>" ]; do sleep 15; done; cat "<output-file>"' \
+    "SKILL.md prescribes the verbatim re-block until-loop pattern (issue #829)"
+  assert_contains "$skill_path" 'Do NOT return a narrative status ("tests are still running, I' \
+    "SKILL.md's anti-pattern list forbids a narrative status return (issue #829)"
+  assert_contains "$skill_path" "Do NOT re-run the command from scratch" \
+    "SKILL.md's anti-pattern list forbids re-running the command from scratch (issue #829)"
+  # shellcheck disable=SC2016
+  # Literal grep needle — the backtick-quoted `Monitor` is matched verbatim, not expanded.
+  assert_contains "$skill_path" 'Do NOT reach for `Monitor` merely because the harness' \
+    "SKILL.md's anti-pattern list forbids reaching for Monitor merely because the harness guard suggests it (issue #829)"
+  assert_contains "$skill_path" "host contention" \
+    "SKILL.md names host contention as the reason runtime is unpredictable (issue #829)"
+  assert_contains "$skill_path" "worker-side" \
+    "SKILL.md frames the #829 section as the worker-side half of the #829/#838 pair"
+
   # Issue #598 — "wait for the PR's own checks before admin-direct-merge
   # instead of merging ungated" clause in the Auto-merge + snapshot-and-return
   # pattern (step 0.5). The clause exists because on a repo where the
