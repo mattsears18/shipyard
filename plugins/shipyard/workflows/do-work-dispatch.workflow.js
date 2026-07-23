@@ -135,21 +135,53 @@
  *     orchestrator computes/performs these and passes the results in.
  * The script's job is the ORCHESTRATION shape (select → pipeline → parallel), not
  * the policy. That division is what no native tool provides and what the epic keeps.
+ *
+ * `export const meta` MUST BE A PURE LITERAL (issue #809)
+ * -------------------------------------------------------------------------------
+ * The `Workflow` tool validates `meta` at the TOOL-CALL BOUNDARY, before the script
+ * ever runs, and rejects the whole script unless every node inside the `meta` object
+ * is a literal: no variables, no function calls, no spreads, no template
+ * interpolation — and, the trap that actually shipped, NO STRING CONCATENATION.
+ * `'a' + 'b'` is a `BinaryExpression`, not a literal, so a `description` assembled
+ * from `+`-joined fragments fails with:
+ *
+ *   Invalid workflow script: meta must be a pure literal:
+ *   non-literal node type in meta: BinaryExpression
+ *
+ * `node --check` PASSES on that form — the concatenation is perfectly valid
+ * JavaScript — which is exactly why 4.0.0 through 4.0.3 shipped with every dispatch
+ * broken and no CI signal. `scripts/tests/workflow-meta-pure-literal-809.test.sh`
+ * now walks `meta` as an AST and fails on any non-literal node, so the regression
+ * cannot reappear silently.
+ *
+ * PRACTICAL CONSEQUENCE: `meta.description` must be ONE single-quoted string
+ * literal on one line, however long. Do not wrap it across lines with `+`, do not
+ * switch it to a backtick template, do not build it from a helper. Long-form prose
+ * belongs in THIS header comment, which is unconstrained — and the description
+ * itself should stay short anyway, since it renders in the permission dialog and
+ * the /workflows list.
+ *
+ * The prose that used to live in `description` (and now lives here): each of the
+ * seven modes has its own prompt builder below, carrying that mode's augmentations
+ * — author-trust gate, verify-gate opt-in, user-feedback extra-scrutiny preamble,
+ * phase-1 slice scoping, next-available-version coordination, triage.auto_close
+ * policy, decompose fan-out cap — and every stage validates its worker's return
+ * against `workerReturnSchema`. The caller pre-provisions each worker's isolated
+ * worktree and passes it in as the work unit's `worktreePath`, because the
+ * Dynamic Workflows runtime exposes no isolation primitive of its own (see the
+ * "Worktree isolation" section above).
+ *
+ * The same boundary rejects a few other things this script must keep avoiding:
+ * `Date.now()`, `Math.random()`, and argless `new Date()` anywhere in the script
+ * (nondeterminism), and TypeScript annotations (the runtime executes plain
+ * JavaScript). None are present as of #809; the test suite above covers `meta`
+ * specifically, and the nondeterminism/TS constraints are documented here so a
+ * later edit does not reintroduce them.
  */
 
 export const meta = {
   name: 'do-work-dispatch',
-  description:
-    'The /shipyard:do-work dispatch loop expressed as a Dynamic Workflow — the ' +
-    'only substrate every `mode:`-driven worker is dispatched through, as of ' +
-    '#791 (the final phase of the #782 epic). Modes: issue-work, ' +
-    'fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, ' +
-    'investigate, spike. Each mode has a prompt builder carrying that mode\'s ' +
-    'augmentations (author-trust gate, verify-gate opt-in, user-feedback ' +
-    'preamble, phase-1 slice, version coordination, triage policy, decompose ' +
-    'fan-out cap) and validates the worker return against a structured schema. ' +
-    'The caller pre-provisions each worker\'s isolated worktree and passes it as ' +
-    'the work unit\'s worktreePath — the runtime has no isolation primitive.',
+  description: 'The /shipyard:do-work dispatch loop as a Dynamic Workflow: the only substrate for all seven mode-driven workers (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate, spike). The caller pre-provisions each worker isolated worktree and passes it in as worktreePath.',
 }
 
 // ---------------------------------------------------------------------------
