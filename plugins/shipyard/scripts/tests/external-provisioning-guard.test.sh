@@ -52,7 +52,19 @@ fi
 issue_work_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 scope_preflight_path="$repo_root/plugins/shipyard/commands/do-work/setup/06-scope-preflight.md"
-operate_path="$repo_root/plugins/shipyard/commands/do-work/operate.md"
+# operate.md was split into a thin router (browser-backend selection +
+# preflight) + on-demand bodies under operate/ (issue #808) — the A.1
+# reactive-enqueue hook that recognizes "external provisioning required" bails
+# now lives in operate/04-steady-state-hooks.md. `operate_router_path` is the
+# thin router alone (for the file-exists check); `operate_path` is a
+# concatenation of the router + every operate/*.md sub-file, so the content
+# assertion below keeps finding the wiring regardless of which sub-file it
+# now lives in.
+operate_router_path="$repo_root/plugins/shipyard/commands/do-work/operate.md"
+operate_dir="$repo_root/plugins/shipyard/commands/do-work/operate"
+operate_path="$(mktemp -t external-provisioning-operate-concat.XXXXXX)"
+cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
+trap 'rm -f "$operate_path"' EXIT
 
 pass=0
 fail=0
@@ -150,7 +162,7 @@ if [[ -f "$scope_preflight_path" ]]; then
 fi
 
 # --- Operator-layer wiring: the operator layer recognizes the bail as browser-completable ---
-assert_file_exists "$operate_path" "commands/do-work/operate.md exists"
+assert_file_exists "$operate_router_path" "commands/do-work/operate.md exists"
 if [[ -f "$operate_path" ]]; then
   assert_contains "$operate_path" "external provisioning required" \
     "operate.md enqueues the provisioning bail as an operator handback"
