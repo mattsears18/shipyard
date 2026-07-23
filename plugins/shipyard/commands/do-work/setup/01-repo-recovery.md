@@ -1,6 +1,6 @@
 # /shipyard:do-work — Setup phase · repo resolve + recovery + refine
 
-**Setup sub-phase (cluster 2 of 5).** Owns steps 1 → 3.5: resolve repo + user, silent-direct-merge repo-shape detection, session-state initialisation, orphan session-file + orphan orchestrator-worktree reaps, trusted-author allowlist resolution, backlog overview, label-ensure + prior-session recovery, and the refinement invocation. Router: [`setup.md`](../setup.md). Sidebar: [`dont.md`](../dont.md). Prev: [`00-config-worktree.md`](./00-config-worktree.md). Next: [`04-backlog-divert.md`](./04-backlog-divert.md).
+**Setup sub-phase (cluster 2 of 5).** Owns steps 1 → 3.5: resolve repo + user, silent-direct-merge repo-shape detection, missing-`workflow`-scope preflight warning, session-state initialisation, orphan session-file + orphan orchestrator-worktree reaps, trusted-author allowlist resolution, backlog overview, label-ensure + prior-session recovery, and the refinement invocation. Router: [`setup.md`](../setup.md). Sidebar: [`dont.md`](../dont.md). Prev: [`00-config-worktree.md`](./00-config-worktree.md). Next: [`04-backlog-divert.md`](./04-backlog-divert.md).
 
 ### 1. Resolve repo + user
 
@@ -72,6 +72,43 @@ fi
 | [drain release-train](../drain.md#release-pr-auto-arming-and-deploy-watch-own-the-tail-phase-c--663) | orchestrator turn (drain poll) | Leave unarmed → drain's merge lander |
 
 A **worker** can afford a multi-minute `--watch` — it owns a dispatch slot and blocks nobody. The **orchestrator** cannot: a block on its own turn stalls the dispatch loop, every in-flight reconcile, and every other PR. So the orchestrator-turn sites leave the PR open and unarmed, and drain's poll loop — which is already a queue — merges it the moment its checks go green.
+
+### 1.35 Preflight-warn on missing `gh` `workflow` OAuth scope ([#818](https://github.com/mattsears18/shipyard/issues/818))
+
+**Cheap, cached alongside the other repo-config preflight reads above (step 1.3).** GitHub blocks `enablePullRequestAutoMerge` for an OAuth-app token when the PR's diff touches `.github/workflows/*`, unless the token carries the `workflow` scope — `repo` alone is not enough. Issue [#812](https://github.com/mattsears18/shipyard/issues/812) (landed) teaches the **reactive** half of this problem: a worker discovers the gap at the first failed `gh pr merge --auto` call on a workflow-touching PR and reports the `auto-merge: unavailable — gh token lacks workflow scope` outcome, hoisted into a once-per-session end-of-session banner. This step is the **proactive** half — a one-time warning at session start, before the first workflow-touching PR is even opened, when the session shape suggests one is likely.
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+
+verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-missing-workflow-scope.sh" <owner/repo> <default-branch> 2>/dev/null || echo silent)
+if [ "$verdict" = "warn" ]; then
+  GH_TOKEN_SCOPES=$(gh auth status 2>&1 | grep -o "Token scopes: '[^']*'" | sed "s/Token scopes: //")
+  cat <<EOF
+warning: gh token is missing the \`workflow\` OAuth scope, and this session
+looks likely to touch .github/workflows/ (an open issue/PR references it, or
+main's most recent CI run failed).
+
+  Current token scopes: ${GH_TOKEN_SCOPES:-<unreadable>}
+
+  Any PR that modifies a workflow file will fail to arm auto-merge with
+  "auto-merge: unavailable — gh token lacks workflow scope" (#812) until
+  the scope is added. Fix once, for this and every future session:
+
+    gh auth refresh -h github.com -s workflow
+
+  This warning prints once per session. It will NOT repeat even if more
+  workflow-touching work is discovered later.
+EOF
+fi
+```
+
+**The condition lives in exactly one place** — [`scripts/detect-missing-workflow-scope.sh`](../../../scripts/detect-missing-workflow-scope.sh) — same rationale as [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config)'s single-source-of-truth script: a two-signal condition restated as prose here would drift from the script the way `issue-work.md` and `auto-merge.md` drifted before [#716](https://github.com/mattsears18/shipyard/issues/716). The script's decision logic (`--decide <has_workflow_scope> <workflow_signal>`) is unit-testable without a live `gh`/network call.
+
+**Silent by default — the common case.** The script short-circuits to `silent` the instant the token already carries `workflow` (no further reads spent), and also resolves to `silent` when the token lacks the scope but nothing in the session shape suggests workflow-touching work. No warning fires on either path — this is deliberate: the issue's acceptance criteria explicitly forbid adding noise to the common case. The two cheap signals that flip it to `warn` (both single API calls, only spent when the scope is actually missing): an open issue or PR referencing `.github/workflows/`, or the default branch's most recent workflow run having concluded `failure` (a proxy for "a fix-main-ci divert — which routinely edits workflow files — is likely this session"; the full `main_ci.status` aggregate computed later in [step 4.5a](04-backlog-divert.md#45-divert-checks-main-ci--pr-pileup) is deliberately not re-derived here, since this is an advisory warning, not a dispatch decision). Any read failure inside the script resolves toward `silent` — fail toward not warning, matching step 1.3's fail-safe posture on its own diagnostic reads.
+
+**One-time, not per-PR.** This step runs once during setup. It does NOT re-check later in the session (e.g. after a new workflow-touching issue enters the backlog) — the reactive #812 path is the backstop for anything this early heuristic misses, and repeating the warning per-PR would be exactly the noise #812 itself was filed to move away from.
+
+**Never attempt to refresh, escalate, or modify the token's scopes.** This step only surfaces the remediation command for a human to run — it does not call `gh auth refresh` itself. Auth handling is left entirely to the operator.
 
 ### 1.5 Initialise the session state file
 
