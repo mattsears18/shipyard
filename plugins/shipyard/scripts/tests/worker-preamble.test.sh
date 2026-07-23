@@ -628,6 +628,52 @@ if [[ -f "$skill_path" ]]; then
     "auto-merge.md step 2 frames the check-rollup snapshot as a one-shot read, never a wait (issue #707)"
   assert_contains "$auto_merge_path" "[#707](https://github.com/mattsears18/shipyard/issues/707)" \
     "auto-merge.md step 2 cites issue #707 for the never-wait-on-CI rule"
+
+  # Issue #845 — "Never `git stash`" section. `git stash` is repo-global
+  # (refs/stash lives in the shared .git-common-dir, not per-worktree), so
+  # concurrent workers in separate worktrees can pop each other's stashed
+  # changes. Repro: session do-work-20260723T124144Z-66736 on
+  # mattsears18/lightwork — the worker on issue #2887 popped a stash entry
+  # that turned out to contain a DIFFERENT, still-running worker's (issue
+  # #2878) in-progress test file; it was only caught because that worker
+  # happened to diff the post-stash state. This is worse than the
+  # worktree-reap hazard in #838/#841: no completion notification to
+  # inspect, no leftover directory to recover from. The section must:
+  # (1) forbid git stash by default and name the refs/stash mechanism,
+  # (2) require the isolating push -m + apply-by-matched-ref shape and
+  # forbid a bare pop, (3) give dirty-worktree guidance at step 0. Removing
+  # any of the three regresses the cross-worker stash-collision contract.
+  assert_contains "$skill_path" \
+    "## Never \`git stash\` — \`refs/stash\` is repo-global, not per-worktree" \
+    "SKILL.md covers the Never git stash section (issue #845)"
+  assert_contains "$skill_path" "([#845](https://github.com/mattsears18/shipyard/issues/845))" \
+    "SKILL.md's git-stash section cites issue #845"
+  assert_contains "$skill_path" "Forbidden by default" \
+    "SKILL.md states git stash is forbidden by default for workers (issue #845)"
+  assert_contains "$skill_path" "refs/stash" \
+    "SKILL.md names refs/stash as the shared-storage mechanism (issue #845)"
+  assert_contains "$skill_path" "git-common-dir" \
+    "SKILL.md ties the git-stash rationale to the shared git-common-dir (issue #845)"
+  assert_contains "$skill_path" "one shared LIFO stack visible to and mutable by" \
+    "SKILL.md explains the stash stack is shared across every concurrent worker (issue #845)"
+  # shellcheck disable=SC2016
+  # Literal grep needle — the shell snippet is matched verbatim, not expanded.
+  assert_contains "$skill_path" 'git stash push -m "<agent-id-or-issue-N>: <reason>"' \
+    "SKILL.md prescribes the isolating git stash push -m form (issue #845)"
+  assert_contains "$skill_path" "A bare \`git stash pop\` always takes \`stash@{0}\`" \
+    "SKILL.md forbids bare git stash pop and names the stash@{0} mechanism (issue #845)"
+  assert_contains "$skill_path" "apply, not pop" \
+    "SKILL.md prescribes apply-then-drop by matched ref, not pop (issue #845)"
+  assert_contains "$skill_path" "\`apply\`-then-\`drop\` by matched ref is the only safe shape" \
+    "SKILL.md states apply-then-drop by matched ref is the only safe shape (issue #845)"
+  assert_contains "$skill_path" "Dirty-worktree guidance at step 0" \
+    "SKILL.md gives dirty-worktree guidance at step 0 (issue #845)"
+  assert_contains "$skill_path" "may belong to a live peer" \
+    "SKILL.md warns pre-existing worktree changes may belong to a live peer (issue #845)"
+  assert_contains "$skill_path" "never a blanket \`git stash\`, \`git clean -fd\`, or \`git restore .\`" \
+    "SKILL.md forbids blanket stash/clean/restore of unexpected worktree state (issue #845)"
+  assert_contains "$skill_path" "the \`git stash\` prohibition" \
+    "SKILL.md's thin-core summary names the git-stash prohibition as an always-loaded rule (issue #845)"
 fi
 
 # (1b) Each per-mode spec's return section must reference the #529
