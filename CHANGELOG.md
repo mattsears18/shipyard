@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.0.2 — 2026-07-22
+
+Fixes `hooks/refuse-broad-process-kill.sh` rule 4 blocking `kill -0` (and `kill -s 0` / `kill -n 0`) liveness probes when combined with a process-pattern lookup (`pgrep`, or `ps | grep`) elsewhere in the same command (closes #804). Signal 0 sends no signal at all — POSIX defines it as a permission-and-existence check — so a `kill -0` invocation cannot terminate anything, and rule 4's classic "look up PIDs by pattern, then kill them" hazard doesn't apply to it. `kill -0` is shipyard's own documented liveness primitive (`scripts/session-state.sh`'s `is-active`), so the false positive fired on a legitimate, recurring orchestrator/worker diagnostic (checking whether a possibly-stalled worker is still alive alongside a process listing). Rules 2 and 3 (`pkill` / `killall`, which always target by pattern) are untouched, as is the existing literal-`kill <pid>` allowance and the fail-open-on-malformed-input posture; a command with a *non*-zero-signal `kill` (e.g. `kill -9 $(pgrep ...)`) still blocks even if a signal-zero `kill` also appears in the same command.
+
+- `plugins/shipyard/hooks/refuse-broad-process-kill.sh` — rule 4's kill-detection logic in the embedded `python3` decision script now excludes `kill` matches whose signal argument is explicitly `-0` / `-s 0` / `-n 0` before checking for a combined pattern lookup; header comment block updated to document the exception.
+- `plugins/shipyard/hooks/tests/refuse-broad-process-kill.test.sh` — new regression coverage: `kill -0`/`kill -s 0`/`kill -n 0` combined with `ps | grep` or `pgrep` is allowed (including the issue's exact repro), a non-zero-signal `kill` combined with a pattern lookup still blocks even alongside a signal-zero `kill` in the same command, and `pkill` / `killall` remain unconditionally blocked (including `killall -0`, which has no signal-zero exemption).
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.0.1` → `4.0.2`.
+
 ### 4.0.1 — 2026-07-22
 
 Fixes `shipyard:worker-preamble`'s step-0 cwd fail-fast and mid-session cwd-anchoring snippets being written as single multi-line compound bash blocks (command substitutions, `cd` subshells, an inline `if`) that the worktree-isolation `Bash` guard refuses to run, forcing every worker dispatch in every mode to eat a failed call plus a retry on its mandatory first action (closes #802). The guard's "Refusing to run it" text was also plausibly misreadable as the isolation violation the check exists to detect, inviting a spurious `blocked:` return on a healthy dispatch. Both snippets are rewritten as sequences of plain, single-purpose `git rev-parse` calls with the git-dir/git-common-dir comparison performed by the worker's own inspection of the outputs rather than scripted in bash — verified runnable as separate `Bash` calls against this dispatch's own worktree before landing.

@@ -35,12 +35,22 @@
 #      invocation used together with a process-pattern lookup (`pgrep`, or a
 #      `ps` piped through `grep`) — the classic "look up PIDs matching a name,
 #      then kill them" two-step that reintroduces the same hazard as pkill
-#      without using the `pkill` binary itself.
+#      without using the `pkill` binary itself. EXCEPTION (#804): a `kill`
+#      invocation whose signal argument is explicitly `0` (`kill -0`,
+#      `kill -s 0`, `kill -n 0`) sends no signal at all — POSIX defines
+#      signal 0 as a permission-and-existence check — so it cannot terminate
+#      anything and does not count as a "kill" for this rule. Only a
+#      non-zero-signal `kill` combined with a pattern lookup still blocks.
 #
 # What is NOT blocked: `kill <pid>` (or `kill -9 <pid>`, `kill -TERM <pid>`)
 # against a literal, specific PID — that's the safe form the worker-preamble
 # section tells workers to use instead (track the PID of a process you
-# yourself spawned, kill only that PID).
+# yourself spawned, kill only that PID). Also not blocked (#804): `kill -0`
+# / `kill -s 0` / `kill -n 0` against any PID, even when combined with a
+# process-pattern lookup elsewhere in the same command — signal 0 is a
+# liveness/permission probe, not a termination signal, and this idiom is
+# shipyard's own documented `is-active` primitive
+# (`scripts/session-state.sh`).
 #
 # False-positive note: this hook cannot verify that a `kill <pid>` PID
 # actually belongs to a process the worker spawned — it only distinguishes
@@ -118,6 +128,24 @@ def in_quotes(text, idx):
 def real_matches(pattern):
     return [m for m in pattern.finditer(cmd) if not in_quotes(cmd, m.start())]
 
+# Signal-zero exemption for rule 4 (#804): `kill -0`, `kill -s 0`, `kill -n 0`
+# send NO signal — POSIX defines signal 0 as a permission-and-existence check
+# only — so a `kill` invocation using it cannot terminate anything, and a
+# liveness probe against a literal PID (shipyard's own
+# `scripts/session-state.sh` `is-active` uses exactly this idiom) should not
+# combine with a pattern lookup elsewhere in the same command to trigger rule
+# 4. Narrow and deliberate: only the explicit signal-0 spellings match here.
+# Any other signal (numeric, symbolic, or the default SIGTERM when no signal
+# flag is given) is NOT exempted, so `kill -9 $(pgrep ...)` still blocks.
+signal_zero_re = re.compile(r'^\s+(-0\b|-s\s*0\b|-n\s*0\b)')
+
+def is_signal_zero_kill(end_pos):
+    # Inspect what immediately follows a matched `kill` token (its putative
+    # signal argument) without needing full shell-argument parsing — a fixed
+    # lookahead window is enough for the `-0` / `-s 0` / `-n 0` spellings.
+    tail = cmd[end_pos:end_pos + 20]
+    return signal_zero_re.match(tail) is not None
+
 # Token-boundary match: not preceded/followed by an identifier character or
 # hyphen, so `pkill` doesn't match inside `mypkillwrapper`, and a path like
 # `./scripts/pkill-helper.sh` still matches (the boundary chars are `/` and
@@ -141,11 +169,18 @@ if killall_hits:
 
 kill_hits = real_matches(kill_re)
 if kill_hits:
-    pgrep_hits = real_matches(pgrep_re)
-    ps_grep_hits = real_matches(ps_grep_re)
-    if pgrep_hits or ps_grep_hits:
-        print("BLOCK\tkill+pattern-lookup\tkill combined with pgrep/ps|grep")
-        sys.exit(0)
+    # Drop signal-zero kill invocations before checking rule 4 — see
+    # is_signal_zero_kill above (#804). A command containing ONLY signal-zero
+    # kills alongside a pattern lookup (e.g. `kill -0 $PID && ps | grep foo`)
+    # no longer matches; a command with at least one non-zero-signal kill
+    # still does.
+    non_zero_kill_hits = [m for m in kill_hits if not is_signal_zero_kill(m.end())]
+    if non_zero_kill_hits:
+        pgrep_hits = real_matches(pgrep_re)
+        ps_grep_hits = real_matches(ps_grep_re)
+        if pgrep_hits or ps_grep_hits:
+            print("BLOCK\tkill+pattern-lookup\tkill combined with pgrep/ps|grep")
+            sys.exit(0)
 
 print("ALLOW")
 PY

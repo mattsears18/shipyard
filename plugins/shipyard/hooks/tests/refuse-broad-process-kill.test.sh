@@ -134,6 +134,50 @@ out=$(run_hook "$(mkpayload Bash 'for pid in $(pgrep node); do kill -9 $pid; don
 assert_blocked_with "$out" "kill" "loop over pgrep output feeding kill → blocked"
 
 # -----------------------------------------------------------------------------
+echo "== kill -0 (signal zero / liveness probe) is exempt from rule 4 (#804)"
+# -----------------------------------------------------------------------------
+# Signal 0 sends no signal at all — POSIX defines it as a permission-and-
+# existence check — so it cannot terminate anything, and combining it with a
+# process-pattern lookup elsewhere in the command should not trip rule 4. This
+# is shipyard's own `scripts/session-state.sh` `is-active` idiom.
+
+# shellcheck disable=SC2016  # literal $PID / ps|grep — a payload fixture, not an expansion
+out=$(run_hook "$(mkpayload Bash 'kill -0 $PID 2>/dev/null && echo ALIVE; ps -eo pid,command | grep -i claude')")
+assert_exit "$out" "0" "(a) kill -0 \$PID combined with ps | grep → allowed"
+
+# shellcheck disable=SC2016  # literal $PID / pgrep — a payload fixture, not an expansion
+out=$(run_hook "$(mkpayload Bash 'kill -s 0 $PID && pgrep -f node')")
+assert_exit "$out" "0" "kill -s 0 \$PID combined with pgrep → allowed"
+
+# shellcheck disable=SC2016  # literal $PID / pgrep — a payload fixture, not an expansion
+out=$(run_hook "$(mkpayload Bash 'kill -n 0 $PID && pgrep -f node')")
+assert_exit "$out" "0" "kill -n 0 \$PID combined with pgrep → allowed"
+
+# shellcheck disable=SC2016  # literal $LP — a payload fixture, not an expansion
+out=$(run_hook "$(mkpayload Bash 'LP=$(grep -oE "[0-9]+" locked); kill -0 "$LP" 2>/dev/null && echo ALIVE || echo DEAD; ps -eo pid,etime,stat,command | grep -i "[c]laude" | head -10')")
+assert_exit "$out" "0" "the exact #804 repro → allowed"
+
+# A non-zero-signal kill combined with a pattern lookup must STILL block,
+# even when a signal-zero kill also appears earlier in the same command.
+# shellcheck disable=SC2016  # literal $PID1/$PID2/pgrep — a payload fixture, not an expansion
+out=$(run_hook "$(mkpayload Bash 'kill -0 $PID1 && kill -9 $PID2 $(pgrep -f node)')")
+assert_blocked_with "$out" "kill" "(b) a mix of kill -0 and kill -9 + pgrep → still blocked"
+
+# shellcheck disable=SC2016  # literal $(pgrep ...) — a payload fixture, not an expansion
+out=$(run_hook "$(mkpayload Bash 'kill -9 $(pgrep -f "playwright test")')")
+assert_blocked_with "$out" "kill" "(b) kill -9 \$PID combined with pgrep → still blocked"
+
+# -----------------------------------------------------------------------------
+echo "== pkill / killall are unaffected by the kill -0 exemption (#804)"
+# -----------------------------------------------------------------------------
+
+out=$(run_hook "$(mkpayload Bash 'pkill -f foo')")
+assert_blocked_with "$out" "pkill" "(c) pkill -f foo → still blocked"
+
+out=$(run_hook "$(mkpayload Bash 'killall -0 foo')")
+assert_blocked_with "$out" "killall" "killall -0 foo → still blocked (rule 3 has no signal-zero exemption)"
+
+# -----------------------------------------------------------------------------
 echo "== kill against a literal PID is allowed"
 # -----------------------------------------------------------------------------
 # This is the SAFE form the hook's own error message tells workers to use:
