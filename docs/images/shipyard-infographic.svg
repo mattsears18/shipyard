@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1200" width="1920" height="1200" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" role="img" aria-labelledby="title desc">
   <title id="title">Shipyard at a glance — autonomous engineering loop</title>
-  <desc id="desc">Five-stage flow from sources through refine and human review, into the orchestrator, out to parallel workers in isolated worktrees, and into the PR pipeline with auto-merge. A footer band enumerates the current set of hardened safety properties, plus the cost-tracking ledger and shipyard.config.json opt-in surfaces.</desc>
+  <desc id="desc">Five-stage flow from sources through refine and human review, into the orchestrator, out to parallel workers in isolated worktrees, and into the PR pipeline with auto-merge. The orchestrator stage shows all seven do-work worker modes (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate, spike) plus the opt-in verify gate. A mid band calls out three surfaces: the cost-tracking ledger, the shipyard.config.json opt-in, and the operator layer that drives a real, logged-in Chrome browser by default. A footer band enumerates current hardened safety properties, including the step-0 cwd fail-fast, the Workflow-substrate worktreePath guard, and unpriced-model flagging.</desc>
 
   <!-- Background -->
   <rect width="1920" height="1200" fill="#0f1826"/>
@@ -81,9 +81,10 @@
       <text x="490" y="378">  rewrite → needs-human-review</text>
       <text x="472" y="408">• open-questions → resolve-defaults</text>
       <text x="490" y="428">  → dispatch-eligible</text>
-      <text x="472" y="458">• fall-through → needs-triage</text>
-      <text x="472" y="498" fill="#e5b06e">Human signs off on the</text>
-      <text x="472" y="518" fill="#e5b06e">user-feedback bucket only.</text>
+      <text x="472" y="458">• fall-through (no recognizable</text>
+      <text x="490" y="478">  pattern) → needs-human-review</text>
+      <text x="472" y="508" fill="#e5b06e">Human signs off on the</text>
+      <text x="472" y="528" fill="#e5b06e">user-feedback bucket only.</text>
     </g>
     <g font-size="12">
       <rect x="472" y="556" width="180" height="24" rx="12" ry="12" fill="#2a1f33" stroke="#7a5a90"/>
@@ -101,22 +102,34 @@
     <text x="824" y="330" fill="#9fb2d6" font-size="14" font-weight="400">workable backlog remains</text>
     <g fill="#cbd5e8" font-size="15" font-weight="400">
       <text x="824" y="372">• Ranks eligible backlog</text>
-      <text x="824" y="402">• Refreshes before every dispatch</text>
+      <text x="824" y="402">• Dispatches via Workflow substrate</text>
       <text x="824" y="432">• Keeps N workers in flight</text>
       <text x="824" y="462">• Diverts on red main / pileup</text>
-      <text x="824" y="492">• Drains via fresh-fetch handoff</text>
     </g>
-    <g font-size="12">
-      <rect x="824" y="514" width="100" height="22" rx="11" ry="11" fill="#1a2a4a" stroke="#3a5380"/>
-      <text x="874" y="529" fill="#cbd5e8" text-anchor="middle">fix-checks</text>
-      <rect x="932" y="514" width="100" height="22" rx="11" ry="11" fill="#1a2a4a" stroke="#3a5380"/>
-      <text x="982" y="529" fill="#cbd5e8" text-anchor="middle">fix-rebase</text>
-      <rect x="824" y="544" width="100" height="22" rx="11" ry="11" fill="#1a2a4a" stroke="#3a5380"/>
-      <text x="874" y="559" fill="#cbd5e8" text-anchor="middle">fix-main-ci</text>
-      <rect x="932" y="544" width="156" height="22" rx="11" ry="11" fill="#1a2a4a" stroke="#3a5380"/>
-      <text x="1010" y="559" fill="#cbd5e8" text-anchor="middle">fix-failing-prs-batch</text>
+    <text x="824" y="490" fill="#7a8aaf" font-size="12">all seven modes, worktreePath pre-provisioned:</text>
+    <g font-size="9.5">
+      <rect x="824" y="500" width="130" height="18" rx="9" ry="9" fill="#1a2a4a" stroke="#3a5380"/>
+      <text x="889" y="512.5" fill="#cbd5e8" text-anchor="middle">issue-work</text>
+      <rect x="962" y="500" width="130" height="18" rx="9" ry="9" fill="#1a2a4a" stroke="#3a5380"/>
+      <text x="1027" y="512.5" fill="#cbd5e8" text-anchor="middle">fix-checks-only</text>
+
+      <rect x="824" y="524" width="130" height="18" rx="9" ry="9" fill="#1a2a4a" stroke="#3a5380"/>
+      <text x="889" y="536.5" fill="#cbd5e8" text-anchor="middle">fix-rebase</text>
+      <rect x="962" y="524" width="130" height="18" rx="9" ry="9" fill="#1a2a4a" stroke="#3a5380"/>
+      <text x="1027" y="536.5" fill="#cbd5e8" text-anchor="middle">fix-main-ci</text>
+
+      <rect x="824" y="548" width="130" height="18" rx="9" ry="9" fill="#1a2a4a" stroke="#3a5380"/>
+      <text x="889" y="560.5" fill="#cbd5e8" text-anchor="middle">investigate</text>
+      <rect x="962" y="548" width="130" height="18" rx="9" ry="9" fill="#1a2a4a" stroke="#3a5380"/>
+      <text x="1027" y="560.5" fill="#cbd5e8" text-anchor="middle">spike</text>
+
+      <rect x="824" y="572" width="272" height="18" rx="9" ry="9" fill="#1a2a4a" stroke="#3a5380"/>
+      <text x="960" y="584.5" fill="#cbd5e8" text-anchor="middle">fix-failing-prs-batch</text>
     </g>
-    <text x="824" y="600" fill="#7a8aaf" font-size="12">specialized diversion workers</text>
+    <g font-size="11">
+      <rect x="824" y="594" width="272" height="20" rx="10" ry="10" fill="#332615" stroke="#8a6a3a"/>
+      <text x="960" y="608" fill="#e5b06e" text-anchor="middle">+ verify — opt-in adversarial pre-merge gate</text>
+    </g>
   </g>
 
   <!-- Stage 4: Workers -->
@@ -167,30 +180,42 @@
     <text x="1528" y="600" fill="#7a8aaf" font-size="12">backlog burns down</text>
   </g>
 
-  <!-- ============================ SIDE SURFACES (mid band) ============================ -->
-  <!-- y=660 to y=820 -->
+  <!-- ============================ MID-BAND SURFACES (three columns) ============================ -->
+  <!-- y=660 to y=820. Three columns: x=96, x=683, x=1270, width=554 each. -->
 
   <!-- Cost-tracking surface -->
   <g>
-    <rect x="96" y="660" width="848" height="160" rx="14" ry="14" fill="url(#side)" stroke="#2c3e63" stroke-width="1"/>
-    <text x="120" y="700" fill="#e5b06e" font-size="14" font-weight="600" letter-spacing="2">OBSERVABILITY</text>
-    <text x="120" y="734" fill="#f5f7fb" font-size="22" font-weight="700">Cost tracking — per-PR comment + persistent cross-session ledger</text>
-    <g fill="#cbd5e8" font-size="14" font-weight="400">
-      <text x="120" y="768">• Each PR gets a cost-tracking comment so you can see at a glance what the work cost.</text>
-      <text x="120" y="788">• Per session: ~/.shipyard/sessions/&lt;id&gt;.json — live state, reaped at end of session.</text>
-      <text x="120" y="808">• Persistent: ~/.shipyard/cost-history.jsonl — query with /shipyard:cost report (by repo, mode, model, issue).</text>
+    <rect x="96" y="660" width="554" height="160" rx="14" ry="14" fill="url(#side)" stroke="#2c3e63" stroke-width="1"/>
+    <text x="120" y="700" fill="#e5b06e" font-size="13" font-weight="600" letter-spacing="2">OBSERVABILITY</text>
+    <text x="120" y="732" fill="#f5f7fb" font-size="19" font-weight="700">Cost tracking</text>
+    <g fill="#cbd5e8" font-size="13" font-weight="400">
+      <text x="120" y="762">• Every PR gets a cost-tracking comment (tokens + USD)</text>
+      <text x="120" y="784">• ~/.shipyard/cost-history.jsonl — cross-session ledger</text>
+      <text x="120" y="806">• /shipyard:cost report — by repo, mode, model, or issue</text>
     </g>
   </g>
 
   <!-- Config opt-in -->
   <g>
-    <rect x="976" y="660" width="848" height="160" rx="14" ry="14" fill="url(#side)" stroke="#2c3e63" stroke-width="1"/>
-    <text x="1000" y="700" fill="#e5b0e8" font-size="14" font-weight="600" letter-spacing="2">CONFIG OPT-IN</text>
-    <text x="1000" y="734" fill="#f5f7fb" font-size="22" font-weight="700">shipyard.config.json — committed repo policy, layered overrides</text>
-    <g fill="#cbd5e8" font-size="14" font-weight="400">
-      <text x="1000" y="768">• /shipyard:init bootstraps the committed repo config; /shipyard:config get|set|edit|validate manages it post-bootstrap.</text>
-      <text x="1000" y="788">• Four layers: built-in defaults → ~/.shipyard/config.json (user) → repo config → .shipyard/config.local.json (gitignored).</text>
-      <text x="1000" y="808">• Trusted-author allowlist (.shipyard/trusted-authors.txt) gates auto-merge; external authors land with needs-human-review.</text>
+    <rect x="683" y="660" width="554" height="160" rx="14" ry="14" fill="url(#side)" stroke="#2c3e63" stroke-width="1"/>
+    <text x="707" y="700" fill="#e5b0e8" font-size="13" font-weight="600" letter-spacing="2">CONFIG OPT-IN</text>
+    <text x="707" y="732" fill="#f5f7fb" font-size="19" font-weight="700">shipyard.config.json</text>
+    <g fill="#cbd5e8" font-size="13" font-weight="400">
+      <text x="707" y="762">• /shipyard:init bootstraps; /shipyard:config get|set|validate manages it</text>
+      <text x="707" y="784">• 4 layers: built-in → user-global → repo → local override</text>
+      <text x="707" y="806">• Trusted-author allowlist gates auto-merge (external → needs-human-review)</text>
+    </g>
+  </g>
+
+  <!-- Operator layer -->
+  <g>
+    <rect x="1270" y="660" width="554" height="160" rx="14" ry="14" fill="url(#side)" stroke="#2c3e63" stroke-width="1"/>
+    <text x="1294" y="700" fill="#8fd3ff" font-size="13" font-weight="600" letter-spacing="2">OPERATOR LAYER</text>
+    <text x="1294" y="732" fill="#f5f7fb" font-size="19" font-weight="700">Drives your real Chrome (#661)</text>
+    <g fill="#cbd5e8" font-size="13" font-weight="400">
+      <text x="1294" y="762">• claude-in-chrome — inherits your logged-in sessions, no setup</text>
+      <text x="1294" y="784">• needs-operator — paste a secret, toggle a console, close a PR</text>
+      <text x="1294" y="806">• --no-operate / --hands-off → code-only, dispatch-only run</text>
     </g>
   </g>
 
@@ -214,28 +239,28 @@
         <text x="144" y="1029"><tspan fill="#f5f7fb" font-weight="600">No-hook-bypass</tspan><tspan fill="#9fb2d6"> — --no-verify and equivalents forbidden at the prompt AND the Bash permission layer </tspan><tspan fill="#7aa2ff" font-weight="600">(#26)</tspan></text>
 
         <circle cx="130" cy="1052" r="3" fill="#7aa2ff"/>
-        <text x="144" y="1057"><tspan fill="#f5f7fb" font-weight="600">Always-dispatching</tspan><tspan fill="#9fb2d6"> — invariant line prints each turn; going quiet with work left is detectable </tspan><tspan fill="#7aa2ff" font-weight="600">(#23)</tspan></text>
+        <text x="144" y="1057"><tspan fill="#f5f7fb" font-weight="600">Step-0 cwd fail-fast</tspan><tspan fill="#9fb2d6"> — a misrouted dispatch bails immediately instead of dying at the final commit </tspan><tspan fill="#7aa2ff" font-weight="600">(#486)</tspan></text>
 
         <circle cx="130" cy="1080" r="3" fill="#7aa2ff"/>
-        <text x="144" y="1085"><tspan fill="#f5f7fb" font-weight="600">Pre-dispatch refresh</tspan><tspan fill="#9fb2d6"> — backlog re-checked before every dispatch; mid-session issues picked up promptly </tspan><tspan fill="#7aa2ff" font-weight="600">(#29)</tspan></text>
+        <text x="144" y="1085"><tspan fill="#f5f7fb" font-weight="600">Workflow worktreePath guard</tspan><tspan fill="#9fb2d6"> — the isolation hook covers the Workflow dispatch shape too, not just Agent-tool </tspan><tspan fill="#7aa2ff" font-weight="600">(#791)</tspan></text>
 
         <circle cx="130" cy="1108" r="3" fill="#7aa2ff"/>
-        <text x="144" y="1113"><tspan fill="#f5f7fb" font-weight="600">User-feedback gating</tspan><tspan fill="#9fb2d6"> — raw feedback refined + needs-human-review before any code-modifying agent runs </tspan><tspan fill="#7aa2ff" font-weight="600">(#24)</tspan></text>
+        <text x="144" y="1113"><tspan fill="#f5f7fb" font-weight="600">Always-dispatching</tspan><tspan fill="#9fb2d6"> — invariant line prints each turn; going quiet with work left is detectable </tspan><tspan fill="#7aa2ff" font-weight="600">(#23)</tspan></text>
       </g>
 
       <!-- Column 2 -->
       <g>
         <circle cx="990" cy="996" r="3" fill="#a8d8b5"/>
-        <text x="1004" y="1001"><tspan fill="#f5f7fb" font-weight="600">PID-liveness orphan-sweep gate</tspan><tspan fill="#9fb2d6"> — defends against mtime-only reap race for long-drain sessions </tspan><tspan fill="#a8d8b5" font-weight="600">(#253)</tspan></text>
+        <text x="1004" y="1001"><tspan fill="#f5f7fb" font-weight="600">Unpriced-model flagging</tspan><tspan fill="#9fb2d6"> — an unknown model is flagged as a lower bound, never silently priced at $0.00 </tspan><tspan fill="#a8d8b5" font-weight="600">(#728)</tspan></text>
 
         <circle cx="990" cy="1024" r="3" fill="#a8d8b5"/>
-        <text x="1004" y="1029"><tspan fill="#f5f7fb" font-weight="600">Fresh-fetch termination</tspan><tspan fill="#9fb2d6"> — last_fresh_fetch invariant + assertion gates drain handoff on a recent live-tracker re-fetch </tspan><tspan fill="#a8d8b5" font-weight="600">(#195)</tspan></text>
+        <text x="1004" y="1029"><tspan fill="#f5f7fb" font-weight="600">Closing-link verification</tspan><tspan fill="#9fb2d6"> — a resolving PR's Closes #N is checked against GitHub's own signal, not just written </tspan><tspan fill="#a8d8b5" font-weight="600">(#481)</tspan></text>
 
         <circle cx="990" cy="1052" r="3" fill="#a8d8b5"/>
-        <text x="1004" y="1057"><tspan fill="#f5f7fb" font-weight="600">Mandatory token attribution</tspan><tspan fill="#9fb2d6"> — bump-tokens promoted to a numbered first step (A.0) after an attribution-skipping regression </tspan><tspan fill="#a8d8b5" font-weight="600">(#197)</tspan></text>
+        <text x="1004" y="1057"><tspan fill="#f5f7fb" font-weight="600">Parent-epic leak guard</tspan><tspan fill="#9fb2d6"> — a "do NOT close" epic reference can't silently auto-close on merge </tspan><tspan fill="#a8d8b5" font-weight="600">(#624)</tspan></text>
 
         <circle cx="990" cy="1080" r="3" fill="#a8d8b5"/>
-        <text x="1004" y="1085"><tspan fill="#f5f7fb" font-weight="600">Label-event audit</tspan><tspan fill="#9fb2d6"> — routing-label mutation by untrusted actors is reverted or alerted via workflow defense-in-depth </tspan><tspan fill="#a8d8b5" font-weight="600">(#140)</tspan></text>
+        <text x="1004" y="1085"><tspan fill="#f5f7fb" font-weight="600">Operator vs. decision split</tspan><tspan fill="#9fb2d6"> — needs-operator (browser-completable) is distinct from needs-human-review </tspan><tspan fill="#a8d8b5" font-weight="600">(#608)</tspan></text>
 
         <circle cx="990" cy="1108" r="3" fill="#a8d8b5"/>
         <text x="1004" y="1113"><tspan fill="#f5f7fb" font-weight="600">Per-worker rolling pre-flight</tspan><tspan fill="#9fb2d6"> — first-dispatch latency cut by waiting on first scope agent rather than full batch </tspan><tspan fill="#a8d8b5" font-weight="600">(#233)</tspan></text>
