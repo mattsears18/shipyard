@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.0.1 — 2026-07-22
+
+Fixes `shipyard:worker-preamble`'s step-0 cwd fail-fast and mid-session cwd-anchoring snippets being written as single multi-line compound bash blocks (command substitutions, `cd` subshells, an inline `if`) that the worktree-isolation `Bash` guard refuses to run, forcing every worker dispatch in every mode to eat a failed call plus a retry on its mandatory first action (closes #802). The guard's "Refusing to run it" text was also plausibly misreadable as the isolation violation the check exists to detect, inviting a spurious `blocked:` return on a healthy dispatch. Both snippets are rewritten as sequences of plain, single-purpose `git rev-parse` calls with the git-dir/git-common-dir comparison performed by the worker's own inspection of the outputs rather than scripted in bash — verified runnable as separate `Bash` calls against this dispatch's own worktree before landing.
+
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — "Step-0 cwd fail-fast" and "Mid-session cwd anchoring" sections rewritten: the compound derive-and-compare-and-branch blocks become three (step-0) and three-plus-anchor (mid-session) separate plain `git rev-parse` / `git -C "$WORKTREE_PATH" rev-parse` calls, each in its own fenced block, with the equality check and `blocked:`/pass decision left to the worker's own reasoning; the `blocked: dispatch-isolation cwd override is wrong` and `blocked: cwd anchor drifted mid-session` bail-message text is unchanged.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.0.0` → `4.0.1`.
+
 ### 4.0.0 — 2026-07-22
 
 **BREAKING: the `dispatch.substrate` config knob is removed.** Delete any `dispatch` block from `shipyard.config.json` / `.shipyard/config.local.json` before upgrading — the repo config schema is `additionalProperties: false`, so a layer that still carries one now fails validation (`/shipyard:config validate` reports it; `shipyard-config.sh load` exits 70) instead of being silently ignored. There is nothing to replace it with.
