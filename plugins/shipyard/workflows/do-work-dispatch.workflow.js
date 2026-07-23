@@ -199,6 +199,16 @@
  * path. `args` is UNTYPED at the tool boundary, and the `Workflow` tool's own docs
  * warn that passing a stringified payload is easy to do by accident ("Pass arrays/
  * objects as actual JSON values in the tool call, NOT as a JSON-encoded string").
+ * Issue #823 found that remediation does not hold up in practice on this harness:
+ * across two separate live dispatches — one pre-#817-fix, one post — `args` arrived
+ * JSON-stringified even though the caller passed an actual JSON object in the tool
+ * call, not a quoted string. `args` MAY therefore arrive stringified regardless of
+ * how the caller invoked the tool (the evidence does not establish this holds for
+ * every caller or harness version — just that it is not a rare mistake to guard
+ * against defensively). Treat the guarded `JSON.parse` below as REQUIRED handling
+ * for the normal delivery shape, not politeness for a hypothetical caller typo —
+ * a future refactor must not remove or condition it away on the assumption that
+ * "callers just need to pass real JSON" will fix a zero-unit dispatch.
  * When `args` arrived as a JSON STRING, `typeof args === 'object'` was false, so
  * `input` became `{}`, `selectedIssues` became `[]`, `workUnits` became `[]`,
  * `parallel([])` resolved instantly, and the run reported SUCCESS with
@@ -208,8 +218,10 @@
  *
  * Three properties are now load-bearing and must be preserved by any future edit:
  *   1. A JSON-STRING `args` is tolerated — parsed via a guarded `JSON.parse` before
- *      the object check, so the most likely caller mistake dispatches correctly
- *      instead of silently no-op'ing.
+ *      the object check. Per #823, this is not merely tolerance for an unlikely
+ *      caller mistake: `args` has been observed arriving stringified on the normal
+ *      dispatch path, so this parse is what makes dispatch work at all, not a
+ *      defensive fallback for a typo.
  *   2. `args` PRESENT AND NON-EMPTY but yielding ZERO work units THROWS, naming the
  *      received shape (`typeof args`, whether `issues` was an array, its length,
  *      and any JSON-parse failure). A dispatch asked to do work that resolves to
@@ -427,8 +439,11 @@ if (workUnits.length === 0) {
     throw new Error(
       `do-work-dispatch: refusing to report an empty dispatch as success — args were supplied but resolved to ZERO work units. ` +
         `Received: ${receivedShape}. ` +
-        `Expected args.issues to be a NON-EMPTY array of work units (or args itself to be a JSON string encoding one). ` +
-        `Pass arrays/objects as actual JSON values in the Workflow tool call, not as a JSON-encoded string. See issue #817.`,
+        `Verify args.issues is a NON-EMPTY array of work units, with each unit carrying at least a mode and a ` +
+        `worktreePath (or args itself is a JSON string encoding such an array). Re-shaping the tool call as a ` +
+        `literal object instead of a JSON string will NOT by itself fix this — args commonly arrives ` +
+        `JSON-stringified at this tool boundary regardless of how it was passed, so an empty or malformed ` +
+        `issues array is a caller-side selection bug, not a JSON-encoding mistake. See issues #817, #823.`,
     )
   }
 
