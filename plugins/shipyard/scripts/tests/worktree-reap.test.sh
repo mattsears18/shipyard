@@ -171,6 +171,66 @@ result=$(run_classify "$lock_dead")
 assert_equals "$result" "dead" \
   "(2) lock with dead PID → 'dead'"
 
+# --- (2a) issue #832 — regression pin: lock present, PID dead, worktree
+# metadata directory FRESHLY CREATED. This is the literal shape of a
+# just-dispatched worker whose harness-written lock names a PID that is
+# already gone (an intermediate spawn-time process, not the long-lived
+# agent process) — classify-lock currently has no signal to distinguish
+# this from a genuinely stale/abandoned lock, and returns 'dead' (reap-
+# eligible) either way, even though the worker may be actively running.
+# The #832 repro: session do-work-20260723T102624Z dispatched an
+# Agent-tool worker into a brand-new agent-* worktree, and a setup-3b-style
+# sweep running concurrently classified that same, seconds-old, live
+# worktree as 'dead'.
+#
+# This fixture pins that CURRENT behavior explicitly — using its own fresh
+# subdirectory (rather than only incidentally exercising it via test (2)'s
+# shared $tmpdir) so the "directory freshly created" precondition is
+# asserted, not assumed. If a future change teaches classify-lock to treat
+# a dead PID + fresh directory as 'unknown' instead of 'dead' (issue #832
+# suggested fix 2 — NOT implemented here; evaluated and skipped because it
+# would flip this same fresh-tmpdir shape in tests (2)/(3)/(13) above/below,
+# which is exactly the "destabilizes existing callers/tests" case #832
+# says to avoid), this assertion is the one to update.
+#
+# The load-bearing fix for the underlying danger is NOT a classify-lock
+# heuristic — it's orchestrator-side: every sweep-style reap loop now
+# checks `.in_flight` membership for the candidate worktree BEFORE ever
+# consulting classify-lock, and skips outright on a match (in-flight
+# membership is authoritative liveness; the lock file is only a fallback
+# for worktrees the session doesn't own). See commands/do-work/dont.md's
+# "Don't reap a live-PID worktree" bullet and
+# commands/do-work-RATIONALE.md's matching section.
+fresh_wt_dir="$tmpdir/fresh-worktree-metadata-dir"
+mkdir -p "$fresh_wt_dir"
+(true) &
+dead_pid_fresh=$!
+wait "$dead_pid_fresh" 2>/dev/null
+while ps -p "$dead_pid_fresh" -o pid= >/dev/null 2>&1; do
+  sleep 0.05
+done
+lock_fresh="$fresh_wt_dir/locked"
+cat > "$lock_fresh" <<EOF
+claude agent agent-test-fresh-dead (pid $dead_pid_fresh)
+EOF
+# Confirm the fixture's own premise: the directory really is fresh (well
+# under any plausible staleness floor — #755's default peer-alive-stale
+# floor is 60 minutes).
+fresh_dir_mtime=$(stat -c %Y "$fresh_wt_dir" 2>/dev/null || stat -f %m "$fresh_wt_dir" 2>/dev/null || echo "")
+fresh_now=$(date +%s 2>/dev/null || echo "")
+if [ -n "$fresh_dir_mtime" ] && [ -n "$fresh_now" ]; then
+  fresh_dir_age_sec=$((fresh_now - fresh_dir_mtime))
+else
+  fresh_dir_age_sec=0
+fi
+if [ "$fresh_dir_age_sec" -lt 300 ] 2>/dev/null; then
+  result=$(run_classify "$lock_fresh")
+  assert_equals "$result" "dead" \
+    "(2a) issue #832 regression pin: dead PID + freshly-created worktree dir (age ${fresh_dir_age_sec}s) still classifies 'dead' — reap-eligible from the helper's own view despite the worker having just been dispatched; the in-flight-membership exclusion (not this classifier) is the load-bearing guard against reaping it"
+else
+  printf '  %sSKIP%s  (2a) fixture directory age (%ss) unexpectedly not fresh — skipping\n' "$GREEN" "$RESET" "$fresh_dir_age_sec"
+fi
+
 # --- (3) lock with malformed content (no parseable PID) ---
 lock_malformed="$tmpdir/malformed.lock"
 cat > "$lock_malformed" <<EOF
