@@ -114,8 +114,12 @@ fi
 # lineage. Assert both: the current phase-4 marker AND the #789 wired-six lineage.
 assert_contains "$workflow_js_path" "Phase 3 (#789) wired the REMAINING SIX" \
   "header comment still cites phase 3 (#789) wiring the remaining six in its lineage"
-assert_contains "$workflow_js_path" "ONLY way a \`mode:\`-driven /do-work worker is dispatched" \
-  "header comment declares this script is the only dispatch path for every mode"
+# #825 restored the Agent-tool shape as the default and demoted this script to
+# the documented alternate — the header now says ALTERNATE, not ONLY. See
+# legacy-agent-dispatch-retired-791.test.sh section (H) for the #825 regression
+# guard on the restoration itself.
+assert_contains "$workflow_js_path" "an ALTERNATE way a \`mode:\`-driven /do-work worker can be" \
+  "header comment declares this script is an alternate dispatch path (#825), not the only one"
 
 echo
 echo "== (B) do-work-dispatch.workflow.js — a real builder for each of the six new modes"
@@ -181,14 +185,19 @@ assert_contains "$workflow_js_path" "worktreeAnchorLines(unit, 'spike')" \
 echo
 echo "== (E) dispatch-rules.md — the workflow-substrate section now covers every mode"
 
-assert_contains "$dispatch_rules_path" "Workflow-substrate dispatch — the dispatch mechanism for every worker mode" \
-  "dispatch-rules.md's substrate section heading covers every mode"
+# #825 demoted this section to the documented alternate shape and retitled it
+# accordingly — see legacy-agent-dispatch-retired-791.test.sh section (H) for
+# the regression guard on the #825 restoration itself.
+assert_contains "$dispatch_rules_path" "Workflow-substrate dispatch — an alternate dispatch shape" \
+  "dispatch-rules.md's substrate section heading names it as the alternate shape"
 assert_contains "$dispatch_rules_path" "#789" \
   "dispatch-rules.md's substrate section cites #789"
-# #791 removed the flag entirely — the substrate section is now unconditional,
-# so the guard is that it claims ALL SEVEN modes follow it, with no branch.
-assert_contains "$dispatch_rules_path" "for all seven \`mode:\` values" \
-  "dispatch-rules.md is explicit that every mode dispatches through the substrate"
+# #791 removed the flag entirely — the substrate section's own five call-site
+# steps are unconditional (no config-read branch); #825 layered the Agent-tool
+# default on top without reintroducing a branch either — both shapes are named
+# once, up front, not re-derived per candidate.
+assert_contains "$dispatch_rules_path" "Both shapes run the **identical** per-mode prompt template" \
+  "dispatch-rules.md is explicit both shapes cover every mode identically, with no per-candidate branch"
 
 for mode in "fix-checks-only" "fix-rebase" "fix-main-ci" "fix-failing-prs-batch" "investigate" "spike"; do
   assert_contains "$dispatch_rules_path" "\"mode\": \"${mode}\"" \
@@ -229,8 +238,11 @@ done
 echo
 echo "== (G) steady-state.md — A.1 generalized to every mode, not issue-work-only"
 
-assert_contains "$steady_state_path" "Every \`mode:\`-driven worker is dispatched through the \`Workflow\` substrate" \
-  "steady-state.md's A.1 note generalizes the translation shim to every mode"
+# #825 re-scoped this note to "either shape" — the Workflow-substrate-specific
+# translation only applies when that alternate shape is in use; the default
+# Agent-tool shape returns free text directly, with nothing to translate.
+assert_contains "$steady_state_path" "translated into free text before reaching this step, not parsed here directly" \
+  "steady-state.md's A.1 note documents the translation shim for the Workflow-substrate alternate"
 assert_contains "$steady_state_path" "#789" \
   "steady-state.md's A.1 note cites #789"
 
