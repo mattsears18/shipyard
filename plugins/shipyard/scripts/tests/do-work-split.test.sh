@@ -457,13 +457,21 @@ assert_contains "$steady_state_path" \
 # Five assertions pin the post-#317 contract:
 #   - The struct list grew a 12th entry `reconciled_agent_ids` (named in
 #     do-work.md alongside the #317 cross-ref).
-#   - The opening sentence reflects the struct count ("nineteen" post-#746's
-#     `operator_denials`; was "eighteen" post-#718, "sixteen" post-#589,
-#     "fifteen" post-#437). NB the prose count had drifted one behind the
-#     actual bullet count (a struct was added without updating the sentence);
-#     #718 re-synced it — the bullet count is the ground truth, and the
-#     struct-derived line cap in check (2) is computed from the bullets, not
-#     from this sentence.
+#   - The opening sentence reflects the struct count. Historically a single
+#     word count ("nineteen" post-#746's `operator_denials`; was "eighteen"
+#     post-#718, "sixteen" post-#589, "fifteen" post-#437) tracking the
+#     TOTAL bullet count in do-work.md's own "## Orchestrator state" section.
+#     Issue #808 split that section into a hot subset (twelve structs, still
+#     inline in do-work.md — read/written most turns) and a cold long-tail
+#     (eight structs, incl. `reconciled_agent_ids`, moved to
+#     do-work/orchestrator-state-reference.md — each consumed by exactly one
+#     other phase file). do-work.md's opening sentence now reads "twelve
+#     **hot** mental data structures" for the subset it still carries inline;
+#     `reconciled_agent_ids` itself is still *named* in do-work.md's pointer
+#     prose (so the struct-list assertion below still passes unchanged) even
+#     though its full definition lives in the split-out file. The
+#     struct-derived line cap in check (2) is computed from do-work.md's own
+#     (now-twelve) bullets, unaffected by the split.
 #   - steady-state.md gained the new A.−1 step (the gate body lives there).
 #   - The advisory log line shape is documented exactly (so a future
 #     regression that drops the gate without renaming everything else
@@ -474,8 +482,8 @@ assert_contains "$do_work_path" \
   'reconciled_agent_ids' \
   "do-work.md struct list names reconciled_agent_ids (#317)"
 assert_contains "$do_work_path" \
-  'nineteen mental data structures' \
-  "do-work.md opening sentence reflects post-#746 struct count (nineteen)"
+  'twelve **hot** mental data structures' \
+  "do-work.md opening sentence reflects post-#808 hot/cold split (twelve hot)"
 assert_contains "$steady_state_path" \
   'A.−1. Reconcile-once gate' \
   "steady-state.md carries the A.−1 reconcile-once gate (#317)"
@@ -1162,12 +1170,21 @@ assert_contains "$schema591" \
 #     and advances version_cursor.
 #   - setup.md step 7 (initial pool fill) pre-allocates monotonic versions
 #     across the batch via the cursor before firing the parallel Agent burst.
+#
+# Post-#808: `version_cursor` is one of the eight cold structs split out of
+# do-work.md into do-work/orchestrator-state-reference.md (each consumed by
+# exactly one other phase file — version_cursor's is dispatch-rules.md's
+# next-available-version computation). do-work.md still *names*
+# `version_cursor` in its hot/cold pointer prose (so the struct-list
+# assertion below is unchanged), but the full bullet — including the #437
+# issue citation — now lives in the split-out file; check there instead.
+orch_state_ref_path808="$repo_root/plugins/shipyard/commands/do-work/orchestrator-state-reference.md"
 assert_contains "$do_work_path" \
   'version_cursor' \
   "do-work.md struct list names version_cursor (#437)"
-assert_contains "$do_work_path" \
+assert_contains "$orch_state_ref_path808" \
   'issues/437' \
-  "do-work.md cites issue #437 as the source of version_cursor"
+  "orchestrator-state-reference.md cites issue #437 as the source of version_cursor (#808 split)"
 assert_contains "$steady_state_path" \
   'issues/437' \
   "steady-state.md cites issue #437 as the source of the batch pre-allocation fix"

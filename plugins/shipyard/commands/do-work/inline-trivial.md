@@ -2,7 +2,7 @@
 
 A dispatch-time fast path that lets the orchestrator handle very small issues **inline** — open the file, make the edit, commit, push, create the PR, arm auto-merge — without paying the ~13k-token cost of dispatching a full `shipyard:issue-worker` agent. Reads from [`shipyard.config.json`](../../../../CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) under the `inline_trivial` key; default OFF.
 
-Loaded on demand from [`steady-state.md`](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c)'s step 3a (the `ready_issues` branch's eligibility check). The thin entry [`commands/do-work.md`](../do-work.md) stays in context across every phase for the [orchestrator-state struct list](../do-work.md#orchestrator-state); this file owns only the inline-eligibility heuristic and the inline-execution mechanics.
+Loaded on demand from [`steady-state.md`](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c)'s step 3a (the `ready_issues` branch's eligibility check). The thin entry [`commands/do-work.md`](../do-work.md) stays in context across every phase for the hot [orchestrator-state struct list](../do-work.md#orchestrator-state); this file owns only the inline-eligibility heuristic and the inline-execution mechanics.
 
 Tracking issue: [#156](https://github.com/mattsears18/shipyard/issues/156). Part of [perf umbrella #152](https://github.com/mattsears18/shipyard/issues/152) — Phase 1.
 
@@ -154,7 +154,7 @@ When **any** step in §A–E fails — self-assign 404s, branch already exists, 
 
 ## Telemetry
 
-Inline execution writes to the same [cost-tracking ledger](../do-work.md#cost-tracking-write-through) as worker-dispatched issues, with one extra field on each inline-ship entry: `mode: "inline"` (vs `mode: "issue-work"` for the worker-dispatched path). The session-end summary surfaces:
+Inline execution writes to the same [cost-tracking ledger](./session-state-file.md#cost-tracking-write-through) as worker-dispatched issues, with one extra field on each inline-ship entry: `mode: "inline"` (vs `mode: "issue-work"` for the worker-dispatched path). The session-end summary surfaces:
 
 - Count of inline-eligible vs dispatched workers (per session).
 - Cost-per-issue comparison: inline mode vs full-worker mode, computed from the cost ledger's `mode` rollup.

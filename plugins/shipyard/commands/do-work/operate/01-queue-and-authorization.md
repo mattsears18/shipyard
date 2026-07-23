@@ -84,11 +84,11 @@ This is a **one-shot, session-scoped ask**, not a per-action round-trip — it c
 
 ## Operator action denied by the harness permission classifier ([#746](https://github.com/mattsears18/shipyard/issues/746))
 
-Even a properly-scoped, batch-confirmed operator action can still be refused outright by the harness classifier — the same layer that can deny the orchestrator's own `Agent` dispatch calls ([#718](../../do-work.md#orchestrator-state)). A denial here means the mutating call (`gh pr close` / `gh pr merge` / a browser mutation) never executed. **The denial is correct, not a bug** — see the reasoning in the [Scope](#scope-of-standing-authorization--session-owned-artifacts-vs-inherited-third-party-prs-746) section above. This section exists so a denied item has a **defined next step** instead of silently vanishing from `operator_queue`.
+Even a properly-scoped, batch-confirmed operator action can still be refused outright by the harness classifier — the same layer that can deny the orchestrator's own `Agent` dispatch calls ([#718](../orchestrator-state-reference.md)). A denial here means the mutating call (`gh pr close` / `gh pr merge` / a browser mutation) never executed. **The denial is correct, not a bug** — see the reasoning in the [Scope](#scope-of-standing-authorization--session-owned-artifacts-vs-inherited-third-party-prs-746) section above. This section exists so a denied item has a **defined next step** instead of silently vanishing from `operator_queue`.
 
 ### 1. Record the denial
 
-Append an entry to the session-local **`operator_denials`** struct (see [do-work.md's orchestrator-state struct list](../../do-work.md#orchestrator-state)):
+Append an entry to the session-local **`operator_denials`** struct (see [`orchestrator-state-reference.md`](../orchestrator-state-reference.md)):
 
 ```
 { kind: "merge-pr" | "close-pr" | "paste-secret" | "toggle-setting" | "reply-comment" | "console-action",
