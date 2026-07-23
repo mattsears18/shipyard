@@ -585,6 +585,56 @@ if [[ -f "$issue_work_path" ]]; then
     "issue-work.md §8 return section states CI confirmation is not a precondition for returning (issue #707)"
 fi
 
+# (1d) Issue #812 — a `gh pr merge --auto` failure caused by a missing
+# `workflow` OAuth scope must be detected and named distinctly from the
+# generic `unavailable — needs manual merge` bucket, at every layer: the
+# worker-preamble fragment that detects it, the issue-work per-mode spec
+# that documents the return string, the JSON schema that validates the
+# structured return, and the .js workflow script's inline copy of that
+# schema (schema-drift parity between the two is covered separately by
+# dispatch-substrate-cutover-790.test.sh; this suite only asserts each file
+# individually knows about the new value).
+if [[ -f "$auto_merge_path" ]]; then
+  assert_contains "$auto_merge_path" 'without .workflow. scope' \
+    "auto-merge.md step 1.1 matches the GraphQL 'without \`workflow\` scope' error signature (issue #812)"
+  assert_contains "$auto_merge_path" "auto-merge: unavailable — gh token lacks workflow scope" \
+    "auto-merge.md names the distinct workflow-scope-blocked suffix (issue #812)"
+  assert_contains "$auto_merge_path" "deterministic, session-wide precondition" \
+    "auto-merge.md explains why the workflow-scope cause is session-wide, not per-PR (issue #812)"
+fi
+
+if [[ -f "$issue_work_path" ]]; then
+  assert_contains "$issue_work_path" "auto-merge: unavailable — gh token lacks workflow scope" \
+    "issue-work.md §8 documents the distinct workflow-scope-blocked return string (issue #812)"
+  assert_contains "$issue_work_path" "gh auth refresh -h github.com -s workflow" \
+    "issue-work.md names the exact one-time remediation command (issue #812)"
+fi
+
+worker_schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
+workflow_js_path="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
+assert_contains "$worker_schema_path" "unavailable-workflow-scope" \
+  "worker-return.schema.json's auto_merge enum carries unavailable-workflow-scope (issue #812)"
+assert_contains "$workflow_js_path" "unavailable-workflow-scope" \
+  "do-work-dispatch.workflow.js's inline auto_merge enum carries unavailable-workflow-scope (issue #812)"
+
+# (1e) Orchestrator-side session-level hoist: a distinct list in orchestrator
+# state, a reconcile-time append, and a once-per-session (not once-per-PR)
+# end-of-session banner — the whole point of #812's suggested fix #2.
+do_work_state_path="$repo_root/plugins/shipyard/commands/do-work.md"
+cleanup_summary_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
+assert_contains "$do_work_state_path" "workflow_scope_blocked_prs" \
+  "do-work.md orchestrator-state documents workflow_scope_blocked_prs (issue #812)"
+if [[ -f "$steady_state_hot_path" ]]; then
+  assert_contains "$steady_state_hot_path" "workflow_scope_blocked_prs" \
+    "steady-state.md's A.1 shipped-handler appends to workflow_scope_blocked_prs (issue #812)"
+fi
+assert_contains "$cleanup_summary_path" "workflow_scope_blocked_prs" \
+  "cleanup-summary.md's end-of-session summary reads workflow_scope_blocked_prs (issue #812)"
+assert_contains "$cleanup_summary_path" "gh auth refresh -h github.com -s workflow" \
+  "cleanup-summary.md's banner names the one-time remediation command (issue #812)"
+assert_contains "$cleanup_summary_path" "omit entirely when \`workflow_scope_blocked_prs\` is empty" \
+  "cleanup-summary.md's banner is silent by default — only prints when the list is non-empty (issue #812)"
+
 # (2) The five dispatch prompts (in commands/do-work/steady-state.md after
 # the issue #154 split) must reference the skill. We count by the canonical
 # reference string the dispatch prompts use to invoke the skill.

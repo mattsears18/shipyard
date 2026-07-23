@@ -93,13 +93,33 @@ After `gh pr create` returns:
 
    **`gated-manual` is the routine, correct outcome on this branch — not an anomaly.** Every PR that reaches this bullet gets `gated-manual`, exactly as every PR that reaches step 1 with a genuine queue gets `enabled`. Don't read the name as "something unusual happened"; it names *how* the merge was gated (the worker watched and merged by hand) rather than *whether* it was gated (it was).
 
-1. Arm auto-merge (when the step-0.5 ungated-path check did NOT fire):
+1. Arm auto-merge (when the step-0.5 ungated-path check did NOT fire). Capture stderr into a local variable — step 1.1 below needs the text, not just the exit status:
    ```bash
-   gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
+   MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
    ```
    If the call errors because auto-merge isn't enabled at the repo level, **don't try to enable it** — that's a repo-config decision. Capture the error to a local variable but proceed to step 1.5 below — the call's exit status alone is NOT a reliable signal of the actual merge outcome (see issue [#340](https://github.com/mattsears18/shipyard/issues/340)).
 
-1.5. **Re-snapshot the PR's actual state before categorizing the auto-merge outcome.** Closes [#340](https://github.com/mattsears18/shipyard/issues/340) — `gh pr merge --auto` does NOT always error when `allow_auto_merge: false` is set at the repo level. When the dispatching user has admin permissions on a repo with auto-merge disabled, `gh` **silently falls through to a direct merge**: the PR lands immediately (if CI is green) or queues for merge (if pending). The call returns exit 0, `autoMergeRequest` is `null` because no auto-merge was armed, and a worker that decides the auto-merge outcome from the call's exit status alone returns `auto-merge: unavailable — needs manual merge` even when the PR is already `state: MERGED`. Repro: 5 PRs in a 26-PR session against `mattsears18/mattsears18.com` (`allow_auto_merge: false`) all returned `unavailable` despite landing as MERGED.
+1.1. **Detect the `workflow`-OAuth-scope cause and name it distinctly — don't let it collapse into the generic `unavailable` ([#812](https://github.com/mattsears18/shipyard/issues/812)).** When the PR's diff touches `.github/workflows/`, GitHub blocks `enablePullRequestAutoMerge` for an OAuth-app token lacking the `workflow` scope, even though `repo` alone is sufficient for everything else the worker just did (`git push` uses a different credential path; `gh pr create` and a non-workflow `gh pr merge` don't touch this scope at all). The GraphQL error has a stable signature:
+
+   ```
+   GraphQL: Pull request refusing to allow an OAuth App to create or update workflow
+   `.github/workflows/<file>.yml` without `workflow` scope (enablePullRequestAutoMerge)
+   ```
+
+   Match it case-insensitively against the captured error text:
+
+   ```bash
+   WORKFLOW_SCOPE_BLOCKED=0
+   if printf '%s' "$MERGE_ARM_ERR" | grep -qi "without .workflow. scope"; then
+     WORKFLOW_SCOPE_BLOCKED=1
+   fi
+   ```
+
+   **Why this cause gets its own token instead of riding the generic `unavailable — needs manual merge` suffix.** The three things that can make `--auto` fail to arm want three different responses, and only one collapses cleanly into "manual merge, nothing more to say": repo-level auto-merge disabled is a repo-config decision (nothing to do); a transient `gh` failure is worth a retry; but a `workflow`-scope-missing token is a **deterministic, session-wide precondition** — every other workflow-touching PR this session (and `fix-main-ci` mode exists specifically to touch `.github/workflows/`) will hit the identical error, and no amount of per-PR retrying fixes it. Only a human running `gh auth refresh -h github.com -s workflow` once does. Lumping it into `unavailable` makes every occurrence look like an independent, unexplained failure instead of one root cause with one fix.
+
+   When `WORKFLOW_SCOPE_BLOCKED=1`, skip the generic step 1.5 categorization below entirely — the outcome is fixed, not read off `gh pr view`: report **`auto-merge: unavailable — gh token lacks workflow scope`** as the return-string suffix (see [issue-work.md step 8](../../agents/issue-worker/issue-work.md#8-return) for the exact line). Everything else about the `unavailable` path is unchanged — the PR is left OPEN and unarmed, step 2's check-rollup snapshot still runs for the `checks:` suffix, and you still never attempt to escalate your own token's scope (that's a human action, not something to route around).
+
+1.5. **Re-snapshot the PR's actual state before categorizing the auto-merge outcome.** Skip this step when step 1.1 already set `WORKFLOW_SCOPE_BLOCKED=1` — the outcome is already decided. Closes [#340](https://github.com/mattsears18/shipyard/issues/340) — `gh pr merge --auto` does NOT always error when `allow_auto_merge: false` is set at the repo level. When the dispatching user has admin permissions on a repo with auto-merge disabled, `gh` **silently falls through to a direct merge**: the PR lands immediately (if CI is green) or queues for merge (if pending). The call returns exit 0, `autoMergeRequest` is `null` because no auto-merge was armed, and a worker that decides the auto-merge outcome from the call's exit status alone returns `auto-merge: unavailable — needs manual merge` even when the PR is already `state: MERGED`. Repro: 5 PRs in a 26-PR session against `mattsears18/mattsears18.com` (`allow_auto_merge: false`) all returned `unavailable` despite landing as MERGED.
 
    The right check is to read both `state` and `autoMergeRequest` directly:
 
@@ -111,7 +131,7 @@ After `gh pr create` returns:
    Categorize into one of three base `auto-merge:` values for the return-string suffix:
    - `.autoMerge == true` → **`auto-merge: enabled`** (queued; auto-merge armed and waiting on checks)
    - `.state == "MERGED"` → **`auto-merge: merged-direct`** (gh's `--auto` call silently direct-merged because the repo has `allow_auto_merge: false` but the dispatching user has admin permissions; PR is already landed) — but see the `merged-direct-ungated` refinement below, which splits this case by whether CI had actually completed at merge time
-   - Otherwise (`.state == "OPEN"` AND `.autoMerge == false`) → **`auto-merge: unavailable — needs manual merge`** (the call genuinely failed and no merge happened)
+   - Otherwise (`.state == "OPEN"` AND `.autoMerge == false`) → **`auto-merge: unavailable — needs manual merge`** (the call genuinely failed and no merge happened). This bucket is for the generic/transient/repo-config case only — a `workflow`-scope-missing failure is caught by step 1.1 *before* this categorization runs and reports the distinct `unavailable — gh token lacks workflow scope` token instead ([#812](https://github.com/mattsears18/shipyard/issues/812)); don't re-derive that distinction here from the plain `state`/`autoMergeRequest` read, which can't tell the two causes apart.
 
    **This categorization block runs only on the step-1 `--auto` path — never on the step-0.5 `gated-manual` branch ([#734](https://github.com/mattsears18/shipyard/issues/734)).** Two structurally different events both leave the PR at `state: MERGED` with `autoMergeRequest: null`, and `gh pr view`'s snapshot alone cannot tell them apart: (1) the step-0.5 detector correctly identified an ungated repo shape, the worker itself blocked on `gh pr checks --watch` until green and then merged by hand — the missing gate was re-created, nothing was skipped; (2) the step-1 `--auto` call was armed because the detector said `gated`, but `gh` still silently fell through to an immediate direct merge — a misprediction, and exactly the [#716](https://github.com/mattsears18/shipyard/issues/716) regression shape this detector exists to catch. If the worker source-of-truth for which branch fired isn't tracked separately, both events collapse onto the identical `merged-direct` token and the reconciler loses the one signal that would reveal case (2) — the failure mode reported in [#734](https://github.com/mattsears18/shipyard/issues/734), where 2 of 3 workers on the same session reported a correctly-gated manual merge with the same vocabulary a genuine ungated-merge regression would use. **The fix is procedural, not a new API read: track which branch you took.** If you executed the step-0.5 green-checks merge, you already know the outcome is `gated-manual` — return that token directly and skip this categorization block. Only fall through to `merged-direct`/`merged-direct-ungated`/`enabled`/`unavailable` when you actually called `gh pr merge --auto` in step 1. Reaching `merged-direct` (or `merged-direct-ungated`) on a PR where step 0.5's detector returned `ungated` means the manual-merge branch was skipped somehow — treat that as a #716-class regression worth flagging loudly, not a routine outcome.
 

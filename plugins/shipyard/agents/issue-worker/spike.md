@@ -273,7 +273,7 @@ Identical mechanics to `issue-work` § 7 — one-shot snapshot, never `--watch`,
 
 | Disposition | Return string |
 |---|---|
-| Spike concluded — design doc + decomposition (+ optional PR-shipped slice) | `spiked+shipped #<N> via PR #<M> (auto-merge: <enabled\|gated-manual\|merged-direct\|merged-direct-ungated\|unavailable — needs manual merge\|gated — external-author origin, needs-human-review label applied>, checks: <green\|pending\|failing>, sub-issues: <#a,#b,...\|none>)` |
+| Spike concluded — design doc + decomposition (+ optional PR-shipped slice) | `spiked+shipped #<N> via PR #<M> (auto-merge: <enabled\|gated-manual\|merged-direct\|merged-direct-ungated\|unavailable — needs manual merge\|unavailable — gh token lacks workflow scope\|gated — external-author origin, needs-human-review label applied>, checks: <green\|pending\|failing>, sub-issues: <#a,#b,...\|none>)` |
 | Investigation surfaced a human-only decision | `spiked+needs-human-review #<N> (label applied)` |
 | Worktree reaped mid-run | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: <hash\|none>)` |
 | Blocked | `blocked #<N> at <stage>: <reason>` |

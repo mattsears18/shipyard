@@ -171,7 +171,7 @@ One line, matching the disposition. These extend the `issue-work` vocabulary; th
 
 | Disposition | Return string |
 |---|---|
-| Fixable (PR opened) | `investigated+fixed #<N> via PR #<M> (auto-merge: <enabled\|gated-manual\|merged-direct\|merged-direct-ungated\|unavailable — needs manual merge\|gated — external-author origin, needs-human-review label applied>, checks: <green\|pending\|failing>)` |
+| Fixable (PR opened) | `investigated+fixed #<N> via PR #<M> (auto-merge: <enabled\|gated-manual\|merged-direct\|merged-direct-ungated\|unavailable — needs manual merge\|unavailable — gh token lacks workflow scope\|gated — external-author origin, needs-human-review label applied>, checks: <green\|pending\|failing>)` |
 | Needs a human | `investigated+needs-human-review #<N> (label applied)` |
 | Not actionable — noise | `investigated+closed-noise #<N>` |
 | Not actionable — duplicate | `investigated+duplicate #<N> of #<K>` |
