@@ -71,6 +71,19 @@
 #         - candidate without/with empty stash skipped for an older valid one
 #         - agent-* worktrees ignored; stash contents whitespace-trimmed
 #         - bad-usage cases (missing flag, unknown flag)
+#  90-96) issue #836 fix 1 — classify-all bulk classification: empty layout,
+#         missing --repo-root, a mixed batch resolving no-lock / dead /
+#         self-ancestor / peer-alive in ONE call, oldest-first mtime
+#         ordering, peer-alive-stale via --peer-stale-min, bad-usage cases,
+#         no .git/worktrees dir at all
+#  97-104) issue #836 fix 2 — reap-stale bounded/checkpointed sweep:
+#         dry-run, real run + phase-tagged audit lines, --max-per-session
+#         cap (oldest-first) leaving the rest in `remaining`,
+#         --exclude-agent-id in-flight guard (issue #832) invisible to the
+#         summary, peer-alive deferred without eating the cap, two
+#         successive capped runs demonstrating forward-progress checkpoint
+#         behavior with no separate state file, bad-usage cases,
+#         --max-per-session 0
 #
 # Pure bash + `ps`. Run with:
 #   bash plugins/shipyard/scripts/tests/worktree-reap.test.sh
@@ -1970,6 +1983,349 @@ assert_exit_code "$?" "64" \
 SHIPYARD_PEER_LOCK_STALE_MIN=notanumber bash "$helper" classify-lock "$tmpdir/anything.lock" 2>/dev/null
 assert_exit_code "$?" "64" \
   "(89) SHIPYARD_PEER_LOCK_STALE_MIN=notanumber -> exit 64"
+
+# ============================================================================
+# classify-all subcommand tests (issue #836 fix 1)
+#
+# Bulk classification: reads every agent-* worktree's lock file and resolves
+# liveness for the WHOLE batch in O(1) subprocess calls (one `ps` snapshot,
+# one self-ancestor walk, one batched `stat`) instead of forking
+# classify-lock once per worktree. Same classification vocabulary as
+# classify-lock. Output is one line per worktree — `<name> <classification>
+# <lock-pid|null>` — sorted oldest-first by worktree-dir mtime.
+#
+# Matrix:
+#   90) no agent-* worktrees at all -> empty output, exit 0
+#   91) bad usage — missing --repo-root -> exit 64
+#   92) mixed classifications in one batch: no-lock / dead / self-ancestor /
+#       peer-alive, matching classify-lock's per-item verdict for each
+#   93) output sorted oldest-first by worktree-dir mtime
+#   94) peer-alive-stale via backdated lock + --peer-stale-min
+#   95) bad usage — unknown flag / malformed --orchestrator-pid /
+#       malformed --peer-stale-min -> exit 64
+#   96) --repo-root with no .git/worktrees dir at all -> empty output, exit 0
+# ============================================================================
+
+echo
+echo "worktree-reap.sh classify-all tests (issue #836 fix 1)"
+echo
+
+ca_repo="$tmpdir/ca-repo"
+
+reset_ca_layout() {
+  rm -rf "$ca_repo"
+  mkdir -p "$ca_repo"
+  (
+    cd "$ca_repo" || exit 1
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+  ) >/dev/null 2>&1
+}
+
+# Real linked worktree, same as reap-session-worktrees' rsw_add_worktree —
+# classify-all reads real `.git/worktrees/agent-<id>/locked` paths.
+ca_add_worktree() {
+  local id="$1"
+  git -C "$ca_repo" worktree add -q \
+    ".claude/worktrees/agent-$id" -b "do-work/issue-$id" >/dev/null 2>&1
+}
+
+run_classify_all() {
+  bash "$helper" classify-all --repo-root "$ca_repo" "$@" 2>/dev/null
+}
+
+# --- (90) no agent-* worktrees at all -> empty output, exit 0 ---
+reset_ca_layout
+result=$(run_classify_all)
+exit_code=$?
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(90) no agent-* worktrees -> empty output"
+assert_exit_code "$exit_code" "0" \
+  "(90a) no agent-* worktrees -> exit 0"
+
+# --- (91) bad usage — missing --repo-root -> exit 64 ---
+bash "$helper" classify-all 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(91) classify-all with no --repo-root -> exit 64"
+
+# --- (92) mixed classifications in one batch ---
+reset_ca_layout
+ca_add_worktree nolock
+ca_add_worktree dead
+ca_add_worktree self
+ca_add_worktree peer
+printf 'claude agent agent-dead (pid 999999)\n' \
+  > "$ca_repo/.git/worktrees/agent-dead/locked"
+printf 'claude agent agent-self (pid %s)\n' "$$" \
+  > "$ca_repo/.git/worktrees/agent-self/locked"
+(sleep 300) &
+ca_sibling_pid=$!
+sleep 0.05
+printf 'claude agent agent-peer (pid %s)\n' "$ca_sibling_pid" \
+  > "$ca_repo/.git/worktrees/agent-peer/locked"
+
+result=$(run_classify_all --orchestrator-pid "$$" | sort)
+expected=$(printf 'agent-dead dead 999999\nagent-nolock no-lock null\nagent-peer peer-alive %s\nagent-self self-ancestor %s' \
+  "$ca_sibling_pid" "$$")
+assert_equals "$result" "$expected" \
+  "(92) classify-all: no-lock / dead / self-ancestor / peer-alive all resolved in one call"
+
+kill "$ca_sibling_pid" 2>/dev/null
+wait "$ca_sibling_pid" 2>/dev/null
+
+# --- (93) output sorted oldest-first by worktree-dir mtime ---
+reset_ca_layout
+ca_add_worktree newer
+ca_add_worktree older
+backdate_minutes "$ca_repo/.claude/worktrees/agent-older" 120
+backdate_minutes "$ca_repo/.claude/worktrees/agent-newer" 5
+result=$(run_classify_all | awk '{print $1}')
+expected=$(printf 'agent-older\nagent-newer')
+assert_equals "$result" "$expected" \
+  "(93) classify-all output sorted oldest-first by worktree-dir mtime"
+
+# --- (94) peer-alive-stale via backdated lock + --peer-stale-min ---
+reset_ca_layout
+ca_add_worktree stale
+(sleep 300) &
+ca_sibling_pid=$!
+sleep 0.05
+printf 'claude agent agent-stale (pid %s)\n' "$ca_sibling_pid" \
+  > "$ca_repo/.git/worktrees/agent-stale/locked"
+backdate_minutes "$ca_repo/.git/worktrees/agent-stale/locked" 90
+result=$(run_classify_all)
+assert_equals "$result" "agent-stale peer-alive-stale $ca_sibling_pid" \
+  "(94) 90min-old peer lock + default 60min floor -> peer-alive-stale"
+result=$(run_classify_all --peer-stale-min 120)
+assert_equals "$result" "agent-stale peer-alive $ca_sibling_pid" \
+  "(94a) same lock + --peer-stale-min 120 -> not stale vs a higher floor"
+kill "$ca_sibling_pid" 2>/dev/null
+wait "$ca_sibling_pid" 2>/dev/null
+
+# --- (95) bad usage ---
+bash "$helper" classify-all --repo-root "$ca_repo" --bogus-flag 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(95) classify-all unknown flag -> exit 64"
+bash "$helper" classify-all --repo-root "$ca_repo" --orchestrator-pid notanumber 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(95a) classify-all malformed --orchestrator-pid -> exit 64"
+bash "$helper" classify-all --repo-root "$ca_repo" --peer-stale-min notanumber 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(95b) classify-all malformed --peer-stale-min -> exit 64"
+
+# --- (96) --repo-root with no .git/worktrees dir at all -> empty, exit 0 ---
+ca_bare="$tmpdir/ca-bare"
+rm -rf "$ca_bare"
+mkdir -p "$ca_bare"
+result=$(bash "$helper" classify-all --repo-root "$ca_bare" 2>/dev/null)
+exit_code=$?
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(96) no .git/worktrees dir -> empty output"
+assert_exit_code "$exit_code" "0" \
+  "(96a) no .git/worktrees dir -> exit 0"
+
+# ============================================================================
+# reap-stale subcommand tests (issue #836 fix 2)
+#
+# Bounded, checkpointed sweep built on classify-all: reaps at most
+# --max-per-session reap-eligible worktrees, oldest-first; peer-alive
+# worktrees are always deferred (never counted against the cap);
+# --exclude-agent-id (the in-flight guard, issue #832) skips a worktree
+# entirely before classification is even consulted; anything reap-eligible
+# beyond the cap is left untouched on disk — the on-disk backlog itself is
+# the checkpoint that lets a later session continue the sweep with no
+# separate state file.
+#
+# Matrix:
+#   97)  dry-run -> lines + summary emitted, nothing removed, no audit log
+#   98)  real run, no cap pressure -> all eligible reaped, audit lines
+#        carry phase "setup-3b"
+#   99)  --max-per-session caps removal (oldest-first); the rest survive on
+#        disk and are counted into `remaining`
+#   100) --exclude-agent-id (in-flight guard) — excluded worktree untouched
+#        and NOT counted in the summary at all
+#   101) peer-alive worktrees are deferred and do NOT count against the cap
+#   102) checkpoint behavior — two successive reap-stale runs with the same
+#        low cap between them clear more of the backlog than either run
+#        alone (forward progress across "sessions" with no separate state)
+#   103) bad usage — missing --repo-root / --session-id / unknown flag ->
+#        exit 64
+#   104) --max-per-session 0 -> nothing removed, everything eligible lands
+#        in `remaining`
+# ============================================================================
+
+echo
+echo "worktree-reap.sh reap-stale tests (issue #836 fix 2)"
+echo
+
+rs_repo="$tmpdir/rs-repo"
+rs_home="$tmpdir/rs-home"
+rs_audit_log="$rs_home/reap-audit.jsonl"
+
+reset_rs_layout() {
+  rm -rf "$rs_repo" "$rs_home"
+  mkdir -p "$rs_home"
+  mkdir -p "$rs_repo"
+  (
+    cd "$rs_repo" || exit 1
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+  ) >/dev/null 2>&1
+}
+
+rs_add_worktree() {
+  local id="$1"
+  git -C "$rs_repo" worktree add -q \
+    ".claude/worktrees/agent-$id" -b "do-work/issue-$id" >/dev/null 2>&1
+}
+
+run_rs() {
+  SHIPYARD_HOME="$rs_home" bash "$helper" reap-stale \
+    --repo-root "$rs_repo" \
+    --session-id "rs-test-session" \
+    "$@" 2>/dev/null
+}
+
+# --- (97) dry-run -> lines + summary, nothing removed, no audit log ---
+reset_rs_layout
+rs_add_worktree aaa
+rs_add_worktree bbb
+result=$(run_rs --dry-run)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=2 deferred=0 unreaped=0 remaining=0" \
+  "(97) dry-run summary line"
+[ -d "$rs_repo/.claude/worktrees/agent-aaa" ] && dry_kept=yes || dry_kept=no
+assert_equals "$dry_kept" "yes" \
+  "(97a) dry-run -> worktree NOT removed"
+[ -f "$rs_audit_log" ] && dry_audit=present || dry_audit=absent
+assert_equals "$dry_audit" "absent" \
+  "(97b) dry-run -> no audit-log write"
+
+# --- (98) real run, no cap pressure -> all eligible reaped, phase tagged ---
+reset_rs_layout
+rs_add_worktree aaa
+rs_add_worktree bbb
+result=$(run_rs)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=2 deferred=0 unreaped=0 remaining=0" \
+  "(98) real run summary line"
+[ -d "$rs_repo/.claude/worktrees/agent-aaa" ] && real_kept=yes || real_kept=no
+assert_equals "$real_kept" "no" \
+  "(98a) real run -> agent-aaa worktree removed"
+line_count=$(wc -l < "$rs_audit_log" 2>/dev/null | tr -d ' ')
+assert_equals "$line_count" "2" \
+  "(98b) real run -> two audit-log lines"
+phase_count=$(grep -c '"phase":"setup-3b"' "$rs_audit_log" 2>/dev/null | tr -d ' ')
+assert_equals "$phase_count" "2" \
+  "(98c) real run -> audit lines carry phase setup-3b"
+
+# --- (99) --max-per-session caps removal, oldest-first ---
+reset_rs_layout
+rs_add_worktree older
+rs_add_worktree newer
+backdate_minutes "$rs_repo/.claude/worktrees/agent-older" 120
+backdate_minutes "$rs_repo/.claude/worktrees/agent-newer" 5
+result=$(run_rs --max-per-session 1)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=1" \
+  "(99) cap=1 -> exactly one reaped, one left in remaining"
+[ -d "$rs_repo/.claude/worktrees/agent-older" ] && older_kept=yes || older_kept=no
+assert_equals "$older_kept" "no" \
+  "(99a) the OLDER worktree is the one reaped (oldest-first)"
+[ -d "$rs_repo/.claude/worktrees/agent-newer" ] && newer_kept=yes || newer_kept=no
+assert_equals "$newer_kept" "yes" \
+  "(99b) the newer worktree survives — left for a future session"
+
+# --- (100) --exclude-agent-id (in-flight guard, issue #832) ---
+reset_rs_layout
+rs_add_worktree aaa
+rs_add_worktree inflight
+result=$(run_rs --exclude-agent-id inflight)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+  "(100) excluded worktree is invisible to the summary entirely"
+[ -d "$rs_repo/.claude/worktrees/agent-inflight" ] && inflight_kept=yes || inflight_kept=no
+assert_equals "$inflight_kept" "yes" \
+  "(100a) excluded (in-flight) worktree is never touched"
+excluded_in_output=$(printf '%s\n' "$result" | grep -c "agent-inflight" || true)
+assert_equals "$excluded_in_output" "0" \
+  "(100b) excluded worktree produces no reaped:/deferred: line at all"
+
+# --- (101) peer-alive is deferred and does NOT count against the cap ---
+reset_rs_layout
+rs_add_worktree peer
+rs_add_worktree aaa
+(sleep 300) &
+rs_sibling_pid=$!
+sleep 0.05
+printf 'claude agent agent-peer (pid %s)\n' "$rs_sibling_pid" \
+  > "$rs_repo/.git/worktrees/agent-peer/locked"
+result=$(run_rs --max-per-session 1)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=1 unreaped=0 remaining=0" \
+  "(101) peer-alive deferred alongside a cap=1 reap — deferred doesn't eat the cap"
+[ -d "$rs_repo/.claude/worktrees/agent-peer" ] && peer_kept=yes || peer_kept=no
+assert_equals "$peer_kept" "yes" \
+  "(101a) peer-alive worktree is left on disk (deferred, not removed)"
+[ -d "$rs_repo/.claude/worktrees/agent-aaa" ] && aaa_kept=yes || aaa_kept=no
+assert_equals "$aaa_kept" "no" \
+  "(101b) the reap-eligible sibling still gets reaped under the same cap"
+kill "$rs_sibling_pid" 2>/dev/null
+wait "$rs_sibling_pid" 2>/dev/null
+
+# --- (102) checkpoint behavior — forward progress across successive runs ---
+# No separate checkpoint FILE is used (see reap_stale's docstring) — the
+# on-disk backlog itself is the checkpoint. Two runs at cap=1 against a
+# 3-worktree backlog should together clear 2 of the 3, oldest-first, with
+# nothing re-processed or skipped.
+reset_rs_layout
+rs_add_worktree a
+rs_add_worktree b
+rs_add_worktree c
+backdate_minutes "$rs_repo/.claude/worktrees/agent-a" 180
+backdate_minutes "$rs_repo/.claude/worktrees/agent-b" 120
+backdate_minutes "$rs_repo/.claude/worktrees/agent-c" 60
+run_rs --max-per-session 1 >/dev/null
+first_remaining=$(find "$rs_repo/.claude/worktrees" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | wc -l | tr -d ' ')
+assert_equals "$first_remaining" "2" \
+  "(102) first session's sweep leaves 2 of 3 (checkpoint = on-disk state)"
+run_rs --max-per-session 1 >/dev/null
+second_remaining=$(find "$rs_repo/.claude/worktrees" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | wc -l | tr -d ' ')
+assert_equals "$second_remaining" "1" \
+  "(102a) second session's sweep continues from where the first left off"
+[ -d "$rs_repo/.claude/worktrees/agent-c" ] && c_survives=yes || c_survives=no
+assert_equals "$c_survives" "yes" \
+  "(102b) the newest worktree (c) is still the one left after two oldest-first passes"
+
+# --- (103) bad usage ---
+SHIPYARD_HOME="$rs_home" bash "$helper" reap-stale \
+  --session-id "x" 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(103) reap-stale missing --repo-root -> exit 64"
+SHIPYARD_HOME="$rs_home" bash "$helper" reap-stale \
+  --repo-root "$rs_repo" 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(103a) reap-stale missing --session-id -> exit 64"
+SHIPYARD_HOME="$rs_home" bash "$helper" reap-stale \
+  --repo-root "$rs_repo" --session-id "x" --bogus-flag 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(103b) reap-stale unknown flag -> exit 64"
+
+# --- (104) --max-per-session 0 -> nothing removed, all land in remaining ---
+reset_rs_layout
+rs_add_worktree aaa
+rs_add_worktree bbb
+result=$(run_rs --max-per-session 0)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=2" \
+  "(104) --max-per-session 0 -> both worktrees land in remaining, untouched"
+[ -d "$rs_repo/.claude/worktrees/agent-aaa" ] && zero_cap_kept=yes || zero_cap_kept=no
+assert_equals "$zero_cap_kept" "yes" \
+  "(104a) --max-per-session 0 -> nothing actually removed"
 
 echo
 if (( fail > 0 )); then

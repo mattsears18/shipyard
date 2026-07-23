@@ -134,6 +134,14 @@ assert_equals "$("$helper" get concurrency.default)" "1" "get concurrency.defaul
 # prevents an accidental flip to conservative pinning.
 assert_equals "$("$helper" get dependencies.new_dep_version)" "latest-stable" "get dependencies.new_dep_version returns latest-stable (issue #694)"
 
+# worktree_reap.max_per_session / warn_threshold — issue #836: the step-3b
+# cross-session stale-worktree sweep is bounded (default 10 per session,
+# oldest-first) and the session-start advisory fires once the on-disk
+# agent-* count meets/exceeds warn_threshold (default 20). Asserting the
+# literals here prevents an accidental drift in either default.
+assert_equals "$("$helper" get worktree_reap.max_per_session)" "10" "get worktree_reap.max_per_session returns 10 (issue #836)"
+assert_equals "$("$helper" get worktree_reap.warn_threshold)" "20" "get worktree_reap.warn_threshold returns 20 (issue #836)"
+
 # dispatch.substrate — RETIRED (#791). #787 scaffolded the Dynamic Workflows
 # substrate, #788/#789 wired all seven modes to it, and #790 flipped the built-in
 # default to "workflow" while retaining the legacy "agent" path for one release
@@ -877,6 +885,36 @@ assert_exit_code "$?" 70 "merge_gate rejects unknown fields"
 echo '{"version":1,"merge_gate":{"serialize":true}}' > "$repo/shipyard.config.json"
 "$helper" set merge_gate.serialize false --local
 assert_equals "$("$helper" get merge_gate.serialize)" "false" "local layer overrides repo for merge_gate.serialize"
+
+# --------------------------------------------------------------------------
+echo "== worktree_reap — bounded/checkpointed sweep + threshold warning (issue #836)"
+
+# A valid full block validates.
+echo '{"version":1,"worktree_reap":{"max_per_session":25,"warn_threshold":50}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "worktree_reap accepts a full valid block"
+assert_equals "$("$helper" get worktree_reap.max_per_session)" "25" "repo override returns max_per_session"
+assert_equals "$("$helper" get worktree_reap.warn_threshold)" "50" "repo override returns warn_threshold"
+
+# max_per_session: 0 is allowed (disables removal, minimum: 0).
+echo '{"version":1,"worktree_reap":{"max_per_session":0}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "worktree_reap.max_per_session accepts 0 (disables removal)"
+
+# Schema rejects a negative max_per_session.
+echo '{"version":1,"worktree_reap":{"max_per_session":-1}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "worktree_reap.max_per_session rejects a negative value"
+
+# Schema rejects a non-integer warn_threshold.
+echo '{"version":1,"worktree_reap":{"warn_threshold":"lots"}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "worktree_reap.warn_threshold rejects a non-integer"
+
+# Schema rejects unknown worktree_reap fields (additionalProperties: false).
+echo '{"version":1,"worktree_reap":{"banana":true}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "worktree_reap rejects unknown fields"
 
 # Reset to valid
 rm -rf "$repo/.shipyard"

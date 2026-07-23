@@ -404,79 +404,96 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
   # 3b — Reap stale agent worktrees from dead Claude Code sessions. Affects future
   # dispatch slot availability, not the first batch.
   #
-  # Issue #284 — the actual `git worktree remove` and the audit-log JSONL write
-  # are encapsulated in `worktree-reap.sh reap`. The helper performs the
-  # remove (or skips it for `--action deferred`) and writes one audit line
-  # in a single transaction, so the audit log is impossible to skip.
+  # Issue #836 — this step used to loop `classify-lock` once PER worktree
+  # (one full script re-invocation, each forking its own `ps`/`stat`
+  # subprocesses) and remove every reap-eligible one unbounded. On a repo
+  # with a large accumulated backlog (the #836 repro: 60 worktrees, ~1.6GB
+  # each, ~90GB total) that loop blew its time budget before classifying a
+  # single candidate. It's replaced below by `worktree-reap.sh reap-stale`
+  # — the single executable source of truth for both the bulk classify
+  # (fix 1: one `ps` call / one self-ancestor walk / one batched `stat` for
+  # the whole batch, instead of O(n) subprocess forks) and the bounded,
+  # checkpointed removal (fix 2: reaps at most `worktree_reap.max_per_session`
+  # per session, oldest-first; the on-disk backlog left behind IS the
+  # checkpoint, so a session that can't clear it all still makes forward
+  # progress and the next session's sweep continues from there). See
+  # `scripts/worktree-reap.sh`'s `classify_all` / `reap_stale` docstrings
+  # for the full algorithm.
   cd "$(git rev-parse --show-toplevel)"
-  # Detect the orchestrator's PID once per loop and export it so every
-  # classify-lock call short-circuits to `self-ancestor` when the lock
-  # holds our own PID (issue #263). The harness writes the orchestrator's
-  # PID into every dispatched agent's lock; without this declaration the
-  # ancestor walk inside classify-lock can fail to find it whenever an
-  # intermediate harness layer returns empty PPID.
+
+  # Threshold warning (issue #836 fix 4) — surface a large agent-* backlog
+  # in the session banner even though the per-session cap means it won't
+  # all clear in one pass. Two cheap reads gate the (potentially slower)
+  # size probe: only pay for `du` when the count actually crosses the
+  # threshold.
+  wt_count=$(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | wc -l | tr -d ' ')
+  warn_threshold=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get worktree_reap.warn_threshold 2>/dev/null || echo "20")
+  if [ "${wt_count:-0}" -gt 0 ] && [ "${wt_count:-0}" -ge "${warn_threshold:-20}" ] 2>/dev/null; then
+    # `find` (not a bare `.claude/worktrees/agent-*` glob) feeds `du -sk` so
+    # the zsh nomatch hazard the #335 comment above already documents for
+    # the `agent-*` find loop can't fire here either. Single `du` invocation
+    # over every path at once (not one call per worktree) — `du` walks the
+    # same file set either way, so batching is a pure subprocess-count win,
+    # same rationale as classify-all's batched `ps`/`stat`.
+    reclaimable_kb=$(find .claude/worktrees -maxdepth 1 -type d -name 'agent-*' -print0 2>/dev/null \
+      | xargs -0 du -sk 2>/dev/null | awk '{sum+=$1} END{print sum+0}')
+    reclaimable_human=$(( (reclaimable_kb + 1023) / 1024 ))
+    cat <<EOF
+⚠️  worktree backlog: ${wt_count} agent-* worktrees on disk (~${reclaimable_human} MB reclaimable),
+   at or above the ${warn_threshold}-worktree warn threshold (worktree_reap.warn_threshold).
+   This session's step-3b sweep reaps at most worktree_reap.max_per_session
+   of them (oldest-first) — the rest are left for subsequent sessions to
+   continue draining. See issue #836 if the backlog isn't shrinking session
+   over session.
+EOF
+  fi
+
+  # Detect the orchestrator's PID once and export it so classify-all's
+  # self-ancestor short-circuit fires reliably (issue #263) — the harness
+  # writes the orchestrator's PID into every dispatched agent's lock, and
+  # without this declaration the ancestor walk can fail to find it whenever
+  # an intermediate harness layer returns empty PPID.
   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+
   # In-flight guard (issue #832) — snapshot the set of agent-ids this
-  # session currently has dispatched, BEFORE the loop below ever consults
-  # classify-lock. This background group is fired fire-and-forget from
+  # session currently has dispatched, BEFORE reap-stale ever consults
+  # classification. This background group is fired fire-and-forget from
   # step 0.7 and runs CONCURRENTLY with the first dispatch (step 7) — a
   # worker dispatched moments earlier can already have a worktree on disk
   # whose harness-written lock names a PID that is already gone (an
   # intermediate spawn-time process, not the long-lived agent process).
-  # classify-lock has no way to tell that apart from a genuinely-dead lock
-  # and returns `dead` — reap-eligible — either way. In-flight membership
-  # is authoritative liveness; the lock file's classification is only a
-  # fallback for worktrees THIS session doesn't own (cross-session
-  # stragglers, which is what step 3b exists to clean up). See
-  # `commands/do-work/dont.md`'s "Don't reap a live-PID worktree" bullet.
+  # Classification alone has no way to tell that apart from a genuinely-dead
+  # lock and would call it `dead` — reap-eligible — either way. In-flight
+  # membership is authoritative liveness; the lock file's classification is
+  # only a fallback for worktrees THIS session doesn't own (cross-session
+  # stragglers, which is what step 3b exists to clean up). Branch name is
+  # NEVER a liveness signal — see `commands/do-work/dont.md`'s "Don't reap
+  # a live-PID worktree" bullet for why a name-based filter has a race
+  # window that would delete an in-flight agent.
   in_flight_agent_ids=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
     --session-id "<session-id>" --path .in_flight 2>/dev/null \
     | jq -r '.[]?.agent_id // empty' 2>/dev/null)
-  # Use `find` instead of a bare `agent-*` glob so the loop survives zsh's
-  # default `nomatch` option when no agent worktrees exist
-  # ([#335](https://github.com/mattsears18/shipyard/issues/335)). Bare globs
-  # raise a fatal error under zsh and abort the entire bg subshell —
-  # including the remaining cleanup sub-steps (3c orphan-branch triage).
-  # `find` exits 0 on no matches; the loop body simply doesn't iterate.
-  for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
-    [ -d "$wt_dir" ] || continue
-    name=$(basename "$wt_dir")
-    # In-flight guard (issue #832) — skip BEFORE classify-lock, not after.
-    # A currently-dispatched slot's worktree is never reap-eligible
-    # regardless of what the lock file classifies as.
-    case $'\n'"$in_flight_agent_ids"$'\n' in
-      *$'\n'"${name#agent-}"$'\n'*) continue ;;
-    esac
-    worktree_path=$(git worktree list --porcelain | awk -v n="$name" '/^worktree /{p=$2} /^branch /{b=$2} /^$/{if (p ~ n) print p}' | head -1)
-    [ -z "$worktree_path" ] && worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
-    [ -z "$worktree_path" ] && continue
-    classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
-    # Extract the lock PID for the audit log (best effort; null literal when
-    # the lock file is missing or unparseable).
-    lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
-    [ -z "$lock_pid" ] && lock_pid="null"
-    if [ "$classification" = "peer-alive" ]; then
-      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-        --action deferred \
-        --worktree-path "$worktree_path" \
-        --worktree-name "$name" \
-        --session-id "<session-id>" \
-        --reason "peer-alive" \
-        --lock-pid "$lock_pid" \
-        --phase "setup-3b" 2>/dev/null || true
-      continue
-    fi
-    git worktree unlock "$worktree_path" 2>/dev/null
-    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-      --action reaped \
-      --worktree-path "$worktree_path" \
-      --worktree-name "$name" \
-      --session-id "<session-id>" \
-      --classification "$classification" \
-      --lock-pid "$lock_pid" \
-      --phase "setup-3b" 2>/dev/null || true
-  done
-  git worktree prune
+  exclude_flags=()
+  while IFS= read -r aid; do
+    [ -z "$aid" ] && continue
+    exclude_flags+=(--exclude-agent-id "$aid")
+  done <<< "$in_flight_agent_ids"
+
+  max_per_session=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get worktree_reap.max_per_session 2>/dev/null || echo "10")
+
+  reap_output=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap-stale \
+    --repo-root "$(pwd)" \
+    --session-id "<session-id>" \
+    --max-per-session "${max_per_session:-10}" \
+    "${exclude_flags[@]}" 2>/dev/null)
+
+  # The summary line is always the LAST line of reap-stale's output —
+  # surface it verbatim so the reaped-vs-deferred-vs-remaining backlog is
+  # visible rather than silent (issue #836 fix 2's "emit a one-line count").
+  summary_line=$(printf '%s\n' "$reap_output" | tail -1)
+  echo "[setup-3b] ${summary_line}"
+
+  git worktree prune 2>/dev/null || true
 
   # 3c — Orphan worktree triage (discovery + handling). The discovery is cheap;
   # the expensive push/PR-create branch only fires when orphans exist. Neither

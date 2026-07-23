@@ -100,6 +100,53 @@
 # flows through to every call site (setup 3b, steady-state §2d, drain
 # #370, step B, A.0.5, A.1, cleanup-summary) with no per-site change.
 #
+#   classify-all --repo-root <path> [--orchestrator-pid <N>]
+#        [--peer-stale-min <N>]
+#     Issue #836 — bulk classification. The per-worktree loop that used to
+#     call `classify-lock` once per `agent-*` worktree forked one process
+#     PER worktree, each of which forked its own `ps`/`stat` subprocesses —
+#     O(n) subprocess cost that timed out before classifying a single
+#     candidate on a 60-worktree backlog. `classify-all` reads every lock
+#     file and enumerates every worktree in ONE pass, then resolves PID
+#     liveness for the WHOLE batch with exactly one `ps -e -o pid=` call
+#     (checked in-memory per lock), walks the self-ancestor chain exactly
+#     once, and batch-`stat`s every worktree directory's mtime in one call.
+#     Same classification vocabulary as `classify-lock`. Emits one line per
+#     `agent-*` worktree: `<name> <classification> <lock-pid|null>`, sorted
+#     oldest-first by worktree-dir mtime so a caller implementing a
+#     bounded, oldest-first reap can consume the output directly.
+#     Exit codes:
+#       0  enumeration succeeded (output may be empty)
+#       64 bad usage (missing --repo-root, malformed flag value)
+#
+#   reap-stale --repo-root <path> --session-id <id>
+#        [--max-per-session <K>] [--exclude-agent-id <id> ...]
+#        [--orchestrator-pid <N>] [--peer-stale-min <N>] [--dry-run]
+#     Issue #836 fix 2 — bound + checkpoint the cross-session stale-
+#     worktree sweep. Built on `classify-all`: reaps at most
+#     `--max-per-session` reap-eligible worktrees this session, oldest
+#     first; peer-alive worktrees are always deferred (not counted against
+#     the cap); anything reap-eligible beyond the cap is left untouched on
+#     disk — the remaining backlog on disk IS the checkpoint, so the next
+#     session's sweep naturally continues from where this one stopped with
+#     no separate state file to maintain. `--exclude-agent-id` (repeatable)
+#     excludes a worktree from consideration entirely, BEFORE
+#     classification is even consulted — the in-flight guard (issue #832):
+#     a currently-dispatched slot's worktree must never be reaped
+#     regardless of what its lock classifies as, because branch name is
+#     never a liveness signal (see commands/do-work/dont.md).
+#     Stdout: one `reaped: <name>` / `unreaped: <name>` (issue #712 —
+#       verified end state, not intent) / `deferred: <name>` line per
+#       acted-upon worktree, followed by exactly one summary line:
+#       `summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN>`.
+#       `remaining` is the count left on disk purely because the cap was
+#       reached — the backlog a future session will continue from.
+#     --dry-run emits the same lines/summary WITHOUT removing anything or
+#     writing audit-log entries.
+#     Exit codes:
+#       0  sweep succeeded (output is always at least the summary line)
+#       64 bad usage (missing required flag, malformed flag value)
+#
 #   detect-orchestrator-pid [<comm-name>]
 #     Walks the process-ancestor chain and prints the PID of the nearest
 #     ancestor whose `comm` matches <comm-name> (default `claude`). Empty
@@ -359,6 +406,14 @@ usage() {
   cat <<'EOF' >&2
 Usage:
   worktree-reap.sh classify-lock <lock-file-path> [--orchestrator-pid <N>]
+  worktree-reap.sh classify-all --repo-root <path> \
+                                [--orchestrator-pid <N>] \
+                                [--peer-stale-min <N>]
+  worktree-reap.sh reap-stale --repo-root <path> --session-id <id> \
+                              [--max-per-session <K>] \
+                              [--exclude-agent-id <id> ...] \
+                              [--orchestrator-pid <N>] \
+                              [--peer-stale-min <N>] [--dry-run]
   worktree-reap.sh detect-orchestrator-pid [<comm-name>]
   worktree-reap.sh derive-session-id --repo-root <path>
   worktree-reap.sh find-orphan-orchestrators --repo-root <path> \
@@ -385,6 +440,33 @@ classify-lock — Prints one of: no-lock | dead | self-ancestor |
                           the staleness floor (default 60 min;
                           SHIPYARD_PEER_LOCK_STALE_MIN / --peer-stale-min)
                           — treated as reapable, same as dead/self-ancestor.
+
+classify-all              — Issue #836. Bulk classification: reads every
+                          agent-* worktree's lock file and enumerates
+                          liveness for the WHOLE batch in O(1) subprocess
+                          calls (one `ps` snapshot, one self-ancestor walk,
+                          one batched `stat`) instead of forking
+                          classify-lock once per worktree. Emits one line
+                          per worktree — `<name> <classification>
+                          <lock-pid|null>` — sorted oldest-first by
+                          worktree-dir mtime. Same classification
+                          vocabulary as classify-lock.
+
+reap-stale                — Issue #836 fix 2. Bounded, checkpointed sweep
+                          built on classify-all: reaps at most
+                          --max-per-session (default 10) reap-eligible
+                          worktrees, oldest-first, defers peer-alive ones,
+                          and leaves the remainder on disk — the on-disk
+                          backlog itself is the checkpoint, so a later
+                          session picks up where this one left off with no
+                          separate state file. --exclude-agent-id (repeat)
+                          skips a worktree entirely before classification
+                          is even consulted (issue #832 in-flight guard —
+                          branch name is never a liveness signal). Emits
+                          reaped:/unreaped:/deferred: lines plus one
+                          `summary: reaped=<R> deferred=<D> unreaped=<U>
+                          remaining=<REMAIN>` line. --dry-run skips
+                          removes and audit writes.
 
 detect-orchestrator-pid — Walks the process-ancestor chain and prints the
                           PID of the nearest ancestor whose `comm` matches
@@ -749,6 +831,272 @@ classify_lock() {
   fi
 
   echo "peer-alive"
+  return 0
+}
+
+# Issue #836 — bulk classification. `classify-lock` is correct but costs one
+# full script re-invocation PLUS its own internal `ps`/`stat` subprocess
+# forks PER worktree. On a repo that has accumulated many orphaned agent
+# worktrees (the #836 repro: 60 worktrees, ~1.6GB each), step 3b's loop
+# forked `classify-lock` 60 times — each fork paying its own `ps -p`/`stat`
+# cost — and blew the caller's time budget before classifying a single
+# candidate. `classify-all` reads every lock file and enumerates every
+# worktree directory in ONE pass, then does the liveness check with exactly
+# ONE `ps` call for the whole batch (a single `ps -e -o pid=` snapshot,
+# checked in-memory per lock — not one `ps -p <pid>` per worktree), and the
+# self-ancestor walk exactly ONCE (not once per worktree). The only
+# remaining subprocess calls are: one `find`, one `ps`, one self-ancestor
+# walk, one batched `stat` over every worktree directory's mtime, and — only
+# for locks that reach the peer-alive branch (alive, not self/ancestor) — a
+# `stat` on that lock file's mtime for the staleness gate. This is the same
+# classification semantics as `classify-lock`, computed for N worktrees in
+# O(1) subprocess calls instead of O(N).
+#
+# Output: one line per `agent-*` worktree found under
+# <repo-root>/.git/worktrees, space-separated:
+#   <name> <classification> <lock-pid|null> <worktree-dir-mtime-epoch|0>
+# classification is one of: no-lock | dead | self-ancestor |
+#   peer-alive-stale | peer-alive — identical vocabulary to classify-lock.
+# Empty stdout when there are no agent-* worktrees. Lines are sorted by
+# worktree-dir mtime ascending (oldest first) so a caller implementing an
+# oldest-first reap cap (issue #836 fix 2) can consume the output directly
+# without a separate sort pass.
+#
+# Args (all optional except --repo-root):
+#   --repo-root <path>          (required) repo root containing .git/worktrees
+#                                and .claude/worktrees
+#   --orchestrator-pid <N>      same semantics as classify-lock
+#   --peer-stale-min <N>        same semantics as classify-lock (default 60)
+#
+# Exit codes: 0 (enumeration succeeded, output may be empty), 64 (bad usage).
+classify_all() {
+  local repo_root=""
+  local orchestrator_pid="${SHIPYARD_ORCHESTRATOR_PID:-}"
+  local peer_stale_min="${SHIPYARD_PEER_LOCK_STALE_MIN:-60}"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --orchestrator-pid)
+        if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
+          echo "classify-all: --orchestrator-pid requires a non-negative integer (got: ${2:-})" >&2
+          return 64
+        fi
+        orchestrator_pid="$2"
+        shift 2
+        ;;
+      --orchestrator-pid=*)
+        local oa_val="${1#--orchestrator-pid=}"
+        if ! [[ "$oa_val" =~ ^[0-9]+$ ]]; then
+          echo "classify-all: --orchestrator-pid requires a non-negative integer (got: $oa_val)" >&2
+          return 64
+        fi
+        orchestrator_pid="$oa_val"
+        shift
+        ;;
+      --peer-stale-min)
+        if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
+          echo "classify-all: --peer-stale-min requires a non-negative integer (got: ${2:-})" >&2
+          return 64
+        fi
+        peer_stale_min="$2"
+        shift 2
+        ;;
+      --peer-stale-min=*)
+        local ps_val="${1#--peer-stale-min=}"
+        if ! [[ "$ps_val" =~ ^[0-9]+$ ]]; then
+          echo "classify-all: --peer-stale-min requires a non-negative integer (got: $ps_val)" >&2
+          return 64
+        fi
+        peer_stale_min="$ps_val"
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "classify-all: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "classify-all: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "classify-all: --repo-root is required" >&2
+    return 64
+  fi
+  if [ -n "$orchestrator_pid" ] && ! [[ "$orchestrator_pid" =~ ^[0-9]+$ ]]; then
+    echo "classify-all: SHIPYARD_ORCHESTRATOR_PID must be a non-negative integer (got: $orchestrator_pid)" >&2
+    return 64
+  fi
+  if ! [[ "$peer_stale_min" =~ ^[0-9]+$ ]]; then
+    echo "classify-all: SHIPYARD_PEER_LOCK_STALE_MIN must be a non-negative integer (got: $peer_stale_min)" >&2
+    return 64
+  fi
+
+  local git_wt_dir="$repo_root/.git/worktrees"
+  [ -d "$git_wt_dir" ] || return 0
+
+  # Bash-3.2 compatible throughout (no `declare -A` / associative arrays —
+  # macOS ships bash 3.2 as its default /usr/bin/env resolution, and every
+  # other function in this file is already written to that floor). Set
+  # membership below uses the same sentinel-delimited-string pattern
+  # `reap_session_worktrees`'s `seen_csv` already uses in this file, and
+  # name-keyed lookups use parallel indexed arrays with a linear scan —
+  # cheap in-memory string comparisons at the tens-to-low-hundreds scale
+  # this sweep runs at, and still far cheaper than the subprocess-per-
+  # worktree cost this subcommand exists to eliminate.
+
+  # Pass 1 — enumerate every agent-* worktree dir under .git/worktrees in
+  # ONE find call, and read every lock file's PID with pure-bash regex
+  # matching (no subprocess fork per lock file). lock_exists[i] / lock_pids[i]
+  # are parallel arrays keyed by the SAME index as names[i]. Named
+  # `lock_pids` (plural) rather than `lock_pid` deliberately — `lock_pid`
+  # (singular, scalar) is already used by classify_lock/reap_action
+  # elsewhere in this file; a same-named local array here is functionally
+  # scope-safe but confuses static analysis across function boundaries.
+  local names=()
+  local lock_exists=()
+  local lock_pids=()
+  local d name lock_file content pid
+  while IFS= read -r d; do
+    [ -z "$d" ] && continue
+    name="${d##*/}"
+    names+=("$name")
+    lock_file="$git_wt_dir/$name/locked"
+    if [ -f "$lock_file" ]; then
+      lock_exists+=("1")
+      content=$(<"$lock_file")
+      if [[ "$content" =~ \(pid[[:space:]]+([0-9]+)\) ]]; then
+        pid="${BASH_REMATCH[1]}"
+      else
+        pid=""
+      fi
+    else
+      lock_exists+=("0")
+      pid=""
+    fi
+    lock_pids+=("$pid")
+  done < <(find "$git_wt_dir" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | sort)
+
+  [ ${#names[@]} -eq 0 ] && return 0
+
+  # Pass 2 — ONE `ps` call resolves liveness for EVERY pid in play at once:
+  # build a newline-bounded blob of every live pid on the system, then test
+  # membership per lock with a bash pattern match (no subprocess). This
+  # replaces what would otherwise be N `ps -p <pid>` / kill -0 subprocess
+  # calls — the O(n) subprocess cost issue #836 reports.
+  local alive_blob=$'\n'
+  local live_pid
+  while IFS= read -r live_pid; do
+    live_pid="${live_pid// /}"
+    [ -n "$live_pid" ] && alive_blob+="${live_pid}"$'\n'
+  done < <(ps -e -o pid= 2>/dev/null)
+
+  # Pass 3 — self-ancestor set, computed ONCE for the whole batch (not once
+  # per worktree the way a per-worktree classify-lock call would). Same
+  # blob-membership technique as alive_blob above.
+  local self_ancestor_blob=$'\n'
+  local sa_pid
+  while IFS= read -r sa_pid; do
+    [ -n "$sa_pid" ] && self_ancestor_blob+="${sa_pid}"$'\n'
+  done < <(self_ancestor_pids)
+
+  # Pass 4 — batch-stat every worktree DIRECTORY's mtime in one call (used
+  # for oldest-first ordering by an issue-#836-fix-2 caller). GNU and
+  # BSD/macOS `stat` differ in flag shape; try GNU first, fall back to BSD.
+  # Both forms accept multiple paths in a single invocation and print one
+  # line per path. stat_names[i] / stat_mtimes[i] are parallel arrays,
+  # looked up by linear scan below (order isn't assumed to match `names`).
+  local wt_root="$repo_root/.claude/worktrees"
+  local stat_paths=()
+  for name in "${names[@]}"; do
+    stat_paths+=("$wt_root/$name")
+  done
+  local stat_out
+  stat_out=$(stat -c '%Y %n' "${stat_paths[@]}" 2>/dev/null)
+  if [ -z "$stat_out" ]; then
+    stat_out=$(stat -f '%m %N' "${stat_paths[@]}" 2>/dev/null)
+  fi
+  local stat_names=()
+  local stat_mtimes=()
+  local mline mtime mpath
+  while IFS= read -r mline; do
+    [ -z "$mline" ] && continue
+    mtime="${mline%% *}"
+    mpath="${mline#* }"
+    stat_names+=("${mpath##*/}")
+    stat_mtimes+=("$mtime")
+  done <<< "$stat_out"
+
+  # Pass 5 — classify each worktree from the in-memory data built above.
+  # Only a peer-alive candidate (alive, not self/ancestor) pays a per-lock
+  # `stat` call, for the staleness gate — every other branch is pure
+  # in-memory lookup / pattern match.
+  local out_lines=()
+  local i found_mtime j classification
+  for ((i = 0; i < ${#names[@]}; i++)); do
+    name="${names[$i]}"
+    pid="${lock_pids[$i]}"
+    classification=""
+    if [ "${lock_exists[$i]}" = "0" ]; then
+      classification="no-lock"
+    elif [ -z "$pid" ]; then
+      classification="dead"
+    elif [[ "$alive_blob" == *$'\n'"$pid"$'\n'* ]]; then
+      if [ -n "$orchestrator_pid" ] && [ "$pid" = "$orchestrator_pid" ]; then
+        classification="self-ancestor"
+      elif [[ "$self_ancestor_blob" == *$'\n'"$pid"$'\n'* ]]; then
+        classification="self-ancestor"
+      else
+        local lock_mtime now age_min
+        lock_mtime=$(stat -c %Y "$git_wt_dir/$name/locked" 2>/dev/null \
+          || stat -f %m "$git_wt_dir/$name/locked" 2>/dev/null)
+        now=$(date +%s 2>/dev/null || echo "")
+        if [ -n "$lock_mtime" ] && [ -n "$now" ]; then
+          age_min=$(( (now - lock_mtime) / 60 ))
+          if [ "$age_min" -ge "$peer_stale_min" ] 2>/dev/null; then
+            classification="peer-alive-stale"
+          else
+            classification="peer-alive"
+          fi
+        else
+          classification="peer-alive"
+        fi
+      fi
+    else
+      classification="dead"
+    fi
+
+    # Linear-scan lookup of this worktree's directory mtime by name.
+    found_mtime="0"
+    for ((j = 0; j < ${#stat_names[@]}; j++)); do
+      if [ "${stat_names[$j]}" = "$name" ]; then
+        found_mtime="${stat_mtimes[$j]}"
+        break
+      fi
+    done
+
+    out_lines+=("$found_mtime $name $classification ${pid:-null}")
+  done
+
+  # Emit sorted oldest-first by worktree-dir mtime (numeric sort on the
+  # leading field), then drop that sort key from the printed line.
+  printf '%s\n' "${out_lines[@]}" | sort -n -k1,1 | while IFS= read -r line; do
+    printf '%s\n' "${line#* }"
+  done
+
   return 0
 }
 
@@ -1829,6 +2177,271 @@ reap_session_worktrees() {
   return 0
 }
 
+# Issue #836 fix 2 — bound + checkpoint the cross-session stale-worktree
+# sweep. Built on top of `classify_all` (fix 1) so the whole sweep — batch
+# classify AND bounded reap — happens in one subcommand invocation instead
+# of the caller open-coding a loop in the spec's bash block.
+#
+# The problem this closes: step 3b's sweep has to walk EVERY `agent-*`
+# worktree still on disk, including a large backlog accumulated from prior
+# crashed sessions or sessions that predate the per-completion reap fixes
+# (#282/#334/#771). `git worktree remove` (even the #664 fast rename-aside
+# path) still costs a handful of subprocess forks per worktree, so an
+# unbounded sweep over a 60-worktree backlog can still outrun a session's
+# time budget. `reap-stale` caps how many it actually reaps THIS session
+# (oldest-first, `--max-per-session`, default matches
+# `worktree_reap.max_per_session` from shipyard-config.sh) and leaves the
+# rest untouched on disk for a subsequent session to continue — no separate
+# checkpoint FILE is needed, because "which worktrees are still on disk" IS
+# the checkpoint: each session that runs this sweep removes up to K more of
+# the oldest remaining ones, so the backlog shrinks monotonically session
+# over session even though no single session clears it in one pass.
+#
+# Excludes any worktree whose agent-id is in the caller-supplied in-flight
+# set (--exclude-agent-id, repeatable) BEFORE classification is even
+# consulted — a currently-dispatched slot's worktree must never be reaped
+# regardless of what its lock classifies as (issue #832; branch name is
+# never a liveness signal — see commands/do-work/dont.md).
+#
+# Algorithm:
+#   1. classify_all (already oldest-first by worktree-dir mtime).
+#   2. Skip any name in the exclude set entirely (no line emitted).
+#   3. peer-alive → deferred (not counted against the cap; always deferred).
+#   4. no-lock / dead / self-ancestor / peer-alive-stale → reap, up to
+#      --max-per-session of them (oldest first, since input is pre-sorted).
+#      Beyond the cap: left untouched, counted into the `remaining` total
+#      printed in the summary line — this session's forward progress.
+#
+# Output: one `reaped: <name>` / `unreaped: <name>` (issue #712 — reports
+# the VERIFIED end state, not the intent) / `deferred: <name>` line per
+# acted-upon worktree, followed by exactly one summary line:
+#   summary: reaped=<R> deferred=<D> remaining=<REMAIN>
+# `remaining` is the count of reap-eligible worktrees that were left on disk
+# because the cap was reached — the backlog a future session will continue
+# from. Empty-but-summary stdout (`summary: reaped=0 deferred=0 remaining=0`)
+# when there are no agent-* worktrees at all.
+#
+# --dry-run emits the same lines/summary WITHOUT removing anything or
+# writing audit-log entries (mirrors reap-session-worktrees' --dry-run).
+#
+# Args:
+#   --repo-root <path>          (required)
+#   --session-id <id>           (required) — passed through to reap_action
+#   --max-per-session <K>       (optional, default 10)
+#   --exclude-agent-id <id>     (optional, repeatable) — bare agent-id, NOT
+#                                the `agent-<id>` worktree name
+#   --orchestrator-pid <N>      (optional) — passed through to classify_all
+#   --peer-stale-min <N>        (optional) — passed through to classify_all
+#   --dry-run                   (optional)
+#
+# Exit codes: 0 (sweep succeeded, output may be summary-only), 64 (bad usage).
+reap_stale() {
+  local repo_root=""
+  local session_id=""
+  local max_per_session=10
+  local orchestrator_pid="${SHIPYARD_ORCHESTRATOR_PID:-}"
+  local peer_stale_min="${SHIPYARD_PEER_LOCK_STALE_MIN:-60}"
+  local dry_run=0
+  local -a exclude_ids=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --session-id)
+        session_id="${2:-}"
+        shift 2
+        ;;
+      --session-id=*)
+        session_id="${1#--session-id=}"
+        shift
+        ;;
+      --max-per-session)
+        if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
+          echo "reap-stale: --max-per-session requires a non-negative integer (got: ${2:-})" >&2
+          return 64
+        fi
+        max_per_session="$2"
+        shift 2
+        ;;
+      --max-per-session=*)
+        local mps_val="${1#--max-per-session=}"
+        if ! [[ "$mps_val" =~ ^[0-9]+$ ]]; then
+          echo "reap-stale: --max-per-session requires a non-negative integer (got: $mps_val)" >&2
+          return 64
+        fi
+        max_per_session="$mps_val"
+        shift
+        ;;
+      --exclude-agent-id)
+        [ -n "${2:-}" ] && exclude_ids+=("$2")
+        shift 2
+        ;;
+      --exclude-agent-id=*)
+        local _eid="${1#--exclude-agent-id=}"
+        [ -n "$_eid" ] && exclude_ids+=("$_eid")
+        shift
+        ;;
+      --orchestrator-pid)
+        orchestrator_pid="${2:-}"
+        shift 2
+        ;;
+      --orchestrator-pid=*)
+        orchestrator_pid="${1#--orchestrator-pid=}"
+        shift
+        ;;
+      --peer-stale-min)
+        peer_stale_min="${2:-}"
+        shift 2
+        ;;
+      --peer-stale-min=*)
+        peer_stale_min="${1#--peer-stale-min=}"
+        shift
+        ;;
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "reap-stale: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "reap-stale: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "reap-stale: --repo-root is required" >&2
+    return 64
+  fi
+  if [ -z "$session_id" ]; then
+    echo "reap-stale: --session-id is required" >&2
+    return 64
+  fi
+
+  # Anchor cwd — reap_action routes through fast_worktree_remove, which runs
+  # bare (cwd-dependent) `git worktree` commands. Same rationale as
+  # reap_session_worktrees above.
+  if ! cd "$repo_root" 2>/dev/null; then
+    echo "reap-stale: cannot cd to --repo-root: $repo_root" >&2
+    return 64
+  fi
+
+  # Build the exclude set (bare agent-ids -> agent-<id> worktree names) as a
+  # sentinel-delimited string for membership checks — bash-3.2 compatible
+  # (no associative arrays), same pattern reap_session_worktrees' `seen_csv`
+  # already uses in this file.
+  local excluded_blob="|"
+  local eid
+  # `${arr[@]+"${arr[@]}"}` is the bash-3.2-safe expansion for "possibly
+  # empty array under set -u" — bash < 4.4 treats a bare `"${arr[@]}"` on a
+  # zero-element array as an unbound-variable error under `set -u`, and
+  # --exclude-agent-id is commonly omitted entirely (no in-flight workers).
+  for eid in "${exclude_ids[@]+"${exclude_ids[@]}"}"; do
+    excluded_blob+="agent-${eid}|"
+  done
+
+  local -a classify_args=(--repo-root "$repo_root")
+  [ -n "$orchestrator_pid" ] && classify_args+=(--orchestrator-pid "$orchestrator_pid")
+  [ -n "$peer_stale_min" ] && classify_args+=(--peer-stale-min "$peer_stale_min")
+
+  # `attempt_count` gates the cap (it costs subprocess forks whether the
+  # removal succeeds or not); `reaped_count` / `unreaped_count` split the
+  # verified outcome of those attempts for the summary line.
+  local attempt_count=0
+  local reaped_count=0
+  local unreaped_count=0
+  local deferred_count=0
+  local remaining_count=0
+
+  local line name classification pid worktree_path
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    name="${line%% *}"
+    line="${line#* }"
+    classification="${line%% *}"
+    pid="${line#* }"
+
+    # In-flight guard (issue #832) — skip BEFORE classification is even
+    # consulted. A currently-dispatched slot's worktree is never
+    # reap-eligible regardless of what its lock classifies as.
+    case "$excluded_blob" in
+      *"|${name}|"*) continue ;;
+    esac
+
+    worktree_path="$repo_root/.claude/worktrees/$name"
+
+    if [ "$classification" = "peer-alive" ]; then
+      printf 'deferred: %s\n' "$name"
+      deferred_count=$((deferred_count + 1))
+      if [ "$dry_run" -eq 0 ]; then
+        reap_action \
+          --action deferred \
+          --worktree-path "$worktree_path" \
+          --worktree-name "$name" \
+          --session-id "$session_id" \
+          --reason "peer-alive" \
+          --phase "setup-3b" \
+          --lock-pid "$pid" \
+          >/dev/null 2>&1 || true
+      fi
+      continue
+    fi
+
+    # Reap-eligible (no-lock / dead / self-ancestor / peer-alive-stale) —
+    # only up to the cap, oldest-first (classify_all's output is already
+    # sorted that way). Beyond the cap: leave untouched for a future
+    # session — this IS the checkpoint (see docstring above).
+    if [ "$attempt_count" -ge "$max_per_session" ]; then
+      remaining_count=$((remaining_count + 1))
+      continue
+    fi
+    attempt_count=$((attempt_count + 1))
+
+    if [ "$dry_run" -eq 1 ]; then
+      printf 'reaped: %s\n' "$name"
+      reaped_count=$((reaped_count + 1))
+      continue
+    fi
+
+    reap_action \
+      --action reaped \
+      --worktree-path "$worktree_path" \
+      --worktree-name "$name" \
+      --session-id "$session_id" \
+      --classification "$classification" \
+      --phase "setup-3b" \
+      --lock-pid "$pid" \
+      >/dev/null 2>&1 || true
+
+    # Issue #712 — report the verified end state, not the intent.
+    if [ -e "$worktree_path" ]; then
+      printf 'unreaped: %s\n' "$name"
+      unreaped_count=$((unreaped_count + 1))
+    else
+      printf 'reaped: %s\n' "$name"
+      reaped_count=$((reaped_count + 1))
+    fi
+  done < <(classify_all "${classify_args[@]}")
+
+  printf 'summary: reaped=%s deferred=%s unreaped=%s remaining=%s\n' \
+    "$reaped_count" "$deferred_count" "$unreaped_count" "$remaining_count"
+
+  return 0
+}
+
 # Issue #712 — post-sweep verification: which worktrees are STILL on disk?
 #
 # The reap sweeps are fire-and-forget (`2>/dev/null || true`) and run inside a
@@ -1930,6 +2543,23 @@ main() {
     classify-lock)
       shift
       classify_lock "$@"
+      ;;
+    classify-all)
+      # Issue #836 — bulk classification. Reads every agent-* worktree's
+      # lock file and enumerates its liveness in O(1) subprocess calls
+      # total, instead of forking classify-lock (and its own internal
+      # ps/stat calls) once per worktree. See classify_all's docstring.
+      shift
+      classify_all "$@"
+      ;;
+    reap-stale)
+      # Issue #836 fix 2 — bounded, checkpointed cross-session stale-
+      # worktree sweep built on classify-all. Reaps at most
+      # --max-per-session (oldest-first), defers peer-alive, and leaves
+      # the rest on disk as a self-checkpointing backlog for the next
+      # session. See reap_stale's docstring.
+      shift
+      reap_stale "$@"
       ;;
     detect-orchestrator-pid)
       # Emit the PID of the nearest ancestor whose `comm` is `claude` (or

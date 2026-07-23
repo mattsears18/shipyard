@@ -210,6 +210,10 @@ DEFAULTS_JQ='{
   },
   "dependencies": {
     "new_dep_version": "latest-stable"
+  },
+  "worktree_reap": {
+    "max_per_session": 10,
+    "warn_threshold": 20
   }
 }'
 
