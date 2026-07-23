@@ -218,8 +218,11 @@ assert_contains "$shim_path" "774" \
 # The orchestrator's dispatch-routing files must now reference this mode —
 # the whole point of #774 is that spike-shaped issues get routed here instead
 # of parked or dispatched as a plain issue-work candidate.
-assert_contains "$dispatch_rules_path" "shipyard:spike-worker" \
-  "dispatch-rules.md routes to shipyard:spike-worker (#774)"
+# #791 retired the Agent-tool `subagent_type` routing (the Workflow substrate
+# takes no subagent_type), so the routing signal in dispatch-rules.md is the
+# mode name plus its per-mode spec, not the shim name.
+assert_contains "$dispatch_rules_path" "issue-worker/spike.md" \
+  "dispatch-rules.md routes mode: spike to the spike per-mode spec (#774, #791)"
 assert_contains "$dispatch_rules_path" "mode: spike" \
   "dispatch-rules.md's spike prompt template names mode: spike (#774)"
 assert_contains "$dispatch_rules_path" "Spike-shape detection" \

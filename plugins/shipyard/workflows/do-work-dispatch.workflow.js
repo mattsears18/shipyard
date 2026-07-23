@@ -2,28 +2,25 @@
  * do-work-dispatch.workflow.js — Dynamic Workflows scaffold for /shipyard:do-work
  * ==============================================================================
  *
- * PHASE 4 (issue #790, the substrate cutover — part of the #782 epic; carries the
- * 2.x -> 3.0.0 major bump). Phase 1 (#787) committed this file as an inert
- * reference scaffold alongside the existing hand-rolled `Agent`-tool orchestrator
- * (commands/do-work/dispatch-rules.md + steady-state.md). Phase 2 (#788) wired ONE
- * mode — `issue-work`. Phase 3 (#789) wired the REMAINING SIX — `fix-checks-only`,
- * `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`, `investigate`, `spike` —
- * against this script. Phase 4 (this state) FLIPS THE DEFAULT: `dispatch.substrate`
- * now defaults to `"workflow"`, so all seven `mode:`-driven workers dispatch
- * through the `Workflow` tool with schema-validated returns by default, with no
- * config. See dispatch-rules.md's "Workflow-substrate dispatch for every worker
- * mode" section for the full per-mode call-site walkthrough.
+ * PHASE 5 of 5 — THE ONLY DISPATCH SUBSTRATE (issue #791, completing the #782
+ * epic; carries the 3.x -> 4.0.0 major bump). Phase 1 (#787) committed this file
+ * as an inert reference scaffold alongside the then-live hand-rolled `Agent`-tool
+ * orchestrator (commands/do-work/dispatch-rules.md + steady-state.md). Phase 2
+ * (#788) wired ONE mode — `issue-work`. Phase 3 (#789) wired the REMAINING SIX —
+ * `fix-checks-only`, `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`,
+ * `investigate`, `spike`. Phase 4 (#790) flipped the built-in `dispatch.substrate`
+ * default from "agent" to "workflow", retaining the legacy path for one release as
+ * an instant-revert override. Phase 5 (this state) REMOVED that legacy path and
+ * DELETED the `dispatch.substrate` knob. See dispatch-rules.md's "Workflow-
+ * substrate dispatch" section for the full per-mode call-site walkthrough.
  *
- * STATUS as of #790:
- *   - `dispatch.substrate` now DEFAULTS to "workflow" — a session that never sets
- *     the config knob dispatches every mode through this script.
- *   - The legacy `Agent`-tool path is RETAINED, fully working, for one release as
- *     the instant-revert override: `/shipyard:config set dispatch.substrate agent`
- *     restores the pre-#790 dispatch behavior for every mode. Regression? That one
- *     line reverts it; the path is not removed until the final #782 phase.
- *   - Removing any part of the `Agent`-tool path remains out of scope — it is the
- *     final #782 phase, gated on this substrate proving itself under the flipped
- *     default across a release.
+ * STATUS as of #791:
+ *   - This script is the ONLY way a `mode:`-driven /do-work worker is dispatched.
+ *     There is no substrate flag, no legacy `Agent`-tool branch, and no fallback.
+ *   - The `Agent` tool is still used elsewhere in shipyard (shipyard:verify-worker
+ *     with isolation: "worktree", shipyard:decompose-worker, the read-only scope-
+ *     preflight / refinement workers) — none of those take a `mode:` value, and
+ *     none route through here.
  *
  * WHY SCAFFOLD IT NOW. Moving the dispatch plan "into code" is the durable win the
  * epic is after: zero routing-token overhead, fixed cost/latency, and an auditable
@@ -40,17 +37,16 @@
  *     structured return (pointed at `workerReturnSchema` below, a same-shape copy
  *     of schemas/worker-return.schema.json); `opts.label` names it in the
  *     /workflows progress view; `opts.model` routes the stage to a specific model
- *     (the same Agent-tool alias — `opus`/`sonnet`/`haiku`/`fable` —
- *     `resolve-dispatch-model.sh` already resolves for the `Agent`-tool path, so
- *     the same script call feeds both substrates identically).
+ *     (the family alias — `opus`/`sonnet`/`haiku`/`fable` — that
+ *     `resolve-dispatch-model.sh` resolves from the merged config's
+ *     `models.<mode>` key and the caller passes in as `unit.model`).
  *   - `pipeline(list, fn)` — run one agent per item in a list.
  *   - `parallel(tasks, opts)` — run a bounded-concurrency pool over tasks. NOT
  *     exercised by the issue-work wiring below: the orchestrator's own
  *     `--concurrency N` rolling pool remains the concurrency mechanism for
- *     `issue-work` dispatch under EITHER substrate (see "Concurrency model" below)
- *     — this script is invoked once per work unit, exactly where the orchestrator
- *     today issues one `Agent` call per pool slot. `parallel()`'s in-script fan-out
- *     stays reserved for a future batch-dispatch phase; its exact option surface
+ *     `issue-work` dispatch (see "Concurrency model" below) — this script is
+ *     invoked once per work unit, one invocation per pool slot. `parallel()`'s
+ *     in-script fan-out stays reserved for a future batch-dispatch phase; its exact option surface
  *     is still not fully public as of this writing, so pinning behavior on it now
  *     would be speculative.
  *   - `args` — global carrying invocation input: one work unit per `agent()` call
@@ -62,32 +58,32 @@
  * the current single-unit-per-run wiring; relevant once a future phase exercises
  * parallel() for real.
  *
- * Concurrency model (all modes, phase 3)
+ * Concurrency model (all modes)
  * ----------------------------------------
  * The orchestrator's `--concurrency N` rolling worker pool (steady-state.md step C
- * / setup.md step 7) is UNCHANGED by this phase. Under `dispatch.substrate:
- * "workflow"`, each pool slot still corresponds to exactly one dispatch — the only
- * change is that filling a slot for ANY mode invokes the `Workflow` tool against
- * this script (one work unit in `args.issues`) instead of the `Agent` tool. The
- * orchestrator's own pool is still what bounds how many of these are in flight
+ * / setup.md step 7) is what bounds parallelism — not this script. Each pool slot
+ * corresponds to exactly one dispatch: filling a slot for ANY mode invokes the
+ * `Workflow` tool against this script with ONE work unit in `args.issues`. The
+ * orchestrator's own pool is what bounds how many of these are in flight
  * simultaneously — this script's own `parallel()` is not asked to manage a
- * multi-unit pool in this phase. See dispatch-rules.md's substrate section for the
+ * multi-unit pool. See dispatch-rules.md's substrate section for the
  * full call-site walkthrough (pre-provisioning the worktree, building `args`,
  * translating the structured return back into the free-text vocabulary
  * steady-state.md's step A.1 already parses).
  *
- * Worktree isolation (all modes, phase 3) — GENUINE GAP, closed by the caller
+ * Worktree isolation (all modes) — GENUINE GAP, closed by the caller
  * -------------------------------------------------------------------------------
  * The `Agent` tool's `isolation: "worktree"` parameter has the harness
  * auto-provision and cwd-pin an isolated worktree for the dispatched subagent
- * before it runs a single tool call. As of this writing, the Dynamic Workflows
+ * before it runs a single tool call — but that tool is no longer how a `mode:`-driven
+ * worker is dispatched (#791). As of this writing, the Dynamic Workflows
  * docs (code.claude.com/docs/en/workflows) document NO equivalent option on
  * `agent()` — the docs state plainly that "the workflow [script] itself" has no
  * filesystem/shell access ("Agents read, write, and run commands. The script
  * coordinates the agents") and describe `agent()`'s options only as prompt/label
  * /model/schema; there is no isolation, worktree, or sandboxing field in that
  * surface. This script therefore CANNOT auto-provision worker isolation the way
- * the `Agent`-tool path does — that responsibility shifts to the CALLER (the
+ * the retired `Agent`-tool path did — that responsibility sits with the CALLER (the
  * orchestrator session, which still has full shell access, unlike this script):
  *   1. Before invoking this script, the orchestrator provisions the isolated
  *      worktree itself and passes the resulting absolute path as
@@ -95,7 +91,8 @@
  *      mode's branch shape:
  *        - `issue-work` / `investigate` / `spike`: `git worktree add <path> -b
  *          do-work/issue-<N> origin/<default-branch>` — a fresh branch off
- *          default, same as the `Agent`-tool path's `isolation: "worktree"`.
+ *          default (what the retired `Agent`-tool path's `isolation: "worktree"`
+ *          produced for these modes).
  *        - `fix-checks-only` / `fix-rebase`: `git worktree add <path> -B
  *          <headRefName> origin/<headRefName>` — checked out directly onto the
  *          EXISTING PR branch being fixed/rebased, not a fresh branch off
@@ -110,10 +107,10 @@
  *          fresh-off-default shape as issue-work.
  *   2. Every per-mode prompt builder below makes the worker's FIRST instruction
  *      an explicit `cd`/anchor into that path (via the shared `worktreeAnchorLines`
- *      helper) — the inverse of the `Agent`-tool path's worker-preamble rule
- *      ("never cd — the harness already pinned your cwd"). A Workflow-dispatched
- *      worker's cwd is NOT pre-pinned, so it must anchor itself before doing
- *      anything else.
+ *      helper). This is Rule 0 of `shipyard:worker-preamble` § "Worktree
+ *      discipline": a Workflow-dispatched worker's cwd is NOT pre-pinned, so it
+ *      must anchor itself before doing anything else, and only THEN does the
+ *      "never cd outside your worktree" rule take effect.
  *   3. The worker then re-applies the SAME step-0 fail-fast verification
  *      (`shipyard:worker-preamble` § "Step-0 cwd fail-fast") to confirm the `cd`
  *      landed on an isolated worktree (git-dir != git-common-dir) rather than
@@ -143,16 +140,16 @@
 export const meta = {
   name: 'do-work-dispatch',
   description:
-    'The /shipyard:do-work dispatch loop expressed as a Dynamic Workflow. Phase 3 ' +
-    '(#789, completing the #782 epic\'s dispatch-migration phases): every ' +
-    '`mode:`-driven worker — issue-work, fix-checks-only, fix-rebase, fix-main-ci, ' +
-    'fix-failing-prs-batch, investigate, spike — runs through this script, ' +
-    'building the same prompt the Agent-tool path builds for that mode ' +
-    '(author-trust gate, verify-gate opt-in, user-feedback preamble, phase-1 ' +
-    'slice, version coordination, triage policy, decompose fan-out cap) and ' +
-    'validating the worker return against a structured schema, whenever ' +
-    'dispatch.substrate is set to "workflow". Inert (default dispatch.substrate ' +
-    'stays "agent") until an operator opts a repo in.',
+    'The /shipyard:do-work dispatch loop expressed as a Dynamic Workflow — the ' +
+    'only substrate every `mode:`-driven worker is dispatched through, as of ' +
+    '#791 (the final phase of the #782 epic). Modes: issue-work, ' +
+    'fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, ' +
+    'investigate, spike. Each mode has a prompt builder carrying that mode\'s ' +
+    'augmentations (author-trust gate, verify-gate opt-in, user-feedback ' +
+    'preamble, phase-1 slice, version coordination, triage policy, decompose ' +
+    'fan-out cap) and validates the worker return against a structured schema. ' +
+    'The caller pre-provisions each worker\'s isolated worktree and passes it as ' +
+    'the work unit\'s worktreePath — the runtime has no isolation primitive.',
 }
 
 // ---------------------------------------------------------------------------
@@ -183,10 +180,9 @@ const models = input.models ?? {}
 // executes this script in an isolated environment with no filesystem access of its
 // own — see the "Worktree isolation" note above for the same constraint applied to
 // worker dispatch. Keep this object's `enum`/`required`/`properties` shape in sync
-// with schemas/worker-return.schema.json by hand; a drift here only breaks the
-// workflow-substrate path (schema validation), never the Agent-tool path, so CI's
-// existing suites can't catch a divergence — review both files together on any
-// return-contract change.
+// with schemas/worker-return.schema.json by hand. A drift between the two is not
+// caught by any existing CI suite (nothing executes this script) — review both
+// files together on any return-contract change.
 const workerReturnSchema = {
   type: 'object',
   required: ['mode', 'outcome'],
@@ -400,8 +396,7 @@ function worktreeAnchorLines(unit, mode) {
     `If that check prints a \`blocked:\` line, stop and return a STRUCTURED result with`,
     `outcome "blocked", blocked_stage "worktree-anchor", and that line as blocked_reason.`,
     `Otherwise every "never cd outside your worktree" / "never git switch to the default`,
-    `branch" rule in \`shipyard:worker-preamble\` applies exactly as it does under the`,
-    `Agent-tool substrate from this point on.`,
+    `branch" rule in \`shipyard:worker-preamble\` applies unmodified from this point on.`,
   ]
 }
 
@@ -664,8 +659,7 @@ function buildIssueWorkPrompt(unit, repoSlug) {
     `If that check prints a \`blocked:\` line, stop and return a STRUCTURED result with`,
     `outcome "blocked", blocked_stage "worktree-anchor", and that line as blocked_reason.`,
     `Otherwise every "never cd outside your worktree" / "never git switch to the default`,
-    `branch" rule in \`shipyard:worker-preamble\` applies exactly as it does under the`,
-    `Agent-tool substrate from this point on.`,
+    `branch" rule in \`shipyard:worker-preamble\` applies unmodified from this point on.`,
     ``,
     `Work issue #${unit.number} in ${repoSlug} to completion. You are already self-assigned.`,
     `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge`,

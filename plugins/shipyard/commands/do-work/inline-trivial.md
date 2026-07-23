@@ -8,7 +8,7 @@ Tracking issue: [#156](https://github.com/mattsears18/shipyard/issues/156). Part
 
 ## When does the inline fast path fire?
 
-Only inside [step 3](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) of the dispatch decision tree (the `ready_issues` branch), as sub-step **3a** evaluated for the candidate **after** collision rules clear but **before** the normal `shipyard:issue-worker` `Agent` tool call.
+Only inside [step 3](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) of the dispatch decision tree (the `ready_issues` branch), as sub-step **3a** evaluated for the candidate **after** collision rules clear but **before** the normal `mode: issue-work` `Workflow` dispatch.
 
 The fast path is gated on **all** of the following being true:
 
@@ -33,7 +33,7 @@ The fast path is gated on **all** of the following being true:
 
    Patterns are evaluated in the order above; first match wins. Multiple-match cases (e.g., a typo in a doc file) don't combine — the first pattern that matches dictates the inline-execution branch.
 
-If **any** of (1)–(7) fails, the candidate is **not inline-eligible** — fall through to the normal step-3 dispatch (the full `shipyard:issue-worker` `Agent` tool call). No comment posted, no label changed; the candidate just goes through the slow path like any other.
+If **any** of (1)–(7) fails, the candidate is **not inline-eligible** — fall through to the normal step-3 dispatch (the full `mode: issue-work` `Workflow` dispatch). No comment posted, no label changed; the candidate just goes through the slow path like any other.
 
 ### Explicit overrides (optional)
 
@@ -46,7 +46,7 @@ Neither label is auto-applied by shipyard — both are human signals.
 
 ## Execution mechanics — inline-eligible candidate
 
-When a candidate passes all 7 rules, dispatch the inline path instead of an `Agent` tool call:
+When a candidate passes all 7 rules, dispatch the inline path instead of a `Workflow` tool call:
 
 ### A. Self-assign and stamp the session label
 
@@ -121,7 +121,7 @@ fi
 
 Then re-snapshot `state` and `autoMergeRequest` per the [worker-preamble auto-merge categorization](../../skills/worker-preamble/auto-merge.md) (issue [#340](https://github.com/mattsears18/shipyard/issues/340)) — `gh` can silently direct-merge instead of arming a queue, so categorize the actual outcome from the post-call state, not from the merge call's exit status alone. (The precise condition under which that happens is **not restated here** — it lives in exactly one executable place, [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh), which the branch above already called. A prose copy is how [#716](https://github.com/mattsears18/shipyard/issues/716) happened.) The base outcomes — `enabled`, `merged-direct`, `unavailable`, and (on the ungated branch above) `deferred-to-lander` — surface in the inline-path summary the same way they surface in the worker-path return string. **Refine `merged-direct` → `merged-direct-ungated` using step F's check-rollup snapshot** (issue [#457](https://github.com/mattsears18/shipyard/issues/457)): if the PR direct-merged while its checks were still `pending`/`failing`, it landed ungated and may yet flip `main` red — surface it as `merged-direct-ungated` and treat it as a [trigger-1 unconditional refresh](./steady-state.md#d-periodic-refresh) so the main-CI divert watches the merge commit. Reaching `merged-direct-ungated` *after* the detector returned `gated` means the detector mispredicted — that's the defense-in-depth backstop, not the primary gate. If `merged-direct` (green-gated), `unavailable`, or `deferred-to-lander`, log it for the end-of-session summary and continue.
 
-### F. Reconcile in-line (no `Agent` notification to wait on)
+### F. Reconcile in-line (no dispatch notification to wait on)
 
 Inline execution has no agent return to reconcile in [step A](./steady-state.md#a-reconcile-the-return) — the orchestrator IS the worker for this slot. Perform the reconcile actions inline:
 
@@ -148,7 +148,7 @@ When **any** step in §A–E fails — self-assign 404s, branch already exists, 
 2. Delete the local branch if it was created (`git switch <orchestrator-default-branch>` then `git branch -D do-work/issue-<N>`).
 3. Don't remove the self-assign or the `shipyard` label — they're correct for the worker dispatch that follows.
 4. Log to the session summary: `[inline-trivial] abort #<N> at step <A|B|C|D|E>: <reason>; dispatched worker instead.`
-5. Dispatch the worker via the normal step-3 path (the same `Agent` tool call that would have fired if the inline check had returned ineligible).
+5. Dispatch the worker via the normal step-3 path (the same `Workflow` dispatch that would have fired if the inline check had returned ineligible).
 
 **Important:** the abort is **per-candidate**, not per-session. A single abort doesn't disable inline-trivial for the session — the next inline-eligible candidate gets evaluated normally. If the **per-session abort rate** exceeds 30% (computed across all candidates that entered the inline branch this session), the heuristic is too aggressive — log a session-end advisory recommending tightening rule 7's patterns or lowering `max_body_chars`. The orchestrator does NOT disable inline-trivial mid-session on a high abort rate; the human reads the advisory and adjusts config for the next session.
 

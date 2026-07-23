@@ -183,17 +183,17 @@ assert_contains "$worker_return_schema_path" '"issue-work"' \
   "worker-return.schema.json's mode enum includes issue-work"
 
 echo
-echo "== (C) dispatch-rules.md — substrate branch at the mode: issue-work dispatch site"
-echo "   (NOTE: as of #789 phase 3, this section now covers every mode — a handful of"
-echo "   assertions below were updated from their phase-2-only wording; see"
-echo "   dispatch-workflow-substrate-789.test.sh for the phase-3-specific coverage.)"
+echo "== (C) dispatch-rules.md — the workflow-substrate dispatch site (all modes)"
+echo "   (NOTE: #789 phase 3 widened this section to every mode; #791 phase 5 made it"
+echo "   UNCONDITIONAL — the dispatch_substrate branch and the legacy Agent-tool branch"
+echo "   were removed along with the config knob. Assertions below track that.)"
 
-assert_contains "$dispatch_rules_path" "Workflow-substrate dispatch for every worker mode" \
+assert_contains "$dispatch_rules_path" "Workflow-substrate dispatch" \
   "dispatch-rules.md has the workflow-substrate dispatch section"
-assert_contains "$dispatch_rules_path" 'dispatch_substrate == "workflow"' \
-  "dispatch-rules.md branches on dispatch_substrate == workflow"
-assert_contains "$dispatch_rules_path" 'dispatch_substrate == "agent"' \
-  "dispatch-rules.md branches on dispatch_substrate == agent"
+assert_not_contains "$dispatch_rules_path" 'dispatch_substrate == "workflow"' \
+  "dispatch-rules.md no longer branches on dispatch_substrate (#791 removed the knob)"
+assert_not_contains "$dispatch_rules_path" 'dispatch_substrate == "agent"' \
+  "dispatch-rules.md no longer carries the legacy Agent-tool substrate branch (#791)"
 assert_contains "$dispatch_rules_path" "do-work-dispatch.workflow.js" \
   "dispatch-rules.md's substrate section names the workflow script"
 assert_contains "$dispatch_rules_path" "Pre-provision the isolated worktree yourself" \
@@ -208,20 +208,21 @@ assert_contains "$dispatch_rules_path" "One work unit per \`Workflow\` call — 
 echo
 echo "== (D) steady-state.md — A.1 documents the translation shim, doesn't re-parse structured returns"
 
-assert_contains "$steady_state_path" "Workflow-substrate dispatches" \
-  "steady-state.md's A.1 documents the workflow-substrate translation shim"
-assert_contains "$steady_state_path" "translated before reaching this step, not parsed here directly" \
+assert_contains "$steady_state_path" "worker-return.schema.json" \
+  "steady-state.md's A.1 documents the structured-return schema the translation shim consumes"
+assert_contains "$steady_state_path" "translated into free text before reaching this step, not parsed here directly" \
   "steady-state.md's A.1 documents the translation happens before this step"
 assert_contains "$steady_state_path" "#788" \
   "steady-state.md's A.1 note cites #788"
 
 echo
-echo "== (E) shipyard.config.schema.json — dispatch.substrate description reflects mixed-mode operation"
+echo "== (E) shipyard.config.schema.json — the dispatch.substrate knob is GONE (#791)"
 
-assert_contains "$config_schema_path" 'issue-work' \
-  "dispatch.substrate description names issue-work among the affected modes"
-assert_contains "$config_schema_path" '"default": "workflow"' \
-  "dispatch.substrate default is workflow (the #790 cutover flipped it; #788 wired the first mode that made the cutover possible)"
+# #788 wired the first mode behind this knob and #790 flipped its default; #791
+# retired the legacy substrate entirely, so the knob is dead config and was
+# removed from the schema. Guard against it being reintroduced.
+assert_not_contains "$config_schema_path" '"substrate"' \
+  "shipyard.config.schema.json no longer declares dispatch.substrate (#791)"
 
 if command -v jq >/dev/null 2>&1; then
   if jq empty "$config_schema_path" >/dev/null 2>&1; then
@@ -232,10 +233,10 @@ if command -v jq >/dev/null 2>&1; then
 fi
 
 echo
-echo "== (F) workflows/README.md — phase-2 status, no stale phase-1-inert framing"
+echo "== (F) workflows/README.md — current phase status, no stale phase-1-inert framing"
 
-assert_contains "$workflow_readme_path" "Phase 2" \
-  "README declares phase 2 status"
+assert_contains "$workflow_readme_path" "Phase 5" \
+  "README declares the current (phase 5) status"
 assert_not_contains "$workflow_readme_path" "nothing here is wired yet" \
   "README no longer claims nothing is wired"
 

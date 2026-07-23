@@ -84,8 +84,14 @@ for f in "$helper" "$status_sh" "$workflow_js" "$workflow_readme" "$worker_schem
 done
 
 # ==========================================================================
-echo "== (A) the default flipped to workflow, and the selector reads it; agent reverts"
+echo "== (A) the substrate knob is RETIRED — one substrate, no config, stale configs rejected"
 # ==========================================================================
+# #790 flipped `dispatch.substrate` from "agent" to "workflow" and kept the
+# legacy path for one release behind an instant-revert override. #791 removed
+# the legacy path AND the knob, so what this section guards flipped too: the
+# key must be gone from every layer, and a config that still carries it must be
+# REJECTED (not silently ignored) so an upgrading repo is told to delete it.
+#
 # A private repo + SHIPYARD_HOME so we never touch the real ~/.shipyard or repo
 # config. Mirrors shipyard-config.test.sh's harness.
 cfg_repo=$(mktemp -d)
@@ -93,40 +99,33 @@ cfg_home=$(mktemp -d)
 export SHIPYARD_REPO_ROOT="$cfg_repo"
 export SHIPYARD_HOME="$cfg_home"
 
-# The built-in default (no config files anywhere) is now "workflow".
-assert_eq "$("$helper" get dispatch.substrate 2>/dev/null)" "workflow" \
-  "built-in default dispatch.substrate is workflow (#790 cutover)"
-assert_eq "$("$helper" get dispatch.substrate --with-source 2>/dev/null | cut -f2)" "defaults" \
-  "the workflow value comes from the built-in defaults layer, not a stray config"
+# The key resolves to nothing — it is not a built-in default any more.
+assert_eq "$("$helper" get dispatch.substrate 2>/dev/null)" "" \
+  "dispatch.substrate resolves to empty — the knob was retired (#791)"
 
-# The substrate SELECTOR the orchestrator uses (dispatch-rules.md's one-liner)
-# reads the flipped default with no config present.
-selector=$("$helper" get dispatch.substrate 2>/dev/null || echo "agent")
-assert_eq "$selector" "workflow" \
-  "the dispatch-substrate selector expression resolves to workflow by default"
+# The built-in default block in shipyard-config.sh no longer declares it.
+if grep -qF '"substrate"' "$helper"; then
+  assert_fail "shipyard-config.sh built-in defaults no longer declare a dispatch substrate"
+else
+  assert_pass "shipyard-config.sh built-in defaults no longer declare a dispatch substrate"
+fi
 
-# The built-in default block in shipyard-config.sh literally says workflow.
-assert_contains_file "$helper" '"substrate": "workflow"' \
-  "shipyard-config.sh built-in defaults block sets substrate to workflow"
+# The JSON schema no longer declares it either.
+if grep -qF '"substrate"' "$config_schema"; then
+  assert_fail "shipyard.config.schema.json no longer declares dispatch.substrate"
+else
+  assert_pass "shipyard.config.schema.json no longer declares dispatch.substrate"
+fi
 
-# The JSON schema default matches.
-assert_contains_file "$config_schema" '"default": "workflow"' \
-  "shipyard.config.schema.json dispatch.substrate default is workflow"
-
-# INSTANT REVERT: setting the knob back to "agent" wins over the flipped default.
-"$helper" set dispatch.substrate agent --repo >/dev/null 2>&1
-assert_eq "$("$helper" get dispatch.substrate 2>/dev/null)" "agent" \
-  "instant-revert: repo override to agent restores the legacy substrate"
-assert_eq "$("$helper" get dispatch.substrate --with-source 2>/dev/null | cut -f2)" "repo" \
-  "instant-revert: the agent override is sourced from the repo layer (wins over the workflow default)"
-
-# Both enum members still validate (the revert target is a fully-supported value).
+# A stale config carrying the retired knob is REJECTED, not ignored — the repo
+# schema is additionalProperties:false, so the upgrade surfaces loudly. This is
+# the breaking change that earns #791 its major version bump.
 printf '{"version":1,"dispatch":{"substrate":"agent"}}' > "$cfg_repo/shipyard.config.json"
 "$helper" validate --layer repo >/dev/null 2>&1
-assert_eq "$?" "0" "schema accepts dispatch.substrate: agent (the revert target validates)"
+assert_eq "$?" "70" "a stale dispatch.substrate: agent config is rejected, not silently ignored (#791)"
 printf '{"version":1,"dispatch":{"substrate":"workflow"}}' > "$cfg_repo/shipyard.config.json"
 "$helper" validate --layer repo >/dev/null 2>&1
-assert_eq "$?" "0" "schema accepts dispatch.substrate: workflow (the new default validates)"
+assert_eq "$?" "70" "a stale dispatch.substrate: workflow config is rejected too (#791)"
 rm -rf "$cfg_repo" "$cfg_home"
 unset SHIPYARD_REPO_ROOT SHIPYARD_HOME
 
@@ -323,12 +322,19 @@ rm -rf "$st_home"
 
 # ==========================================================================
 echo
-echo "== (E) instant-revert documented prominently + release bump landed"
+echo "== (E) migration documented prominently + release bump landed"
 # ==========================================================================
-assert_contains_file "$workflow_readme" "dispatch.substrate agent" \
-  "workflows/README.md documents the one-line instant-revert command"
-assert_contains_file "$workflow_readme" "Instant revert" \
-  "workflows/README.md carries a prominent Instant-revert callout"
+# #790's instant-revert escape hatch was removed by #791 along with the knob it
+# reverted to. What must be prominent now is the MIGRATION callout telling an
+# upgrading repo to delete its stale `dispatch` config block — the breaking
+# change that earns the major bump.
+if grep -qF "dispatch.substrate agent" "$workflow_readme"; then
+  assert_fail "workflows/README.md no longer advertises the retired instant-revert command (#791)"
+else
+  assert_pass "workflows/README.md no longer advertises the retired instant-revert command (#791)"
+fi
+assert_contains_file "$workflow_readme" "delete your \`dispatch\` config block" \
+  "workflows/README.md carries a prominent upgrade/migration callout (#791)"
 assert_contains_file "$changelog" "### 3.0.0" \
   "CHANGELOG.md has the 3.0.0 entry"
 if grep -A40 '### 3.0.0' "$changelog" | grep -qF 'dispatch.substrate agent'; then
