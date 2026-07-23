@@ -2,22 +2,30 @@
  * do-work-dispatch.workflow.js — Dynamic Workflows scaffold for /shipyard:do-work
  * ==============================================================================
  *
- * PHASE 5 of 5 — THE ONLY DISPATCH SUBSTRATE (issue #791, completing the #782
- * epic; carries the 3.x -> 4.0.0 major bump). Phase 1 (#787) committed this file
- * as an inert reference scaffold alongside the then-live hand-rolled `Agent`-tool
- * orchestrator (commands/do-work/dispatch-rules.md + steady-state.md). Phase 2
- * (#788) wired ONE mode — `issue-work`. Phase 3 (#789) wired the REMAINING SIX —
- * `fix-checks-only`, `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`,
- * `investigate`, `spike`. Phase 4 (#790) flipped the built-in `dispatch.substrate`
- * default from "agent" to "workflow", retaining the legacy path for one release as
- * an instant-revert override. Phase 5 (this state) REMOVED that legacy path and
- * DELETED the `dispatch.substrate` knob. See dispatch-rules.md's "Workflow-
- * substrate dispatch" section for the full per-mode call-site walkthrough.
+ * PHASE 5 of 5 shipped as planned (issue #791, completing the #782 epic; carried
+ * the 3.x -> 4.0.0 major bump) — SINCE PARTIALLY REVERTED BY #825. Phase 1 (#787)
+ * committed this file as an inert reference scaffold alongside the then-live
+ * hand-rolled `Agent`-tool orchestrator (commands/do-work/dispatch-rules.md +
+ * steady-state.md). Phase 2 (#788) wired ONE mode — `issue-work`.
+ * Phase 3 (#789) wired the REMAINING SIX — `fix-checks-only`, `fix-rebase`,
+ * `fix-main-ci`, `fix-failing-prs-batch`, `investigate`, `spike`. Phase 4 (#790)
+ * flipped the built-in `dispatch.substrate` default from "agent" to "workflow", retaining the
+ * legacy path for one release as an instant-revert override. Phase 5 REMOVED that
+ * legacy path and DELETED the `dispatch.substrate` knob. #825 then found this
+ * substrate's dispatched workers could not perform a single file write (the
+ * harness refused every Edit/Write call with a "parent bg session hasn't
+ * isolated" error) and restored the `Agent`-tool dispatch shape as the DEFAULT
+ * for `mode:`-driven workers — WITHOUT reintroducing the `dispatch.substrate`
+ * knob. See dispatch-rules.md's "Agent-tool dispatch" (default) and "Workflow-
+ * substrate dispatch" (alternate) sections for the current split and the full
+ * per-mode call-site walkthrough of this script.
  *
- * STATUS as of #791:
- *   - This script is the ONLY way a `mode:`-driven /do-work worker is dispatched.
- *     There is no substrate flag, no legacy `Agent`-tool branch, and no fallback.
- *   - The `Agent` tool is still used elsewhere in shipyard (shipyard:verify-worker
+ * STATUS as of #825:
+ *   - This script is an ALTERNATE way a `mode:`-driven /do-work worker can be
+ *     dispatched — the DEFAULT is the `Agent` tool (`subagent_type` + isolation:
+ *     "worktree"), per dispatch-rules.md. There is still no config flag choosing
+ *     between the two shapes; the choice is spec-level, not user-configurable.
+ *   - The `Agent` tool is also used elsewhere in shipyard (shipyard:verify-worker
  *     with isolation: "worktree", shipyard:decompose-worker, the read-only scope-
  *     preflight / refinement workers) — none of those take a `mode:` value, and
  *     none route through here.

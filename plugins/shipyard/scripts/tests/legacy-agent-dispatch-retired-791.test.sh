@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
-# Test: the legacy `Agent`-tool dispatch path is RETIRED — issue #791, phase 5
-# of 5 (the final phase) of the #782 Dynamic Workflows epic.
+# Test: the `dispatch.substrate` config knob stays RETIRED, and the `Workflow`-
+# substrate script stays self-sufficient as a documented dispatch shape — issue
+# #791, phase 5 of 5 (the final phase) of the #782 Dynamic Workflows epic.
+#
+# AMENDED BY #825 — Agent-tool dispatch is no longer retired.
+# ------------------------------------------------------------
+# #791's original premise was that the `Workflow` substrate was THE ONLY dispatch
+# mechanism for every `mode:`-driven worker, with the `Agent`-tool path fully
+# removed. Issue #825 found that a `Workflow`-substrate-dispatched worker could
+# not perform a single file write (the harness refused every Edit/Write call
+# with a "parent bg session hasn't isolated" error, reproduced with the parent
+# orchestrator isolated and unisolated alike) and restored the `Agent`-tool
+# dispatch shape — `subagent_type` + `isolation: "worktree"` — as the DEFAULT for
+# all seven modes, WITHOUT reintroducing the `dispatch.substrate` knob. This
+# suite now pins the surviving, still-true invariants from #791 (the knob stays
+# gone; the `Workflow` substrate stays self-sufficient as the documented
+# alternate shape) plus new section (H), which pins the #825 restoration itself.
 #
 # Background — issue #791
 # -----------------------
@@ -8,34 +23,44 @@
 # #788 wired `issue-work` to it. #789 wired the remaining six modes. #790 flipped
 # the built-in `dispatch.substrate` default from "agent" to "workflow" (the 3.0.0
 # major bump) while RETAINING the hand-rolled `Agent`-tool orchestrator for one
-# release as an instant-revert override. #791 removes that legacy path and the
-# now-dead `dispatch.substrate` knob.
+# release as an instant-revert override. #791 removed that legacy path and the
+# `dispatch.substrate` knob — #825 restored the `Agent`-tool dispatch SHAPE as
+# the default (see above) but did NOT restore the knob; there is still no config
+# flag choosing between shapes.
 #
 # THE CORRECTNESS BAR THIS SUITE ENFORCES
 # ---------------------------------------
-# Removing the legacy path removes the fallback, so the surviving `Workflow`-
-# substrate instructions must be COMPLETE and SELF-SUFFICIENT: an orchestrator
-# reading the post-removal spec must be able to dispatch every one of the seven
-# worker modes end-to-end with no reference to a deleted `Agent`-tool branch, AND
-# the worktree-isolation guarantee must still be enforced by a concrete
-# mechanism. That is what sections (A)-(F) below pin:
+# The `Workflow`-substrate instructions must stay COMPLETE and SELF-SUFFICIENT as
+# a documented alternate shape: an orchestrator choosing to dispatch through it
+# must be able to run every one of the seven worker modes end-to-end, AND the
+# worktree-isolation guarantee must still be enforced by a concrete mechanism
+# under BOTH shapes. That is what sections (A)-(H) below pin:
 #
 #   (A) the knob is gone from the built-in defaults and the schema, and a stale
 #       config carrying it is REJECTED rather than silently ignored;
-#   (B) dispatch-rules.md's substrate section is unconditional (no flag read, no
-#       two-branch fork) and still documents all five call-site steps;
+#   (B) dispatch-rules.md's `Workflow`-substrate section is unconditional (no
+#       flag read, no two-branch fork) and still documents all five call-site
+#       steps, as the documented alternate shape;
 #   (C) SELF-SUFFICIENCY — every one of the seven modes has both a worktree
 #       pre-provisioning shape and an args.issues[] example, and the workflow
 #       script has a real prompt builder for each;
 #   (D) the worktree-isolation guarantee is still MECHANICALLY enforced: the
 #       PreToolUse hook blocks a `Workflow` dispatch whose work unit carries no
-#       worktreePath, and still guards the `Agent` shape for the agents that
-#       legitimately still use it (shipyard:verify-worker);
-#   (E) the orphaned-worktree cleanup #791 introduces — because the orchestrator
-#       now creates the worktree BEFORE the dispatch call, a classifier-denied
-#       dispatch strands one that no other reap path would find;
-#   (F) worker-preamble re-scoped: anchor-first (Rule 0) worktree discipline and
-#       a return contract that names the structured shape.
+#       worktreePath, and still guards the `Agent` shape for every guarded
+#       `subagent_type` (all seven mode shims plus shipyard:verify-worker);
+#   (E) the orphaned-worktree cleanup #791 introduces for the `Workflow`-
+#       substrate alternate — because the orchestrator creates the worktree
+#       BEFORE that shape's dispatch call, a classifier-denied dispatch strands
+#       one that no other reap path would find;
+#   (F) worker-preamble documents both shapes: anchor-first (Rule 0) worktree
+#       discipline for the `Workflow` alternate, and the structured-return
+#       contract that alternate shape's translation relies on;
+#   (G) docs + schema no longer advertise the retired `dispatch.substrate` knob
+#       as available;
+#   (H) #825 — the `Agent`-tool shape is documented as the DEFAULT: the routing
+#       table names a `subagent_type` per mode again, the six sibling shims
+#       (plus the issue-worker router) say they're dispatched by name again, and
+#       the config knob is still absent (spec-level default, not configurable).
 #
 # Pure bash + jq. Run with:
 #   bash plugins/shipyard/scripts/tests/legacy-agent-dispatch-retired-791.test.sh
@@ -134,30 +159,21 @@ unset SHIPYARD_REPO_ROOT SHIPYARD_HOME
 
 # ==========================================================================
 echo
-echo "== (B) dispatch-rules.md — the substrate section is unconditional, no legacy fork"
+echo "== (B) dispatch-rules.md — the Workflow-substrate section is unconditional, no config-read fork"
 # ==========================================================================
 assert_not_contains "$dispatch_rules" 'dispatch_substrate == "agent"' \
-  "dispatch-rules.md has no legacy Agent-tool substrate branch"
+  "dispatch-rules.md has no config-read Agent-tool substrate branch"
 assert_not_contains "$dispatch_rules" 'dispatch_substrate == "workflow"' \
-  "dispatch-rules.md has no workflow substrate branch either (nothing to branch on)"
+  "dispatch-rules.md has no config-read workflow substrate branch either (nothing to branch on)"
 assert_not_contains "$dispatch_rules" 'get dispatch.substrate' \
   "dispatch-rules.md no longer reads the retired config knob"
-assert_contains "$dispatch_rules" "for all seven \`mode:\` values" \
-  "dispatch-rules.md states the substrate is the mechanism for all seven modes"
+assert_contains "$dispatch_rules" "Both shapes run the **identical** per-mode prompt template" \
+  "dispatch-rules.md states both dispatch shapes cover all seven modes identically"
 assert_contains "$dispatch_rules" "Migration — the retired \`dispatch.substrate\` knob" \
   "dispatch-rules.md carries a migration note for repos that set the retired knob"
 
-# The routing table must no longer name an Agent-tool subagent_type per mode.
-for shim in shipyard:issue-worker shipyard:fix-checks-worker shipyard:fix-rebase-worker \
-            shipyard:fix-main-ci-worker shipyard:fix-pr-batch-worker shipyard:investigate-worker \
-            shipyard:spike-worker; do
-  # The shim name may still appear in the historical/rationale paragraph, but not
-  # as a `subagent_type: "<shim>"` dispatch directive.
-  assert_not_contains "$dispatch_rules" "subagent_type: \"${shim}\"" \
-    "dispatch-rules.md no longer issues subagent_type: \"${shim}\""
-done
-
-# ...but the Agent tool is NOT globally banned: decompose-worker still uses it.
+# ...and the Agent tool is NOT globally banned: decompose-worker still uses it
+# (unconditionally, on both shapes — it isn't governed by either one).
 assert_contains "$dispatch_rules" 'subagent_type: "shipyard:decompose-worker"' \
   "decompose-worker's Agent-tool dispatch is deliberately retained (not a mode: worker)"
 
@@ -376,6 +392,56 @@ if command -v jq >/dev/null 2>&1; then
     assert_fail "both schemas are still valid JSON after the removal"
   fi
 fi
+
+# ==========================================================================
+echo
+echo "== (H) #825 — Agent-tool dispatch is documented as the DEFAULT again"
+# ==========================================================================
+issue_worker_agent="$repo_root/plugins/shipyard/agents/issue-worker.md"
+
+# The routing table names a subagent_type per mode again. Parallel arrays
+# (not `declare -A`) — associative arrays are a bash-4+ feature and this suite
+# must also run under macOS's bundled bash 3.2.
+mode_shim_pairs=(
+  "issue-work:shipyard:issue-worker"
+  "fix-checks-only:shipyard:fix-checks-worker"
+  "fix-rebase:shipyard:fix-rebase-worker"
+  "fix-main-ci:shipyard:fix-main-ci-worker"
+  "fix-failing-prs-batch:shipyard:fix-pr-batch-worker"
+  "investigate:shipyard:investigate-worker"
+  "spike:shipyard:spike-worker"
+)
+for pair in "${mode_shim_pairs[@]}"; do
+  mode="${pair%%:*}"
+  shim="${pair#*:}"
+  assert_contains "$dispatch_rules" "\`${shim}\`" \
+    "dispatch-rules.md's routing table names ${shim} for mode: ${mode}"
+done
+
+assert_contains "$dispatch_rules" "Agent-tool dispatch — the default dispatch shape" \
+  "dispatch-rules.md has a dedicated Agent-tool-dispatch section documenting the default"
+assert_contains "$dispatch_rules" "Workflow-substrate dispatch — an alternate dispatch shape" \
+  "dispatch-rules.md demotes the Workflow substrate to a documented alternate"
+
+# The knob stays gone even though the shape it used to select is restored.
+assert_not_contains "$config_schema" '"substrate"' \
+  "the routing restoration did not resurrect dispatch.substrate in the schema"
+assert_contains "$dispatch_rules" 'not reinstated by #825' \
+  "dispatch-rules.md's Migration note explicitly says the knob was NOT reinstated"
+
+# Every sibling shim (and the issue-worker router) says it's dispatched by name
+# again, not merely retained as a hand-dispatch target.
+for shim_file in fix-main-ci-worker fix-pr-batch-worker fix-checks-worker \
+                 fix-rebase-worker investigate-worker spike-worker; do
+  f="$repo_root/plugins/shipyard/agents/${shim_file}.md"
+  assert_contains "$f" "dispatches this shim by name again" \
+    "${shim_file}.md documents itself as dispatched by name again (#825)"
+  assert_not_contains "$f" "no longer dispatches this shim by name" \
+    "${shim_file}.md no longer claims it's not dispatched by name"
+done
+
+assert_contains "$issue_worker_agent" "Agent\` tool (how \`/shipyard:do-work\` dispatches every one of the 7 modes by default" \
+  "issue-worker.md's worktree-isolation contract leads with the Agent-tool default"
 
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"
