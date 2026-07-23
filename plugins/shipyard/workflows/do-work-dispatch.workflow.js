@@ -246,6 +246,7 @@ const workerReturnSchema = {
         'merged-direct',
         'merged-direct-ungated',
         'unavailable',
+        'unavailable-workflow-scope',
         'gated-external',
         null,
       ],
