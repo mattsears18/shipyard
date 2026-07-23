@@ -6,7 +6,7 @@ Three phases sit at the wind-down side of the orchestrator:
 2. **Termination** — the mechanical "all queues empty" exit condition.
 3. **End-of-session drain** — the post-dispatch-loop merge-train watcher that keeps the orchestrator alive until session-opened PRs settle.
 
-All three share the same authority: they DON'T cancel in-flight work, they DON'T ask the user to confirm, they wait until the merge train is genuinely done — per the progress-based exit (every session_pr settled), with `max_drain_hours` (default 8h) as the ultimate ceiling (issue [#374](https://github.com/mattsears18/shipyard/issues/374)). The thin entry [`commands/do-work.md`](../do-work.md) owns the [orchestrator-state struct list](../do-work.md#orchestrator-state); the steady-state loop ([`steady-state.md`](./steady-state.md)) hands off here once it can't dispatch any more work; this file hands off to [`cleanup-summary.md`](./cleanup-summary.md) once drain exits.
+All three share the same authority: they DON'T cancel in-flight work, they DON'T ask the user to confirm, they wait until the merge train is genuinely done — per the progress-based exit (every session_pr settled), with `max_drain_hours` (default 8h) as the ultimate ceiling (issue [#374](https://github.com/mattsears18/shipyard/issues/374)). The thin entry [`commands/do-work.md`](../do-work.md) owns the hot [orchestrator-state struct list](../do-work.md#orchestrator-state) (cold long-tail in [`orchestrator-state-reference.md`](./orchestrator-state-reference.md)); the steady-state loop ([`steady-state.md`](./steady-state.md)) hands off here once it can't dispatch any more work; this file hands off to [`cleanup-summary.md`](./cleanup-summary.md) once drain exits.
 
 ## Soft drain
 

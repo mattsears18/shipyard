@@ -1,6 +1,6 @@
 # /shipyard:do-work — Setup phase
 
-The session-startup steps (0.4 → 7). Runs once, end of phase hands off to [steady-state](./steady-state.md). The thin entry [`commands/do-work.md`](../do-work.md) owns the [orchestrator-state struct list](../do-work.md#orchestrator-state) and the [session state file schema](../do-work.md#session-state-file); this file owns the actual setup-step execution.
+The session-startup steps (0.4 → 7). Runs once, end of phase hands off to [steady-state](./steady-state.md). The thin entry [`commands/do-work.md`](../do-work.md) owns the hot [orchestrator-state struct list](../do-work.md#orchestrator-state) and a pointer to the [session state file](../do-work.md#session-state-file) (cold long-tail detail split into [`orchestrator-state-reference.md`](./orchestrator-state-reference.md) and [`session-state-file.md`](./session-state-file.md)); this file owns the actual setup-step execution.
 
 ## This file is a thin router — load only the sub-phase you need
 

@@ -112,7 +112,7 @@ fi
 
 ### 1.5 Initialise the session state file
 
-Stand up the durable JSON mirror (see [Session state file](../../do-work.md#session-state-file)). One-shot setup write — every subsequent mutation routes through `session-state.sh update`.
+Stand up the durable JSON mirror (see [Session state file](../../do-work.md#session-state-file) and the full [schema + helper reference](../session-state-file.md)). One-shot setup write — every subsequent mutation routes through `session-state.sh update`.
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
