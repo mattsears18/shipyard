@@ -319,6 +319,21 @@ if [ "$is_terminal" = "false" ]; then
   wt_dir=".git/worktrees/agent-${completed_agent_id}"
   worktree_path="$(git rev-parse --show-toplevel)/.claude/worktrees/agent-${completed_agent_id}"
 
+  # In-flight guard (issue #832) — NOT applicable as an exclusion here, and
+  # that's intentional. Unlike the sweep-style reap sites (setup 3b,
+  # dispatch-rules §2d, drain's pre-dispatch reap), this block never scans
+  # `.git/worktrees/agent-*` for candidates — it targets exactly ONE
+  # worktree: `<slot-id>`'s own `completed_agent_id`, and only because THIS
+  # slot's agent has already returned (even if the return itself is
+  # crash-like / non-terminal). The harness's own completion notification —
+  # not classify-lock's PID check — is the authoritative liveness signal
+  # here, and it has already fired by the time this code runs. `.in_flight`
+  # still nominally holds this slot's entry (release happens later in step
+  # B), so a naive "skip if present in in_flight" check would wrongly
+  # defer reaping the very return this step exists to reconcile. Do not
+  # add one. classify-lock is still consulted below for its OTHER
+  # classifications (peer-alive vs. safe-to-reap) — just not as a liveness
+  # override of the fact that this slot has already terminated.
   if [ -d "$wt_dir" ]; then
     # Bootstrap the orchestrator PID so classify-lock can short-circuit on
     # our own session's locks (issue #263 — same pattern as A.1/B's reaps).
@@ -807,7 +822,16 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   # Bootstrap the orchestrator PID so classify-lock can short-circuit
   # on our own session's locks (issue #263).
   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
-
+  # In-flight guard (issue #832) — NOT applicable as an exclusion here, and
+  # deliberately so. The `do-work/issue-<N>` branch filter below scopes this
+  # loop to exactly one worktree: THIS just-shipped slot's own worktree
+  # (branch names are unique per issue, so no other in-flight peer can hold
+  # this branch). `.in_flight[<slot-id>]` for this slot is still present at
+  # this point (release happens later, at step B) — so a naive "skip if
+  # present in in_flight" check would wrongly defer reaping the very
+  # worktree this step exists to reap. Do not add one; classify-lock below
+  # is still the correct liveness check for THIS worktree, exactly as
+  # A.0.5's analogous single-target reap documents.
   for wt_dir in "${PRIMARY_CHECKOUT}/.git/worktrees"/agent-*; do
     [ -d "$wt_dir" ] || continue
     branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')
@@ -1170,6 +1194,13 @@ PRIMARY_CHECKOUT=$(git worktree list --porcelain 2>/dev/null \
 wt_dir="${PRIMARY_CHECKOUT}/.git/worktrees/agent-${completed_agent_id}"
 worktree_path="${PRIMARY_CHECKOUT}/.claude/worktrees/agent-${completed_agent_id}"
 
+# In-flight guard (issue #832) — NOT applicable as an exclusion here, same
+# reasoning as A.0.5 and A.1's shipped-path reap above. This block targets
+# exactly one worktree — THIS slot's own `completed_agent_id` — because
+# step A has already parsed this dispatch's terminal return by the time
+# step B runs. `.in_flight[<slot-id>]` is still present (this IS the
+# release), so a naive in_flight-membership skip would wrongly defer the
+# reap this step performs. Do not add one.
 if [ -d "$wt_dir" ]; then
   # Bootstrap the orchestrator PID so classify-lock can short-circuit on
   # our own session's locks (issue #263 — same pattern as A.1's reap).

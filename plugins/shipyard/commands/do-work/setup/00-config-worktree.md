@@ -416,6 +416,22 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
   # ancestor walk inside classify-lock can fail to find it whenever an
   # intermediate harness layer returns empty PPID.
   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+  # In-flight guard (issue #832) — snapshot the set of agent-ids this
+  # session currently has dispatched, BEFORE the loop below ever consults
+  # classify-lock. This background group is fired fire-and-forget from
+  # step 0.7 and runs CONCURRENTLY with the first dispatch (step 7) — a
+  # worker dispatched moments earlier can already have a worktree on disk
+  # whose harness-written lock names a PID that is already gone (an
+  # intermediate spawn-time process, not the long-lived agent process).
+  # classify-lock has no way to tell that apart from a genuinely-dead lock
+  # and returns `dead` — reap-eligible — either way. In-flight membership
+  # is authoritative liveness; the lock file's classification is only a
+  # fallback for worktrees THIS session doesn't own (cross-session
+  # stragglers, which is what step 3b exists to clean up). See
+  # `commands/do-work/dont.md`'s "Don't reap a live-PID worktree" bullet.
+  in_flight_agent_ids=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+    --session-id "<session-id>" --path .in_flight 2>/dev/null \
+    | jq -r '.[]?.agent_id // empty' 2>/dev/null)
   # Use `find` instead of a bare `agent-*` glob so the loop survives zsh's
   # default `nomatch` option when no agent worktrees exist
   # ([#335](https://github.com/mattsears18/shipyard/issues/335)). Bare globs
@@ -425,6 +441,12 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
   for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
     [ -d "$wt_dir" ] || continue
     name=$(basename "$wt_dir")
+    # In-flight guard (issue #832) — skip BEFORE classify-lock, not after.
+    # A currently-dispatched slot's worktree is never reap-eligible
+    # regardless of what the lock file classifies as.
+    case $'\n'"$in_flight_agent_ids"$'\n' in
+      *$'\n'"${name#agent-}"$'\n'*) continue ;;
+    esac
     worktree_path=$(git worktree list --porcelain | awk -v n="$name" '/^worktree /{p=$2} /^branch /{b=$2} /^$/{if (p ~ n) print p}' | head -1)
     [ -z "$worktree_path" ] && worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
     [ -z "$worktree_path" ] && continue

@@ -196,6 +196,17 @@ When filling a slot, walk this decision tree:
    # Declare the orchestrator PID once so classify-lock short-circuits self-locks
    # to `self-ancestor` (issue #263) regardless of process-tree shape.
    export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+   # In-flight guard (issue #832) — snapshot this session's currently
+   # in-flight agent-ids BEFORE the loop below ever consults classify-lock.
+   # In-flight membership is authoritative liveness; the lock file's
+   # classification is only a fallback. Belt-and-braces here alongside the
+   # `$head_ref` branch-match filter below (which already narrows this loop
+   # to a PR whose originating worker has, per this dispatch site's own
+   # precondition, already returned) — see `dont.md`'s "Don't reap a
+   # live-PID worktree" bullet.
+   in_flight_agent_ids=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+     --session-id "<session-id>" --path .in_flight 2>/dev/null \
+     | jq -r '.[]?.agent_id // empty' 2>/dev/null)
 
    # $head_ref is the PR's headRefName (already known from the failed-PR scan's
    # snapshot — no extra `gh` round-trip needed).
@@ -205,6 +216,10 @@ When filling a slot, walk this decision tree:
      [ "$branch_ref" = "$head_ref" ] || continue
 
      name=$(basename "$wt_dir")
+     # In-flight guard (issue #832) — skip BEFORE classify-lock, not after.
+     case $'\n'"$in_flight_agent_ids"$'\n' in
+       *$'\n'"${name#agent-}"$'\n'*) continue ;;
+     esac
      worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
      [ -z "$worktree_path" ] && continue
 

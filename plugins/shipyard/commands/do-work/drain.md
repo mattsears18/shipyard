@@ -322,12 +322,27 @@ if [ "$PRIMARY_BRANCH" = "$head_ref" ]; then
 fi
 # --------------------------------------------------------------------------
 
+# In-flight guard (issue #832) — snapshot this session's currently in-flight
+# agent-ids BEFORE the loop below ever consults classify-lock. Drain can run
+# concurrent fix-checks-only / fix-rebase workers against OTHER PRs while
+# this per-PR reap fires — in-flight membership is authoritative liveness;
+# the lock file's classification is only a fallback for a worktree this
+# session doesn't currently own. See `dont.md`'s "Don't reap a live-PID
+# worktree" bullet.
+in_flight_agent_ids=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+  --session-id "<session-id>" --path .in_flight 2>/dev/null \
+  | jq -r '.[]?.agent_id // empty' 2>/dev/null)
+
 for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
   [ -d "$wt_dir" ] || continue
   branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
   [ "$branch_ref" = "$head_ref" ] || continue
 
   name=$(basename "$wt_dir")
+  # In-flight guard (issue #832) — skip BEFORE classify-lock, not after.
+  case $'\n'"$in_flight_agent_ids"$'\n' in
+    *$'\n'"${name#agent-}"$'\n'*) continue ;;
+  esac
   worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
   [ -z "$worktree_path" ] && continue
 
