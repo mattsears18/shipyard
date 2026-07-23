@@ -1509,12 +1509,12 @@ assert_contains "$dont_path" \
 assert_contains "$dont_path" \
   'match none of the five' \
   "dont.md ties the invalid defer rationalizations to the five defer_reason_class values (#531)"
-assert_contains "$dont_path" \
+assert_contains "$rationale_path" \
   'Self-filed follow-ups re-enter the backlog like any other issue' \
-  "dont.md states self-filed follow-ups re-enter the backlog (#531)"
-assert_contains "$dont_path" \
+  "RATIONALE.md states self-filed follow-ups re-enter the backlog (#531)"
+assert_contains "$rationale_path" \
   'soft cap on the per-session count of issues filed by this session' \
-  "dont.md documents the bounded-regress soft-cap guard, not blanket refusal (#531)"
+  "RATIONALE.md documents the bounded-regress soft-cap guard, not blanket refusal (#531)"
 assert_contains "$drain_path" \
   'issues/531' \
   "drain.md termination assertion cites issue #531"
