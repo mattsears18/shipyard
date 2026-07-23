@@ -223,6 +223,16 @@ Closes [#358](https://github.com/mattsears18/shipyard/issues/358). The reap path
 
 Both failure modes leave the worktree path unreusable for the remainder of the session; the next setup-3b pass at session start eventually reaps, but the cost in the interim is one stuck slot per crash. This step is the in-session safety net: a **crash-aware reap that fires before A.1** explicitly because the agent is non-recoverable and the lingering subprocess (if any) is dead weight — `peer-alive` does not justify deferring on a crash return the way it does on a clean completion.
 
+**This section is the single shared contract for every shape of "a worker stopped without a terminal return" — the failure class [#838](https://github.com/mattsears18/shipyard/issues/838) and [#833](https://github.com/mattsears18/shipyard/issues/833) both report, extending [#813](https://github.com/mattsears18/shipyard/issues/813).** They differ only in what triggers the non-terminal stop, and both funnel through the same detect → inspect → (resume | recover-and-reap) flow below:
+
+- The harness reports `status: completed` but the return text is pending-intent narrative outside the terminal vocabulary (#813 / #838 — e.g. *"Waiting for the background test run to complete."*). Covered by the **stalled-worker detection and resume** subsection immediately below.
+- The harness reports `status: completed` with a return that's genuinely crash-like (an API error, an empty string, or a narrative that leaves nothing resumable) — the original #358 case. Covered by the **crash / narrative-non-terminal detection** subsection further down.
+- The harness reports **`status: failed`** via the stall watchdog (*"no progress for 600s (stream watchdog did not recover)"*) — #833. This status is, on its own, sufficient to route through the inspect-before-reap flow below regardless of what the notification's accompanying `result` text says — see the mechanical terminal-prefix check's `harness_status` guard.
+
+**Never reap before inspecting — this is the load-bearing safety property.** Whenever either signal fires, the worktree gets `git log --oneline origin/<default>..HEAD` and `git status --porcelain` read *before* any `git worktree remove`, exactly as the "mechanical check that grounds the judgment call" below already does for the pending-intent case. Everything past that inspection — resume vs. salvage-and-reap vs. drop-clean — is recovery *policy*; the inspection itself is not optional on any of the three triggers above.
+
+**None of these three is `blocked`.** `blocked` stays reserved for a worker's own deliberate, terminal `blocked: <reason>` return (A.1's handling below) — a worker that stops non-terminally or gets killed by the stall watchdog made no such deliberate call, so none of the paths in this section apply a `blocked:*` label. The outcome class this section produces is `stalled` (pending-intent path) or a plain crash-recovery reap (everything else) — see the `stalled_dispatches` ledger ([`orchestrator-state-reference.md`](./orchestrator-state-reference.md#cold-orchestrator-state-structures)) for how every occurrence, regardless of trigger, is recorded for the end-of-session summary.
+
 **Stalled-worker detection and resume — the FIRST check inside this step, before the crash-detection paths below ([#813](https://github.com/mattsears18/shipyard/issues/813)).** A narrative, future-tense return is not always a crash. A worker that finished its real work but suspended itself awaiting a `Monitor` / backgrounded-process notification it can never receive (the harness only re-wakes a task that has a *live foreground* call outstanding — a task that went idle awaiting a background child has already ended, per `shipyard:worker-preamble` § "Run all work synchronously to a terminal state") looks identical to a crash by the terminal-prefix check below, but its worktree is very often complete and one `git commit` away from shipping. Reaping it outright via the crash-recovery path further down either force-commits with `--no-verify` — discarding the worker's own hook-validated commit path — or, if the worktree happens to hold no diff, simply throws real, expensive work away for a fresh re-dispatch to redo from scratch. Neither is correct when the worker can instead just be told to stop waiting and finish. **This is a distinct, non-terminal outcome — call it `stalled`** — and it is NOT `blocked`: `blocked` is reserved for a worker's own deliberate, terminal `blocked: <reason>` return (see [A.1's `blocked #<N>` handling](#a1-parse-the-return-string) below), and routing a stalled worker's pending-but-recoverable work through the `blocked` label/comment machinery would mislabel near-complete work as a dead end. This paragraph is the discriminator that routes to **resume** instead of reap; everything from "**Detection — what counts as a crash…**" onward remains the fallback for genuine crashes and exhausted resumes.
 
 **The judgment call — pending intent, not a keyword list.** Read the return text the way a human reviewer would: does it describe an outcome that already happened (a `shipped`/`green`/`blocked`/etc. terminal, or a genuine crash signature like `API Error:` or an empty string), or does it describe a plan contingent on something that has NOT happened yet — future tense ("I'm now waiting for…", "I'll proceed to…", "once it reports green, I'll…"), a numbered to-do list of steps not yet taken, or any other framing that names an intention rather than a completed action? The latter is **pending intent**. This is a judgment call the orchestrator makes by reading the text, not a regex/keyword match — a worker's own phrasing varies, and a brittle keyword list is both easy to evade by accident and expensive to keep current. Treat any return that reads as "I'm about to…" / "next I will…" / "waiting for X, then I'll Y" as pending-intent, regardless of the exact wording.
@@ -235,21 +245,36 @@ dirty=$(git -C "$worktree_path" status --porcelain 2>/dev/null)
 ```
 
 - `ahead_count > 0` (committed-but-unpushed work) **OR** `dirty` is non-empty (uncommitted edits) → **resume-worthy.** The worker did real work; it just suspended itself instead of finishing it. Proceed to the resume path below.
-- `ahead_count == 0` **AND** `dirty` is empty → **not resume-worthy**, no matter how pending-intent the text reads. There is nothing on disk to preserve — fall through to the ordinary crash-like detection/reap below (it will find nothing to recover and just reap, exactly like any other empty-worktree crash).
+- `ahead_count == 0` **AND** `dirty` is empty → **not resume-worthy**, no matter how pending-intent the text reads. There is nothing on disk to preserve — this is exactly today's dispatch-refused shape (see [dispatch-rules.md's "leave no `.in_flight` slot behind and let the next turn's slot-fill retry the candidate"](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c)): drop the slot and let step C's next fill retry the candidate fresh. Fall through to the ordinary crash-like detection/reap below — it will find nothing to recover, just reap, and record the `stalled_dispatches` entry itself (see the ledger append at the bottom of the crash-recovery block).
 
-**The resume path — re-run the blocking command in the FOREGROUND, never re-arm the same background wait.** When pending-intent AND resume-worthy both hold, do NOT run the crash-recovery auto-commit-and-reap path below. Instead:
+**The resume path — prefer resuming the SAME agent over a fresh dispatch, and never re-arm the same background wait ([#838](https://github.com/mattsears18/shipyard/issues/838), [#833](https://github.com/mattsears18/shipyard/issues/833)).** When pending-intent AND resume-worthy both hold, do NOT run the crash-recovery auto-commit-and-reap path below. A resume preserves the worker's transcript and its worktree in place; re-dispatching from scratch redoes work already paid for, and the pre-dispatch reap that precedes a fresh dispatch would delete the recoverable work first. Instead:
 
-1. **Bound it first — retry cap 2.** Track `stalled_resume_counts[<slot-target>]` (keyed by the slot's issue/PR number — same convention as `main_ci_fix_attempts`) in orchestrator working memory, initialized to 0 the first time a slot's target is seen. If the count is already `>= 2`, do NOT resume again — fall through to the crash-recovery path below instead, so a genuinely wedged worker (one that stalls again on every resume) lands on the existing crash-recovery / `blocked` handling rather than looping forever.
-2. Otherwise, increment `stalled_resume_counts[<slot-target>]` by 1 and **re-dispatch into the SAME worktree** — not a fresh one. The worktree path and branch are unchanged: do not `git worktree add` again and do not create a new branch. Issue a fresh dispatch (the same `Workflow`/`Agent` mechanism the original dispatch used) whose prompt:
-   - States plainly that this is a **resume**, not a fresh start — the worktree at `<worktree_path>` already contains completed or partially-completed work from a previous attempt; inspect it first (`git status`, `git diff`) rather than redoing it.
-   - Instructs the worker to **stop waiting on any background process or `Monitor` subscription** — that mechanism cannot notify it again inside a fresh dispatch — and to **re-run the blocking command (the test suite, the long-running check) synchronously in the foreground**, reading its exit status directly, exactly as `shipyard:worker-preamble`'s "Run all work synchronously to a terminal state" rule already requires of every dispatch.
-   - Tells the worker to then proceed through its mode's normal terminal steps (commit, push, open the PR) once the foreground command completes, and to return one of its mode's normal terminal strings.
-3. Log `[reconcile-A.0.5-resume] slot=<slot-id> target=#<slot-target> stalled resume attempt <n>/2 dispatched into existing worktree <worktree_path> (#813)` and end this turn's A.0.5 handling for this slot — the freshly-dispatched resume becomes the slot's new in-flight agent (update `.in_flight.<slot>.agent_id` to the resume dispatch's id). Its own completion re-enters this same reconcile flow on its own wake, subject to the same pending-intent detection and the same retry cap.
-4. When the resume dispatch itself later returns a genuine terminal string, A.1's normal per-mode handling processes it exactly as if it had arrived on the first attempt — `stalled` is invisible to A.1's return vocabulary once it resolves. If the resume dispatch stalls again and the cap (step 1) isn't yet exhausted, this same check fires again on its own wake and resumes it a second time; once the cap is hit, the NEXT stalled (or crashed) wake for that target falls through to the ordinary crash-recovery path below.
+1. **Bound it first — retry cap 1 per target per session.** Track `stalled_resume_counts[<slot-target>]` (keyed by the slot's issue/PR number — same convention as `main_ci_fix_attempts`) in orchestrator working memory, initialized to 0 the first time a slot's target is seen. If the count is already `>= 1`, do NOT resume again — this target already had its one resume. **Hand it back** by falling through to the crash-recovery path below, which still salvages any committed/dirty work into a PR (see "Recovery semantics, in order" further down) — it just does so via auto-commit-and-push rather than a second live resume. A target that stalls twice is genuinely wedged; looping resumes on it wastes tokens without addressing the underlying cause.
+2. Otherwise, increment `stalled_resume_counts[<slot-target>]` by 1 and **gather the orchestrator's own reading of the worktree BEFORE composing the resume message.** The stalled agent's last self-report is not trustworthy about how far it actually got — it may have been mid-sentence when the stall watchdog killed it. Run, read-only, against `$worktree_path`:
+   ```bash
+   git -C "$worktree_path" fetch origin "$DEFAULT_BRANCH" 2>/dev/null || true
+   git -C "$worktree_path" log --oneline "origin/${DEFAULT_BRANCH}..HEAD"
+   git -C "$worktree_path" status --porcelain
+   # When version_coordination is enabled, also read the manifest's current
+   # on-disk version so the resume message states it rather than guessing.
+   gh pr list --repo <owner/repo> --state open --head "do-work/issue-<N>" \
+     --json number --jq '.[0].number // empty'
+   ```
+   Fold the literal output of each into the resume message: commits present/absent (with SHAs and subject lines), dirty paths (the porcelain listing verbatim), the manifest version currently on disk, and whether a PR already exists for the branch. This reading — not the worker's own prior narrative — is what the resume message asserts as ground truth.
+3. **Resume the SAME agent when one is live and addressable; otherwise re-enter the SAME worktree with a fresh call.** The two dispatch shapes this repo uses have different resume primitives, and the choice between them is mechanical, not a preference:
+   - **`Agent`-tool dispatch (`isolation: "worktree"`, a live background subagent with an `agent_id`)** — send a follow-up message to that exact agent via `SendMessage` targeting its `agent_id`. This is the preferred path where available: it resumes the agent's own transcript in place, so it already has full context of what it did and why — the orchestrator only supplies the verified worktree reading from step 2 and the instructions below. **This is the path validated live in this session**: worker `#826`'s dispatch stalled with its deliverable uncommitted, was resumed via `SendMessage` carrying the orchestrator's own worktree reading, and shipped cleanly as PR #834.
+   - **`Workflow`-substrate dispatch (an `agent()` call — the default per [#791](https://github.com/mattsears18/shipyard/issues/791))** — `agent()` is a one-shot call with no documented resume/follow-up primitive (see [`workflows/README.md`](../../workflows/README.md)), so there is no live agent to message. The closest equivalent is a **fresh `agent()` call into the SAME worktree and branch** — do not `git worktree add` again and do not create a new branch; the prompt itself carries the resume framing and the step-2 reading.
+
+   Either way, the message/prompt:
+   - States plainly that this is a **resume**, not a fresh start, and **opens with the orchestrator's own verified reading from step 2** — not a request for the worker to re-derive it.
+   - Instructs the worker to **stop waiting on any background process or `Monitor` subscription** — that mechanism cannot notify it again inside a resume — and to **re-run the blocking command (the test suite, the long-running check) synchronously in the foreground**, reading its exit status directly, exactly as `shipyard:worker-preamble`'s "Run all work synchronously to a terminal state" rule already requires of every dispatch.
+   - Tells the worker to then proceed through its mode's normal terminal steps (commit, push, open the PR, or continue past whatever step the step-2 reading shows is next) once the foreground command completes, and to return one of its mode's normal terminal strings.
+4. Log `[reconcile-A.0.5-resume] slot=<slot-id> target=#<slot-target> stalled resume attempt 1/1 via <SendMessage|fresh-agent()-call> into existing worktree <worktree_path> (#838/#833)` and append a `stalled_dispatches` entry (see [`orchestrator-state-reference.md`](./orchestrator-state-reference.md#cold-orchestrator-state-structures)) with `outcome: "resumed"`. End this turn's A.0.5 handling for this slot — the resume becomes the slot's new in-flight agent (for a `SendMessage` resume, `.in_flight.<slot>.agent_id` is unchanged since it's the same agent; for a fresh `agent()` call, update it to the new call's id). Its own completion re-enters this same reconcile flow on its own wake, subject to the same detection and the now-exhausted retry cap.
+5. When the resume itself later returns a genuine terminal string, A.1's normal per-mode handling processes it exactly as if it had arrived on the first attempt — `stalled` is invisible to A.1's return vocabulary once it resolves; update the `stalled_dispatches` entry's `resumed_pr` field to the shipped PR number, if any. If the resume stalls again, the cap (step 1) is now exhausted — the NEXT stalled (or `status: failed`) wake for that target falls through to the ordinary crash-recovery path below and its own `stalled_dispatches` entry records `outcome: "handed-back"`.
 
 **Why resume beats the crash-recovery reap for this specific shape.** The crash-recovery path further down auto-commits with `--no-verify` and force-reaps — correct for an agent that is truly gone (crashed, errored, or a return with no salvageable worktree), but heavy-handed for a worker that is provably still resumable: it bypasses the worker's own commit hooks, discards its live context (root-caused understanding of the diff, in-flight PR-body drafting), and burns a second dispatch's tokens re-establishing what the first dispatch already knew. A one-message resume costs almost nothing by comparison and lets the SAME worker finish normally, hooks and all — this is the recovery the [#813](https://github.com/mattsears18/shipyard/issues/813) repro's orchestrator performed by hand (inspecting the worktree, then resuming the agent with a message to stop waiting and re-run in the foreground) before this section existed to specify it.
 
-**Detection — what counts as a crash / narrative-non-terminal return (the fallback for genuine crashes and exhausted resumes).** The stalled-worker check above already handles the pending-intent-with-resumable-worktree case. Everything below applies to what's left: returns with no pending-intent reading at all (an actual crash signature), and stalled returns that found nothing resumable or already exhausted the resume cap. The agent's last-line return text fails the terminal-prefix check when it does NOT start with any of:
+**Detection — what counts as a crash / narrative-non-terminal return (the fallback for genuine crashes and exhausted resumes).** The stalled-worker check above already handles the pending-intent-with-resumable-worktree case. Everything below applies to what's left: returns with no pending-intent reading at all (an actual crash signature), stalled returns that found nothing resumable or already exhausted the resume cap, and **any dispatch where the harness itself reports `status: failed`** — the stall watchdog ("no progress for 600s (stream watchdog did not recover)", the [#833](https://github.com/mattsears18/shipyard/issues/833) trigger). A `status: failed` notification routes here **unconditionally**, regardless of what its `result`/return text says — the watchdog firing means the agent never reached its own terminal return, so even text that happens to start with a terminal-looking prefix (a coincidence, not a real completion) must not short-circuit the inspection. The agent's last-line return text fails the terminal-prefix check when the harness status is `failed`, OR when the text does NOT start with any of:
 
 - `shipped` (issue-work, fix-main-ci, fix-failing-prs-batch happy path)
 - `green` (fix-checks-only happy path)
@@ -300,20 +325,30 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 # The agent's last-line return text from the harness notification. The
 # orchestrator already has this in working memory for A.1's parse below.
 return_text="<the agent's last-line return text, trimmed>"
+# The harness task-notification's own status field: "completed" or "failed".
+# A "failed" status is the #833 stall-watchdog trigger ("no progress for
+# 600s (stream watchdog did not recover)") and is treated as non-terminal
+# UNCONDITIONALLY below, independent of what return_text says.
+harness_status="<the harness task-notification's status field>"
 
 # Terminal-prefix check — case-insensitive match against the six valid
-# prefixes from the per-mode return contracts.
+# prefixes from the per-mode return contracts. Skipped entirely when
+# harness_status == "failed": the watchdog firing means this dispatch never
+# reached its own terminal return, so a text prefix that happens to look
+# terminal is not trusted as a real completion (#833).
 is_terminal=false
-case "$return_text" in
-  shipped*|green*|noop:*|blocked*|rebased*|reaped:*)
-    is_terminal=true
-    ;;
-esac
+if [ "$harness_status" != "failed" ]; then
+  case "$return_text" in
+    shipped*|green*|noop:*|blocked*|rebased*|reaped:*)
+      is_terminal=true
+      ;;
+  esac
+fi
 
 if [ "$is_terminal" = "false" ]; then
-  # Crash / narrative-non-terminal — fire the reap.
+  # Crash / narrative-non-terminal / harness-failed — fire the reap.
   log_prefix=$(printf '%s' "$return_text" | head -c 80)
-  echo "[reconcile-A.0.5] crash-like return for slot=<slot-id> agent=<agent-id>: \"$log_prefix\"; firing post-return reap (#358)"
+  echo "[reconcile-A.0.5] non-terminal stop for slot=<slot-id> agent=<agent-id> harness_status=${harness_status}: \"$log_prefix\"; firing post-return inspect-before-reap (#358/#838/#833)"
 
   completed_agent_id="${.in_flight[<slot-id>].agent_id}"
   wt_dir=".git/worktrees/agent-${completed_agent_id}"
@@ -642,6 +677,23 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
       wasted_narrative_tokens=$(( ${wasted_narrative_tokens:-0} + ${A05_DISPATCH_TOKENS:-0} ))
       echo "[reconcile-A.0.5] wasted dispatch (#529): non-terminal narrative, no recoverable work; counted (total now ${wasted_narrative_dispatches})"
     fi
+
+    # Stalled-dispatch ledger (#838/#833) — record every reap this block
+    # performs, mirroring dispatch_denials (#718) / operator_denials (#746).
+    # This is the single append point for the crash-recovery fallback path
+    # (both a genuine crash AND a resume-cap-exhausted second stall land
+    # here); the "resumed" outcome is appended separately at the resume
+    # path's own step 4, since a resume returns early and never reaches
+    # this block. Distinguish trigger and outcome:
+    stalled_trigger="non-terminal-return"
+    [ "$harness_status" = "failed" ] && stalled_trigger="harness-failed"
+    if [ -n "${recovered_pr:-}" ]; then
+      stalled_outcome="handed-back"
+    else
+      stalled_outcome="dropped-clean"
+    fi
+    stalled_dispatches+=("{\"target\":\"#${slot_issue:-unknown}\",\"mode\":\"${slot_kind:-unknown}\",\"trigger\":\"${stalled_trigger}\",\"outcome\":\"${stalled_outcome}\",\"resumed_pr\":${recovered_pr:-null},\"detected_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}")
+    echo "[reconcile-A.0.5] stalled_dispatches entry recorded: target=#${slot_issue:-unknown} trigger=${stalled_trigger} outcome=${stalled_outcome}"
   fi
 fi
 ```
