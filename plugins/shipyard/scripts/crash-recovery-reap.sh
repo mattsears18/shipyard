@@ -340,11 +340,29 @@ cmd_reap() {
     # Pre-reap recovery check (#493): before reaping, check whether the
     # crashed worker left committed work that hasn't been pushed yet. This
     # only applies to issue-work dispatches (slot_kind == "issue") since
-    # those are the only ones with a named do-work/issue-<N> branch and a
-    # linked issue to recover against.
+    # those are the only ones with a named do-work/issue-<N> (or, on a split
+    # dispatch, do-work/slice-<N> — issue #1562) branch and a linked issue to
+    # recover against.
     if [ "$slot_kind" = "issue" ] && [ -n "$slot_issue" ] && [ -d "$worktree_path" ]; then
       local DEFAULT_BRANCH ahead_count push_ok=""
+      local recovery_branch recovery_is_slice="false"
       DEFAULT_BRANCH=$("$GH" repo view "$repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
+
+      # Recover onto the branch this worktree ACTUALLY holds, not a
+      # hardcoded `do-work/issue-<N>` (issue #1562). Two dispatches don't
+      # carry that name: a split dispatch (operator_residual /
+      # verification_slice) is branched `do-work/slice-<N>` so its PR can't
+      # auto-link to the issue it must not close, and issue-work.md §3's
+      # worktree-name-collision fallback checks out
+      # `do-work/issue-<N>-<epoch>` locally while pushing to the canonical
+      # remote name. Reading HEAD covers both; the canonical name stays the
+      # fallback for a detached/unreadable HEAD.
+      recovery_branch=$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+      case "$recovery_branch" in
+        ""|HEAD)                             recovery_branch="do-work/issue-${slot_issue}" ;;
+        do-work/issue-${slot_issue}-[0-9]*)  recovery_branch="do-work/issue-${slot_issue}" ;;
+        do-work/slice-*)                     recovery_is_slice="true" ;;
+      esac
       # Fetch so origin/<default> ref is current.
       git -C "$worktree_path" fetch origin "$DEFAULT_BRANCH" 2>/dev/null || true
       ahead_count=$(git -C "$worktree_path" rev-list --count "origin/${DEFAULT_BRANCH}..HEAD" 2>/dev/null || echo "0")
@@ -372,13 +390,18 @@ cmd_reap() {
         # commit succeeded); this is an orchestrator-side recovery push on
         # a dead agent's branch.
         local push_out push_ok_local
-        if push_out=$(git -C "$worktree_path" push origin "do-work/issue-${slot_issue}" 2>&1); then
+        # `HEAD:refs/heads/<name>` rather than a bare local refname: in the
+        # §3 collision-fallback case the local branch is
+        # `do-work/issue-<N>-<epoch>` while the canonical remote name is
+        # `do-work/issue-<N>`, so a bare push of the latter would fail with
+        # "src refspec does not match any" (issue #1562).
+        if push_out=$(git -C "$worktree_path" push origin "HEAD:refs/heads/${recovery_branch}" 2>&1); then
           push_ok_local=true
         else
           push_ok_local=false
         fi
         push_ok="$push_ok_local"
-        echo "[reconcile-A.0.5-recovery] push do-work/issue-${slot_issue}: ok=${push_ok} (${push_out:0:120})"
+        echo "[reconcile-A.0.5-recovery] push ${recovery_branch}: ok=${push_ok} (${push_out:0:120})"
 
       elif [ -n "$(git -C "$worktree_path" status --porcelain 2>/dev/null)" ]; then
         # Dirty-working-tree recovery (#495): the worker crashed/stalled
@@ -421,13 +444,13 @@ cmd_reap() {
 
         if [ "$autocommit_ok" = "true" ]; then
           local push_out2 push_ok_local2
-          if push_out2=$(git -C "$worktree_path" push origin "do-work/issue-${slot_issue}" 2>&1); then
+          if push_out2=$(git -C "$worktree_path" push origin "HEAD:refs/heads/${recovery_branch}" 2>&1); then
             push_ok_local2=true
           else
             push_ok_local2=false
           fi
           push_ok="$push_ok_local2"
-          echo "[reconcile-A.0.5-recovery] push do-work/issue-${slot_issue}: ok=${push_ok} (${push_out2:0:120})"
+          echo "[reconcile-A.0.5-recovery] push ${recovery_branch}: ok=${push_ok} (${push_out2:0:120})"
         else
           push_ok=false
         fi
@@ -443,18 +466,31 @@ cmd_reap() {
           # Step 2: check whether an open PR already exists for this branch.
           local existing_pr
           existing_pr=$("$GH" pr list --repo "$repo" --state open \
-            --head "do-work/issue-${slot_issue}" \
+            --head "${recovery_branch}" \
             --json number --jq '.[0].number // empty' 2>/dev/null || true)
 
-          local pr_ok=""
+          local pr_ok="" recovered_title recovered_body
+          # A `do-work/slice-<N>` branch is a split dispatch: its PR ships a
+          # partial slice and must NOT close #<N> (issue #1562). Reference the
+          # issue by bare URL with no closing keyword and no bare `#<N>` token
+          # anywhere in the title or body — #624's auto-promotion hazard — so
+          # crash recovery can't close an issue the dispatch deliberately left
+          # open. Every other recovery keeps the closing keyword unchanged.
+          if [ "$recovery_is_slice" = "true" ]; then
+            recovered_title="fix: crash-recovered partial slice for issue ${slot_issue}"
+            recovered_body=$(printf 'Ships a partial slice of https://github.com/%s/issues/%s, which stays open.\n\n## Summary\nCrash-recovered by orchestrator A.0.5 pre-reap recovery (#493/#495) from a split dispatch (branch %s, issue #1562). Worker crashed/stalled before or after committing. Deliberately carries NO closing keyword — a human must disposition the residual on the linked issue.\n\n## Test plan\n- [ ] Verify which acceptance criteria this slice actually covers, and what residual remains\n' "$repo" "$slot_issue" "$recovery_branch")
+          else
+            recovered_title="fix: crash-recovered work for issue #${slot_issue}"
+            recovered_body=$(printf 'Closes #%s\n\n## Summary\nCrash-recovered by orchestrator A.0.5 pre-reap recovery (#493/#495). Worker crashed/stalled before or after committing. CI is the safety net for uncommitted-worktree recoveries.\n\n## Test plan\n- [ ] Verify acceptance criteria from #%s are met\n' "$slot_issue" "$slot_issue")
+          fi
           if [ -z "$existing_pr" ]; then
             # No PR yet — create one with the standard issue-work template.
             if recovered_pr=$("$GH" pr create \
               --repo "$repo" \
-              --head "do-work/issue-${slot_issue}" \
+              --head "${recovery_branch}" \
               --label shipyard \
-              --title "fix: crash-recovered work for issue #${slot_issue}" \
-              --body "$(printf 'Closes #%s\n\n## Summary\nCrash-recovered by orchestrator A.0.5 pre-reap recovery (#493/#495). Worker crashed/stalled before or after committing. CI is the safety net for uncommitted-worktree recoveries.\n\n## Test plan\n- [ ] Verify acceptance criteria from #%s are met\n' "$slot_issue" "$slot_issue")" \
+              --title "$recovered_title" \
+              --body "$recovered_body" \
               2>/dev/null); then
               pr_ok=true
             else
@@ -464,7 +500,7 @@ cmd_reap() {
           else
             recovered_pr="$existing_pr"
             pr_ok=true
-            echo "[reconcile-A.0.5-recovery] PR #${existing_pr} already open for do-work/issue-${slot_issue}; skipping create"
+            echo "[reconcile-A.0.5-recovery] PR #${existing_pr} already open for ${recovery_branch}; skipping create"
           fi
 
           if [ "$pr_ok" = "true" ] && [ -n "$recovered_pr" ]; then

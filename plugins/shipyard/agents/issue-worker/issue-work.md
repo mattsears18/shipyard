@@ -41,9 +41,10 @@ gh pr list --repo <owner/repo> --state open --limit 200 \
 # `gh pr create`) — that PR carries no closing keyword, so the check above
 # is blind to it. See `shipyard:worker-preamble` § "Native background-subagent
 # auto-PR reconciliation" (issue #785) for why this can happen and what it means.
+# `do-work/slice-<N>` is a split dispatch's branch (#1562) — same situation.
 gh pr list --repo <owner/repo> --state open --limit 200 \
   --json number,headRefName,labels \
-  --jq "[.[] | select(.headRefName == \"do-work/issue-<N>\") | {number, labels: [.labels[].name]}]"
+  --jq "[.[] | select(.headRefName == \"do-work/issue-<N>\" or .headRefName == \"do-work/slice-<N>\") | {number, labels: [.labels[].name]}]"
 ```
 
 The `--jq` projection on the issue view keeps every field this step consumes — `state` (workable check), `title`/`body` (untrusted-input read in step 2), `labels[].name` (block-label check), `assignees[].login` (concurrent-claim check), `author.login` (trust-walk anchor in step 2), `comments[].{author.login, body, url, createdAt}` (trusted-author comment-thread walk + permalink citation in step 2) — and drops every field the worker doesn't read (label `id` / `description` / `color`, assignee `id` / `name`, comment `id` / `updatedAt`, author `id` / `name`). Same call count, smaller objects. Worker-preamble §"`gh` JSON discipline" covers the convention.
@@ -54,7 +55,7 @@ Bail with `blocked` if any of:
 - Issue has an assignee that isn't the authenticated `gh` user (someone else picked it up).
 - Issue carries `wontfix` / `needs-human-review` / `discussion` labels. (`needs-design` folded into `needs-human-review` per [#515](https://github.com/mattsears18/shipyard/issues/515); bare `blocked` per [#1128](https://github.com/mattsears18/shipyard/issues/1128); `needs-triage` retired per [#1120](https://github.com/mattsears18/shipyard/issues/1120).)
 - **Any open PR references this issue with a closing keyword** — don't open a duplicate. Return: `blocked: PR #<M> already open for this issue`.
-- **Any open PR already has head branch `do-work/issue-<N>`** (the second query above), even without a closing keyword. This is almost always either a live sibling worktree mid-dispatch, or a native-auto-opened draft PR left over from a worker that pushed then bailed before `gh pr create` (see the worker-preamble cross-reference above). Don't open a second PR against the same branch — return `blocked: PR #<M> already open on canonical branch do-work/issue-<N> — verify it carries --label shipyard and a closing keyword before retrying` so a human (or a fresh dispatch once the branch is free) can patch or replace it rather than racing it.
+- **Any open PR already has head branch `do-work/issue-<N>` or `do-work/slice-<N>`** (the second query above), even without a closing keyword. This is almost always either a live sibling worktree mid-dispatch, or a native-auto-opened draft PR left over from a worker that pushed then bailed before `gh pr create` (see the worker-preamble cross-reference above). Don't open a second PR against the same branch — return `blocked: PR #<M> already open on canonical branch do-work/issue-<N> — verify it carries --label shipyard and a closing keyword before retrying` so a human (or a fresh dispatch once the branch is free) can patch or replace it rather than racing it.
 
 ### 0.5 Verify dispatch-time scope-boundary framing against the issue's live comment thread ([#1179](https://github.com/mattsears18/shipyard/issues/1179))
 
@@ -124,8 +125,9 @@ DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBr
 
 # REMOTE_BRANCH is the canonical name — orphan triage and the PR's head
 # always resolve to this, regardless of what this worktree's local branch
-# ends up being called (see the collision fallback below).
-REMOTE_BRANCH="do-work/issue-<N>"
+# ends up being called (see the collision fallback below). Take it VERBATIM
+# from the dispatch prompt's `Branch:` line; never "correct" it (#1562).
+REMOTE_BRANCH="<the dispatch prompt's Branch: line, verbatim>"
 LOCAL_BRANCH="$REMOTE_BRANCH"
 
 if ! git checkout -B "$LOCAL_BRANCH" "origin/$DEFAULT_BRANCH" 2>/tmp/do-work-checkout-err.log; then
@@ -153,7 +155,7 @@ if ! git checkout -B "$LOCAL_BRANCH" "origin/$DEFAULT_BRANCH" 2>/tmp/do-work-che
 fi
 ```
 
-Branch name comes from the orchestrator's dispatch prompt and must be exactly `do-work/issue-<N>` — that constraint is on the **remote** branch (`$REMOTE_BRANCH`), not necessarily this worktree's local checkout. The deterministic *remote* name is what lets the orchestrator's next-session orphan triage find your PR if this session is killed; [step 5](#5-commit--push--pr) pushes to and opens the PR against `$REMOTE_BRANCH` explicitly, so the fallback case still produces a discoverable, canonically-named PR even when `$LOCAL_BRANCH` diverges.
+Branch name comes from the orchestrator's dispatch prompt and must be exactly what its `Branch:` line names — that constraint is on the **remote** branch (`$REMOTE_BRANCH`), not necessarily this worktree's local checkout. The deterministic *remote* name is what lets the orchestrator's next-session orphan triage find your PR if this session is killed; [step 5](#5-commit--push--pr) pushes to and opens the PR against `$REMOTE_BRANCH` explicitly, so the fallback case still produces a discoverable, canonically-named PR even when `$LOCAL_BRANCH` diverges.
 
 **When the fallback fires** (`$LOCAL_BRANCH != $REMOTE_BRANCH`), the collision means a *different* on-disk worktree — dead scaffold or live sibling, you genuinely cannot tell which without violating worktree discipline by `cd`-ing into it — is holding `$REMOTE_BRANCH` locally. Leave it strictly alone for the rest of this dispatch. Its own lifecycle (a live worker's own return, or the orchestrator's orphan-triage sweep) is responsible for cleaning it up — not you, and not this session.
 

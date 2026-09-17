@@ -2560,9 +2560,19 @@ assert_contains "$issue_work_path736" \
 assert_contains "$issue_work_path736" \
   'already used by worktree' \
   "issue-work.md §3 detects the worktree-name-collision failure mode (#736)"
+# #736's invariant is that REMOTE_BRANCH is the DETERMINISTIC name the push,
+# the PR head, and orphan triage all resolve to — not that it is literally
+# `do-work/issue-<N>`. Since #1562 a split dispatch is branched
+# `do-work/slice-<N>` instead (a branch literally named `do-work/issue-<N>`
+# auto-links the issue such a PR must not close, #893), so §3 takes the
+# dispatch prompt's `Branch:` value verbatim. Both names are still
+# derivable from <N> alone, which is what #736 actually depends on.
 assert_contains "$issue_work_path736" \
-  'REMOTE_BRANCH="do-work/issue-<N>"' \
-  "issue-work.md §3 pins REMOTE_BRANCH to the canonical do-work/issue-<N> name (#736)"
+  "REMOTE_BRANCH=\"<the dispatch prompt's Branch: line, verbatim>\"" \
+  "issue-work.md §3 pins REMOTE_BRANCH to the dispatched branch name (#736, #1562)"
+assert_contains "$issue_work_path736" \
+  'do-work/slice-<N>' \
+  "issue-work.md recognizes the split dispatch's neutral branch shape (#1562)"
 assert_contains "$issue_work_path736" \
   'Do NOT touch the other worktree' \
   "issue-work.md §3 forbids touching the colliding worktree on fallback (#736)"
