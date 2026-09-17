@@ -1,12 +1,55 @@
 # /shipyard:do-work — Setup phase · config + worktree
 
-**Setup sub-phase (cluster 1, part 1/2 — [#994](https://github.com/mattsears18/shipyard/issues/994)).** Steps 0.3 → 0.7 (intro): config + worktree relocation + session-state init + parallelization contract intro. Continues in [`00b-parallelization-cache.md`](./00b-parallelization-cache.md). Router: [`setup.md`](../setup.md).
+**Setup sub-phase (cluster 1, part 1/2 — [#994](https://github.com/mattsears18/shipyard/issues/994)).** Steps 0.2 → 0.7 (intro): host-git preflight + config + worktree relocation + session-state init + parallelization contract intro. Continues in [`00b-parallelization-cache.md`](./00b-parallelization-cache.md). Router: [`setup.md`](../setup.md).
 
 ## Lightweight C=1 path — what's skipped and what stays
 
 **Full detail moved to [`00j-c1-path-index.md`](./00j-c1-path-index.md)** ([#1431](https://github.com/mattsears18/shipyard/issues/1431), splitting this file back under the per-file byte cap). Load it now — it owns the complete reference index: the "what's skipped at C=1" table (with a link to each gate's owning callout), the "what stays at C=1" list, how the inline-trivial fast path stacks orthogonally with concurrency, and when to pick C=1 vs C≥2. This is a reference index, not a numbered step — deep-link only, not part of the ordered per-session walk.
 
 ## Setup (run once)
+
+### 0.2 Host-git health preflight — stop here if the harness's own git is unusable ([#1567](https://github.com/mattsears18/shipyard/issues/1567))
+
+**This is the first thing the session does — before the `CLAUDE_PLUGIN_ROOT` preamble, before the opt-in check, before anything else.** Every isolation mechanism `/shipyard:do-work` depends on runs on git *inside Claude Code itself*, not in a Bash-tool subprocess, so a host whose system `git` is broken cannot dispatch a single worker — and the failure surfaces at **step 7**, after the full ~15-minute setup pass, unless it's caught here. [#1567](https://github.com/mattsears18/shipyard/issues/1567)'s first-hand repro (session `do-work-20260916T112450Z-93563`, 2026-09-16, against this repo on plugin 4.55.3) walked all of steps 1 → 6 before discovering no dispatch shape worked at all.
+
+The canonical trigger is macOS with `xcode-select -p` pointing at `/Applications/Xcode.app` and an **unaccepted Xcode license**: `/usr/bin/git` (the `xcrun` shim) then fails *every* call with `You have not agreed to the Xcode license agreements`, and that takes out —
+
+- `EnterWorktree` (`name:` form) — `Could not read the repository git config to neutralize filter drivers`
+- `EnterWorktree` (`path:` form, the [#1066](https://github.com/mattsears18/shipyard/issues/1066) recovery in [`00c-worktree-recovery.md`](./00c-worktree-recovery.md)) — `` `git -C <repo> worktree list` failed: You have not agreed to the Xcode license agreements ``
+- `Agent(isolation: "worktree")` — the same filter-drivers error. Every mode shim declares `isolation: worktree` in its frontmatter, so **no `Agent` dispatch shape works at all**.
+- The `Workflow`-substrate alternate provisions the worktree fine with raw git, but the dispatched worker's own git calls hit the identical error, so the worker can only return `blocked` — which stamps `needs-human-review` on a perfectly workable issue.
+
+Run the check. It is a plain, single-purpose command with no arguments (the script self-locates its probes), so it runs cleanly pre-relocation; it needs no `CLAUDE_PLUGIN_ROOT` preamble beyond the one line that resolves the path:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+"$CLAUDE_PLUGIN_ROOT/scripts/detect-host-git-health.sh"
+```
+
+[`detect-host-git-health.sh`](../../../scripts/detect-host-git-health.sh) is the single executable source of truth for this verdict — following the [`detect-ungated-admin-direct-merge.sh`](../../../scripts/detect-ungated-admin-direct-merge.sh) precedent, don't re-derive the check by hand. It probes with `DEVELOPER_DIR` **unset** on purpose: a session that has already worked around a broken host by exporting that variable would otherwise see a clean shell while the harness still fails. It prints `verdict=<word>` on stdout:
+
+| `verdict=` | Exit | What to do |
+|---|---|---|
+| `healthy` | 0 | Proceed to step 0.3. The normal path — this check is a sub-second no-op. |
+| `not-a-repo` | 0 | git works; the cwd just isn't a working tree. Not a host-git failure — proceed; step 0.4 and step 1 own repo resolution. |
+| `xcode-license` | 1 | **Stop the session.** Print the script's own stderr remediation verbatim and exit. |
+| `git-unusable` | 1 | **Stop the session.** git is broken for some other reason (missing, broken install, PATH). Print the stderr diagnostic and exit. |
+
+**On a non-zero exit, stop — do not attempt to route around it.** A `DEVELOPER_DIR=/Library/Developer/CommandLineTools` prefix fixes the orchestrator's *own shell calls* and nothing else; the harness's internal git calls never see that variable, so every downstream isolation mechanism is already known dead. Trying the `Workflow`-substrate alternate, or falling back to a raw `git worktree add`, only moves the same failure one layer down into the worker. The remediation is host-level and takes one command:
+
+```
+sudo xcodebuild -license accept
+```
+
+or, equivalently, point the toolchain away from Xcode entirely:
+
+```
+sudo xcode-select -s /Library/Developer/CommandLineTools
+```
+
+Report which command the operator should run, then end the session. This is a hand-back, not a `blocked` issue label — no issue is at fault, and nothing in the backlog should be mutated by a session that never got far enough to dispatch.
+
+**Don't over-trigger.** The gate fires only on a *non-zero* verdict. `not-a-repo` is explicitly a pass: this step asks "is git usable on this host," not "am I in the right repo." Regression-guarded by [`scripts/tests/detect-host-git-health.test.sh`](../../../scripts/tests/detect-host-git-health.test.sh), which drives the classifier from recorded exit/stderr pairs and from a stubbed git binary — the real failing host state can't be reproduced once its license has been accepted, and un-accepting it is a `sudo` host mutation no test may perform.
 
 ### 0.3 `CLAUDE_PLUGIN_ROOT` re-export preamble (every Bash-tool call)
 
