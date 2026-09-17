@@ -99,6 +99,15 @@ if [[ -f "$resolver" ]]; then
   # the bad state is made unreachable instead of recoverable.
   assert_contains "$resolver" 'BLOCKED, not' \
     "resolver documents why the DIRTY-only entry condition is not widened"
+  # Issue #1571 — the allocator must not count the PR's own pre-allocated
+  # claim against it. The early return lives in allocate_slot; pin both the
+  # issue link and the fact that the decision is made there.
+  assert_contains "$resolver" '#1571' \
+    "resolver links to originating issue #1571"
+  # Escaped rather than single-quoted: the needle contains literal `$pr` /
+  # `$floor`, and a single-quoted needle trips shellcheck's SC2016.
+  assert_contains "$resolver" "version_gt \"\$pr\" \"\$floor\"" \
+    "allocate_slot keeps the PR's own slot when main has not reached it"
 else
   bad "resolver script exists at $resolver"
 fi
@@ -373,6 +382,74 @@ if work=$(new_fixture cursor-monotonic); then
   fi
 else
   bad "shape 4: fixture setup"
+fi
+
+# --- Shape 5: the #1571 repro — the PR KEEPS its own pre-allocated slot. -----
+# The orchestrator dispatched this PR at 4.51.8 (a sibling already held 4.51.7)
+# and `compute` advanced the cursor to 4.51.8 in the same breath. The sibling
+# then merged, taking main to 4.51.7 and DIRTYing this PR. 4.51.8 is still
+# free and still strictly above the new floor, so the resolve must LEAVE IT
+# ALONE. Pre-fix the cursor fold counted this PR's own claim against it —
+# `max(floor 4.51.7, cursor 4.51.8)` = 4.51.8 — and handed out 4.51.9,
+# permanently skipping 4.51.8 in the released sequence.
+if work=$(new_fixture keeps-own-slot); then
+  add_pr_branch "$work" pr/own 4.51.8
+  advance_main "$work" 4.51.7 yes
+  cursor="$FX_ROOT/cursor-5"
+  printf '4.51.8' > "$cursor"          # what `compute` left at dispatch time
+  run_resolver "$work" pr/own "$cursor"
+
+  assert_resolved "shape 5: resolver exits 0 (resolved)" "$RESOLVE_RC"
+  head_v=$(version_at "$work" "origin/pr/own")
+  floor_v=$(version_at "$work" "origin/main")
+  assert_equals "shape 5: floor is the sibling's merged version" "4.51.7" "$floor_v"
+  assert_equals "shape 5: PR keeps its own pre-allocated slot (no gap)" "4.51.8" "$head_v"
+  if version_gt "$head_v" "$floor_v"; then
+    ok "shape 5: head ($head_v) is STRICTLY greater than the merge-base ($floor_v)"
+  else
+    bad "shape 5: head ($head_v) must be strictly greater than the merge-base ($floor_v)"
+  fi
+  cl=$( cd "$work" && git show "origin/pr/own:CHANGELOG.md" 2>/dev/null )
+  if grep -qF "### $head_v — " <<< "$cl"; then
+    ok "shape 5: CHANGELOG carries a matching '### $head_v' heading"
+  else
+    bad "shape 5: CHANGELOG has no '### $head_v' heading"
+  fi
+  if grep -qF "### 4.51.7 — " <<< "$cl"; then
+    ok "shape 5: the sibling's released '### 4.51.7' heading survived"
+  else
+    bad "shape 5: the sibling's released '### 4.51.7' heading was dropped"
+  fi
+else
+  bad "shape 5: fixture setup"
+fi
+
+# --- Shape 6: a cursor ABOVE the PR's version still wins. -------------------
+# The complement of shape 5, and the guarantee that keeping `pr_version` does
+# not weaken #1539. Here main merged the SAME version the PR carries (4.51.7),
+# so the claim is genuinely dead — and the cursor sits at 4.51.8 because a
+# LATER dispatch already claimed that slot. Reallocation must skip past the
+# cursor, not merely past the floor: floor+1 would be 4.51.8, which is taken.
+if work=$(new_fixture cursor-above-pr); then
+  add_pr_branch "$work" pr/dead 4.51.7
+  advance_main "$work" 4.51.7 yes
+  cursor="$FX_ROOT/cursor-6"
+  printf '4.51.8' > "$cursor"          # a later dispatch already claimed this
+  run_resolver "$work" pr/dead "$cursor"
+
+  assert_resolved "shape 6: resolver exits 0 (resolved)" "$RESOLVE_RC"
+  head_v=$(version_at "$work" "origin/pr/dead")
+  floor_v=$(version_at "$work" "origin/main")
+  assert_equals "shape 6: dead claim reallocates ABOVE the cursor, not the floor" \
+    "4.51.9" "$head_v"
+  if version_gt "$head_v" "$floor_v"; then
+    ok "shape 6: head ($head_v) is STRICTLY greater than the merge-base ($floor_v)"
+  else
+    bad "shape 6: head ($head_v) must be strictly greater than the merge-base ($floor_v)"
+  fi
+  assert_equals "shape 6: cursor advanced to the slot handed out" "4.51.9" "$(cat "$cursor")"
+else
+  bad "shape 6: fixture setup"
 fi
 
 fi  # git/jq available

@@ -86,6 +86,17 @@
 # same version. Reading a cursor can only ever raise the slot handed out, so
 # it cannot reintroduce a collision.
 #
+# Keeping the PR's own pre-allocated slot (issue #1571)
+# -----------------------------------------------------
+# Folding the cursor in unconditionally had a cost of its own: `compute` had
+# ALREADY advanced the cursor to this PR's own slot when the PR was dispatched,
+# so `max(floor, cursor)` equalled the PR's version and the allocator skipped
+# past it to the next one. Every DIRTY PR burned a version number it already
+# legitimately held, and the released sequence grew permanent gaps. The
+# allocator now keeps `pr_version` whenever it is still strictly above the
+# floor, and reallocates (cursor fold included) only once main has reached or
+# passed it. See allocate_slot below.
+#
 # Exit status / stdout (exactly one line):
 #   0  resolved pr=<M> version=<next-free-or-empty> head=<new-sha>
 #      The rebase (clean, or a recognized manifest/CHANGELOG conflict) was
@@ -258,13 +269,37 @@ cursor_advance() {
 }
 
 # allocate_slot <base_version> <pr_version> <floor> — the ONE place this
-# script picks a new version. Folds the persisted cursor into the floor first
-# (#1539 secondary finding) so two resolves in one pass can't hand out the
-# same slot, then bumps at the PR's own release level. The result is always
-# strictly greater than <floor>, which is exactly what the release-bump guard
-# requires.
+# script picks a new version.
+#
+# Step 1 (issue #1571): KEEP the PR's own pre-allocated version whenever main
+# has not reached it. A version this PR already carries is this PR's own claim
+# — the orchestrator's next-available-version.sh `compute` handed it out at
+# dispatch time and no sibling holds it — so as long as it is still strictly
+# above <floor> it satisfies the release-bump guard as-is and there is nothing
+# to reallocate.
+#
+# This early return is load-bearing, not an optimization. Without it the
+# cursor fold below counted the PR's OWN claim against it: `compute` had
+# already advanced the cursor TO this PR's slot at dispatch, so
+# `max(floor, cursor)` equalled pr_version and compute_next_free returned the
+# slot ABOVE it. At --concurrency 1 every PR that goes DIRTY from its
+# predecessor's merge burned one version number that way, leaving permanent
+# gaps in the released sequence (observed live: 4.55.5 -> 4.55.6 and
+# 4.55.7 -> 4.55.8 in session do-work-20260916T112450Z-93563).
+#
+# Step 2 (issue #1539): only when main HAS reached or passed the PR's version
+# — so the claim is genuinely dead — fold the persisted cursor into the floor,
+# so two resolves in one pass can't hand out the same slot, then bump at the
+# PR's own release level. A cursor strictly above pr_version means some LATER
+# dispatch claimed higher slots; that is real contention and must still be
+# skipped past. Either way the result is strictly greater than <floor>, which
+# is exactly what the release-bump guard requires.
 allocate_slot() {
   local base="$1" pr="$2" floor="$3" cursor effective
+  if is_semver "$pr" && version_gt "$pr" "$floor"; then
+    printf '%s' "$pr"
+    return
+  fi
   cursor=$(cursor_read)
   effective=$(version_max "$floor" "$cursor")
   compute_next_free "$base" "$pr" "$effective"
