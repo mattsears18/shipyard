@@ -20,7 +20,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-ci-green.sh" <owner/repo> --branch <default-branch>
+   "$CLAUDE_PLUGIN_ROOT/scripts/assert-ci-green.sh" <owner/repo> --branch <default-branch>
    VERDICT=$?
    ```
 
@@ -97,7 +97,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+   VERDICT=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
    # The repo is POSITIONAL — there is no --repo flag (#1502). A VERDICT starting
    # with `USAGE_ERROR:` (exit 64) means YOU called it wrong and says nothing
    # about the repo: re-run once with the literal positional form above, and if

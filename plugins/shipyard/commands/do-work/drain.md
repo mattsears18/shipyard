@@ -261,7 +261,7 @@ Every poll loop this file describes — the drain protocol's own "every 60s, sna
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   bash "$CLAUDE_PLUGIN_ROOT/scripts/watch-pr-terminal.sh" --pr <M> --repo <owner/repo> --interval 60 --max-wait 7200
+   "$CLAUDE_PLUGIN_ROOT/scripts/watch-pr-terminal.sh" --pr <M> --repo <owner/repo> --interval 60 --max-wait 7200
    ```
 
    Its terse, single-terminal-line stdout contract (per-poll heartbeats and `gh` diagnostics on stderr only) mirrors `assert-worktree-cwd.sh` / `assert-branch-switched.sh`'s stdout-terse/stderr-diagnostic convention — a caller (or the `Monitor` tool, which streams a backgrounded command's stdout as notifications) reads one line for the whole run, not a stream of per-poll chatter. Run `--help` for the full flag reference. **It does not replace this file's own multi-PR `session_prs` bookkeeping** below — that reads `mergeStateStatus` / `statusCheckRollup` across the *whole* open-PR set in one batched query per poll, where this script watches exactly one PR to done. Reach for it for a genuinely single-PR wait — e.g. blocking synchronously after a manual gated-merge ([§6.a](../../agents/issue-worker/issue-work.md#6a-run-the-ungated-admin-direct-merge-pre-check-first--before-any-merge-call-598--602--716)'s `gh pr checks --watch` covers that specific case already, but a future single-PR watch elsewhere in this spec should reach for this script rather than inlining a new loop) or an ad hoc watch outside the main drain snapshot.
@@ -405,7 +405,7 @@ Before the per-poll actions below dispatch anything, scan for a **mutually-block
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-mb_pairs=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-mutually-blocking-prs.sh" <owner/repo> <candidate PR numbers, space-separated>)
+mb_pairs=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-mutually-blocking-prs.sh" <owner/repo> <candidate PR numbers, space-separated>)
 mb_exit=$?
 ```
 
@@ -756,7 +756,7 @@ Closes the orchestrator-turn half of [#720](https://github.com/mattsears18/shipy
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-merge_gating=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
+merge_gating=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
 # The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
 # prints `USAGE_ERROR: ...` on stdout and exits 64, which the `|| echo ungated`
 # fallback then appends to, producing a verdict matching NEITHER literal — which

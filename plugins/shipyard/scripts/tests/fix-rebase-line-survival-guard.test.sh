@@ -178,7 +178,9 @@ if [[ -f "$fix_rebase_path" ]]; then
     "scripts/verify-added-lines-survived.sh exists"
   assert_contains "$fix_rebase_path" 'scripts/verify-added-lines-survived.sh' \
     "fix-rebase.md invokes verify-added-lines-survived.sh rather than an inline comparison"
-  assert_contains "$fix_rebase_path" 'bash "$CLAUDE_PLUGIN_ROOT/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF"' \
+  # Direct exec, NOT `bash "$CLAUDE_PLUGIN_ROOT/..."` — the launcher form is
+  # refused by the isolation guard (issue #1566).
+  assert_contains "$fix_rebase_path" '"$CLAUDE_PLUGIN_ROOT/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF"' \
     "fix-rebase.md's invocation passes MERGE_BASE and the pre-rebase head ref"
   assert_contains "$fix_rebase_path" "it never inspects *which* file or *what* the content means" \
     "fix-rebase.md states the guard is content-agnostic (no per-file hard-coding)"

@@ -166,7 +166,7 @@ Branch name comes from the orchestrator's dispatch prompt and must be exactly wh
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-branch-switched.sh" "$WORKTREE_PATH" "${LOCAL_BRANCH:-do-work/issue-<N>}"
+"$CLAUDE_PLUGIN_ROOT/scripts/assert-branch-switched.sh" "$WORKTREE_PATH" "${LOCAL_BRANCH:-do-work/issue-<N>}"
 ```
 
 `match` → proceed below. Anything else (`mismatch`/`error`) → **stop, no `Edit`/`Write` yet** — complete [step 3](#3-sync--branch) first (the diagnostic names the harness placeholder branch explicitly if that's the cause).
@@ -210,7 +210,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 # (variables don't survive across Bash tool calls, so this is re-derived here)
 scanner="$CLAUDE_PLUGIN_ROOT/scripts/changelog-monotonicity-scan.sh"
 if [[ -f "$scanner" ]]; then
-  if ! bash "$scanner" "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+  if ! "$scanner" "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
     echo "blocked: deleted released CHANGELOG heading(s) during CHANGELOG entry write — restore them before committing (https://github.com/mattsears18/shipyard/issues/555)"
     exit 0
   fi
@@ -273,7 +273,7 @@ Then, as its own plain Bash call (`origin/<default-branch>` is already fetched i
 
 ```bash
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-change-present.sh" "origin/$DEFAULT_BRANCH"
+"$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-change-present.sh" "origin/$DEFAULT_BRANCH"
 ```
 
 Read the exit status and stdout:
@@ -551,7 +551,7 @@ Run the detector. It is a **script, not a rule for you to re-derive** — do not
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+VERDICT=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
 # The repo is POSITIONAL — there is no --repo flag (#1502). A VERDICT starting
 # with `USAGE_ERROR:` (exit 64) means YOU called it wrong and says nothing about
 # the repo: re-run once with the literal positional form above, and if it still

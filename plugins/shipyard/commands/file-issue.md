@@ -130,7 +130,7 @@ Read the gate once, through the repo-aware resolver — never a bare `shipyard-c
 
 ```bash
 CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-MILESTONE_GATE=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/resolve-filing-milestone-gate.sh" "$REPO")
+MILESTONE_GATE=$("$CLAUDE_PLUGIN_ROOT/scripts/resolve-filing-milestone-gate.sh" "$REPO")
 MILESTONES_ENABLED=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^enabled=//p')
 MILESTONES_ASSIGN=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^assign_on_file=//p')
 MILESTONES_FALLBACK=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^fallback=//p')

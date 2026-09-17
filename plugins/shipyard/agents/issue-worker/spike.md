@@ -240,7 +240,7 @@ Then, as its own plain Bash call:
 
 ```bash
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-change-present.sh" "origin/$DEFAULT_BRANCH"
+"$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-change-present.sh" "origin/$DEFAULT_BRANCH"
 ```
 
 Read the exit status and stdout:

@@ -145,7 +145,7 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
       for f in $conflicted; do
         if printf '%s' "$vc_append_only" | jq -e --arg f "$f" 'type == "array" and (index($f) != null)' >/dev/null 2>&1; then
-          AO_OUT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/resolve-append-only-conflict.sh" "$f")
+          AO_OUT=$("$CLAUDE_PLUGIN_ROOT/scripts/resolve-append-only-conflict.sh" "$f")
           AO_STATUS=$?
           if [ "$AO_STATUS" != "0" ]; then
             git rebase --abort 2>/dev/null || true
@@ -313,7 +313,7 @@ The `FILE`-kind (3-field) entry format is documented in full in [`verify-added-l
    # (variables don't survive across Bash tool calls, so this is re-derived here)
    conflict_scanner="$CLAUDE_PLUGIN_ROOT/scripts/conflict-marker-scan.sh"
    if [[ -f "$conflict_scanner" ]]; then
-     if ! bash "$conflict_scanner" >/dev/null 2>&1; then
+     if ! "$conflict_scanner" >/dev/null 2>&1; then
        git rebase --abort 2>/dev/null || true
        echo "blocked rebase #<M>: conflict markers remain after resolution — needs manual rebase"
        exit 0
@@ -340,7 +340,7 @@ The `FILE`-kind (3-field) entry format is documented in full in [`verify-added-l
    # (variables don't survive across Bash tool calls, so this is re-derived here)
    scanner="$CLAUDE_PLUGIN_ROOT/scripts/changelog-monotonicity-scan.sh"
    if [[ -f "$scanner" ]]; then
-     if ! bash "$scanner" "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+     if ! "$scanner" "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
        git rebase --abort 2>/dev/null || true
        echo "blocked rebase #<M>: deleted released CHANGELOG heading(s) after conflict resolution — needs manual rebase (https://github.com/mattsears18/shipyard/issues/555)"
        exit 0
@@ -370,7 +370,7 @@ The `FILE`-kind (3-field) entry format is documented in full in [`verify-added-l
    Then, as its own plain Bash call:
 
    ```bash
-   bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-rebase-diff-nonempty.sh" "origin/$DEFAULT_BRANCH" "origin/$HEAD_REF"
+   "$CLAUDE_PLUGIN_ROOT/scripts/assert-rebase-diff-nonempty.sh" "origin/$DEFAULT_BRANCH" "origin/$HEAD_REF"
    ```
 
    Read the exit status and stdout:
@@ -404,7 +404,7 @@ The `FILE`-kind (3-field) entry format is documented in full in [`verify-added-l
    CANDIDATE_KNOWN_REWRITES="$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"
    [ -f "$CANDIDATE_KNOWN_REWRITES" ] && KNOWN_REWRITES="$CANDIDATE_KNOWN_REWRITES"
 
-   VERIFY_OUTPUT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF" ${KNOWN_REWRITES:+"$KNOWN_REWRITES"} 2>&1)
+   VERIFY_OUTPUT=$("$CLAUDE_PLUGIN_ROOT/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF" ${KNOWN_REWRITES:+"$KNOWN_REWRITES"} 2>&1)
    VERIFY_STATUS=$?
 
    if [ "$VERIFY_STATUS" != "0" ]; then

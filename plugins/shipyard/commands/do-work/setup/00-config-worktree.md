@@ -103,7 +103,7 @@ warning: this repo's primary checkout is $SHIPYARD_PLUGIN_ROOT_BEHIND commit(s) 
   (#1167) — 0.3/0.4 only.
 EOF
     fi
-    SCV=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-skill-cache-staleness.sh" "$STALENESS_DEFAULT_BRANCH")
+    SCV=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-skill-cache-staleness.sh" "$STALENESS_DEFAULT_BRANCH")
     if [ "${SCV#stale:}" != "$SCV" ]; then
       SHIPYARD_SKILL_CACHE_STALE="${SCV#stale:}"
       echo "warn: stale skill cache: $SHIPYARD_SKILL_CACHE_STALE" >&2

@@ -289,6 +289,20 @@
 # trimmed section plus the row needed the bump. The detail lives in
 # launcher-git-refusal.md.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 69000 -> 70000 by
+# #1566 (2026-09-17): a short always-loaded "Invoke a helper script by
+# direct exec — never `bash <script>`" section. This is the sibling of the
+# #1558 raise directly above and lands for the same reason: it is a refusal
+# every worker meets on its FIRST helper-script call, so a fragment alone
+# only helps a worker that already knows to go looking. The two refusals are
+# distinct (a launcher the host inserts vs. one the caller writes) and
+# neither fix resolves the other, so a worker that hits one is likely to hit
+# the other and needs both rules in front of it. The section was already
+# trimmed once to fit — the measurement table, both carve-outs, and the
+# scanner rationale all live in dont.md § "The launcher rule (#1566)" and
+# do-work-RATIONALE.md rather than here. The file had ~378 bytes of overage
+# against the old ceiling after that trim.
+#
 # issue-work.md was NOT raised for #1519 (2026-08-24) — its one-line Don't-
 # section mirror (the same shape #1166 added for "Never create a credential",
 # repeated across all seven per-mode files) landed it at EXACTLY 130000
@@ -376,7 +390,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  69000 \
+  70000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \

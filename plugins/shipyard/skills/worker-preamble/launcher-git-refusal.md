@@ -35,7 +35,7 @@ Both forms were verified live in an isolated worktree on a host with the RTK hoo
 - **Spec commands written as `git …` mean `/usr/bin/git …` on such a host.** Substitute the absolute path. Keep every argument exactly as the spec wrote it.
 - **`/usr/bin/git` is the usual location** on macOS and most Linux distributions. If it doesn't exist, run `command -v git` as its own plain call and use the path it prints.
 - **Other rewritten tools work the same way.** Use `/usr/bin/grep`, `/usr/bin/sed`, and so on when the rewritten form trips the check.
-- **Scripts are not affected.** `bash "$CLAUDE_PLUGIN_ROOT/scripts/<name>.sh"` runs git inside the script, where the hook never sees it. No change is needed for shipyard's helper scripts.
+- **Scripts are not affected *by this hook*.** A shipyard helper script runs git inside its own body, where the rewrite hook never sees it — so the git calls a script makes need no absolute-path treatment. **But invoke the script by direct exec, not via `bash`** — `"$CLAUDE_PLUGIN_ROOT/scripts/<name>.sh"`, never `bash "$CLAUDE_PLUGIN_ROOT/scripts/<name>.sh"`. The launcher form is refused by a *different* rule ([#1566](https://github.com/mattsears18/shipyard/issues/1566), below).
 
 ## What not to do
 
@@ -43,6 +43,24 @@ Both forms were verified live in an isolated worktree on a host with the RTK hoo
 - **Don't route through the launcher's own passthrough** (for example, `rtk proxy git …`). That is still a launcher with `git` among its operands.
 - **Don't `cd` out of your worktree** to find a place where the check doesn't fire. That breaks worktree discipline Rule 1.
 - **Don't return `blocked:` over this.** The absolute-path form is a complete workaround. Return `blocked:` only if the absolute-path form is refused too, and quote the refusal text.
+
+## Related refusal: `bash` in front of a script path ([#1566](https://github.com/mattsears18/shipyard/issues/1566))
+
+This fragment's hook is one the *host* inserts. There is a second launcher refusal you cause yourself, with a different message and a different fix:
+
+> …but this command runs bash in a plain command; **what it reads or is handed as shell text cannot be shown not to run git.** Refusing to run it
+
+It fires when `bash` (or `sh`) is handed a script path the guard cannot statically resolve — an expansion rather than a spelled-out literal. Both halves are required: `bash <literal-path>` runs, and `"$VAR/scripts/x.sh"` runs, but `bash "$VAR/scripts/x.sh"` is refused.
+
+**The fix is to drop the launcher**, not to substitute the literal — direct exec works with an expansion *and* with a literal, so it needs no judgment about which values you hold:
+
+```
+"$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag
+```
+
+Every script in `plugins/shipyard/scripts/` ships executable with a shebang (CI-enforced), so this is always safe. The one exception is a script **you** wrote this dispatch with the `Write` tool — that has no exec bit, so `chmod +x <path>` as its own plain command first, then direct-exec it.
+
+Full rule, measurement table, and carve-outs: `commands/do-work/dont.md` § "The launcher rule (#1566)".
 
 ## Related refusal: object literals in `session-state.sh update --set`
 

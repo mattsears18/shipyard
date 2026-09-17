@@ -116,8 +116,11 @@ if [[ -f "$fix_rebase" ]]; then
   # shellcheck disable=SC2016  # literal needle — must NOT expand $CLAUDE_PLUGIN_ROOT
   assert_contains "$fix_rebase" 'conflict_scanner="$CLAUDE_PLUGIN_ROOT/scripts/conflict-marker-scan.sh"' \
     "fix-rebase.md step 5.5 resolves a path to the scanner script"
+  # Direct exec, NOT `bash "$conflict_scanner"` — prefixing a launcher onto a
+  # script path the isolation guard can't statically resolve is refused
+  # (issue #1566; see commands/do-work/dont.md § "The launcher rule").
   # shellcheck disable=SC2016  # literal needle — must NOT expand $conflict_scanner
-  assert_contains "$fix_rebase" 'bash "$conflict_scanner"' \
+  assert_contains "$fix_rebase" '"$conflict_scanner"' \
     "fix-rebase.md step 5.5 invokes the scanner"
   assert_contains "$fix_rebase" 'https://github.com/mattsears18/shipyard/issues/1462' \
     "fix-rebase.md links to originating issue #1462"

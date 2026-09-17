@@ -176,7 +176,7 @@ Run the check. It is a **script, not a rule for you to re-derive**:
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 gh issue view <N> --repo <owner/repo> --json body --jq '.body' > .shipyard-scratch/issue-<N>-body.md
-bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-stale-agent-limitation.sh" .shipyard-scratch/issue-<N>-body.md
+"$CLAUDE_PLUGIN_ROOT/scripts/detect-stale-agent-limitation.sh" .shipyard-scratch/issue-<N>-body.md
 ```
 
 It prints one line — `verdict=<v> class=<c> capability=<s> phrase=<p>` — and always exits 0:

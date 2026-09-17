@@ -50,7 +50,7 @@ SCHEDULE_JSON=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get audits.sche
 ### 3. Compute what's due
 
 ```bash
-DUE=$(printf '%s' "$SCHEDULE_JSON" | bash "$SCRIPT" due --repo "<owner/repo>" --schedule-json -)
+DUE=$(printf '%s' "$SCHEDULE_JSON" | "$SCRIPT" due --repo "<owner/repo>" --schedule-json -)
 ```
 
 Output is JSONL (one compact JSON object per due entry: `{dimension, cadence, url, last_run_at, seconds_since_last_run}`) or empty if nothing is due. If `$DUE` is empty, print **"Nothing due right now."** and stop — this is the routine, expected outcome on most `/loop`-driven invocations, not an error.
@@ -76,7 +76,7 @@ For each due entry (parallel dispatch across entries is fine — each dimension 
 **Do NOT call `record` before the dispatch has returned.** Recording early and then having the dispatch fail partway (agent spawn error, tool denial) would silently mark the dimension "done" for a full cadence cycle when nothing actually ran — the eas-watch.md precedent ("don't advance the cursor before surfacing") applies here identically.
 
 ```bash
-bash "$SCRIPT" record --repo "<owner/repo>" --dimension "<dimension>"
+"$SCRIPT" record --repo "<owner/repo>" --dimension "<dimension>"
 ```
 
 Do this once per due dimension, right after that dimension's own audit.md flow (agent dispatch + reconciliation) completes — not batched at the very end of the whole command, so a later dimension's failure doesn't retroactively un-record an earlier dimension's success.

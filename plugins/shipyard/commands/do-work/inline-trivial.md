@@ -124,7 +124,7 @@ export CLAUDE_PLUGIN_ROOT
 # .shipyard/config.local.json post-relocation.
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
-VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+VERDICT=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
 # The repo is POSITIONAL — there is no --repo flag (#1502). A VERDICT starting
 # with `USAGE_ERROR:` (exit 64) means YOU called it wrong; the `= "gated"` test
 # below then correctly falls through to the conservative branch, but re-run once

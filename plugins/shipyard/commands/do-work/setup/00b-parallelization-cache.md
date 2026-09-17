@@ -306,7 +306,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 "$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" run \
   --session-id "<session-id>" --ttl 10 -- \
-  bash "$CLAUDE_PLUGIN_ROOT/scripts/gh-batch.sh" pr-status \
+  "$CLAUDE_PLUGIN_ROOT/scripts/gh-batch.sh" pr-status \
     --repo <owner/repo> --numbers "142 143 144"
 ```
 

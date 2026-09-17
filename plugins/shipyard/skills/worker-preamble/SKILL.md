@@ -121,6 +121,14 @@ For `gh` subcommands that don't take a `-C`-equivalent local-path flag (most acc
 
 A host-global hook (e.g. RTK) rewrote `git …` into `<launcher> git …`. Retry as `/usr/bin/git …` (`-C` unchanged) for the rest of the dispatch; never touch the hook, and don't return `blocked:` over it. See [`launcher-git-refusal.md`](./launcher-git-refusal.md).
 
+## Invoke a helper script by direct exec — never `bash <script>` ([#1566](https://github.com/mattsears18/shipyard/issues/1566))
+
+Call every `plugins/shipyard/scripts/*.sh` helper directly — `"$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag` — never `bash "$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag`. The launcher form is refused (*"runs bash in a plain command; what it reads or is handed as shell text cannot be shown not to run git"*) because the guard can't see which file `bash` will read. Both halves are required — `bash <spelled-out-literal>` runs, and the expansion alone runs — so direct exec, immune to both, is the unconditional form. Every shipped script is committed executable with a shebang (CI-enforced).
+
+**Exception — a script you wrote this dispatch.** `Write` sets no exec bit: `chmod +x <path>` as its own plain command, then direct-exec it. Reaching for `bash` to skip the `chmod` is the refused shape.
+
+Distinct from #1558 above; neither fix works on the other. Full rule + measurement table: `commands/do-work/dont.md` § "The launcher rule (#1566)".
+
 ## Adding a new executable script — record the git exec bit yourself ([#1395](https://github.com/mattsears18/shipyard/issues/1395))
 
 **If your change ADDS a file whose documented use is direct invocation** — any `plugins/shipyard/scripts/*.sh` in this repo, or a `bin/`/`scripts/` entrypoint elsewhere — record its executable bit **in the git index**, and give it a `#!` shebang. A bare `chmod +x` is not enough: it changes the working-tree mode only, git still commits the file at `100644`, and it lands non-executable for every consumer. Run this right after `git add`-ing the new script, before `git commit`:

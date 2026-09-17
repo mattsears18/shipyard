@@ -50,7 +50,7 @@ Default values:
 
 ```bash
 SCRIPT="$CLAUDE_PLUGIN_ROOT/scripts/eas-watch.sh"
-SLUG=$(bash "$SCRIPT" project-slug)
+SLUG=$("$SCRIPT" project-slug)
 ```
 
 If `project-slug` exits non-zero (no `app.json` / `app.config.{js,ts}` at cwd), print a clear one-liner and stop. Do NOT prompt the user to enter a slug manually — wrong cwd is the common case here and the right answer is "cd to your app repo first."
@@ -58,7 +58,7 @@ If `project-slug` exits non-zero (no `app.json` / `app.config.{js,ts}` at cwd), 
 ### 3. Materialize the state file (idempotent)
 
 ```bash
-bash "$SCRIPT" state-init
+"$SCRIPT" state-init
 ```
 
 First-run sets up `~/.shipyard/eas-state.json` with `{"version":1,"projects":{}}`. Subsequent runs are no-ops.
@@ -66,14 +66,14 @@ First-run sets up `~/.shipyard/eas-state.json` with `{"version":1,"projects":{}}
 If `--reset` was passed, blank this project's entry before listing builds:
 
 ```bash
-bash "$SCRIPT" state-update --project "$SLUG" --last-seen-id ""
+"$SCRIPT" state-update --project "$SLUG" --last-seen-id ""
 ```
 
 ### 4. Query recent builds
 
 ```bash
 BUILDS_FILE=$(mktemp)
-bash "$SCRIPT" list-builds --limit "$LIMIT" > "$BUILDS_FILE"
+"$SCRIPT" list-builds --limit "$LIMIT" > "$BUILDS_FILE"
 ```
 
 `list-builds` wraps `eas build:list --json --non-interactive`. If `eas` is not on PATH, the helper exits 3 with `not found on PATH — install with: npm i -g eas-cli` — surface that message verbatim and stop.
@@ -81,7 +81,7 @@ bash "$SCRIPT" list-builds --limit "$LIMIT" > "$BUILDS_FILE"
 ### 5. Diff against state
 
 ```bash
-NEW_BUILDS=$(bash "$SCRIPT" diff --project "$SLUG" --builds-json "$BUILDS_FILE")
+NEW_BUILDS=$("$SCRIPT" diff --project "$SLUG" --builds-json "$BUILDS_FILE")
 ```
 
 Output is JSONL — one JSON object per new build, each carrying `{id, status, platform, profile, createdAt, gitCommitHash, errorMessage, logsUrl}`. Empty output means no new builds — print `No new builds since last check.` and stop (no state advance needed — the cursor hasn't moved).
@@ -182,7 +182,7 @@ Only after surfacing (and optionally filing / notifying), advance the cursor to 
 
 ```bash
 NEWEST_ID=$(echo "$NEW_BUILDS" | head -1 | jq -r '.id')
-bash "$SCRIPT" state-update --project "$SLUG" --last-seen-id "$NEWEST_ID"
+"$SCRIPT" state-update --project "$SLUG" --last-seen-id "$NEWEST_ID"
 ```
 
 This is deliberately the LAST step: if a notification call or `gh issue create` fails partway through, the cursor stays where it was so the next invocation re-surfaces the same builds. **Idempotency for `--file-issue` comes from the in:body build-id search in step 7** — re-running won't create duplicate issues; it WILL re-banner the same builds in the terminal, which is fine.
