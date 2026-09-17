@@ -720,7 +720,8 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                               the terminal `summary:` line, by which point
                               every PR already existed.
 
-                          ALREADY-LANDED PRE-CHECKS (issues #1517, #1541).
+                          ALREADY-LANDED PRE-CHECKS (issues #1517, #1541,
+                          #1560, #1565).
                           #1518 bounded the blast radius; this is the
                           predicate that was misfiring. `ahead` compares
                           commits by SHA IDENTITY, so on a squash-merge repo
@@ -728,7 +729,7 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                           permanently > 0 for every branch ever landed —
                           `ahead == 0` is unreachable, the worktree
                           candidate set never drains, and each leftover
-                          regenerates a duplicate PR every session. Four
+                          regenerates a duplicate PR every session. Five
                           CONTENT-aware signals now gate PR creation, in
                           evidence-strength order; any one alone suppresses
                           it:
@@ -739,6 +740,29 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                                would have suppressed the large majority.
                                Provably nothing unique here, so the
                                worktree AND the local branch are removed.
+                           1b. Every path the branch TOUCHES relative to its
+                               merge-base already matches the default branch
+                               byte-for-byte (issue #1560). Check 1's
+                               question asked against a narrower key, and
+                               pure local git like check 1. Check 1 compares
+                               the whole tree, so it stops firing the instant
+                               the default branch moves anywhere — immediate
+                               on a repo where every PR touches a
+                               coordination-managed CHANGELOG.md /
+                               plugin.json row. This restricts the comparison
+                               to the paths the branch actually claims, so
+                               unrelated upstream churn is excluded by
+                               construction. Catches the class no check below
+                               can: the code half of an issue landing under a
+                               DIFFERENT PR from a DIFFERENT branch while the
+                               issue stays OPEN for an operator residual —
+                               no merged PR on this head for 2b, no closed
+                               issue for 2, and no added path for 3. Unlike
+                               check 3 this considers every change type, not
+                               just additions, because it tests path CONTENT
+                               rather than path EXISTENCE and so cannot be
+                               fired by coordination-row noise. Weak-evidence
+                               action: worktree removed, branch ref KEPT.
                             2. Originating issue (parsed from the
                                `do-work/issue-<N>` branch name) already
                                CLOSED **and** linked to a merged PR via
@@ -789,7 +813,7 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                                signal) and compares no line, hunk, or byte
                                counts. Same weak-evidence action as check 2:
                                worktree removed, branch ref KEPT.
-                          All four fail CONSERVATIVE — an unreadable signal is
+                          All five fail CONSERVATIVE — an unreadable signal is
                           never evidence of staleness, so anything that
                           cannot be classified is salvaged exactly as
                           before. Suppression runs BEFORE the --max-prs cap,
@@ -801,6 +825,15 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                           per candidate, one `already-landed: <branch> —
                           <why>` summary line each, and an
                           `already_landed=<L>` field on the summary line.
+                          A suppressed candidate that still has a PR OPEN on
+                          its canonical head gets `; PR #<n> still open on
+                          this head is now moot` appended to both lines
+                          (issue #1560) — read-only, so the stale draft is
+                          named for a human rather than silently dropped
+                          from every report once suppression stops it
+                          reaching the `existing-pr` arm. It is deliberately
+                          NOT closed from here: that would be a new
+                          outward-facing write in the sweep #1518 bounds.
 
 report-unreaped         — Issue #712. Post-sweep verification. Emits one
                           absolute path per line for every agent-* /
@@ -3340,6 +3373,25 @@ reap_stale() {
 # asks `gh pr list --state merged --head <canonical branch>` — the exact
 # head the salvage would push to — only after 1 and 2 decline. Same
 # conservative-failure rule and same weak-evidence action as check 2.
+#
+# Issue #1560 — check 1b, the class NONE of 1 / 2 / 2b / 3 can reach. All
+# three GitHub-state checks assume the landing is attributable to THIS branch
+# or THIS issue's closure; check 3 assumes the branch invents a path. A branch
+# whose code half merged under a DIFFERENT PR from a DIFFERENT branch, while
+# its issue stayed OPEN for an operator residual, satisfies none of those and
+# only MODIFIES existing files — so it salvaged forever. Observed twice on the
+# same branch on mattsears18/lightwork (do-work/issue-4738: exports landed as
+# PR #4740, re-salvaged as #4769 and again as #4816, both closed as
+# redundant), and once from the `existing-pr` side (do-work/issue-4768's stale
+# draft #4817 reported as `failed-pr` and queued for draft recovery, a moot
+# duplicate of the merged PR #4796). Check 1b restricts check 1's whole-tree
+# content comparison to the paths the branch actually touches, which is the
+# only signal that settles the shape directly rather than by inference. Same
+# conservative-failure rule and same weak-evidence action as check 2. The same
+# issue's report-only half names any PR still OPEN on the canonical head in
+# every already-landed verdict, so suppression does not make a stale draft
+# invisible to the human who has to close it. See the block above each check
+# for the full predicate and the declined alternatives.
 triage_orphan_branches() {
   local repo_root=""
   local repo=""
@@ -3497,6 +3549,9 @@ triage_orphan_branches() {
   local branch path n canonical_branch ahead pushed open_pr
   local stale_reason stale_action diff_rc issue_probe issue_state closing_pr merged_pr
   local merge_base added_path added_total added_on_main added_sample
+  local touched_path touched_total touched_rc touched_sample
+  local stale_open_pr stale_pr_note
+  local -a touched_paths=()
   local idx=0
   while IFS= read -r branch; do
     [ -z "$branch" ] && continue
@@ -3578,6 +3633,113 @@ triage_orphan_branches() {
       # alone would only convert an unbounded PR generator into an unbounded
       # no-op loop that still re-scans every leftover worktree every session.
       stale_action="remove-worktree-and-branch"
+    fi
+
+    # Check 1b — TOUCHED-PATH CONTENT IDENTITY: every path this branch
+    # changes already matches the default branch byte-for-byte. Issue #1560.
+    #
+    # Numbered 1b rather than renumbering the checks below it (the #1565
+    # precedent): this is check 1's question — "is this branch's content
+    # already upstream?" — asked against a narrower key, so every "check 2" /
+    # "check 2b" / "check 3" reference in this file and in
+    # worktree-reap.test.sh keeps its existing meaning.
+    #
+    # WHAT IT CATCHES that nothing else here can. Check 1 compares the WHOLE
+    # tree, so it stops firing the instant the default branch moves ANYWHERE
+    # — which, on a repo where every PR touches a coordination-managed
+    # CHANGELOG.md / plugin.json row, is immediately. Checks 2 and 2b both
+    # key on GitHub state: check 2 needs the ISSUE closed-by-a-merged-PR,
+    # check 2b needs a merged PR on THIS head ref. Neither describes the
+    # shape #1560 reports — the code half of an issue landing under a
+    # DIFFERENT PR from a DIFFERENT branch, while the issue itself stays OPEN
+    # for an operator residual: there is no merged PR on this head for 2b to
+    # find, and the issue is not closed for 2 to read. And check 3 looks only
+    # at paths the branch ADDS, so a branch that merely MODIFIES existing
+    # files never reaches a verdict there at all.
+    #
+    # That combination left mattsears18/lightwork's do-work/issue-4738
+    # salvageable forever: its OPERATOR_ALERT_EMAILS / MAINTAINER_EMAILS
+    # exports landed via PR #4740, and the branch was re-salvaged as #4769
+    # and then again as #4816, each closed as redundant — the locally-correct
+    # remedy, which leaves the generator fully intact. #1560's follow-up
+    # comment records the same predicate failing from the other side, on an
+    # `existing-pr` candidate (do-work/issue-4768, duplicate of the merged PR
+    # #4796) reported as `failed-pr: 4817` and queued for draft recovery.
+    #
+    # THE PREDICATE. Take the paths the branch touches relative to its
+    # merge-base with the default branch — ANY change type, not just
+    # additions — and ask whether the default branch's version of every one
+    # of them is identical to the branch's today. If so, the branch's entire
+    # content contribution is already upstream however it got there, and a
+    # salvage PR can only re-propose merged work. This is the same
+    # content-identity evidence check 1 asserts, restricted to the paths the
+    # branch actually claims; the unrelated upstream churn that is all check
+    # 1 really measures once the default branch moves is excluded by
+    # construction.
+    #
+    # WHY ALL TOUCHED PATHS, not just added ones. Check 3's added-only
+    # restriction exists because it tests mere path EXISTENCE, where a
+    # modified coordination-managed row is pure noise ("the default branch
+    # also moved CHANGELOG.md" is true of every PR in this repo). This check
+    # tests path CONTENT, so that noise cannot fire it: if the branch's
+    # CHANGELOG.md differs from the default branch's — which it does the
+    # instant either side moves — the "all" test fails and the branch
+    # salvages. Restricting to additions here would instead reintroduce
+    # exactly the #1560 blind spot, whose reported branch adds no path at all.
+    #
+    # WHY "ALL", NOT "ANY". One touched path still differing means the branch
+    # carries content the default branch has never seen, so it salvages
+    # unchanged.
+    #
+    # FAILURE POSTURE, identical to every check around it. A branch with zero
+    # touched paths — an unresolvable merge-base, an errored diff — is never
+    # stale here; emptiness is not evidence. `git diff --quiet` exits 0 for
+    # "no difference", 1 for "differs", and >1 for an error, and only the
+    # literal 0 is read as evidence, so an error salvages too.
+    #
+    # ACTION is check 2's, not check 1's. The branch's tree as a whole is NOT
+    # the default branch's tree here (that is check 1's stronger claim), so
+    # its commits are not provably reachable from the default branch: drain
+    # the worktree — which is what makes the candidate set terminate — and
+    # KEEP the branch ref as a safety net for a human to inspect.
+    #
+    # WHY NOT ALSO #1560's second suggestion, "scan the issue's timeline for
+    # a merged PR that references it without a closing keyword". Declined: a
+    # merged PR that merely MENTIONS an issue is not evidence it did that
+    # issue's work — "related to #N" and "while here, also touches #N" both
+    # read identically to a real landing — so the signal cannot fail
+    # conservative. The content-identity test above settles the same repro
+    # directly rather than by inference, and asserts something a mention
+    # never does.
+    if [ -z "$stale_reason" ]; then
+      merge_base=$(git merge-base "origin/${default_branch}" "$branch" 2>/dev/null)
+      if [ -n "$merge_base" ]; then
+        touched_paths=()
+        touched_total=0
+        touched_sample=""
+        # -z/NUL-delimited and --no-renames for the reasons check 3 spells
+        # out below: a path containing whitespace is read intact rather than
+        # core.quotePath-escaped, and a rename is seen as the delete+add pair
+        # it is instead of collapsing out of the set being tested.
+        while IFS= read -r -d '' touched_path; do
+          [ -z "$touched_path" ] && continue
+          touched_total=$((touched_total + 1))
+          touched_paths+=("$touched_path")
+          [ -z "$touched_sample" ] && touched_sample="$touched_path"
+        done < <(git diff --name-only --no-renames -z \
+          "$merge_base" "$branch" 2>/dev/null)
+        # `touched_total > 0` also guards the array expansion below, which
+        # `set -u` would otherwise reject on an empty array.
+        if [ "$touched_total" -gt 0 ]; then
+          git diff --quiet "origin/${default_branch}" "$branch" -- \
+            "${touched_paths[@]}" >/dev/null 2>&1
+          touched_rc=$?
+          if [ "$touched_rc" -eq 0 ]; then
+            stale_reason="content already upstream: all $touched_total path(s) this branch touches already match $default_branch (e.g. $touched_sample)"
+            stale_action="remove-worktree-only"
+          fi
+        fi
+      fi
     fi
 
     # Check 2 — originating issue already CLOSED by a merged PR. One `gh`
@@ -3785,16 +3947,33 @@ triage_orphan_branches() {
     fi
 
     if [ -n "$stale_reason" ]; then
+      # Issue #1560 — name any PR still OPEN on the canonical head as part of
+      # the verdict. A suppressed candidate never reaches the `existing-pr`
+      # arm below, so without this a stale draft opened by an EARLIER sweep
+      # simply stops being mentioned anywhere: correctly absent from the
+      # caller's failed_prs list (it is moot, not failing — which is the half
+      # of #1560's follow-up comment this fixes) but also invisible to the
+      # human reading this output, who still has to close it. Deliberately
+      # READ-ONLY: closing the PR from here would add a new outward-facing
+      # write class to the one sweep whose blast radius #1518 exists to
+      # bound, so the verdict surfaces the number and leaves the decision
+      # outside. Non-numeric or empty output is reported as no PR at all,
+      # matching every other probe in this function.
+      stale_open_pr=$("$GH" pr list --repo "$repo" --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
+      case "$stale_open_pr" in
+        ''|*[!0-9]*) stale_pr_note="" ;;
+        *) stale_pr_note="; PR #$stale_open_pr still open on this head is now moot" ;;
+      esac
       # #1518's pre-write progress contract: the classification is printed
       # before any write, and unconditionally — so `--dry-run` renders the
       # full per-candidate verdict a human can audit, rather than the
       # classification only becoming visible once the real sweep has acted.
       if [ "$stale_action" = "remove-worktree-and-branch" ]; then
-        printf '[%s/%s] already-landed %s — %s; no PR opened, removing worktree + branch\n' \
-          "$idx" "$total" "$canonical_branch" "$stale_reason"
+        printf '[%s/%s] already-landed %s — %s; no PR opened, removing worktree + branch%s\n' \
+          "$idx" "$total" "$canonical_branch" "$stale_reason" "$stale_pr_note"
       else
-        printf '[%s/%s] already-landed %s — %s; no PR opened, removing worktree (branch kept)\n' \
-          "$idx" "$total" "$canonical_branch" "$stale_reason"
+        printf '[%s/%s] already-landed %s — %s; no PR opened, removing worktree (branch kept)%s\n' \
+          "$idx" "$total" "$canonical_branch" "$stale_reason" "$stale_pr_note"
       fi
       if [ "$dry_run" -eq 0 ]; then
         # Non-force ONLY — issue #712's "force only behind evidence" rule.
@@ -3812,7 +3991,7 @@ triage_orphan_branches() {
             "$idx" "$total" "$canonical_branch"
         fi
       fi
-      landed_lines+=("$canonical_branch — $stale_reason")
+      landed_lines+=("$canonical_branch — $stale_reason$stale_pr_note")
       landed_count=$((landed_count + 1))
       continue
     fi

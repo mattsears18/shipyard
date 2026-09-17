@@ -3576,6 +3576,256 @@ assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
   "summary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=1" \
   "(163a) counters split the merged-PR leftover from the genuine salvage"
 
+# ============================================================================
+# Issue #1560 — check 1b, the TOUCHED-PATH CONTENT-IDENTITY pre-check.
+#
+# The shape none of checks 1 / 2 / 2b / 3 can reach: a branch whose code half
+# merged under a DIFFERENT PR from a DIFFERENT branch, while its originating
+# issue stayed OPEN for an operator residual, and which only MODIFIES existing
+# files. Check 1 sees a non-empty whole-tree diff (the default branch moved
+# elsewhere), check 2 sees an OPEN issue, check 2b finds no merged PR on this
+# head, and check 3 finds no added path to probe — so the branch salvaged once
+# per session, forever. mattsears18/lightwork's do-work/issue-4738 did exactly
+# that: its exports landed as PR #4740 and it was re-salvaged as #4769 and
+# again as #4816, both closed as redundant.
+#
+# Coverage goals:
+#   - Fires on the sibling-landed shape with an OPEN issue -> no PR, worktree
+#     removed, branch ref KEPT (weak evidence, check 2's action).
+#   - Runs BEFORE either gh read, so neither check 2 nor check 2b is paid.
+#   - DECLINES when the default branch has NOT caught up on a touched path —
+#     the ordinary unlanded case, which must still salvage.
+#   - DECLINES on a partial match (one touched path landed, one not): the
+#     quantifier is ALL, not ANY.
+#   - Never downgrades check 1's stronger action when both would fire.
+#   - Reports a PR still OPEN on the canonical head as MOOT rather than
+#     feeding it to failed_prs — issue #1560's follow-up comment.
+#   - --dry-run renders the verdict and performs no write.
+#   - Suppression precedes the --max-prs cap.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches touched-path content-identity pre-check (issue #1560)"
+echo
+
+# tob_add_worktree_sibling_landed <issue-n> — the #1560 shape. The branch
+# MODIFIES a file that already existed at the fork point (so check 3 has no
+# added path to probe), a SIBLING PR lands byte-identical content for it on
+# the default branch, and the default branch also moves an UNRELATED file so
+# check 1's whole-tree comparison is non-empty and correctly declines. The
+# caller leaves the originating issue OPEN, which is what makes check 2
+# decline, and seeds no merged-PR fixture, which is what makes check 2b
+# decline.
+tob_add_worktree_sibling_landed() {
+  local n="$1"
+  local path="$tob_repo/.claude/worktrees/agent-$n"
+  printf 'export OPERATOR_ALERT_EMAILS = []\n' > "$tob_repo/config-$n.ts"
+  git -C "$tob_repo" add "config-$n.ts" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "seed config $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  tob_add_worktree "$n"
+  printf 'export OPERATOR_ALERT_EMAILS = ["ops@example.com"]\n' > "$path/config-$n.ts"
+  git -C "$path" add "config-$n.ts" >/dev/null 2>&1
+  git -C "$path" commit -q -m "wip $n" >/dev/null 2>&1
+  # The sibling PR lands the same content from a different branch, and the
+  # default branch picks up unrelated churn alongside it.
+  printf 'export OPERATOR_ALERT_EMAILS = ["ops@example.com"]\n' > "$tob_repo/config-$n.ts"
+  printf 'unrelated churn %s\n' "$n" > "$tob_repo/CHANGELOG-$n.md"
+  git -C "$tob_repo" add "config-$n.ts" "CHANGELOG-$n.md" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "sibling PR landed $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  git -C "$tob_repo" fetch -q origin >/dev/null 2>&1
+}
+
+# tob_add_worktree_sibling_partial <issue-n> — the branch modifies TWO
+# pre-existing files and the default branch catches up on only ONE of them.
+tob_add_worktree_sibling_partial() {
+  local n="$1"
+  local path="$tob_repo/.claude/worktrees/agent-$n"
+  printf 'a0\n' > "$tob_repo/alpha-$n.ts"
+  printf 'b0\n' > "$tob_repo/beta-$n.ts"
+  git -C "$tob_repo" add "alpha-$n.ts" "beta-$n.ts" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "seed pair $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  tob_add_worktree "$n"
+  printf 'a1\n' > "$path/alpha-$n.ts"
+  printf 'b1\n' > "$path/beta-$n.ts"
+  git -C "$path" add "alpha-$n.ts" "beta-$n.ts" >/dev/null 2>&1
+  git -C "$path" commit -q -m "wip $n" >/dev/null 2>&1
+  printf 'a1\n' > "$tob_repo/alpha-$n.ts"
+  git -C "$tob_repo" add "alpha-$n.ts" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "landed alpha $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  git -C "$tob_repo" fetch -q origin >/dev/null 2>&1
+}
+
+# --- (164) check 1b fires: sibling-landed work, OPEN issue -> no PR, ref KEPT ---
+reset_tob_layout
+tob_add_worktree_sibling_landed 580
+printf 'OPEN|' > "$tob_state/issue-probe-580"
+printf '894' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"[1/1] already-landed do-work/issue-580 — content already upstream: all 1 path(s) this branch touches already match main (e.g. config-580.ts); no PR opened, removing worktree (branch kept)"*) sibling_line_ok=1 ;;
+  *) sibling_line_ok=0 ;;
+esac
+assert_equals "$sibling_line_ok" "1" \
+  "(164) code landed via a sibling PR while the issue stayed OPEN -> already-landed progress line naming the touched path"
+case "$(cat "$tob_gh_log")" in
+  *"pr create"*) sibling_pr_created=1 ;;
+  *) sibling_pr_created=0 ;;
+esac
+assert_equals "$sibling_pr_created" "0" \
+  "(164a) check 1b fired -> gh pr create is never called (no duplicate of the sibling's landed work)"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=0 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(164b) check 1b counts as already_landed, not salvaged"
+if [ -d "$tob_repo/.claude/worktrees/agent-580" ]; then
+  printf '  %sFAIL%s  (164c) check-1b worktree still on disk — the candidate set never drains\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (164c) check-1b worktree removed — the candidate set drains\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+if git -C "$tob_repo" show-ref --verify --quiet "refs/heads/do-work/issue-580"; then
+  printf '  %sPASS%s  (164d) check-1b branch ref KEPT as a safety net (its commits are still unreachable from main)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (164e) check-1b branch ref was deleted — that is check 1'"'"'s stronger action, not this one\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+case "$result" in
+  *"already-landed: do-work/issue-580 — content already upstream: all 1 path(s) this branch touches"*) sibling_summary_ok=1 ;;
+  *) sibling_summary_ok=0 ;;
+esac
+assert_equals "$sibling_summary_ok" "1" \
+  "(164f) a per-branch 'already-landed: <branch> — <why>' summary line names the content-identity verdict"
+case "$(cat "$tob_gh_log")" in
+  *"issue view"*) sibling_issue_read=1 ;;
+  *) sibling_issue_read=0 ;;
+esac
+assert_equals "$sibling_issue_read" "0" \
+  "(164g) check 1b is pure local git and precedes checks 2 / 2b — neither gh read is paid"
+
+# --- (165) negative control: main has NOT caught up -> still salvages ---
+reset_tob_layout
+tob_add_worktree_ahead 581
+printf 'OPEN|' > "$tob_state/issue-probe-581"
+printf '895' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-581"*) unlanded_salvaged=1 ;;
+  *) unlanded_salvaged=0 ;;
+esac
+assert_equals "$unlanded_salvaged" "1" \
+  "(165) a touched path the default branch has never seen -> salvaged (the ordinary unlanded case)"
+case "$result" in
+  *"already-landed do-work/issue-581"*) unlanded_suppressed=1 ;;
+  *) unlanded_suppressed=0 ;;
+esac
+assert_equals "$unlanded_suppressed" "0" \
+  "(165a) the genuinely-unlanded branch is never classified already-landed"
+
+# --- (166) partial match -> declines; the quantifier is ALL, not ANY ---
+reset_tob_layout
+tob_add_worktree_sibling_partial 582
+printf 'OPEN|' > "$tob_state/issue-probe-582"
+printf '896' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-582"*) sibling_partial_salvaged=1 ;;
+  *) sibling_partial_salvaged=0 ;;
+esac
+assert_equals "$sibling_partial_salvaged" "1" \
+  "(166) one touched path still differing upstream -> salvaged (check 1b requires ALL of them, not ANY)"
+
+# --- (167) check 1 still answers first, with its stronger action intact ---
+reset_tob_layout
+tob_add_worktree_landed 583
+printf 'OPEN|' > "$tob_state/issue-probe-583"
+result=$(run_tob)
+case "$result" in
+  *"already-landed do-work/issue-583 — content already upstream (empty diff vs main); no PR opened, removing worktree + branch"*) order5_ok=1 ;;
+  *) order5_ok=0 ;;
+esac
+assert_equals "$order5_ok" "1" \
+  "(167) whole-tree identity still answers before check 1b — check 1's branch-deleting action is not downgraded"
+if git -C "$tob_repo" show-ref --verify --quiet "refs/heads/do-work/issue-583"; then
+  printf '  %sFAIL%s  (167a) check-1 branch ref survived — check 1b downgraded the stronger action\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (167a) check-1 branch ref still deleted (provably nothing unique on it)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+
+# --- (168) a moot OPEN PR on the head is named, never reported as failing ---
+reset_tob_layout
+tob_add_worktree_sibling_landed 584
+printf 'OPEN|' > "$tob_state/issue-probe-584"
+# The stale draft an earlier sweep opened, with a RED rollup — the exact
+# `failed-pr: 4817` / draft-recovery shape from #1560's follow-up comment.
+printf '4817' > "$tob_state/pr-for-do-work_issue-584"
+printf '1' > "$tob_state/rollup-4817"
+result=$(run_tob)
+case "$result" in
+  *"already-landed do-work/issue-584 — content already upstream: all 1 path(s) this branch touches already match main (e.g. config-584.ts); no PR opened, removing worktree (branch kept); PR #4817 still open on this head is now moot"*) moot_line_ok=1 ;;
+  *) moot_line_ok=0 ;;
+esac
+assert_equals "$moot_line_ok" "1" \
+  "(168) a PR still open on the canonical head is named as moot in the already-landed verdict"
+case "$result" in
+  *"failed-pr:"*) moot_reported_failing=1 ;;
+  *) moot_reported_failing=0 ;;
+esac
+assert_equals "$moot_reported_failing" "0" \
+  "(168a) the moot draft is never reported as failed-pr — it is duplicate work, not a failing PR to fix"
+case "$result" in
+  *"already-landed: do-work/issue-584 — content already upstream: all 1 path(s) this branch touches already match main (e.g. config-584.ts); PR #4817 still open on this head is now moot"*) moot_summary_ok=1 ;;
+  *) moot_summary_ok=0 ;;
+esac
+assert_equals "$moot_summary_ok" "1" \
+  "(168b) the per-branch summary line carries the moot-PR note too"
+case "$(cat "$tob_gh_log")" in
+  *"pr close"*|*"pr edit"*) moot_closed=1 ;;
+  *) moot_closed=0 ;;
+esac
+assert_equals "$moot_closed" "0" \
+  "(168c) the moot PR is named, never closed — closing it would be a new outward write in the sweep #1518 bounds"
+
+# --- (169) --dry-run renders the check-1b verdict and performs no write ---
+reset_tob_layout
+tob_add_worktree_sibling_landed 585
+printf 'OPEN|' > "$tob_state/issue-probe-585"
+result=$(run_tob --dry-run)
+case "$result" in
+  *"already-landed do-work/issue-585 — content already upstream: all 1 path(s) this branch touches"*) dry_sibling_ok=1 ;;
+  *) dry_sibling_ok=0 ;;
+esac
+assert_equals "$dry_sibling_ok" "1" \
+  "(169) --dry-run renders the check-1b verdict so a human can audit it before the real sweep"
+if [ -d "$tob_repo/.claude/worktrees/agent-585" ]; then
+  printf '  %sPASS%s  (169a) --dry-run left the check-1b worktree on disk\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (169a) --dry-run removed a check-1b worktree\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (170) suppression precedes the --max-prs cap for check 1b too ---
+reset_tob_layout
+tob_add_worktree_sibling_landed 586
+printf 'OPEN|' > "$tob_state/issue-probe-586"
+tob_add_worktree_ahead 587
+printf 'OPEN|' > "$tob_state/issue-probe-587"
+printf '897' > "$tob_state/next-pr-number"
+result=$(run_tob --max-prs 1)
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "1" \
+  "(170) a check-1b candidate does not consume the --max-prs budget"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(170a) counters split the sibling-landed leftover from the genuine salvage"
+
 # --- (144) --max-prs must be a non-negative integer ---
 bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
   --default-branch "main" --max-prs "lots" >/dev/null 2>&1
