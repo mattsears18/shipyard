@@ -1914,7 +1914,7 @@ Adding **any** literal text to that same word rescues it:
 | Position | Example | Verdict |
 |---|---|---|
 | Script path | `bash "$X"` | REFUSED |
-| Path with literal suffix | `bash "$X/plugins/shipyard/scripts/compound-block-scan.sh" --help` | RUNS |
+| Path with literal suffix | `bash "$X/plugins/shipyard/scripts/compound-block-scan.sh" --help` | RUNS — **no longer reproduces, see [#1566](#the-1566-launcher-measurement-bash--an-unresolvable-script-path)** |
 | Flag value | `bash stub.sh run --repo <literal> --me "$X"` | REFUSED |
 | Positional argument | `ls "$X"` | REFUSED |
 | Second word | `echo a "$X"` | REFUSED |
@@ -2050,6 +2050,45 @@ At A.0 the resolved id is then read off stdout and threaded into both `bump-toke
 
 **Side effect worth recording: `steady-state.md` was split.** The file had ~68 bytes of headroom under the 245,760-byte phase-file cap after #1476, and decomposition adds prose. Rather than write a terser fix than the correct one, the D-tail merge-completion sweeps moved verbatim to [`d-tail-merge-sweeps.md`](./do-work/d-tail-merge-sweeps.md) — the same router/fragment answer [#611](https://github.com/mattsears18/shipyard/issues/611) → [#994](https://github.com/mattsears18/shipyard/issues/994) → [#1233](https://github.com/mattsears18/shipyard/issues/1233) → [#1431](https://github.com/mattsears18/shipyard/issues/1431) → [#1446](https://github.com/mattsears18/shipyard/issues/1446) each reached. D-tail was chosen over the far larger A.0.5 section on blast radius: it is a self-contained `####` with only **two** inbound anchor links, versus A.0.5's ten. The fragment lives in the same directory, so only intra-file `](#…)` anchors needed rewriting to `](./steady-state.md#…)`; it is listed in `compound-block-scan.sh`'s curated `FILES` so the relocation doesn't silently drop scan coverage. Headroom afterwards: ~9.8 KB.
 
+
+## The #1566 launcher measurement: `bash` + an unresolvable script path
+
+**What #1566 reported, and why the report's own hypothesis was wrong.** The issue observed that post-`EnterWorktree`, `bash <script>` invocations were being refused while the same scripts ran when executed directly by path, and proposed that **the `bash` launcher itself** had become a refusal trigger. Re-running the experiment against the current harness — one variable at a time, in a live isolated worktree, each verdict re-run to confirm determinism — shows the launcher alone is *not* the trigger. Six literal-path `bash` invocations ran cleanly, including the exact `SHIPYARD_REPO_ROOT=<literal> bash <plugin-root literal>/scripts/classify-backlog.sh` shape the issue named as the archetypal broken call site.
+
+**The actual predicate: `bash` handed a script path the guard cannot statically resolve.** Both halves are required, and the observation table isolates each:
+
+| Command | Verdict |
+|---|---|
+| `bash <absolute-literal>/scripts/shipyard-config.sh --help` | RUNS |
+| `bash plugins/shipyard/scripts/shipyard-config.sh --help` | RUNS |
+| `bash <absolute-literal>/scripts/shipyard-config.sh get backlog.self_assign` | RUNS |
+| `bash <literal>/…/shipyard-config.sh exists; bash <literal>/…/shipyard-config.sh get …` | RUNS |
+| `SHIPYARD_REPO_ROOT=<literal> bash <literal>/scripts/classify-backlog.sh --help` | RUNS |
+| `<absolute-literal>/scripts/shipyard-config.sh --help` | RUNS |
+| `plugins/shipyard/scripts/shipyard-config.sh --help` | RUNS |
+| `export CLAUDE_PLUGIN_ROOT="<literal>"` + `bash "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get …` | **REFUSED** (×2) |
+| `export CLAUDE_PLUGIN_ROOT="<literal>"` + `"$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get …` | RUNS |
+| `export FOO="<literal>"` + `echo "$FOO/scripts/shipyard-config.sh"` | RUNS |
+
+The last three rows are the decisive triple: the same word (`"$VAR/scripts/shipyard-config.sh"`) refuses under `bash`, runs as a direct-exec command, and runs as an `echo` argument. So this is **not** the #1474 whole-word rule — the literal suffix still rescues the word everywhere else, exactly as #1474 measured. What is new is that the `bash` launcher no longer accepts a suffixed expansion as a resolvable script path.
+
+The refusal text names the mechanism and is distinct from every other shape in this document: *"this command runs bash in a plain command; **what it reads or is handed as shell text** cannot be shown not to run git."* The guard's objection is that it cannot see which file `bash` will read and execute, so it cannot rule out that the file runs git against the wrong root. This is the check working as designed, and it is strictly more conservative than the build #1474 measured against — where `bash "$X/plugins/shipyard/scripts/compound-block-scan.sh" --help` was recorded as RUNS.
+
+**Why the fix is direct exec rather than literal substitution.** #1474's general remedy — spell the value out as a literal — would work here too, but it is the wrong choice for this shape. It requires per-call-site judgment about which values the caller happens to hold, it has to be re-applied every time a spec block is edited, and it is exactly the remedy four prior sweeps applied and saw re-accumulate. Direct exec is immune to *both* halves of the predicate: it runs with an expansion and with a literal, so a swept call site stays correct regardless of how the surrounding block later changes. #1566 swept all 48 `bash "$CLAUDE_PLUGIN_ROOT/scripts/…"` call sites across the corpus to this form.
+
+This is safe unconditionally for shipped scripts: all 73 production scripts under `plugins/shipyard/scripts/` carry a `#!` shebang at committed mode `100755`, and [`scripts/tests/script-exec-bits.test.sh`](../scripts/tests/script-exec-bits.test.sh) fails CI if one regresses — so "is it executable?" is not a question a spec author has to answer. Two carve-outs keep the launcher: a script the worker itself created with the `Write` tool (no exec bit — `chmod +x` then direct-exec, per `nvm-source-refusal.md`), and the deliberately mixed-mode suites under `scripts/tests/`, which are documented and invoked with spelled-out literal paths.
+
+### Why this one gets a scanner when #1474's rule did not
+
+[#1474 built nothing](#the-1474-scanner-decision-build-nothing) because its prototype produced 152 findings dominated by pre-relocation blocks and illustrative pseudo-code, and separating the genuine refusals required knowing, per block, whether it runs post-relocation *and* whether it is executed verbatim — neither of which the markdown expresses. **Neither condition binds here.** The launcher shape is unambiguous wherever it appears in an executable block: `bash "$VAR/scripts/x.sh"` is never the right thing to write, pre- or post-relocation, because direct exec is strictly better in both. So the guard needs no per-file judgment, and therefore no curated file list that can drift out of date.
+
+[`scripts/tests/launcher-invocation-scan.test.sh`](../scripts/tests/launcher-invocation-scan.test.sh) sweeps every tracked markdown file under `plugins/` (147 at time of writing) and fails on a launcher-plus-expansion invocation. The one design constraint is that it reads **only ```` ```bash ```` fences**: `dont.md`'s worked-example table, the #1474 observation rows above, and several worker-preamble fragments all quote the refused form deliberately, as inline code or inside a plain fence. Restricting the scan to executable fences is exactly what lets it be repo-wide with no allowlist. It carries its own two-way self-test (a fixture that must be caught, a fixture of legal forms that must not be) plus a discovery floor, so a scan that walks nothing can't report clean — the [vacuous-pass shape](#the-1474-scanner-decision-build-nothing) this corpus documents elsewhere, and one this file hit for real during development when `mapfile` turned out to be bash 4+ while the dev host ships bash 3.2.
+
+**It deliberately does not live in [`compound-block-scan.sh`](../scripts/compound-block-scan.sh)**, the apparent natural home, which already flags four shapes and has clean precedent for a fifth. That scanner's curated `FILES` list doesn't include `agents/issue-worker/*.md` or `skills/worker-preamble/*.md`, where most of these 48 call sites live — and those files return 40+ findings for its *other* four shapes (pipes and loops, concentrated in `fix-rebase.md`, `fix-checks-only.md`, `spike.md`). Admitting them to gain the fifth check would bury a narrow, well-measured guard under a large unrelated sweep, or require exempting most of the newly-admitted blocks with `<!-- compound-block-scan: allow -->` markers, which defeats the point. Adding the check while leaving `FILES` alone was rejected for the opposite reason: it would cover roughly ten of the 48 sites while reporting "all scanned files clean." Sweeping the worker-facing files of the pipe/loop shapes and admitting them properly is a follow-up.
+
+### What this does not change
+
+The #1474 whole-word rule stands in full; only the single `bash`-with-literal-suffix row of its position table no longer reproduces, and it is annotated in place rather than deleted (the measurement was honest when taken — the harness moved). The #1558 rewriter-hook refusal is a separate rule with a separate fix (`/usr/bin/git`), and neither fix resolves the other's refusal; `launcher-git-refusal.md` now carries both, since a worker that hits one is likely to hit the other. #1566's own secondary finding — that a `PreToolUse` hook rewriting `grep` into `rtk grep` produces the #1558 refusal shape for a non-git tool — was already documented by #1558 and is reconfirmed rather than new.
 
 ## `url-json` — the third recheck-probe verb, and why its host allowlist is empty by default (issue #1496)
 

@@ -96,7 +96,7 @@ Then pass `--label "P0"` / `--label "P1"` / `--label "P2"` — matching the buck
 
 ```bash
 CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-MILESTONE_GATE=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/resolve-filing-milestone-gate.sh" <owner/repo>)
+MILESTONE_GATE=$("$CLAUDE_PLUGIN_ROOT/scripts/resolve-filing-milestone-gate.sh" <owner/repo>)
 MILESTONES_ENABLED=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^enabled=//p')
 MILESTONES_ASSIGN=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^assign_on_file=//p')
 MILESTONES_FALLBACK=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^fallback=//p')

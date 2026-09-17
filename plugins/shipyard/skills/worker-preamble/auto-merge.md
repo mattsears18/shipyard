@@ -42,7 +42,7 @@ After `gh pr create` returns:
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   GATE_VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-gate-narrowing.sh" <owner/repo> <pr-num>)
+   GATE_VERDICT=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-gate-narrowing.sh" <owner/repo> <pr-num>)
    ```
 
    **The repo is POSITIONAL — there is no `--repo` flag** ([#1502](https://github.com/mattsears18/shipyard/issues/1502)). Run it exactly as written above. Passing `--repo <owner/repo> <pr-num>` used to bind the repo variable to the literal `--repo` and produce `gh pr diff owner/name --repo --repo`, whose failure surfaced as `unknown` — which this branch treats as `narrowing`, so a caller error silently cost a human-review clear on a PR that never needed one. The script now rejects the flag form up front (exit `64`, stdout `USAGE_ERROR: ...`) before any `gh` call.
@@ -83,7 +83,7 @@ After `gh pr create` returns:
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+   VERDICT=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
    # `ungated` => do NOT arm --auto; --watch the PR's checks, merge only if green.
    # `gated`   => --auto genuinely queues behind CI; arm it (step 1 below).
    ```
@@ -91,8 +91,8 @@ After `gh pr create` returns:
    **The repo is POSITIONAL — there is no `--repo` flag** ([#1502](https://github.com/mattsears18/shipyard/issues/1502)). Run it exactly as written above; the literal shape is stated here rather than left to be derived from prose, following the [#1455](https://github.com/mattsears18/shipyard/issues/1455) / [#1492](https://github.com/mattsears18/shipyard/issues/1492) precedent:
 
    ```
-   bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>          # correct
-   bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" --repo <owner/repo>   # WRONG — exits 64
+   "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>          # correct
+   "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" --repo <owner/repo>   # WRONG — exits 64
    ```
 
    `--repo` is the natural guess, because `gh` itself spells the same argument that way. Before [#1502](https://github.com/mattsears18/shipyard/issues/1502) the flag was bound straight into the repo variable and forwarded, producing `gh api repos/--repo`, and the script reported `could not read repo signals for '--repo'` and exited 1 — a caller error wearing the costume of a transient API/permission failure, on the one detector `CLAUDE.md` designates as the executable source of truth a maintainer runs by hand.

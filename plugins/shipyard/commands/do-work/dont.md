@@ -152,12 +152,52 @@ Quoting is the whole difference; it holds across both `export VAR=…` and split
 **What this means when you author a post-relocation block.** The two-statement stash read (`CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` + `export CLAUDE_PLUGIN_ROOT`) is fine and stays fine — it contains no bare whole-word expansion. What breaks a block is the *use*:
 
 ```
-bash "$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag    → RUNS    (literal suffix)
+"$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag         → RUNS    (literal suffix, direct exec)
+bash "$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag    → REFUSED (launcher — see #1566 below)
 git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD         → REFUSED (bare whole word)
 [ -z "$SOME_VAR" ] && SOME_VAR="unknown"                    → REFUSED (bare whole word in the test)
 ```
 
+> **Row 2 corrected by [#1566](https://github.com/mattsears18/shipyard/issues/1566).** It previously read `→ RUNS (literal suffix)`, which is what #1474 measured and is no longer true on the current harness build. The literal-suffix rescue itself still holds — that is row 1, and it is the form to write. What changed is that prefixing it with the `bash` launcher now refuses. See [the launcher rule](#the-launcher-rule-1566-never-put-bash-in-front-of-a-script-path-you-cannot-spell-out) immediately below.
+
 So the rule to apply is narrower and more actionable than "substitute every value as a literal": **give the expansion a literal suffix, or substitute the literal outright.** Where neither is possible — a `git -C <root>` or a `[ -z … ]` guard genuinely needs the bare value — substitute the literal, or split the statement into a separate plain call whose value you already hold.
+
+#### The launcher rule (#1566): never put `bash` in front of a script path you cannot spell out
+
+**A command is refused when a launcher that takes shell text — `bash`, `sh` — is handed a script path the guard cannot statically resolve.** The refusal message is distinct from every shape above, and naming it is how you tell this apart from the whole-word rule:
+
+> This session is isolated in the worktree …, but this command runs bash in a plain command; **what it reads or is handed as shell text cannot be shown not to run git.** Refusing to run it
+
+The guard's objection is specific: it cannot see which file `bash` will read and execute, so it cannot rule out that the file runs git against the wrong root. A literal path it can resolve; an expansion it cannot.
+
+**Both halves matter — either one alone is fine.** Measured live in an isolated worktree, one variable at a time, each verdict re-run to confirm determinism ([RATIONALE → The #1566 launcher measurement](../do-work-RATIONALE.md#the-1566-launcher-measurement-bash--an-unresolvable-script-path) for the full table):
+
+```
+"$CLAUDE_PLUGIN_ROOT/scripts/x.sh" get backlog.self_assign        → RUNS     (expansion, no launcher)
+bash <absolute-literal>/scripts/x.sh get backlog.self_assign      → RUNS     (launcher, no expansion)
+bash plugins/shipyard/scripts/x.sh --help                         → RUNS     (launcher, relative literal)
+bash "$CLAUDE_PLUGIN_ROOT/scripts/x.sh" get backlog.self_assign   → REFUSED  (launcher + expansion)
+echo "$CLAUDE_PLUGIN_ROOT/scripts/x.sh"                           → RUNS     (same word, not a script path)
+```
+
+**The fix is to drop the launcher, not to substitute the literal.** Direct exec is immune to *both* halves — it runs with an expansion and with a literal — so it is the one form that needs no per-call-site judgment about which values you happen to hold:
+
+```
+"$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag
+```
+
+This is safe for every script in `plugins/shipyard/scripts/`: all of them ship with a `#!` shebang at committed mode `100755`, enforced in CI by [`scripts/tests/script-exec-bits.test.sh`](../../scripts/tests/script-exec-bits.test.sh). #1566 swept all 48 `bash "$CLAUDE_PLUGIN_ROOT/scripts/…"` call sites across the spec corpus to this form.
+
+**Two carve-outs where the launcher is still correct:**
+
+- **A script you wrote this dispatch with the `Write` tool** (e.g. into `.shipyard-scratch/`) has no exec bit — `Write` does not set one. Run `chmod +x <path>` as its own plain command, then direct-exec it. Do not reach for `bash` to skip the `chmod`; that is the refused shape.
+- **Test suites under `scripts/tests/`** are deliberately mixed-mode (see `script-exec-bits.test.sh`'s scope note) and are documented as `bash <file>`. Those invocations spell the path out literally, so they run.
+
+**This one IS CI-enforced** — unlike the whole-word rule above, which [#1474 deliberately left unguarded](#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word). [`scripts/tests/launcher-invocation-scan.test.sh`](../../scripts/tests/launcher-invocation-scan.test.sh) sweeps every tracked markdown file under `plugins/` and fails on a launcher-plus-expansion invocation inside a ```` ```bash ```` fence. What makes a gate tractable here and not there: this shape is unambiguous wherever it appears in an executable block, so it needs no per-file pre- vs post-relocation judgment and therefore no curated `FILES` list to drift. The scan is deliberately restricted to ```` ```bash ```` fences precisely so it can be repo-wide — the worked-example table above, [RATIONALE](../do-work-RATIONALE.md#the-1566-launcher-measurement-bash--an-unresolvable-script-path)'s historical #1474 rows, and several fragments all quote the refused form on purpose, in prose or in a plain fence, and must keep doing so.
+
+It deliberately does **not** live in [`compound-block-scan.sh`](../../scripts/compound-block-scan.sh), the apparent natural home. That scanner's curated `FILES` list doesn't include `agents/issue-worker/*.md` or `skills/worker-preamble/*.md` — where most of these call sites actually are — and those files are nowhere near clean of its existing four shapes (40+ pipe/loop findings, concentrated in `fix-rebase.md`, `fix-checks-only.md`, and `spike.md`). Admitting them to gain the fifth check would bury a narrow, well-measured guard under a large unrelated sweep. Sweeping those files of the pipe/loop shapes and admitting them properly is a follow-up.
+
+**Related but distinct: a launcher the *host* inserts.** A user-global `PreToolUse` hook that rewrites `git …` into `rtk git …` (or `grep` into `rtk grep`) produces a *different* refusal — "runs `<launcher>` with a git command among its operands" — with a different fix: call the binary by absolute path (`/usr/bin/git`). That is [#1558](https://github.com/mattsears18/shipyard/issues/1558), documented for workers in `shipyard:worker-preamble`'s [`launcher-git-refusal.md`](../../skills/worker-preamble/launcher-git-refusal.md) fragment, and it applies to the orchestrator too from the moment it enters its own worktree. The two rules share a theme — the guard refuses what it cannot see through a launcher — but neither fix works on the other's refusal.
 
 **No CI gate enforces this, deliberately.** #1474 measured the rule, prototyped it against `compound-block-scan.sh`'s six curated files, got **152 findings** dominated by pre-relocation blocks and illustrative pseudo-code, and concluded that distinguishing genuine refusals requires knowing per-block whether it runs post-relocation *and* whether it is executed verbatim — neither of which the markdown expresses. See [RATIONALE → The #1474 scanner decision](../do-work-RATIONALE.md#the-1474-scanner-decision-build-nothing) for the full reasoning. **Do not re-propose that scanner without re-running the experiment first** — five attempts have now been made on this guard, and four of them shipped a fix built on a model that had not been measured.
 

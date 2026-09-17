@@ -23,7 +23,7 @@ failures=$(gh run list --commit "$sha" --json conclusion \
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 # GOOD — one executable answer to "is CI green for <target>?", with the
 # observed-something precondition built in.
-bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-ci-green.sh" <owner/repo> --commit HEAD
+"$CLAUDE_PLUGIN_ROOT/scripts/assert-ci-green.sh" <owner/repo> --commit HEAD
 case $? in
   0) : ;;  # green    — >=1 run observed, every workflow's latest completed run
            #            passed, AND that run actually executed its steps

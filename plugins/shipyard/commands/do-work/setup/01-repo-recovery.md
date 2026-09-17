@@ -31,7 +31,7 @@ This is a **warning, not a behavior change** — the orchestrator does not flip 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
+verdict=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
 # The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
 # prints `USAGE_ERROR: ...` on stdout and exits 64, which the `|| echo ungated`
 # fallback then appends to, producing a verdict that matches NEITHER literal.
@@ -94,7 +94,7 @@ A **worker** can afford a multi-minute `--watch` — it owns a dispatch slot and
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 
-verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-missing-workflow-scope.sh" <owner/repo> <default-branch> 2>/dev/null || echo silent)
+verdict=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-missing-workflow-scope.sh" <owner/repo> <default-branch> 2>/dev/null || echo silent)
 # The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
 # prints `USAGE_ERROR: ...` on stdout and exits 64 instead of the pre-#1502
 # behaviour of probing the repo `--repo`, failing both reads, and printing a
@@ -145,7 +145,7 @@ fi
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-CI_POOL_LINE=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-runner-capacity.sh" <owner/repo> 2>/dev/null || echo unknown)
+CI_POOL_LINE=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-runner-capacity.sh" <owner/repo> 2>/dev/null || echo unknown)
 CI_POOL_SHAPE=$(printf '%s' "$CI_POOL_LINE" | awk '{print $1}')
 CI_POOL_TOTAL=0
 CI_POOL_QUEUED=0
@@ -181,7 +181,7 @@ Follow-up to [step 1.36](#136-detect-ci-executor-pool-capacity-and-clamp-toward-
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-CI_CHEAP_LINE=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" "<repo-checkout>/.github/workflows" 2>/dev/null || echo no-cheap-path)
+CI_CHEAP_LINE=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" "<repo-checkout>/.github/workflows" 2>/dev/null || echo no-cheap-path)
 CI_CHEAP_GLOBS=""
 if [ "${CI_CHEAP_LINE%% *}" = "cheap-path-available" ]; then
   CI_CHEAP_GLOBS=$(printf '%s' "$CI_CHEAP_LINE" | sed -n 's/^cheap-path-available globs=//p')

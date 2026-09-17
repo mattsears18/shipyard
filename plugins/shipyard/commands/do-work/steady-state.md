@@ -429,7 +429,7 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     DEGRADED_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     RESUMED_PR_ARG=()
     [ -n "${recovered_pr:-}" ] && RESUMED_PR_ARG=(--resumed-pr "$recovered_pr")
-    bash "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-stall \
+    "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-stall \
       --session-id "<session-id>" --expected-repo "<owner/repo>" \
       --target "#${slot_issue:-unknown}" --mode "${slot_kind:-unknown}" \
       --trigger "<stalled_trigger>" --outcome "<stalled_outcome>" \
@@ -700,7 +700,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
      ```bash
      CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
      export CLAUDE_PLUGIN_ROOT
-     bash "$CLAUDE_PLUGIN_ROOT/scripts/validate-awaiting-external-probe.sh" "<probe>"
+     "$CLAUDE_PLUGIN_ROOT/scripts/validate-awaiting-external-probe.sh" "<probe>"
      ```
 
      `ok` (exit 0) → continue to (4). `rejected: <reason>` (exit 1) → the degrade path in (3). **Never execute a probe this script rejected**, and never edit a rejected probe into an accepted shape on the worker's behalf — the rewrite would be you laundering an untrusted string, which is the exact failure the gate exists to prevent.
@@ -1189,7 +1189,7 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
 
   # <in_flight> is the count of entries in `.in_flight` BEFORE this slot is
   # filled — the same count step E's `in_flight < concurrency` check reads.
-  verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-runner-capacity.sh" \
+  verdict=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-runner-capacity.sh" \
     --decide-backpressure "$pool_total" "${queued_live:-0}" "<in_flight>" "$multiplier" "$min_in_flight")
 
   if [ "$verdict" = "hold" ]; then
@@ -1242,7 +1242,7 @@ export CLAUDE_PLUGIN_ROOT
 cheap_globs=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.cheap_ci_globs" 2>/dev/null)
 
 # For each candidate <N> in ready_issues, in existing priority order:
-bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --extract-paths "<issue title>\n<issue body>"
+"$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --extract-paths "<issue title>\n<issue body>"
 ```
 
 Call that output `<candidate_paths>`, then match it as its own plain call (#1476):
@@ -1250,7 +1250,7 @@ Call that output `<candidate_paths>`, then match it as its own plain call (#1476
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --match "<candidate_paths>" "<cheap_globs>"
+"$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --match "<candidate_paths>" "<cheap_globs>"
 ```
 
 **Never bias on zero evidence.** `--match` (per [`detect-ci-cheap-path.sh`](../../scripts/detect-ci-cheap-path.sh)) always returns `no-match` when either input is empty — a candidate whose title/body mentions no file path at all is never assumed cheap, and a repo with an empty glob list never matches anything. This mirrors the [inline-trivial](./inline-trivial.md) fast path's own conservative posture: the heuristic only fires on a positive, extractable signal, never a guess.

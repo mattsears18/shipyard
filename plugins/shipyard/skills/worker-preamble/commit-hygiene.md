@@ -30,7 +30,7 @@ Verify before pushing: `git log -1 --format=%s` should read as a valid Conventio
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-bash "$CLAUDE_PLUGIN_ROOT/scripts/commit-subject-scan.sh" "origin/$DEFAULT_BRANCH"
+"$CLAUDE_PLUGIN_ROOT/scripts/commit-subject-scan.sh" "origin/$DEFAULT_BRANCH"
 ```
 
 Exit 0 → every subject conforms, push. Exit 1 → it prints each offending `<sha>  <subject>` and why; amend or squash per the three cases above, then re-run. Exit 2 → usage/environment error (not in a work tree, unresolvable base ref) — fix the invocation; never read a 2 as a pass.

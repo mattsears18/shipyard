@@ -817,7 +817,7 @@ A denial that is not recorded is invisible: the slot goes unfilled and the targe
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 DEGRADED_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-bash "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-denial \
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-denial \
   --session-id "<session-id>" --expected-repo "<owner/repo>" \
   --target "<#N|#M|main|pr-pileup>" --mode "<mode>" \
   --denial-text "<verbatim first line of the harness denial>" \

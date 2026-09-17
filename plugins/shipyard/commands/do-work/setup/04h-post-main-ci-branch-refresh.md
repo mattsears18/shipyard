@@ -20,7 +20,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 fix_commit_sha=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.sha')
 fix_commit_date=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.commit.committer.date')
-bash "$CLAUDE_PLUGIN_ROOT/scripts/stale-check-refresh.sh" run \
+"$CLAUDE_PLUGIN_ROOT/scripts/stale-check-refresh.sh" run \
   --repo <owner/repo> \
   --fix-commit-sha "$fix_commit_sha" \
   --fix-commit-date "$fix_commit_date" \

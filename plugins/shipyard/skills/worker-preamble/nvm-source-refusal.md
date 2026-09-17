@@ -50,8 +50,14 @@ WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 #   source "$NVM_DIR/nvm.sh"
 #   nvm use
 #   exec "$@"
-bash "$WORKTREE_PATH/.shipyard-scratch/nvm-use.sh" npm ci
+chmod +x "$WORKTREE_PATH/.shipyard-scratch/nvm-use.sh"
 ```
+
+```bash
+"$WORKTREE_PATH/.shipyard-scratch/nvm-use.sh" npm ci
+```
+
+**The `chmod` is load-bearing, and so is direct-exec'ing the result ([#1566](https://github.com/mattsears18/shipyard/issues/1566)).** The `Write` tool doesn't set an exec bit, so the script isn't runnable until you set one — and `bash "$WORKTREE_PATH/…/nvm-use.sh"` is not the way around that: prefixing a launcher onto a script path the guard can't statically resolve is itself refused (`SKILL.md` § "Invoke a helper script by direct exec"). `chmod` then direct-exec, as two plain commands.
 
 Seed `.shipyard-scratch/.gitignore` first per `SKILL.md` § "Scratch directory" if you haven't already this dispatch, and clean the script up best-effort when done.
 

@@ -67,7 +67,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 Then, as its own plain `Bash` call:
 
 ```bash
-bash "$CLAUDE_PLUGIN_ROOT/scripts/validate-awaiting-external-probe.sh" "<your probe command>"
+"$CLAUDE_PLUGIN_ROOT/scripts/validate-awaiting-external-probe.sh" "<your probe command>"
 ```
 
 - **`ok` (exit 0)** — safe to hand over. Return it verbatim; do not "improve" it afterwards.
