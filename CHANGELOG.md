@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.55.10 — 2026-09-17
+
+Isolated sessions on a host with a command-rewriting hook now have a documented way to run git (closes #1558). A global `PreToolUse` hook such as RTK rewrites `git …` into `rtk git …`. Once a session is inside a worktree, the isolation check can't verify that launcher form, so it refuses plain git commands, including `git -C <worktree> …`. The rewrite is selective by subcommand: `git fetch`, `git status`, and `git log` were refused while `git rev-parse` ran. Every isolated worker, and the orchestrator right after step 0.5, had to rediscover the fix on its own. The fix is to call the binary by absolute path, `/usr/bin/git …`. It works with `-C` anchoring and was verified live on an RTK host. The issue's third item, object-literal refusals in `session-state.sh update --set`, was already fixed by #1561's `--set-file` and per-field forms, so this entry only points to that fix. The optional setup-time probe that would record a `git_bin` in session state is not included.
+
+- `plugins/shipyard/skills/worker-preamble/launcher-git-refusal.md`: new on-demand fragment. It quotes the refusal text and explains the cause, the absolute-path fix (with a `command -v git` fallback), the same fix for other rewritten tools, and what not to do: don't edit the hook, don't use the launcher's passthrough, don't `cd` out, and don't return `blocked:`.
+- `plugins/shipyard/skills/worker-preamble/SKILL.md`: short always-loaded section stating the one-line fix, plus the fragment's index row.
+- `plugins/shipyard/commands/do-work/dont.md`: the post-relocation section now separates this refusal from the compound-shape rule and gives the orchestrator the same fix.
+- `plugins/shipyard/scripts/tests/launcher-git-refusal-1558.test.sh`: new suite that checks all three locations.
+- `plugins/shipyard/scripts/tests/spec-size-budget.test.sh`: worker-preamble `SKILL.md` ceiling raised from 68000 to 69000, with the reason recorded.
+
 ### 4.55.8 — 2026-09-17
 
 Stops one path-scoped sibling job from disabling the `fix-main-ci` divert (closes #1564). `assert-ci-green.sh` marked a whole workflow run vacuous (#1495) when any one of its jobs skipped most of its steps. On a repo whose single `CI` workflow has a legitimately path-scoped job (lightwork's `🧹 Lint (marketing)`, which skips on every non-marketing commit), that meant every run read as vacuous, even though Lint & Typecheck, Unit Tests, and Web E2E all ran in full. The 5-run walk-back never found an executed run, `main_ci` stayed at `unknown` for the whole session, and a red `main` could never queue a divert. Now a run is vacuous only when some job is vacuous and no other job did real work, meaning a non-vacuous job that ran at least as many user-authored steps as the largest vacuous job has. #1495's shape stays vacuous: there, `detect-paths` ran a few steps and the required test job skipped everything. Scoring only required checks was considered and rejected, because lightwork's path-scoped marketing lint is itself a required check.

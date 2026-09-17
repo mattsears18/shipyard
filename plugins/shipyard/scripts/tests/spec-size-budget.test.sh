@@ -277,6 +277,18 @@
 # irreversible-external-action.md; the file had ~1073 bytes of headroom left
 # after #1240's raise, and the section plus the index row needed the bump.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 68000 -> 69000 by
+# #1558 (2026-09-17): a short always-loaded "Plain `git` refused as 'runs
+# <launcher> with a git command among its operands'" section, plus its
+# fragment's index row. On a host with a command-rewriting PreToolUse hook
+# (RTK), every isolated worker had plain git calls refused and rediscovered
+# the /usr/bin/git workaround on its own, at a cost of wasted tool calls on
+# every dispatch. A fragment alone only helps a worker that already knows to
+# look for it, so the one-line fix sits in the core where every worker sees
+# it before its first refusal. The file had ~440 bytes of headroom after #1519's raise, and the
+# trimmed section plus the row needed the bump. The detail lives in
+# launcher-git-refusal.md.
+#
 # issue-work.md was NOT raised for #1519 (2026-08-24) — its one-line Don't-
 # section mirror (the same shape #1166 added for "Never create a credential",
 # repeated across all seven per-mode files) landed it at EXACTLY 130000
@@ -348,7 +360,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  68000 \
+  69000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
