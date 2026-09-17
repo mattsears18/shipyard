@@ -728,7 +728,7 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                           permanently > 0 for every branch ever landed —
                           `ahead == 0` is unreachable, the worktree
                           candidate set never drains, and each leftover
-                          regenerates a duplicate PR every session. Three
+                          regenerates a duplicate PR every session. Four
                           CONTENT-aware signals now gate PR creation, in
                           evidence-strength order; any one alone suppresses
                           it:
@@ -750,6 +750,23 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                                revert landed work. Weaker evidence, so the
                                worktree is removed but the branch ref is
                                KEPT as a safety net.
+                           2b. The BRANCH'S OWN PR already MERGED — one
+                               `gh pr list --state merged --head
+                               <do-work/issue-N>` read, made only when
+                               checks 1 and 2 have both declined (issue
+                               #1565). Check 2 keys exclusively on the
+                               ISSUE's closedByPullRequestsReferences, which
+                               GitHub populates only when a merged PR
+                               carried a closing keyword its linker
+                               resolved; an issue closed by hand after its
+                               PR landed is CLOSED/COMPLETED with that array
+                               EMPTY, so check 2 declines while the branch's
+                               own PR sits there MERGED. Asks about the
+                               exact head ref the salvage below would push
+                               to and open its PR against, so a hit means
+                               the PR this sweep is about to duplicate has
+                               already merged. Same weak-evidence action as
+                               check 2: worktree removed, branch ref KEPT.
                             3. Superseded draft — every path the branch ADDS
                                relative to its merge-base with the default
                                branch already exists on the default branch
@@ -772,7 +789,7 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                                signal) and compares no line, hunk, or byte
                                counts. Same weak-evidence action as check 2:
                                worktree removed, branch ref KEPT.
-                          All three fail CONSERVATIVE — an unreadable signal is
+                          All four fail CONSERVATIVE — an unreadable signal is
                           never evidence of staleness, so anything that
                           cannot be classified is salvaged exactly as
                           before. Suppression runs BEFORE the --max-prs cap,
@@ -3310,6 +3327,19 @@ reap_stale() {
 # action as check 2 (worktree drained, branch ref kept). See the block above
 # the check itself for the full predicate, the measured reason a per-file
 # blob-ancestry test was rejected, and the residual-risk argument.
+#
+# Issue #1565 — check 2b, closing check 2's OTHER blind spot. Check 2 needs
+# the issue's `closedByPullRequestsReferences` to be populated, and GitHub
+# populates it only when a merged PR carried a closing keyword its linker
+# resolved — so an issue closed BY HAND after its PR landed reads
+# CLOSED/COMPLETED with that array EMPTY and check 2 declines, even though
+# the branch's own PR is MERGED. Observed live on mattsears18/lightwork
+# (session do-work-20260915T205245Z-95644): do-work/issue-4738 and
+# do-work/issue-4823 were both planned for `salvage` with PRs #4740 and
+# #4826 already merged, checks 1 and 3 having correctly declined. Check 2b
+# asks `gh pr list --state merged --head <canonical branch>` — the exact
+# head the salvage would push to — only after 1 and 2 decline. Same
+# conservative-failure rule and same weak-evidence action as check 2.
 triage_orphan_branches() {
   local repo_root=""
   local repo=""
@@ -3465,7 +3495,7 @@ triage_orphan_branches() {
   fi
 
   local branch path n canonical_branch ahead pushed open_pr
-  local stale_reason stale_action diff_rc issue_probe issue_state closing_pr
+  local stale_reason stale_action diff_rc issue_probe issue_state closing_pr merged_pr
   local merge_base added_path added_total added_on_main added_sample
   local idx=0
   while IFS= read -r branch; do
@@ -3588,6 +3618,67 @@ triage_orphan_branches() {
             # worktrees: the refs are inert once no worktree points at them.
             stale_action="remove-worktree-only"
           fi
+          ;;
+      esac
+    fi
+
+    # Check 2b — the BRANCH'S OWN PR already MERGED. Issue #1565.
+    #
+    # Numbered 2b rather than renumbering the superseded-draft check to 4
+    # because it is check 2's question asked against a second, independent
+    # key: same near-conclusive evidence class, same weak-evidence action,
+    # and the cheapest possible position (one `gh` read, made only when the
+    # free local-git check 1 and the already-paid check 2 have both
+    # declined). Every "check 3" reference in this file and in
+    # worktree-reap.test.sh continues to mean the superseded-draft check.
+    #
+    # WHAT IT CATCHES that check 2 cannot. Check 2 keys exclusively on the
+    # ISSUE's `closedByPullRequestsReferences`, which GitHub populates only
+    # when a merged PR carried a closing keyword its linker resolved. An
+    # issue closed BY HAND after its PR landed — or closed via a PR body the
+    # linker never resolved — is CLOSED/COMPLETED with that array EMPTY, so
+    # check 2's second half fails and it declines, even while the branch's
+    # own PR sits there MERGED. That is not hypothetical: session
+    # do-work-20260915T205245Z-95644 on mattsears18/lightwork planned
+    # `salvage` for do-work/issue-4738 and do-work/issue-4823 whose PRs
+    # #4740 and #4826 had both already merged, because both issues reported
+    # `{"closedByPullRequestsReferences":[],"state":"CLOSED"}`. Check 1
+    # declined (the default branch had moved on since the squash) and check
+    # 3 declined (neither branch adds a new path), so the one signal that
+    # settles it — the branch's own PR state — was never consulted, and the
+    # sweep would have pushed two stale branches, opened two duplicate
+    # drafts, and spent 2 of its 3 --max-prs slots on work already upstream.
+    #
+    # WHY THIS HEAD REF. The probe asks about `$canonical_branch`, the exact
+    # head the salvage path below pushes to and opens its PR against (and
+    # the same name its own open-PR query already uses). A hit therefore
+    # means literally "the PR this sweep is about to duplicate has already
+    # merged" rather than anything inferred from a different ref.
+    #
+    # WHY NOT ALSO "CLOSED + COMPLETED + no open PR". #1565 floats that as a
+    # second, weaker class to consider. Declined here: it infers landing
+    # from the ABSENCE of a signal, which cannot fail conservative — a
+    # `not planned`-adjacent close, or a repo where the PR was closed
+    # unmerged, reads identically to a real landing. This check asserts a
+    # merged PR exists, which the absence form never does.
+    #
+    # FAILURE POSTURE, identical to every check around it: an empty or
+    # unreadable result is not evidence of staleness and salvages unchanged.
+    # ACTION is check 2's, not check 1's — under a squash merge the branch's
+    # own commits are still not reachable from the default branch, so the
+    # worktree is drained and the branch ref is KEPT as a safety net.
+    if [ -z "$stale_reason" ]; then
+      merged_pr=$("$GH" pr list --repo "$repo" --state merged --head "$canonical_branch" \
+        --json number --jq '.[0].number // empty' 2>/dev/null)
+      case "$merged_pr" in
+        ''|*[!0-9]*)
+          # Empty, or anything that is not a bare PR number (an error string
+          # leaking onto stdout, a `gh` that printed a warning). Unreadable
+          # signal -> not stale.
+          ;;
+        *)
+          stale_reason="branch's own PR #$merged_pr already MERGED"
+          stale_action="remove-worktree-only"
           ;;
       esac
     fi
