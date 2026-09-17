@@ -44,6 +44,7 @@
 #            [--milestones-enabled true|false] [--milestones-prioritize-dispatch true|false]
 #            [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
 #            [--pr-collision-verdicts <json-object>]
+#            [--sub-issues <json-object>]
 #            [--someday-milestone <title>] [--someday-recheck-days <N>]
 #            [--fallback-milestone <title>]
 #     Reads a JSON array of issues on stdin — the exact projection setup.md
@@ -64,9 +65,9 @@
 #       {"number":N,"verdict":"drop","reason":"covered-by-open-pr","evidence_pointer":"PR #M closingIssuesReferences includes #N"}
 #       {"number":N,"verdict":"drop","reason":"pr-collision-gated"}
 #       {"number":N,"verdict":"drop","reason":"someday-milestone","evidence_pointer":"milestone <title>","someday_recheck_action":"first-park"|"not-due"|"cheap-reset"}
-#     The `tracking` shapes are that label's special case (issue #1364) — see
-#     "Provisional gate: tracking requires a content-sourced justification"
-#     below. Every OTHER gate label (`blocked:ci`, `wontfix`, `discussion`,
+#     The `tracking` shapes are that label's special case (issues #1364 and
+#     #1556) — see has_tracking_justification's own comment block below for
+#     the full, precedence-ordered signal list. Every OTHER gate label (`blocked:ci`, `wontfix`, `discussion`,
 #     `needs-human-review`) always emits the plain
 #     `{"verdict":"gate","reason":"<label>"}` shape; among GATE verdicts only
 #     `tracking` ever carries `evidence_pointer` or the
@@ -209,6 +210,20 @@
 #     that cost-avoidance optimization, and the semantic premise re-
 #     validation it would require, is deliberately not wired here; see
 #     do-work.md's `deferred_issues` entry for the tracked follow-up.
+#     `--sub-issues` (issue #1556) is a JSON object mapping issue number
+#     (STRING key, same convention as `--probe-verdicts`) to that issue's
+#     GitHub sub-issue nodes — `[{"number":N,"state":"OPEN"|"CLOSED"}, ...]`
+#     — as read by a prior `sub-issues` pass (below). Defaults to `{}`, which
+#     reproduces pre-#1556 behavior byte-for-byte. Consumed by exactly ONE
+#     clause: the `tracking` provisional gate's justification check. A
+#     non-empty entry is that gate's strongest (and only STRUCTURED) signal —
+#     `tracking` is defined as "parent epic, decomposed into sub-issues", so
+#     a populated sub-issue graph is the textbook case the label exists for,
+#     and it is invisible to every body-prose signal because the relationship
+#     is structured GitHub state rather than text. Before #1556 a correctly
+#     decomposed epic therefore surfaced as `tracking-unjustified` — an
+#     anomaly channel firing on a healthy epic — while an issue that merely
+#     happened to carry an "Options" heading passed clean.
 #     `--someday-milestone <title>` (issue #1406) is a THIRD, distinct park
 #     mechanism from time-gate/event-gate above — not a leaf of either. An
 #     issue whose `milestone` field (the same flattened title the
@@ -311,6 +326,31 @@
 #     WARNING to stderr and continues to the next issue rather than aborting
 #     the whole call. Exit 0 always (even on empty/no-matching input); 64
 #     bad usage; 65 missing jq.
+#
+#   sub-issues --repo <owner/repo>
+#     < wide-fetch-issue-json (array) on stdin — the same payload `classify`
+#     reads (only `number`/`labels` used).
+#     Live-queries: for every issue carrying the `tracking` label, reads its
+#     GitHub sub-issue graph via a single `gh api graphql` call per issue
+#     (issue #1556). Prints a JSON object mapping issue number (STRING key,
+#     same convention as `--probe-verdicts`) to that issue's sub-issue
+#     nodes:
+#       {"4688":[{"number":4698,"state":"CLOSED"},{"number":4701,"state":"OPEN"}]}
+#     — ready to pass straight through as `classify --sub-issues`. Issues
+#     with no `tracking` label are never queried and contribute no key;
+#     neither does an issue whose sub-issue graph is empty, or whose read
+#     failed for any reason (the API erroring, `subIssues` being unavailable
+#     on this GitHub deployment, a malformed response). A missing key makes
+#     `classify` fall through to the body-prose tracking signals — exactly
+#     the pre-#1556 behavior — so an inconclusive read can only ever surface
+#     the gate as `tracking-unjustified`, never fabricate a justification.
+#     Empty object (`{}`), not empty string, when no issue in the input
+#     carries the label — so `--sub-issues "$(...)"` composes directly
+#     without a caller-side empty-string special case.
+#     Cost is near zero on a normal backlog: the `tracking` set is typically
+#     tiny, and an input with none in it makes no network call at all.
+#     Exit codes: 0 success (even if the set is empty); 64 bad usage; 65 if
+#     `gh` or `jq` is missing.
 #
 #   eval-probes --repo <owner/repo>
 #     < wide-fetch-issue-json (array) on stdin — the exact same payload
@@ -467,7 +507,7 @@ Usage:
       [--milestones-enabled true|false]
       [--milestones-prioritize-dispatch true|false]
       [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
-      [--pr-collision-verdicts <json-object>]
+      [--pr-collision-verdicts <json-object>] [--sub-issues <json-object>]
       [--someday-milestone <title>] [--someday-recheck-days <N>]
       [--fallback-milestone <title>]
     < wide-fetch-issue-json (array) on stdin
@@ -484,6 +524,9 @@ Usage:
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh eval-pr-collision --repo <owner/repo>
+    < wide-fetch-issue-json (array) on stdin
+
+  backlog-filter.sh sub-issues --repo <owner/repo>
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh summary --me <login>
@@ -551,13 +594,12 @@ def lower: ascii_downcase;
 # real state.
 def gate_labels: ["blocked:ci", "wontfix", "discussion", "needs-human-review", "tracking"];
 
-# has_tracking_justification($issue) -- issue #1364. The bare `tracking`
-# gate above is explicitly documented as provisional (a defensive gate
-# against the label object never being migrated, #1081) rather than a
-# settled, intentional routing decision -- so unlike the other four gate
-# labels, it must not fire silently on label presence alone. This is the
-# CHEAP version from the issue own suggested fix: require the body to
-# contain at least one recognized human-owned signal. Absence of every
+# has_tracking_justification($issue; $subs) -- issues #1364 and #1556. The
+# bare `tracking` gate above is explicitly documented as provisional (a
+# defensive gate against the label object never being migrated, #1081)
+# rather than a settled, intentional routing decision -- so unlike the other
+# four gate labels, it must not fire silently on label presence alone: it
+# requires at least one recognized human-owned signal. Absence of every
 # signal means the label is doing all the work, which is the case worth
 # surfacing rather than silently dropping. Returns a short citation string
 # (becomes the emitted `evidence_pointer`) on a match, or null on no match
@@ -565,15 +607,73 @@ def gate_labels: ["blocked:ci", "wontfix", "discussion", "needs-human-review", "
 # concrete, content-sourced citation string), not that subsystem full
 # object shape (defer_reason_class/provenance/deferred_at do not apply to
 # a pure mechanical classifier with no LLM judgment involved).
-def has_tracking_justification($issue):
+#
+# The recognized signals, in precedence order:
+#   1. a populated GitHub sub-issue graph   (structured, #1556)
+#   2. a `Decision required` heading        (body prose, #1364)
+#   3. an `Options` heading                 (body prose, #1364)
+#   4. a `Blocked by #N` reference          (body prose, #1364)
+#   5. a task-list of issue references      (body prose, #1556)
+# Signal 1 ranks first because it is the definitional case and the only
+# non-prose one; signal 5 ranks last so that adding it cannot change the
+# evidence_pointer any pre-#1556 match already emitted.
+# sub_issue_justification($issue; $subs) -- issue #1556. The one STRUCTURED
+# signal in this list, and the strongest justification there is: `tracking`
+# is DEFINED as "parent epic/strategy, decomposed into sub-issues", so an
+# issue with a populated GitHub sub-issue graph is the textbook case the
+# label exists for. It was also the one case the body-prose-only signal list
+# could not see, because the sub-issue relationship is structured GitHub
+# state, never body text -- so a correctly decomposed epic surfaced as
+# `tracking-unjustified` (an anomaly) while an issue that merely happened to
+# carry an "Options" heading passed clean. $subs is the precomputed map the
+# `sub-issues` subcommand produces (network I/O happens THERE, never here --
+# classify stays pure, same discipline as probe_verdict / pr_collision_
+# verdict above). A missing entry -- no precompute ran, the repo has no
+# sub-issue graph, the API read failed -- yields null and falls through to
+# the body-prose signals below, i.e. exactly the pre-#1556 behavior.
+def sub_issue_justification($issue; $subs):
+  (($subs[($issue.number | tostring)]) // []) as $raw
+  | (if (($raw | type) == "array")
+     then ($raw | map(select((type == "object") and (.number != null))))
+     else [] end) as $nodes
+  | if (($nodes | length) == 0) then null
+    else
+      ($nodes | length) as $total
+      | ([$nodes[] | select(((.state // "") | lower) == "open")] | length) as $open
+      | ($nodes | map("#" + (.number | tostring))) as $refs
+      | (if ($total > 10)
+         then (($refs[0:10] | join(", ")) + ", ...")
+         else ($refs | join(", ")) end) as $list
+      | (($total | tostring)
+         + (if ($total == 1) then " sub-issue (" else " sub-issues (" end)
+         + $list + "); " + ($open | tostring) + " open")
+    end;
+
+# task_list_justification($issue) -- issue #1556, the second half. A body
+# task-list of issue references (`- [ ] #123`, or the same line carrying a
+# full issue URL) is the PRE-sub-issues way of expressing the identical
+# decomposition, still common in older epics filed before GitHub shipped the
+# structured sub-issue graph. Ranked LAST so the three original prose
+# signals keep emitting byte-identical evidence_pointer strings for every
+# issue that already matched one of them.
+def task_list_justification($issue):
   ($issue.body // "") as $b
-  | if ($b | test("(?im)^#{1,6}\\s*decision required\\b")) then
+  | ([$b | scan("(?im)^[ \\t]*[-*+][ \\t]+\\[[ xX]\\][ \\t]+(?:https://github\\.com/[^ /]+/[^ /]+/issues/|#)([0-9]+)")] | first) as $tcap
+  | if ($tcap == null) then null
+    else ("Task-list issue reference #" + $tcap[0] + " in body")
+    end;
+
+def has_tracking_justification($issue; $subs):
+  (sub_issue_justification($issue; $subs)) as $sub
+  | ($issue.body // "") as $b
+  | if ($sub != null) then $sub
+    elif ($b | test("(?im)^#{1,6}\\s*decision required\\b")) then
       "Decision-required heading in body"
     elif ($b | test("(?im)^#{1,6}\\s*options?\\b")) then
       "Options heading in body"
     else
       ([$b | scan("(?i)blocked by #([0-9]+)")] | first) as $bcap
-      | if ($bcap == null) then null
+      | if ($bcap == null) then task_list_justification($issue)
         else ("Blocked by #" + $bcap[0] + " reference in body")
         end
     end;
@@ -882,7 +982,7 @@ def is_pr_collision_gated($issue):
 def pr_collision_verdict($issue; $verdicts):
   ($verdicts[($issue.number | tostring)] // "open");
 
-def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days; $unmilestoned_seq):
+def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days; $unmilestoned_seq; $sub_issues):
   (matches_gate_label($issue)) as $gate_hit
   | is_event_gated($issue; $recheck_probe_enabled) as $event_gated
   | is_pr_collision_gated($issue) as $pr_collision_gated
@@ -890,7 +990,7 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
       {number: $issue.number, verdict: "drop", reason: "untrusted-author"}
     elif ($gate_hit != null) then
       (if ($gate_hit == "tracking") then
-         (has_tracking_justification($issue)) as $justification
+         (has_tracking_justification($issue; $sub_issues)) as $justification
          | (if ($justification != null) then
               {number: $issue.number, verdict: "gate", reason: "tracking", evidence_pointer: $justification}
             else
@@ -999,7 +1099,7 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
 # any single issue. null whenever no fallback milestone was named or none
 # is present in this input, which makes milestone_rank the identity.
 | (fallback_milestone_seq($issues; $fallback_milestone)) as $unmilestoned_seq
-| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days; $unmilestoned_seq))) as $classified
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days; $unmilestoned_seq; $sub_issues))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
       | sort_by(._sort_key))
@@ -1047,6 +1147,12 @@ cmd_classify() {
   # eval-recheck-probe.sh guards, so there is no equivalent security
   # surface to gate off.
   local pr_collision_verdicts_json="{}"
+  # --sub-issues (issue #1556). Default "{}" reproduces pre-#1556 behavior
+  # byte-for-byte for every existing caller and fixture: with an empty map,
+  # sub_issue_justification returns null for every issue and
+  # has_tracking_justification falls straight through to the unchanged
+  # body-prose signal chain. Produced by the `sub-issues` subcommand below.
+  local sub_issues_json="{}"
   # --closed-by-open-pr (issue #1389). Default "{}" reproduces pre-#1389
   # behavior byte-for-byte for every existing caller and fixture: with an
   # empty map, covered_by_open_pr returns null for every issue and
@@ -1090,6 +1196,7 @@ cmd_classify() {
       --probe-verdicts) probe_verdicts_json="${2:-}"; shift 2 ;;
       --recheck-probe-enabled) recheck_probe_enabled="${2:-}"; shift 2 ;;
       --pr-collision-verdicts) pr_collision_verdicts_json="${2:-}"; shift 2 ;;
+      --sub-issues) sub_issues_json="${2:-}"; shift 2 ;;
       --someday-milestone) someday_milestone="${2:-}"; shift 2 ;;
       --someday-recheck-days) someday_recheck_days="${2:-}"; shift 2 ;;
       --fallback-milestone) fallback_milestone="${2:-}"; shift 2 ;;
@@ -1157,6 +1264,14 @@ cmd_classify() {
     return 64
   fi
 
+  if [[ -z "$sub_issues_json" ]]; then
+    sub_issues_json="{}"
+  fi
+  if ! printf '%s' "$sub_issues_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "classify: --sub-issues must be a JSON object, got: $sub_issues_json" >&2
+    return 64
+  fi
+
   if [[ -z "$covered_by_open_pr_json" ]]; then
     covered_by_open_pr_json="{}"
   fi
@@ -1201,6 +1316,7 @@ cmd_classify() {
     --argjson recheck_probe_enabled "$recheck_probe_enabled" \
     --argjson probe_verdicts "$probe_verdicts_json" \
     --argjson pr_collision_verdicts "$pr_collision_verdicts_json" \
+    --argjson sub_issues "$sub_issues_json" \
     --argjson covered_by_open_pr "$covered_by_open_pr_json" \
     --arg someday_milestone "$someday_milestone" \
     --argjson someday_recheck_days "$someday_recheck_days" \
@@ -1532,6 +1648,99 @@ cmd_eval_pr_collision() {
   printf '}\n'
 }
 
+# cmd_sub_issues — the live-network precomputation half of the `tracking`
+# provisional gate's STRUCTURED justification signal (issue #1556). Reads
+# the same wide-fetch payload `classify` reads (only `number`/`labels`
+# matter), and for every issue carrying the `tracking` label queries its
+# GitHub sub-issue graph. Kept separate from `classify` for the same reason
+# `closed-by-healthy-pr` / `eval-probes` / `eval-pr-collision` are: the
+# classification DECISION stays a pure, fixture-testable function with zero
+# network calls of its own.
+#
+# Cost is near zero on a normal backlog: the pre-filter means only
+# `tracking`-labeled issues are queried at all, and that set is typically
+# tiny (often empty, in which case not a single GraphQL call is made).
+#
+# Fail-safe posture: any failure for a given issue — the API erroring, the
+# `subIssues` connection being unavailable on this GitHub deployment, a
+# malformed response — contributes NO key, which makes
+# has_tracking_justification fall through to its body-prose signals, i.e.
+# exactly the pre-#1556 behavior for that issue. A missing read never
+# fabricates a justification.
+cmd_sub_issues() {
+  local repo=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      *) echo "sub-issues: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+  if [[ -z "$repo" ]]; then
+    echo "sub-issues: --repo is required" >&2
+    usage
+    return 64
+  fi
+  require_jq "backlog-filter.sh"
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "sub-issues: gh is required but not installed" >&2
+    return 65
+  fi
+
+  local owner name input numbers n nodes first_entry
+  owner="${repo%%/*}"
+  name="${repo##*/}"
+  if [[ -z "$owner" || -z "$name" || "$owner" == "$repo" ]]; then
+    echo "sub-issues: --repo must be owner/name, got: $repo" >&2
+    return 64
+  fi
+
+  input=$(cat)
+  if [[ -z "$input" ]]; then
+    input="[]"
+  fi
+
+  # Pre-filter to `tracking`-labeled issue numbers only -- the same
+  # efficiency pre-filter eval-probes / eval-pr-collision use, avoiding a
+  # network call for every issue that could not possibly reach the
+  # tracking-justification branch in the first place. Label matching is
+  # case-insensitive, mirroring matches_gate_label's own `lower` normalization.
+  numbers=$(printf '%s' "$input" | jq -r '
+    .[] | select((((.labels // []) | map(ascii_downcase)) | index("tracking")) != null) | .number
+  ' 2>/dev/null)
+
+  printf '{'
+  first_entry=true
+  for n in $numbers; do
+    [[ -z "$n" ]] && continue
+    # The $owner/$name/$number tokens below are GraphQL variables bound by
+    # the -F flags, NOT shell variables -- single quotes are required.
+    # shellcheck disable=SC2016
+    nodes=$(gh api graphql \
+      -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){subIssues(first:50){nodes{number state}}}}}' \
+      -F owner="$owner" -F name="$name" -F number="$n" \
+      --jq '.data.repository.issue.subIssues.nodes' 2>/dev/null)
+    [[ -z "$nodes" ]] && continue
+    # Non-array, empty, or otherwise unusable -> no key, never a fabricated
+    # one. An issue with zero sub-issues is NOT a justification.
+    nodes=$(printf '%s' "$nodes" | jq -c '
+      if type == "array"
+      then map(select((type == "object") and (.number != null)) | {number, state})
+      else [] end
+    ' 2>/dev/null)
+    [[ -z "$nodes" ]] && continue
+    if ! printf '%s' "$nodes" | jq -e 'length > 0' >/dev/null 2>&1; then
+      continue
+    fi
+    if [[ "$first_entry" == "true" ]]; then
+      first_entry=false
+    else
+      printf ','
+    fi
+    printf '"%s":%s' "$n" "$nodes"
+  done
+  printf '}\n'
+}
+
 # cmd_summary — the unfiltered_open_count / me_assigned_open invariant-line
 # tokens (issue #1246). Reads the same wide-fetch payload `classify` reads,
 # BEFORE classification runs, so a regression in the classifier itself is
@@ -1598,6 +1807,10 @@ main() {
     eval-pr-collision)
       shift
       cmd_eval_pr_collision "$@"
+      ;;
+    sub-issues)
+      shift
+      cmd_sub_issues "$@"
       ;;
     summary)
       shift
