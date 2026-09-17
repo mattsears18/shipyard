@@ -4030,6 +4030,130 @@ bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
 assert_exit_code "$?" "64" \
   "(176a) triage-orphan-branches --max-removals -1 -> exit 64"
 
+# ============================================================================
+# Issue #1577 — `triage-orphan-branches` rendered/queried branch name for a
+# NON-`do-work/issue-<N>` candidate.
+#
+# The candidate set is every `do-work/*` worktree branch, and `sed` passes
+# its input through UNCHANGED on a no-match, so a `do-work/fix-main-ci-<sha>`
+# / `do-work/fix-pr-pileup-<ts>` / `do-work/slice-<N>` candidate used to
+# produce `canonical_branch=do-work/issue-do-work/fix-main-ci-<sha>`. That
+# name is not display-only: it is what every downstream `gh`/`git` call for
+# the candidate targets, so the sweep's state reads about the branch were
+# meaningless AND the `--dry-run` plan a human is asked to audit rendered a
+# revision `git log` rejects.
+#
+# Coverage goals:
+#   - A `do-work/fix-main-ci-<sha>` candidate renders its OWN name, and that
+#     name round-trips through `git rev-parse` (the issue's explicit ask).
+#   - No `gh` call targets the doubled name; the real one is queried instead.
+#   - `do-work/slice-<N>` (#1562's split-dispatch branch shape) likewise.
+#   - The `gh issue edit --remove-assignee` calls are suppressed when the
+#     branch yielded no issue number, rather than firing on a garbage one.
+#   - Regression pin: an ordinary `do-work/issue-<N>` candidate — and a §3
+#     collision-fallback `do-work/issue-<N>-<stamp>` local name — still
+#     render and query the CANONICAL `do-work/issue-<N>`.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches non-issue-N branch naming (issue #1577)"
+echo
+
+# tob_add_worktree_named <branch> <slug> — worktree on an ARBITRARY
+# `do-work/*` branch name (the existing helpers hardcode `do-work/issue-$n`),
+# with no commits beyond base.
+tob_add_worktree_named() {
+  git -C "$tob_repo" worktree add -q \
+    ".claude/worktrees/agent-$2" -b "$1" >/dev/null 2>&1
+}
+
+# tob_add_worktree_named_ahead <branch> <slug> — same, plus one commit
+# carrying real content so the candidate reaches the salvage path (an empty
+# tree would be classified already-landed by #1517's check 1).
+tob_add_worktree_named_ahead() {
+  local path="$tob_repo/.claude/worktrees/agent-$2"
+  tob_add_worktree_named "$1" "$2"
+  printf 'unlanded work on %s\n' "$1" > "$path/work-$2.txt"
+  git -C "$path" add "work-$2.txt" >/dev/null 2>&1
+  git -C "$path" commit -q -m "wip $2" >/dev/null 2>&1
+}
+
+# tob_rendered_salvage_name — the branch name the single salvage plan line
+# rendered, extracted from a captured $result.
+tob_rendered_salvage_name() {
+  printf '%s\n' "$1" | sed -n 's|^\[1/1\] salvage \([^ ]*\) .*|\1|p'
+}
+
+# --- (177) a do-work/fix-main-ci-<sha> candidate ---
+reset_tob_layout
+tob_add_worktree_named_ahead "do-work/fix-main-ci-7627117" "fixmainci"
+result=$(run_tob --dry-run)
+case "$result" in
+  *"do-work/issue-do-work/"*) tob_doubled=1 ;;
+  *) tob_doubled=0 ;;
+esac
+assert_equals "$tob_doubled" "0" \
+  "(177) non-issue-N candidate -> no doubled 'do-work/issue-do-work/' prefix in the plan"
+tob_rendered=$(tob_rendered_salvage_name "$result")
+assert_equals "$tob_rendered" "do-work/fix-main-ci-7627117" \
+  "(177a) non-issue-N candidate -> the plan names the branch itself"
+if git -C "$tob_repo" rev-parse --verify --quiet "$tob_rendered^{commit}" >/dev/null 2>&1; then
+  tob_roundtrip=1
+else
+  tob_roundtrip=0
+fi
+assert_equals "$tob_roundtrip" "1" \
+  "(177b) the rendered name round-trips through git rev-parse (the #1577 ask)"
+case "$(cat "$tob_gh_log")" in
+  *"--head do-work/issue-do-work/"*) tob_bad_head=1 ;;
+  *) tob_bad_head=0 ;;
+esac
+assert_equals "$tob_bad_head" "0" \
+  "(177c) no gh query targets the doubled branch name"
+case "$(cat "$tob_gh_log")" in
+  *"--head do-work/fix-main-ci-7627117"*) tob_good_head=1 ;;
+  *) tob_good_head=0 ;;
+esac
+assert_equals "$tob_good_head" "1" \
+  "(177d) the open-PR query targets the branch's real, existing name"
+
+# --- (177e) do-work/slice-<N> — #1562's split-dispatch branch shape ---
+reset_tob_layout
+tob_add_worktree_named_ahead "do-work/slice-1562" "slice"
+result=$(run_tob --dry-run)
+assert_equals "$(tob_rendered_salvage_name "$result")" "do-work/slice-1562" \
+  "(177e) a do-work/slice-<N> candidate renders its own name, not a doubled prefix"
+
+# --- (177f) no `gh issue edit --remove-assignee` on a branch with no issue number ---
+reset_tob_layout
+tob_add_worktree_named "do-work/fix-pr-pileup-1700000000" "pileup"
+result=$(run_tob)
+case "$result" in
+  *"abandon do-work/fix-pr-pileup-1700000000 — no commits beyond main"*) tob_abandon_named=1 ;;
+  *) tob_abandon_named=0 ;;
+esac
+assert_equals "$tob_abandon_named" "1" \
+  "(177f) a non-issue-N abandon line names the branch itself"
+case "$(cat "$tob_gh_log")" in
+  *"issue edit"*) tob_edit_called=1 ;;
+  *) tob_edit_called=0 ;;
+esac
+assert_equals "$tob_edit_called" "0" \
+  "(177g) non-issue-N abandon -> no 'gh issue edit --remove-assignee' on a garbage number"
+
+# --- (177h) regression pin: issue-N candidates still render CANONICALLY ---
+reset_tob_layout
+tob_add_worktree_named_ahead "do-work/issue-505" "505"
+result=$(run_tob --dry-run)
+assert_equals "$(tob_rendered_salvage_name "$result")" "do-work/issue-505" \
+  "(177h) an ordinary do-work/issue-<N> candidate still renders do-work/issue-<N>"
+
+reset_tob_layout
+tob_add_worktree_named_ahead "do-work/issue-506-1700000000" "collision"
+result=$(run_tob --dry-run)
+assert_equals "$(tob_rendered_salvage_name "$result")" "do-work/issue-506" \
+  "(177i) a §3 collision-fallback local name still normalizes to the canonical do-work/issue-<N>"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
