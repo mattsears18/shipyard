@@ -296,6 +296,22 @@
 # next editor of that file knows a red from this suite is expected on any
 # addition, not a mystery: trim first, and raise only with a reason.
 #
+# issue-work.md's ceiling was raised 130000 -> 131000 by #1562 (2026-09-17):
+# with the file at EXACTLY 130000 (the note above), any edit reds this suite,
+# so this raise is the "trim first, then raise with a reason" path that note
+# prescribes. The trim happened first and is why the cost is only ~272 bytes:
+# the *explanation* of why a split dispatch is branched `do-work/slice-<N>`
+# rather than `do-work/issue-<N>` lives in the orchestrator's conditional
+# Context paragraph (dispatch-rules.md's split-dispatch branch-name
+# augmentation) and in the on-demand issue-work-parent-epic-leak.md fragment
+# — both reach the worker exactly when they apply — so the always-loaded
+# spec carries only what it cannot omit: §3 can no longer hardcode
+# `REMOTE_BRANCH="do-work/issue-<N>"` (it would contradict the dispatched
+# branch and re-introduce the auto-link #893 documented), and §0's
+# duplicate-PR cross-check has to match both shapes or it goes blind to a
+# split dispatch's leftover PR. 131000 (not 130500) restores real headroom
+# instead of the zero-byte margin that made this raise necessary.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -355,7 +371,7 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  130000 \
+  131000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \

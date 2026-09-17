@@ -245,8 +245,13 @@ case "$sub" in
         # branch (issue #576). For any other branch pattern (e.g., a live
         # fix-checks or fix-rebase worker), preserve the conservative defer.
         case "$branch_ref" in
-          do-work/issue-*)
-            : # completed issue-work worktree — fall through to force-reap
+          do-work/issue-*|do-work/slice-*)
+            # completed issue-work worktree — fall through to force-reap.
+            # `do-work/slice-*` is the same mode: a split dispatch is branched
+            # that way so its PR can't auto-link to the issue it must not
+            # close (issue #1562). Identical reasoning — the originating
+            # issue-work worker has already returned by drain time.
+            :
             ;;
           *)
             # A genuinely-live non-orchestrator PID holds the lock (or its

@@ -117,6 +117,12 @@ case "$sub" in
     fi
 
     head_ref="do-work/issue-${issue}"
+    # A split dispatch (operator_residual / verification_slice) branches
+    # `do-work/slice-<N>` instead, so its PR can't auto-link to the issue it
+    # must not close (issue #1562). Still exactly one worktree per issue
+    # number, so matching either exact name preserves this loop's
+    # unique-by-construction property.
+    slice_ref="do-work/slice-${issue}"
 
     # Anchor cwd to a stable directory BEFORE the reap (issue #497). The
     # harness can leak the orchestrator's cwd into an `agent-*` worktree
@@ -168,7 +174,9 @@ case "$sub" in
     for wt_dir in "${PRIMARY_CHECKOUT}/.git/worktrees"/agent-*; do
       [ -d "$wt_dir" ] || continue
       branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
-      [ "$branch_ref" = "$head_ref" ] || continue
+      if [ "$branch_ref" != "$head_ref" ] && [ "$branch_ref" != "$slice_ref" ]; then
+        continue
+      fi
 
       name=$(basename "$wt_dir")
       worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
@@ -237,7 +245,11 @@ case "$sub" in
       # actually verified (worktree_path no longer exists) — dropping the
       # branch ref while a still-present worktree holds it checked out
       # would be wrong (#1404).
-      git branch -D "$head_ref" 2>/dev/null || true
+      # Drop the ref this worktree actually held ($branch_ref), not the
+      # canonical name — on a split dispatch those differ ($slice_ref,
+      # issue #1562) and dropping the wrong one would leave the real branch
+      # pinned.
+      git branch -D "$branch_ref" 2>/dev/null || true
       reaped=true
       break   # at most one match per issue number
     done

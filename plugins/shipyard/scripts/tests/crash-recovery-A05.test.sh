@@ -182,12 +182,38 @@ assert_contains "$crash_recovery_reap_path" \
   '[ "$slot_kind" = "issue" ]' \
   "crash-recovery-reap.sh recovery is gated on slot kind == issue"
 
-# 7) The push step is documented (moved into the script).
+# 7) The push step is documented (moved into the script). The recovery push
+#    targets the branch the crashed worktree ACTUALLY holds, via an explicit
+#    `HEAD:refs/heads/<name>` refspec rather than a hardcoded
+#    `do-work/issue-<N>` local refname (issue #1562) — a split dispatch is
+#    branched `do-work/slice-<N>`, and issue-work.md §3's worktree-collision
+#    fallback checks out `do-work/issue-<N>-<epoch>` locally, so a bare push
+#    of the canonical name fails "src refspec does not match any" for both.
 # shellcheck disable=SC2016
-# Literal grep needle — ${slot_issue} is matched verbatim in the script, not expanded.
+# Literal grep needle — ${recovery_branch} is matched verbatim in the script, not expanded.
 assert_contains "$crash_recovery_reap_path" \
-  'push origin "do-work/issue-${slot_issue}"' \
-  "crash-recovery-reap.sh recovery pushes the branch to origin"
+  'push origin "HEAD:refs/heads/${recovery_branch}"' \
+  "crash-recovery-reap.sh recovery pushes the worktree's own branch to origin"
+# shellcheck disable=SC2016
+assert_contains "$crash_recovery_reap_path" \
+  'recovery_branch=$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD' \
+  "crash-recovery-reap.sh derives the recovery branch from the worktree's HEAD (#1562)"
+# shellcheck disable=SC2016
+assert_contains "$crash_recovery_reap_path" \
+  'recovery_branch="do-work/issue-${slot_issue}"' \
+  "crash-recovery-reap.sh falls back to the canonical branch name when HEAD is unreadable"
+assert_contains "$crash_recovery_reap_path" \
+  'do-work/slice-*)' \
+  "crash-recovery-reap.sh recognizes a split dispatch's neutral branch (#1562)"
+# A recovered split-dispatch PR must NOT close the issue the split deliberately
+# left open — no closing keyword, and no bare #<N> token that #624's
+# auto-promotion could turn into one.
+assert_contains "$crash_recovery_reap_path" \
+  'recovery_is_slice' \
+  "crash-recovery-reap.sh branches its PR body on whether the branch is a slice (#1562)"
+assert_contains "$crash_recovery_reap_path" \
+  'Ships a partial slice of https://github.com/%s/issues/%s' \
+  "crash-recovery-reap.sh uses a bare-URL, non-closing reference for a recovered slice PR (#1562)"
 
 # 8) The PR-create step is documented, including the existing-PR check that
 #    handles the case where the worker pushed but crashed before PR

@@ -14,7 +14,8 @@ import { worktreeAnchorLines, awaitingExternalReturnLines } from './shared.mjs'
 // Helper — build the issue-work dispatch prompt. This is the workflow-substrate
 // twin of dispatch-rules.md's `mode: issue-work` prompt template: same fields,
 // same conditional augmentations (verify-gate paragraph, user-feedback preamble,
-// phase-1 slice paragraph, next-available-version paragraph), same worker-preamble
+// split-dispatch neutral-branch paragraph, phase-1 slice paragraph,
+// next-available-version paragraph), same worker-preamble
 // skill + per-mode spec load instructions. The one structural delta from the
 // Agent-tool prompt is the leading worktree-anchor instruction (see the file-header
 // "Worktree isolation" note) and the closing return-contract line (structured
@@ -73,6 +74,30 @@ export function buildIssueWorkPrompt(unit, repoSlug) {
       `If the original raw user text (in the preserved comment) contradicts what's in the`,
       `refined body, trust the **raw text** and flag the discrepancy in the issue — the`,
       `refinement step may have misread the user.`,
+    )
+  }
+
+  // Split-dispatch branch-name augmentation — mirrors dispatch-rules.md's
+  // "Split-dispatch branch-name augmentation (#1562)" paragraph verbatim.
+  // Set by the orchestrator whenever it computed the neutral `do-work/slice-<N>`
+  // branch (i.e. the candidate carried `operator_residual` or
+  // `verification_slice`). It is a plain boolean rather than a re-derivation
+  // from those two fields because neither is passed through to this builder —
+  // both of their own augmentations are still parity-waived (#918), so
+  // deriving from them here would render this paragraph for nobody.
+  if (unit.splitDispatch) {
+    lines.push(
+      ``,
+      `**Neutral branch name (split dispatch, #1562):** Your branch is \`${unit.branch}\`,`,
+      `deliberately NOT \`do-work/issue-${unit.number}\`. This PR must reference`,
+      `#${unit.number} without closing it, and a branch literally named`,
+      `\`do-work/issue-${unit.number}\` is an independent auto-link vector that registers`,
+      `#${unit.number} in \`closingIssuesReferences\` on its own — surviving a body rewrite,`,
+      `a commit-message rewrite, and even a close+reopen (#893). Do NOT rename this branch`,
+      `to the canonical shape, and do not push a second \`do-work/issue-${unit.number}\``,
+      `branch alongside it. Push and open the PR against \`${unit.branch}\`;`,
+      `\`agents/issue-worker/issue-work.md\` §3's \`$REMOTE_BRANCH\` is this name for this`,
+      `dispatch.`,
     )
   }
 

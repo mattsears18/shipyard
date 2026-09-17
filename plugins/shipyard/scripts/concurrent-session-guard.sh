@@ -81,6 +81,13 @@ case "$sub" in
     fi
 
     head_ref="do-work/issue-${issue}"
+    # A split dispatch (operator_residual / verification_slice) is branched
+    # `do-work/slice-<N>` instead, so its PR can't auto-link to the issue it
+    # must not close (issue #1562). It is the SAME issue number, so a live
+    # peer holding that worktree is the same race this guard exists to catch
+    # — match either exact name. Deterministic-from-<N> by design: that is
+    # why the neutral name carries no free-text slug.
+    slice_ref="do-work/slice-${issue}"
 
     # Declare our orchestrator PID so classify-lock distinguishes our own
     # session's locks (self-ancestor) from genuine peer-session locks
@@ -100,7 +107,9 @@ case "$sub" in
     # every variable set inside still take effect after the loop ends.
     while IFS= read -r wt_dir; do
       branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
-      [ "$branch_ref" = "$head_ref" ] || continue
+      if [ "$branch_ref" != "$head_ref" ] && [ "$branch_ref" != "$slice_ref" ]; then
+        continue
+      fi
       classification=$("${here}/worktree-reap.sh" classify-lock "$wt_dir/locked")
       # `unknown` (issue #1206 — lock file exists but couldn't be parsed) is
       # treated identically to `peer-alive` here: fail closed. Skipping the
