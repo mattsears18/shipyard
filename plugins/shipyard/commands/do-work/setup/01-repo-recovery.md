@@ -304,7 +304,9 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 PEER_TARGETS_JSON=$(printf '%s' "$PEER_CLAIMED_TARGETS" | jq -R 'split(",") | map(select(length>0) | tonumber)')
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
-  --set ".peer_sessions = { count: ${PEER_COUNT:-0}, claimed_targets: $PEER_TARGETS_JSON, checked_at: \"<iso-8601 UTC now>\" }"
+  --set ".peer_sessions.count = ${PEER_COUNT:-0}" \
+  --set ".peer_sessions.claimed_targets = $PEER_TARGETS_JSON" \
+  --set ".peer_sessions.checked_at = \"<iso-8601 UTC now>\""
 ```
 
 `PEER_CLAIMED_TARGETS` feeds [step 4's drop rule](04-backlog-divert.md#4-fetch--rank-the-backlog) (mechanics + warn-and-continue policy: [`04e-peer-session-drop.md`](04e-peer-session-drop.md)). `PEER_COUNT` feeds [step E's invariant line](../steady-state.md#e-invariant-line-end-of-every-steady-state-turn) as `peers=<n>`.

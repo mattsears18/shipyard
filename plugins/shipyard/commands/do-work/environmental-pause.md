@@ -32,17 +32,17 @@ paused_at="<iso-8601 UTC now>"
 deadline_at="<paused_at + ${max_hours:-4}h, computed once here — never recomputed on a later check>"
 reason="CI queue backpressure: queued=${queued_live:-0} > threshold=$threshold = pool_total($pool_total)×${multiplier:-5} — held with in_flight<=$in_flight"
 
+# One per-field --set each, never a single whole-object literal:
+# post-relocation the isolation guard refuses that shape (#1561).
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update \
   --session-id "<session-id>" \
   --allow-degraded-init --degraded-init-repo "<owner/repo>" \
-  --set ".paused_on_environment = {
-    reason: \"$reason\",
-    resume_probe_repo: \"<owner/repo>\",
-    resume_probe_pool_total: $pool_total,
-    resume_probe_multiplier: ${multiplier:-5},
-    paused_at: \"$paused_at\",
-    deadline_at: \"$deadline_at\"
-  }"
+  --set ".paused_on_environment.reason = \"$reason\"" \
+  --set ".paused_on_environment.resume_probe_repo = \"<owner/repo>\"" \
+  --set ".paused_on_environment.resume_probe_pool_total = $pool_total" \
+  --set ".paused_on_environment.resume_probe_multiplier = ${multiplier:-5}" \
+  --set ".paused_on_environment.paused_at = \"$paused_at\"" \
+  --set ".paused_on_environment.deadline_at = \"$deadline_at\""
 ```
 
 Increment the session-local `paused_on_environment_stats.paused` counter (working memory only — see [`orchestrator-state-reference.md`](./orchestrator-state-reference.md), not mirrored to the session-state file), then arm the resume watch as a **background `Monitor`** — this is the entire fix, in one call: it re-arms a future wake source that would otherwise not exist. **Never an inline poll loop** — a maintainer applying this issue found that the worktree-isolation guard refuses a `Monitor` command carrying a `while true` loop on the identical grounds it refuses an equivalent inline `Bash` block ("too complex to verify that it stays inside the worktree"); [`scripts/watch-resume-probe.sh`](../../scripts/watch-resume-probe.sh) is the committed extraction (mirrors [`watch-pr-terminal.sh`](../../scripts/watch-pr-terminal.sh)'s precedent for the identical class of refusal, [#1326](https://github.com/mattsears18/shipyard/issues/1326)) — the `Monitor` call invokes it as ONE plain command, never a loop of its own:

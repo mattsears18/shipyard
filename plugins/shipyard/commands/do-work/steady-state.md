@@ -1211,7 +1211,8 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
   # Full mechanism: invariant-line.md's ci_backpressure entry.
   CHECKED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
-    --set ".last_backpressure_check = {verdict: \"$ci_backpressure\", at: \"$CHECKED_AT\"}" \
+    --set ".last_backpressure_check.verdict = \"$ci_backpressure\"" \
+    --set ".last_backpressure_check.at = \"$CHECKED_AT\"" \
     >/dev/null 2>&1 || true
 else
   # Not a self-hosted pool, or pool_total unreadable — the check above is a
@@ -1271,23 +1272,16 @@ Apply the **dispatch rules** to pick the next job:
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-# --allow-degraded-init survives the mid-session file-disappear race
-# (issue #281). Without it, a concurrent /do-work session's orphan-sweep
-# reaping this file mid-session would surface as exit 3 on the next
-# update call, leaving working memory out of sync with the file.
-"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update \
-  --session-id "<session-id>" \
+# set-slot, never an update whose --set value is an object literal --
+# post-relocation the isolation guard refuses that shape (#1561).
+# One --hard-path / --soft-path per path; started_at defaults to now;
+# add --version-slot / --worktree-path when they apply. Degraded-init: #281.
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" set-slot \
+  --session-id "<session-id>" --expected-repo "<owner/repo>" \
   --allow-degraded-init --degraded-init-repo "<owner/repo>" \
-  --set ".in_flight.<slot-id> = {
-    kind: \"issue\", target: <N>,
-    claimed_paths: { hard: [...], soft: [...] },
-    agent_id: \"<agent-uuid>\",
-    model: \"<dispatch_model, or the literal string default>\",
-    started_at: \"<iso-8601 UTC now>\",
-    progress_current: null,
-    progress_total: null,
-    progress_updated_at: null
-  }"
+  --slot-id "<slot-id>" --kind issue --target "#<N>" \
+  --agent-id "<agent-uuid>" --model "<dispatch_model-or-default>" \
+  --hard-path "<path>" --soft-path "<path>"
 ```
 
 **Session-wide environmental pause (issue [#1402](https://github.com/mattsears18/shipyard/issues/1402)) — run immediately after the queue-depth backpressure check above, before step D.** Read [`environmental-pause.md`](./environmental-pause.md) now and run it in full — the trigger condition (backpressure held, nothing dispatched, `in_flight` at or below `paused_on_environment.pause_when_in_flight_at_or_below`), the arm (write `.paused_on_environment`, arm a bounded background `Monitor` watching [`scripts/watch-resume-probe.sh`](../../scripts/watch-resume-probe.sh) so a future notification exists to resume the loop instead of the turn just ending with nothing further scheduled), and the resume handling (a fresh backlog fetch on recovery; a genuine hand-back on expiry). Feeds `paused_env=<none|active>` into step E below.

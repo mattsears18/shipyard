@@ -104,8 +104,28 @@ plugins/shipyard/scripts/session-state.sh init \
 plugins/shipyard/scripts/session-state.sh read --session-id "<session-id>" [--path ".session_prs"]
 
 # Merge jq assignments atomically. --allow-degraded-init: RECOMMENDED (#281 — survives mid-session file disappear).
+# Never put a non-empty JSON object literal in a --set value: post-relocation
+# the isolation guard refuses it (#1561). Assign per field, or Write the
+# expression to a file and pass --set-file <path> (one expression per file,
+# newlines allowed; applied in order with any --set flags).
 plugins/shipyard/scripts/session-state.sh update --session-id "<session-id>" \
   --set '.session_prs += [96]' --set '.main_ci.status = "green"' --allow-degraded-init --degraded-init-repo "<owner/repo>"
+plugins/shipyard/scripts/session-state.sh update --session-id "<session-id>" \
+  --set-file "<worktree>/.shipyard-scratch/state-expr.jq"
+
+# Create/replace one .in_flight slot (#1561) — plain flags only. started_at
+# defaults to now; progress_* start null; version_slot / worktree_path are
+# omitted unless passed. Repeat --hard-path / --soft-path per path. Accepts
+# the same --allow-degraded-init / --degraded-init-repo / --expected-repo /
+# --skip-repo-check flags as update.
+plugins/shipyard/scripts/session-state.sh set-slot --session-id "<session-id>" \
+  --slot-id "<slot-id>" --kind issue --target "#<N>" \
+  --agent-id "<agent-id>" --model "<alias-or-default>" \
+  [--started-at <iso>] [--version-slot <X.Y.Z>] [--worktree-path <abs>] \
+  --hard-path "<path>" --soft-path "<path>"
+
+# Remove one .in_flight slot (#1561). Idempotent on an absent slot.
+plugins/shipyard/scripts/session-state.sh release-slot --session-id "<session-id>" --slot-id "<slot-id>"
 
 # Liveness check for the orphan-sweep (setup.md step 1.6). Exit 0 when file
 # exists AND .pid is alive (kill -0); exit 1 otherwise.

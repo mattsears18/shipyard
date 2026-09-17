@@ -2624,6 +2624,84 @@ rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=66" "record-denial refuses a cross-repo write"
 rm -rf "$tmphome"
 
+echo "== issue #1561 — flag-shaped hot-path writes (set-slot / release-slot / --set-file)"
+# Post-relocation the worktree-isolation guard refuses an `update --set`
+# whose value carries a JSON object literal. These three surfaces let every
+# hot-path write avoid putting one on the command line.
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "slot-1561" --repo "owner/repo" >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "slot-1561" \
+  --slot-id "slot-1" --kind issue --target "#4823" --agent-id "agent-abc" \
+  --model opus --started-at "2026-09-14T12:50:00Z" \
+  --hard-path "src/a.ts" --hard-path "src/b.ts" --soft-path "CHANGELOG.md" \
+  --expected-repo "owner/repo" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight["slot-1"].target')
+assert_equals "$out" "#4823" "set-slot writes the slot's target"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight["slot-1"].claimed_paths.hard | join(",")')
+assert_equals "$out" "src/a.ts,src/b.ts" "set-slot records repeated --hard-path values in order"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight["slot-1"].claimed_paths.soft | join(",")')
+assert_equals "$out" "CHANGELOG.md" "set-slot records --soft-path values"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight["slot-1"] | [.agent_id, .model, .started_at, has("version_slot")] | map(tostring) | join(",")')
+assert_equals "$out" "agent-abc,opus,2026-09-14T12:50:00Z,false" "set-slot records agent_id/model/started_at and omits an unset version_slot"
+
+# A second slot merges rather than replacing .in_flight wholesale; a value
+# containing jq metacharacters is stored literally, never evaluated.
+SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "slot-1561" \
+  --slot-id 'slot-"2"' --kind fix-checks --target '#9") | .pwned = ("x' \
+  --version-slot "4.55.4" --worktree-path "/tmp/wt-2" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight | keys | length')
+assert_equals "$out" "2" "set-slot merges a second slot alongside the first"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight["slot-\"2\""].target')
+assert_equals "$out" '#9") | .pwned = ("x' "set-slot stores a jq-metacharacter value literally"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path 'has("pwned")')
+assert_equals "$out" "false" "set-slot never evaluates caller-supplied text as jq"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight["slot-\"2\""] | [.model, .version_slot, (.agent_id|tostring)] | join(",")')
+assert_equals "$out" "default,4.55.4,null" "set-slot defaults model to \"default\", agent_id to null, and records --version-slot"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight["slot-\"2\""].worktree_path')
+assert_equals "$out" "/tmp/wt-2" "set-slot records --worktree-path"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "slot-1561" \
+  --slot-id "slot-3" --kind bogus --target "#1" 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=64" "set-slot rejects an unknown --kind"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "slot-1561" --kind issue --target "#1" 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=64" "set-slot requires --slot-id"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "slot-1561" \
+  --slot-id "slot-3" --kind issue --target "#1" --expected-repo "owner/other" 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=66" "set-slot honors the cross-repo write guard"
+
+SHIPYARD_HOME="$tmphome" bash "$helper" release-slot --session-id "slot-1561" --slot-id "slot-1" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '.in_flight | keys | join(",")')
+assert_equals "$out" 'slot-"2"' "release-slot removes only the named slot"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" release-slot --session-id "slot-1561" --slot-id "slot-1" 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=0" "release-slot on an absent slot is an idempotent no-op"
+
+# --set-file: a multi-line expression with an object literal, read from disk.
+setfile="$tmphome/expr.jq"
+cat > "$setfile" <<'EXPR'
+.main_ci = {
+  status: "green",
+  checked_at: "2026-09-14T12:51:00Z"
+}
+EXPR
+SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "slot-1561" \
+  --set '.raw_backlog = [4821]' --set-file "$setfile" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-1561" --path '[.main_ci.status, (.raw_backlog|tostring)] | join(",")')
+assert_equals "$out" "green,[4821]" "update --set-file applies a file-sourced expression alongside --set"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "slot-1561" --set-file "$tmphome/nope.jq" 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=64" "update --set-file rejects a missing file"
+: > "$tmphome/empty.jq"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "slot-1561" --set-file "$tmphome/empty.jq" 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=64" "update --set-file rejects an empty file"
+
+# Degraded-init passthrough: set-slot recovers a vanished session file.
+SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "slot-gone" \
+  --slot-id "slot-1" --kind issue --target "#5" \
+  --allow-degraded-init --degraded-init-repo "owner/repo" >/dev/null 2>&1
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-gone" --path '.in_flight["slot-1"].target')
+assert_equals "$out" "#5" "set-slot --allow-degraded-init recovers a missing session file"
+rm -rf "$tmphome"
+
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]
