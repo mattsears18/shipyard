@@ -565,7 +565,8 @@ Usage:
   worktree-reap.sh triage-orphan-branches --repo-root <path> \
                                           --repo <owner/repo> \
                                           --default-branch <name> \
-                                          [--max-prs <N>] [--dry-run] \
+                                          [--max-prs <N>] \
+                                          [--max-removals <N>] [--dry-run] \
                                           [--arm-auto-merge]
   worktree-reap.sh report-unreaped --repo-root <path> \
                                    [--current-session-id <id>]
@@ -708,6 +709,31 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                               `cap-reached: ...` line, and leaves those
                               worktrees untouched for a later re-run.
                               `--max-prs 0` means unlimited (explicit opt-in).
+                            * `--max-removals <N>` (default 3) caps how many
+                              already-landed worktrees ONE invocation may
+                              REMOVE (issue #1559). `--max-prs` bounds only PR
+                              opens; the already-landed arm performs no PR
+                              write at all, so before #1559 its removals were
+                              entirely unbounded — and on a JS monorepo each
+                              one unlinks a full cloned node_modules tree, so
+                              a dozen of them ran for minutes and blew the
+                              caller's 120s foreground budget. On hitting the
+                              cap the sweep still CLASSIFIES every remaining
+                              candidate (the PR stays suppressed — the #1517
+                              duplicate-PR generator is never reintroduced)
+                              but performs no removal, emitting one
+                              `removal-deferred: <branch>` line each plus a
+                              single `removal-cap-reached: ...` line.
+                              `--max-removals 0` means unlimited (explicit
+                              opt-in). Applies under `--dry-run` too, so 5a's
+                              plan shows exactly which removals 5b will defer.
+                            * A `heavy-worktrees: <H> of <T> ...` header line
+                              (issue #1559), emitted when at least one
+                              candidate worktree carries a `node_modules`
+                              tree. Removal cost is dominated by those, so
+                              the count is the one number that predicts this
+                              sweep's runtime — knowable from the `--dry-run`
+                              plan, before 5b runs.
                             * `--dry-run` prints the candidate list and the
                               intended action per branch and performs NO
                               writes at all — no worktree remove, no branch
@@ -834,6 +860,10 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                           reaching the `existing-pr` arm. It is deliberately
                           NOT closed from here: that would be a new
                           outward-facing write in the sweep #1518 bounds.
+                          The REMOVAL half of that action is separately
+                          bounded by `--max-removals` (issue #1559, above) —
+                          classification and PR suppression are never
+                          deferred, only the `git worktree remove`.
 
 report-unreaped         — Issue #712. Post-sweep verification. Emits one
                           absolute path per line for every agent-* /
@@ -3392,6 +3422,33 @@ reap_stale() {
 # every already-landed verdict, so suppression does not make a stale draft
 # invisible to the human who has to close it. See the block above each check
 # for the full predicate and the declined alternatives.
+#
+# Issue #1559 — the OTHER unbounded axis. #1518's `--max-prs` cap is what
+# 00e-pre-relocation-sweeps.md cites as the guarantee this sweep fits its
+# caller's 120s FOREGROUND budget, but that cap bounds only PR OPENS. The
+# already-landed arm added by #1517 opens no PR at all, so it was never
+# subject to it — and its action is a `git worktree remove`, which on a JS
+# monorepo unlinks a full cloned node_modules tree. Twelve of them took
+# several minutes. Observed on lightwork session
+# 5e2310d7-ed29-4af9-acb2-9d6a21200dbe (2026-09-13 ~21:07Z): a 14-candidate
+# set (2 salvage, 12 already-landed) was killed at [3/14] by a 115s timeout,
+# and the re-run had to be backgrounded — finishing AFTER the orchestrator
+# had already called EnterWorktree, crossing exactly the boundary step 0.45
+# exists to stay on one side of.
+#
+# `--max-removals` (default 3) bounds it, mirroring --max-prs: same 0-means-
+# unlimited opt-out, same defer-and-report posture, same applies-under-
+# --dry-run behaviour so the plan a human reads matches what the sweep does.
+# What it deliberately does NOT defer is the CLASSIFICATION: a capped
+# candidate is still printed as already-landed and still has its PR
+# suppressed, so bounding removals cannot resurrect #1517's duplicate-PR
+# generator. Only the removal waits for the next session, and the on-disk
+# backlog is its own checkpoint — the same shape reap-stale (#836) uses.
+#
+# A `heavy-worktrees:` header line reports how many candidates carry a
+# node_modules tree, because that count — not the candidate count — is what
+# predicts this sweep's runtime, and #1559 asks for it to be visible in the
+# 5a plan rather than discovered by a timeout during 5b.
 triage_orphan_branches() {
   local repo_root=""
   local repo=""
@@ -3401,6 +3458,11 @@ triage_orphan_branches() {
   # candidate set is itself evidence something is wrong and is exactly when
   # NOT to act on all of it unattended.
   local max_prs=3
+  # Issue #1559 — the removal budget, independent of --max-prs. Same default
+  # and same 0-means-unlimited convention, because the reasoning is the same:
+  # a genuinely stranded backlog is small, so a LARGE one is itself evidence
+  # to act on only part of it unattended.
+  local max_removals=3
   local dry_run=0
   local arm_auto_merge=0
 
@@ -3452,6 +3514,14 @@ triage_orphan_branches() {
         max_prs="${1#--max-prs=}"
         shift
         ;;
+      --max-removals)
+        max_removals="${2:-}"
+        shift 2
+        ;;
+      --max-removals=*)
+        max_removals="${1#--max-removals=}"
+        shift
+        ;;
       --dry-run)
         dry_run=1
         shift
@@ -3496,6 +3566,12 @@ triage_orphan_branches() {
       return 64
       ;;
   esac
+  case "$max_removals" in
+    ''|*[!0-9]*)
+      echo "triage-orphan-branches: --max-removals must be a non-negative integer (got: '$max_removals')" >&2
+      return 64
+      ;;
+  esac
 
   if ! cd "$repo_root" 2>/dev/null; then
     echo "triage-orphan-branches: cannot cd to --repo-root: $repo_root" >&2
@@ -3514,9 +3590,17 @@ triage_orphan_branches() {
   local prs_created=0
   local deferred_count=0
   local landed_count=0
+  # Issue #1559 — removal budget bookkeeping, deliberately kept OFF the
+  # `summary:` line. The --max-prs deferrals it mirrors aren't a summary field
+  # either (they report via `deferred:` + `cap-reached:`), and the summary
+  # line's exact four-field shape is a documented output contract that
+  # 01c-label-recovery-refine.md's orchestrator-side parser reads positionally.
+  local removals_done=0
+  local removals_deferred_count=0
   local -a failed_pr_lines=()
   local -a stale_assign_lines=()
   local -a deferred_lines=()
+  local -a removal_deferred_lines=()
   local -a landed_lines=()
 
   # Issue #1517 — refresh the remote-tracking ref the already-landed
@@ -3544,6 +3628,29 @@ triage_orphan_branches() {
   printf 'candidates: %s\n' "$total"
   if [ "$dry_run" -eq 1 ]; then
     printf 'dry-run: no writes will be performed\n'
+  fi
+
+  # Issue #1559 — removal-cost estimate, emitted with the header so it is
+  # visible in 5a's read-only plan rather than discovered as a timeout during
+  # 5b. `git worktree remove` is cheap on an ordinary checkout and expensive
+  # on one carrying a cloned node_modules tree, so this count — not `total` —
+  # is what predicts the sweep's runtime. Suppressed entirely at zero: a repo
+  # with no heavy worktrees should not pay a line of noise per session, and an
+  # absent line is unambiguous (the header is fixed-position).
+  local heavy_wt_list heavy_total heavy_path heavy_branch
+  heavy_wt_list=$(git worktree list 2>/dev/null)
+  heavy_total=0
+  while IFS= read -r heavy_branch; do
+    [ -z "$heavy_branch" ] && continue
+    heavy_path=$(printf '%s\n' "$heavy_wt_list" | grep "\[$heavy_branch\]" | awk '{print $1}')
+    [ -z "$heavy_path" ] && continue
+    if [ -d "$heavy_path/node_modules" ]; then
+      heavy_total=$((heavy_total + 1))
+    fi
+  done <<< "$candidates"
+  if [ "$heavy_total" -gt 0 ]; then
+    printf 'heavy-worktrees: %s of %s candidate worktree(s) carry a node_modules tree — removal is slow\n' \
+      "$heavy_total" "$total"
   fi
 
   local branch path n canonical_branch ahead pushed open_pr
@@ -3964,6 +4071,37 @@ triage_orphan_branches() {
         ''|*[!0-9]*) stale_pr_note="" ;;
         *) stale_pr_note="; PR #$stale_open_pr still open on this head is now moot" ;;
       esac
+
+      # Issue #1559 — the removal budget, checked BEFORE the normal
+      # classification line so the line a human reads never claims a removal
+      # that isn't going to happen. Ordered AFTER #1560's moot-PR probe above
+      # so a deferred verdict still carries the same `; PR #<n> ... is now
+      # moot` note the acted-on ones do — the stale draft is equally invisible
+      # either way, and more so when the removal waits a session.
+      #
+      # Note what is NOT deferred here: the candidate is still reported as
+      # already-landed, still counted in `already_landed=`, and — critically —
+      # still `continue`s past the salvage arm, so no PR is opened for it.
+      # Deferring the PR suppression along with the removal would hand #1517's
+      # duplicate-PR generator back its trigger. Only the expensive half waits.
+      #
+      # Checked in --dry-run too (the `--max-prs` cap is), so 5a's plan names
+      # exactly the candidates 5b will leave on disk.
+      if [ "$max_removals" -ne 0 ] && [ "$removals_done" -ge "$max_removals" ]; then
+        printf '[%s/%s] already-landed %s — %s; no PR opened, removal deferred (--max-removals cap (%s) reached)%s\n' \
+          "$idx" "$total" "$canonical_branch" "$stale_reason" "$max_removals" "$stale_pr_note"
+        removal_deferred_lines+=("$canonical_branch")
+        removals_deferred_count=$((removals_deferred_count + 1))
+        landed_lines+=("$canonical_branch — $stale_reason$stale_pr_note")
+        landed_count=$((landed_count + 1))
+        continue
+      fi
+      # Counted on the ATTEMPT, not on success — the budget exists to bound
+      # wall-clock time, and a removal that fails partway through a large tree
+      # has already spent it. Same posture as `prs_created`, which #1518
+      # increments regardless of whether `gh pr create` succeeded.
+      removals_done=$((removals_done + 1))
+
       # #1518's pre-write progress contract: the classification is printed
       # before any write, and unconditionally — so `--dry-run` renders the
       # full per-candidate verdict a human can audit, rather than the
@@ -4147,6 +4285,13 @@ triage_orphan_branches() {
   for x in "${landed_lines[@]+"${landed_lines[@]}"}"; do
     printf 'already-landed: %s\n' "$x"
   done
+  for x in "${removal_deferred_lines[@]+"${removal_deferred_lines[@]}"}"; do
+    printf 'removal-deferred: %s\n' "$x"
+  done
+  if [ "$removals_deferred_count" -gt 0 ]; then
+    printf 'removal-cap-reached: %s already-landed worktree(s) not removed; re-run or raise --max-removals (current: %s)\n' \
+      "$removals_deferred_count" "$max_removals"
+  fi
   for x in "${deferred_lines[@]+"${deferred_lines[@]}"}"; do
     printf 'deferred: %s\n' "$x"
   done

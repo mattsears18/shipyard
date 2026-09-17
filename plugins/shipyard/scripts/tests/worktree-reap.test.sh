@@ -3836,6 +3836,200 @@ bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
 assert_exit_code "$?" "64" \
   "(144a) triage-orphan-branches --max-prs -1 -> exit 64"
 
+# ============================================================================
+# Issue #1559 — --max-removals. #1518's --max-prs cap is what
+# 00e-pre-relocation-sweeps.md cites as the guarantee this sweep fits its
+# caller's 120s FOREGROUND budget, but it bounds only PR OPENS. The
+# already-landed arm (#1517) opens no PR, so it was never subject to that cap,
+# and its action is a `git worktree remove` that on a JS monorepo unlinks a
+# full cloned node_modules tree. A 14-candidate set (12 already-landed) was
+# killed at [3/14] by a 115s timeout on lightwork session
+# 5e2310d7-ed29-4af9-acb2-9d6a21200dbe.
+#
+# Coverage goals:
+#   - The cap bounds removals: N already-landed candidates, --max-removals 1
+#     -> exactly 1 worktree gone, the rest still on disk.
+#   - A deferred candidate is still CLASSIFIED already-landed and still has
+#     its PR suppressed — bounding removals must not resurrect #1517's
+#     duplicate-PR generator.
+#   - Report lines: one `removal-deferred: <branch>` each plus a single
+#     `removal-cap-reached: ...`, and a progress line naming the cap.
+#   - The `summary:` line's four-field shape is UNCHANGED (its exact text is
+#     a documented output contract read positionally by the orchestrator).
+#   - --max-removals 0 means unlimited; the default is 3.
+#   - The cap is independent of --max-prs in both directions.
+#   - Applies under --dry-run, so 5a's plan matches what 5b will do.
+#   - The `heavy-worktrees:` header fires on a node_modules-carrying candidate
+#     and stays silent otherwise.
+#   - Bad values -> exit 64.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches removal cap (issue #1559)"
+echo
+
+# tob_landed_batch <n>... — seed each issue as a check-1 already-landed
+# candidate (content already upstream), the cheapest shape that reaches the
+# removal arm with no gh fixture needed.
+tob_landed_batch() {
+  local n
+  for n in "$@"; do
+    tob_add_worktree_landed "$n"
+  done
+}
+
+# --- (171) --max-removals caps how many worktrees one pass removes ---
+reset_tob_layout
+tob_landed_batch 600 601 602
+printf '900' > "$tob_state/next-pr-number"
+result=$(run_tob --max-removals 1)
+removed=0
+for tob_n in 600 601 602; do
+  [ -d "$tob_repo/.claude/worktrees/agent-$tob_n" ] || removed=$((removed + 1))
+done
+assert_equals "$removed" "1" \
+  "(171) --max-removals 1 with 3 already-landed candidates -> exactly 1 worktree removed"
+case "$result" in
+  *"removal-cap-reached: 2 already-landed worktree(s) not removed; re-run or raise --max-removals (current: 1)"*) rm_cap_ok=1 ;;
+  *) rm_cap_ok=0 ;;
+esac
+assert_equals "$rm_cap_ok" "1" \
+  "(171a) removal cap reached -> the removal-cap-reached remediation line is emitted"
+rm_deferred_lines=$(printf '%s\n' "$result" | grep -c '^removal-deferred: ' || true)
+assert_equals "$rm_deferred_lines" "2" \
+  "(171b) removal cap reached -> one 'removal-deferred: <branch>' line per deferred candidate"
+case "$result" in
+  *"no PR opened, removal deferred (--max-removals cap (1) reached)"*) rm_progress_ok=1 ;;
+  *) rm_progress_ok=0 ;;
+esac
+assert_equals "$rm_progress_ok" "1" \
+  "(171c) a deferred removal gets a progress line naming the cap as the reason"
+# THE load-bearing property: deferring the REMOVAL must not defer the
+# SUPPRESSION. A capped candidate that fell through to the salvage arm would
+# hand issue #1517's duplicate-PR generator back its trigger.
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "0" \
+  "(171d) a removal-deferred candidate still has its PR suppressed (#1517 is not resurrected)"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=0 abandoned=0 stale_assigns=0 already_landed=3" \
+  "(171e) all 3 still count as already_landed, and the summary line's shape is unchanged"
+
+# --- (172) --max-removals 0 means unlimited (explicit opt-in) ---
+reset_tob_layout
+tob_landed_batch 610 611 612 613
+printf '910' > "$tob_state/next-pr-number"
+result=$(run_tob --max-removals 0)
+removed=0
+for tob_n in 610 611 612 613; do
+  [ -d "$tob_repo/.claude/worktrees/agent-$tob_n" ] || removed=$((removed + 1))
+done
+assert_equals "$removed" "4" \
+  "(172) --max-removals 0 -> unlimited; all 4 already-landed worktrees removed"
+case "$result" in
+  *"removal-cap-reached:"*) rm_cap_present=1 ;;
+  *) rm_cap_present=0 ;;
+esac
+assert_equals "$rm_cap_present" "0" \
+  "(172a) --max-removals 0 -> no removal-cap-reached line"
+
+# --- (172b) the default removal cap is 3, not unlimited ---
+reset_tob_layout
+tob_landed_batch 620 621 622 623 624
+printf '920' > "$tob_state/next-pr-number"
+result=$(run_tob)
+removed=0
+for tob_n in 620 621 622 623 624; do
+  [ -d "$tob_repo/.claude/worktrees/agent-$tob_n" ] || removed=$((removed + 1))
+done
+assert_equals "$removed" "3" \
+  "(172b) no --max-removals flag -> the default cap of 3 applies"
+
+# --- (173) the two caps are independent budgets ---
+# 2 already-landed leftovers + 2 genuine salvage candidates, both caps at 1.
+# Each cap must bound only its own action: one removal, one PR.
+reset_tob_layout
+tob_landed_batch 630 631
+tob_add_worktree_ahead 632
+tob_add_worktree_ahead 633
+printf 'OPEN|' > "$tob_state/issue-probe-632"
+printf 'OPEN|' > "$tob_state/issue-probe-633"
+printf '930' > "$tob_state/next-pr-number"
+result=$(run_tob --max-removals 1 --max-prs 1)
+removed=0
+for tob_n in 630 631; do
+  [ -d "$tob_repo/.claude/worktrees/agent-$tob_n" ] || removed=$((removed + 1))
+done
+assert_equals "$removed" "1" \
+  "(173) --max-removals bounds removals only — 1 of 2 already-landed worktrees removed"
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "1" \
+  "(173a) --max-prs still bounds PR opens independently — 1 of 2 salvage candidates actioned"
+case "$result" in
+  *"removal-cap-reached: 1 already-landed"*) both_caps_rm=1 ;;
+  *) both_caps_rm=0 ;;
+esac
+assert_equals "$both_caps_rm" "1" \
+  "(173b) both caps report separately — the removal cap line is present"
+case "$result" in
+  *"cap-reached: 1 candidate(s) remaining, not actioned; re-run or raise --max-prs"*) both_caps_pr=1 ;;
+  *) both_caps_pr=0 ;;
+esac
+assert_equals "$both_caps_pr" "1" \
+  "(173c) both caps report separately — the --max-prs cap line is present"
+
+# --- (174) the removal cap applies under --dry-run, so 5a's plan matches 5b ---
+reset_tob_layout
+tob_landed_batch 640 641 642
+printf '940' > "$tob_state/next-pr-number"
+result=$(run_tob --dry-run --max-removals 1)
+case "$result" in
+  *"already-landed do-work/issue-642 — content already upstream (empty diff vs main); no PR opened, removal deferred (--max-removals cap (1) reached)"*) dry_rm_ok=1 ;;
+  *) dry_rm_ok=0 ;;
+esac
+assert_equals "$dry_rm_ok" "1" \
+  "(174) --dry-run renders the deferred-removal verdict the real sweep would reach"
+dry_still_present=0
+for tob_n in 640 641 642; do
+  [ -d "$tob_repo/.claude/worktrees/agent-$tob_n" ] && dry_still_present=$((dry_still_present + 1))
+done
+assert_equals "$dry_still_present" "3" \
+  "(174a) --dry-run removes nothing regardless of the cap"
+
+# --- (175) the heavy-worktrees header estimates removal cost up front ---
+reset_tob_layout
+tob_landed_batch 650 651
+mkdir -p "$tob_repo/.claude/worktrees/agent-650/node_modules"
+result=$(run_tob --dry-run)
+case "$result" in
+  *"heavy-worktrees: 1 of 2 candidate worktree(s) carry a node_modules tree — removal is slow"*) heavy_ok=1 ;;
+  *) heavy_ok=0 ;;
+esac
+assert_equals "$heavy_ok" "1" \
+  "(175) a node_modules-carrying candidate is counted in the heavy-worktrees header"
+assert_equals "$(printf '%s\n' "$result" | head -n 1)" "candidates: 2" \
+  "(175a) the heavy-worktrees line never displaces 'candidates:' as the first line"
+
+# --- (175b) no heavy worktrees -> the line is suppressed entirely ---
+reset_tob_layout
+tob_landed_batch 660
+result=$(run_tob --dry-run)
+case "$result" in
+  *"heavy-worktrees:"*) heavy_noise=1 ;;
+  *) heavy_noise=0 ;;
+esac
+assert_equals "$heavy_noise" "0" \
+  "(175b) a repo with no node_modules-carrying candidate pays no heavy-worktrees line"
+
+# --- (176) --max-removals must be a non-negative integer ---
+bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
+  --default-branch "main" --max-removals "lots" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(176) triage-orphan-branches --max-removals <non-integer> -> exit 64"
+bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
+  --default-branch "main" --max-removals "-1" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(176a) triage-orphan-branches --max-removals -1 -> exit 64"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
