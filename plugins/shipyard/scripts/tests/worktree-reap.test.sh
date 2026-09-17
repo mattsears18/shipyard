@@ -2527,13 +2527,22 @@ case "$1 $2" in
     ;;
   "pr list")
     # --head <branch> is somewhere in "$@"; look up its assigned PR number.
+    # --state merged marks issue #1565's check-2b probe, which reads a
+    # SEPARATE fixture: seeding an open PR for a branch must never double as
+    # evidence that the branch's PR already merged, and vice versa.
     branch=""
+    state=""
     prev=""
     for a in "$@"; do
       [ "$prev" = "--head" ] && branch="$a"
+      [ "$prev" = "--state" ] && state="$a"
       prev="$a"
     done
-    cat "$TOB_STATE/pr-for-${branch//\//_}" 2>/dev/null
+    if [ "$state" = "merged" ]; then
+      cat "$TOB_STATE/merged-pr-for-${branch//\//_}" 2>/dev/null
+    else
+      cat "$TOB_STATE/pr-for-${branch//\//_}" 2>/dev/null
+    fi
     ;;
   "pr create")
     branch=""
@@ -3366,6 +3375,206 @@ assert_equals "$created" "1" \
 assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
   "summary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=1" \
   "(157a) counters split the superseded draft from the genuine salvage"
+
+# ============================================================================
+# Issue #1565 — check 2b, the BRANCH'S-OWN-PR-MERGED pre-check.
+#
+# Check 2 (#1517) needs the ISSUE's closedByPullRequestsReferences to be
+# populated, and GitHub populates it only when a merged PR carried a closing
+# keyword its linker resolved. An issue closed BY HAND after its PR landed
+# reads CLOSED/COMPLETED with that array EMPTY, so check 2's second half
+# fails and it declines — while the branch's own PR sits there MERGED.
+# Observed live on mattsears18/lightwork (session
+# do-work-20260915T205245Z-95644): do-work/issue-4738 and do-work/issue-4823
+# were both planned for `salvage` with PRs #4740 and #4826 already merged.
+# Check 1 declined (main had moved on since the squash) and check 3 declined
+# (neither branch adds a new path), so nothing consulted the one signal that
+# settles it.
+#
+# Coverage goals:
+#   - Fires on the #1565 shape (CLOSED issue, EMPTY closing refs, branch's
+#     own PR MERGED) -> no PR, worktree removed, branch ref KEPT.
+#   - DECLINES when no merged PR exists for the head, and when the probe
+#     returns something that is not a bare PR number.
+#   - An OPEN PR on the head is NEVER read as a merged one — that candidate
+#     still takes the existing-pr path.
+#   - Runs only after checks 1 and 2 decline, and BEFORE check 3.
+#   - --dry-run renders the verdict and performs no write.
+#   - Suppression precedes the --max-prs cap.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches branch's-own-PR-merged pre-check (issue #1565)"
+echo
+
+# --- (158) check 2b fires: hand-closed issue, branch's PR merged -> branch KEPT ---
+reset_tob_layout
+tob_add_worktree_ahead 570
+# The #1565 shape exactly: CLOSED, but closedByPullRequestsReferences empty,
+# so check 2 declines on its second half.
+printf 'CLOSED|' > "$tob_state/issue-probe-570"
+printf '4740' > "$tob_state/merged-pr-for-do-work_issue-570"
+printf '890' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"[1/1] already-landed do-work/issue-570 — branch's own PR #4740 already MERGED; no PR opened, removing worktree (branch kept)"*) merged_line_ok=1 ;;
+  *) merged_line_ok=0 ;;
+esac
+assert_equals "$merged_line_ok" "1" \
+  "(158) CLOSED issue with EMPTY closing refs but a MERGED PR on the branch -> already-landed progress line naming that PR"
+case "$(cat "$tob_gh_log")" in
+  *"pr create"*) merged_pr_created=1 ;;
+  *) merged_pr_created=0 ;;
+esac
+assert_equals "$merged_pr_created" "0" \
+  "(158a) check 2b fired -> gh pr create is never called (no duplicate draft for landed work)"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=0 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(158b) check 2b counts as already_landed, not salvaged"
+if [ -d "$tob_repo/.claude/worktrees/agent-570" ]; then
+  printf '  %sFAIL%s  (158c) check-2b worktree still on disk — the candidate set never drains\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (158c) check-2b worktree removed — the candidate set drains\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+if git -C "$tob_repo" show-ref --verify --quiet "refs/heads/do-work/issue-570"; then
+  printf '  %sPASS%s  (158d) check-2b branch ref KEPT as a safety net (squash merge leaves its commits unreachable)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (158e) check-2b branch ref was deleted — evidence is too weak for that\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+case "$result" in
+  *"already-landed: do-work/issue-570 — branch's own PR #4740 already MERGED"*) merged_summary_ok=1 ;;
+  *) merged_summary_ok=0 ;;
+esac
+assert_equals "$merged_summary_ok" "1" \
+  "(158f) a per-branch 'already-landed: <branch> — <why>' summary line names the merged PR"
+
+# --- (159) conservative fall-through: no merged PR for the head -> salvage ---
+reset_tob_layout
+tob_add_worktree_ahead 571
+printf 'CLOSED|' > "$tob_state/issue-probe-571"
+printf '891' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-571"*) no_merged_salvaged=1 ;;
+  *) no_merged_salvaged=0 ;;
+esac
+assert_equals "$no_merged_salvaged" "1" \
+  "(159) no merged PR on the head -> salvaged as before (absence of a signal is never evidence)"
+
+reset_tob_layout
+tob_add_worktree_ahead 572
+printf 'CLOSED|' > "$tob_state/issue-probe-572"
+# Not a bare PR number — e.g. a gh warning leaking onto stdout.
+printf 'could not resolve to a Repository' > "$tob_state/merged-pr-for-do-work_issue-572"
+printf '892' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-572"*) garbage_salvaged=1 ;;
+  *) garbage_salvaged=0 ;;
+esac
+assert_equals "$garbage_salvaged" "1" \
+  "(159a) a non-numeric check-2b probe result -> salvaged (unreadable signal is not staleness)"
+
+# --- (160) an OPEN PR on the head is never read as a merged one ---
+reset_tob_layout
+tob_add_worktree_ahead 573
+printf 'CLOSED|' > "$tob_state/issue-probe-573"
+printf '705' > "$tob_state/pr-for-do-work_issue-573"
+result=$(run_tob)
+case "$result" in
+  *"existing-pr do-work/issue-573 — PR #705 already open"*) open_not_merged_ok=1 ;;
+  *) open_not_merged_ok=0 ;;
+esac
+assert_equals "$open_not_merged_ok" "1" \
+  "(160) an OPEN PR on the head takes the existing-pr path — check 2b asserts a MERGED PR, not any PR"
+case "$result" in
+  *"already-landed do-work/issue-573"*) open_misread=1 ;;
+  *) open_misread=0 ;;
+esac
+assert_equals "$open_misread" "0" \
+  "(160a) the open-PR candidate is never classified already-landed"
+
+# --- (161) ordering: checks 1 and 2 answer before 2b; 2b answers before 3 ---
+reset_tob_layout
+tob_add_worktree_ahead 574
+printf 'CLOSED|1234' > "$tob_state/issue-probe-574"
+printf '4740' > "$tob_state/merged-pr-for-do-work_issue-574"
+result=$(run_tob)
+case "$result" in
+  *"already-landed do-work/issue-574 — issue #574 CLOSED, work merged as PR #1234"*) order2_ok=1 ;;
+  *) order2_ok=0 ;;
+esac
+assert_equals "$order2_ok" "1" \
+  "(161) check 2 answers before check 2b — the already-paid read's reason wins"
+
+reset_tob_layout
+tob_add_worktree_landed 575
+printf '4740' > "$tob_state/merged-pr-for-do-work_issue-575"
+result=$(run_tob)
+case "$(cat "$tob_gh_log")" in
+  *"--state merged"*) merged_probed=1 ;;
+  *) merged_probed=0 ;;
+esac
+assert_equals "$merged_probed" "0" \
+  "(161a) check 1 short-circuits check 2b — no gh read is made when local git already answered"
+case "$result" in
+  *"already-landed do-work/issue-575 — content already upstream (empty diff vs main); no PR opened, removing worktree + branch"*) order3_ok=1 ;;
+  *) order3_ok=0 ;;
+esac
+assert_equals "$order3_ok" "1" \
+  "(161b) check 1's stronger action (branch ref deleted too) is not downgraded by check 2b"
+
+reset_tob_layout
+tob_add_worktree_superseded 576
+printf 'OPEN|' > "$tob_state/issue-probe-576"
+printf '4826' > "$tob_state/merged-pr-for-do-work_issue-576"
+result=$(run_tob)
+case "$result" in
+  *"already-landed do-work/issue-576 — branch's own PR #4826 already MERGED"*) order4_ok=1 ;;
+  *) order4_ok=0 ;;
+esac
+assert_equals "$order4_ok" "1" \
+  "(161c) check 2b answers before check 3 — a merged PR is stronger evidence than a path collision"
+
+# --- (162) --dry-run renders the check-2b verdict and performs no write ---
+reset_tob_layout
+tob_add_worktree_ahead 577
+printf 'CLOSED|' > "$tob_state/issue-probe-577"
+printf '4740' > "$tob_state/merged-pr-for-do-work_issue-577"
+result=$(run_tob --dry-run)
+case "$result" in
+  *"already-landed do-work/issue-577 — branch's own PR #4740 already MERGED"*) dry_merged_ok=1 ;;
+  *) dry_merged_ok=0 ;;
+esac
+assert_equals "$dry_merged_ok" "1" \
+  "(162) --dry-run renders the check-2b verdict so a human can audit it before the real sweep"
+if [ -d "$tob_repo/.claude/worktrees/agent-577" ]; then
+  printf '  %sPASS%s  (162a) --dry-run left the check-2b worktree on disk\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (162a) --dry-run removed a check-2b worktree\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (163) suppression precedes the --max-prs cap for check 2b too ---
+reset_tob_layout
+tob_add_worktree_ahead 578
+printf 'CLOSED|' > "$tob_state/issue-probe-578"
+printf '4740' > "$tob_state/merged-pr-for-do-work_issue-578"
+tob_add_worktree_ahead 579
+printf 'OPEN|' > "$tob_state/issue-probe-579"
+printf '893' > "$tob_state/next-pr-number"
+result=$(run_tob --max-prs 1)
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "1" \
+  "(163) a check-2b candidate does not consume the --max-prs budget"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(163a) counters split the merged-PR leftover from the genuine salvage"
 
 # --- (144) --max-prs must be a non-negative integer ---
 bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
