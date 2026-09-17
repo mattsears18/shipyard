@@ -780,6 +780,85 @@ fixture_summary_missing_assignees='[{"number":2101},{"number":2102,"assignees":[
 out=$(printf '%s' "$fixture_summary_missing_assignees" | bash "$helper" summary --me "alice")
 assert_equals "$out" '{"unfiltered_open_count":2,"me_assigned_open":1}' "(48) summary tolerates an issue object with no assignees key at all (defensive // [])"
 
+# --- validate-issues — wide-fetch input-shape check (issue #1555) -----------
+# The wide-fetch projection is subtly non-uniform: labels/assignees/milestone
+# flatten to scalars, author deliberately stays the object {login}. Getting
+# that asymmetry wrong used to escape as a raw POSITIONAL jq error naming no
+# field. These cases pin both directions of #1555's repro (milestone left as
+# gh's object; author "consistently" flattened to a string) plus the
+# permissiveness that keeps every pre-#1555 fixture valid.
+
+valid_issue='{"number":4723,"title":"t","body":"b","labels":["P1"],"assignees":["alice"],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01","milestone":"1 · Foo"}'
+
+out=$(printf '[%s]' "$valid_issue" | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "0" "(49) #1555: the canonical wide-fetch shape validates"
+assert_equals "$out" "" "(49) #1555: a valid payload emits nothing"
+
+# #1555 repro attempt 1 — milestone left as gh's {number,title,...} object.
+out=$(printf '%s' '[{"number":4723,"author":{"login":"alice"},"milestone":{"number":5,"title":"1 · Foo"}}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "64" "(50) #1555 attempt 1: an unflattened milestone object exits 64"
+assert_contains "$out" ".milestone must be" "(50) #1555 attempt 1: the error names the .milestone field"
+assert_contains "$out" "issue #4723" "(50) #1555 attempt 1: the error names the offending issue number"
+assert_contains "$out" 'milestone: (.milestone.title // null)' "(50) #1555 attempt 1: the error carries the flattening expression that fixes it"
+
+# #1555 repro attempt 2 — author "consistently" flattened to a string.
+out=$(printf '%s' '[{"number":4723,"author":"alice","milestone":null}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "64" "(51) #1555 attempt 2: an over-flattened author string exits 64"
+assert_contains "$out" ".author must be an object" "(51) #1555 attempt 2: the error names the .author field"
+assert_contains "$out" "issue #4723" "(51) #1555 attempt 2: the error names the offending issue number"
+
+out=$(printf '%s' '[{"number":4723,"labels":[{"name":"P1"}],"author":{"login":"alice"}}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "64" "(52) #1555: unflattened labels objects exit 64"
+assert_contains "$out" 'labels: [.labels[].name]' "(52) #1555: the labels error carries its flattening expression"
+
+out=$(printf '%s' '[{"number":4723,"assignees":[{"login":"alice"}],"author":{"login":"alice"}}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "64" "(53) #1555: unflattened assignees objects exit 64"
+assert_contains "$out" 'assignees: [.assignees[].login]' "(53) #1555: the assignees error carries its flattening expression"
+
+out=$(printf '%s' '{"number":4723}' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "64" "(54) #1555: a top-level object (not an array) exits 64"
+assert_contains "$out" "top-level value must be a JSON array" "(54) #1555: the top-level error says what was expected"
+
+out=$(printf '%s' 'not json at all' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "64" "(55) #1555: an unparseable payload exits 64 rather than leaking jq's own parse error"
+assert_contains "$out" "not valid JSON" "(55) #1555: the parse failure is reported in shipyard's own words"
+
+out=$(printf '%s' '[{"title":"no number here","author":{"login":"alice"}}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "64" "(56) #1555: a missing .number exits 64"
+assert_contains "$out" "element [0]" "(56) #1555: with no issue number to cite, the error falls back to the array position"
+
+# Permissiveness: every field except .number is OPTIONAL to classify, which
+# defaults them -- so an absent field must never be an error, or every
+# pre-#1555 fixture in this very suite would start failing.
+out=$(printf '%s' '[{"number":4723}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "0" "(57) #1555: absent optional fields validate (classify defaults them)"
+
+out=$(printf '%s' '[{"number":4723,"author":{"login":"alice"},"milestone":null,"labels":[],"assignees":[]}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "0" "(58) #1555: null milestone and empty label/assignee arrays validate"
+
+out=$(printf '%s' '[{"number":4723,"author":{"login":"alice"},"someFutureField":{"a":1}}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "0" "(59) #1555: an unrecognized extra field is ignored, not rejected"
+
+out=$(bash "$helper" validate-issues </dev/null 2>&1); rc=$?
+assert_equals "$rc" "0" "(60) #1555: genuinely empty stdin defaults to an empty array, same as classify"
+
+out=$(bash "$helper" validate-issues --bogus </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(61) #1555: validate-issues rejects unknown args"
+
+# At most 5 field errors are printed, then a count of the rest -- a badly
+# marshalled 200-issue payload must not bury the terminal in diagnostics.
+out=$(jq -nc '[range(1;9) | {number: ., author: "x"}]' | bash "$helper" validate-issues 2>&1); rc=$?
+assert_equals "$rc" "64" "(62) #1555: a payload with many bad issues exits 64"
+assert_contains "$out" "and 3 more" "(62) #1555: only the first 5 errors print, with the remainder counted"
+
+# classify runs the same check itself, so a direct classify caller is covered
+# without calling validate-issues first -- and the error is attributed to
+# `classify`, not to some inner jq expression.
+out=$(printf '%s' '[{"number":4723,"author":"alice"}]' | bash "$helper" classify --me me --trusted-authors alice 2>&1); rc=$?
+assert_equals "$rc" "64" "(63) #1555: classify validates its own stdin and exits 64 on a bad shape"
+assert_contains "$out" "classify: input error:" "(63) #1555: classify's shape error is attributed to classify, with a named field"
+assert_contains "$out" "gh issue list --repo" "(63) #1555: the canonical fetch command is printed at the point of failure"
+
 echo
 echo "----------------------------------------"
 echo "pass=$pass fail=$fail"

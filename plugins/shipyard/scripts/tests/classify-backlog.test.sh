@@ -9,6 +9,9 @@
 #   usage / arg validation      — missing --repo/--me/--trusted-authors/
 #                                  --issues-file; unknown subcommand
 #   --issues-file missing       — exits 66
+#   --issues-file mis-shaped    — exits 64 up front, before any network
+#                                  call, naming the offending field and
+#                                  issue number (issue #1555)
 #   run — end to end            — config reads resolve to their documented
 #                                  defaults/fallbacks with no repo config
 #                                  present; the classify NDJSON reflects an
@@ -189,6 +192,38 @@ echo '{"version":1,"backlog":{"someday_milestone":"Someday"}}' > "${SOMEDAY_CONF
 
 out="$(SHIPYARD_REPO_ROOT="$SOMEDAY_CONFIG_ROOT" PATH="${TMP_BIN}:${PATH}" bash "$script" run --repo o/r --me alice --trusted-authors alice --issues-file "$SOMEDAY_FIXTURES" 2>&1)"
 assert_contains "$out" '"reason":"someday-milestone"' "backlog.someday_milestone config read threads through classify-backlog.sh to classify's drop verdict"
+
+# --------------------------------------------------------------------------
+echo
+echo "run — --issues-file shape check fires BEFORE any network call (issue #1555)"
+# --------------------------------------------------------------------------
+# #1555's repro: the wide-fetch projection is non-uniform (labels/assignees/
+# milestone flatten to scalars; author stays the object {login}), and getting
+# it wrong used to cost two failed invocations diagnosed from a POSITIONAL jq
+# error naming no field. The check runs up front so the failure is cheap and
+# self-explanatory.
+BAD_MILESTONE_FIXTURES="${WORK}/bad-milestone-fixtures.json"
+cat > "$BAD_MILESTONE_FIXTURES" <<'EOF'
+[
+  {"number": 300, "title": "t", "body": "", "labels": [], "assignees": [], "author": {"login": "alice"}, "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "milestone": {"number": 5, "title": "1 · Foo"}}
+]
+EOF
+out="$(run_script run --repo o/r --me alice --trusted-authors alice --issues-file "$BAD_MILESTONE_FIXTURES" 2>&1)"; rc=$?
+assert_exit "$rc" "64" "#1555: an unflattened milestone object exits 64, not the old positional-jq 5"
+assert_contains "$out" ".milestone must be" "#1555: the failure names the offending field"
+assert_contains "$out" "issue #300" "#1555: the failure names the offending issue number"
+assert_contains "$out" "does not match the wide-fetch shape" "#1555: classify-backlog.sh attributes the failure to --issues-file"
+assert_contains "$out" "gh issue list --repo" "#1555: the canonical fetch command is printed at the point of failure"
+
+BAD_AUTHOR_FIXTURES="${WORK}/bad-author-fixtures.json"
+cat > "$BAD_AUTHOR_FIXTURES" <<'EOF'
+[
+  {"number": 301, "title": "t", "body": "", "labels": [], "assignees": [], "author": "alice", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "milestone": null}
+]
+EOF
+out="$(run_script run --repo o/r --me alice --trusted-authors alice --issues-file "$BAD_AUTHOR_FIXTURES" 2>&1)"; rc=$?
+assert_exit "$rc" "64" "#1555: an over-flattened author string exits 64"
+assert_contains "$out" ".author must be an object" "#1555: the failure names .author as the one field that must NOT be flattened"
 
 echo
 printf '  %s passed, %s failed\n' "$pass" "$fail"
