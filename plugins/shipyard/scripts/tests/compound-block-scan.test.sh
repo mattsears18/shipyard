@@ -434,6 +434,65 @@ if [[ -f "$config_worktree_real" ]]; then
   fi
 fi
 
+# (#1561) An `update --set` value carrying a non-empty JSON object literal
+# is refused post-relocation; the scanner flags it, single- or multi-line.
+objlit_md="$work/objlit.md"
+cat > "$objlit_md" <<'FIXTURE'
+```bash
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<sid>" \
+  --set '.in_flight = {"slot-1": {kind: "issue", target: "#4823"}}'
+```
+FIXTURE
+if bash "$scanner" "$objlit_md" 2>/dev/null | grep -q 'object-literal-in-set'; then
+  ok "scanner flags a single-line object literal in a --set value (#1561)"
+else
+  bad "scanner MISSED a single-line object literal in a --set value (#1561)"
+fi
+
+objlit_multi_md="$work/objlit-multi.md"
+cat > "$objlit_multi_md" <<'FIXTURE'
+```bash
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<sid>" \
+  --set ".paused_on_environment = {
+    reason: \"$reason\"
+  }"
+```
+FIXTURE
+if bash "$scanner" "$objlit_multi_md" 2>/dev/null | grep -q 'object-literal-in-set'; then
+  ok "scanner flags a multi-line object literal in a --set value (#1561)"
+else
+  bad "scanner MISSED a multi-line object literal in a --set value (#1561)"
+fi
+
+# The sanctioned shapes pass: an empty literal, per-field path assignments
+# (including a ${VAR:-default} value), --set-file, and set-slot.
+objlit_ok_md="$work/objlit-ok.md"
+cat > "$objlit_ok_md" <<'FIXTURE'
+```bash
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<sid>" \
+  --set '.in_flight = {}' \
+  --set ".paused_on_environment.resume_probe_multiplier = ${multiplier:-5}" \
+  --set-file "<worktree>/.shipyard-scratch/expr.jq"
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" set-slot --session-id "<sid>" \
+  --slot-id "slot-1" --kind issue --target "#4823"
+```
+FIXTURE
+if bash "$scanner" "$objlit_ok_md" >/dev/null 2>&1; then
+  ok "scanner passes empty literals, per-field assignments, --set-file and set-slot (#1561)"
+else
+  bad "scanner FALSE-POSITIVED on a sanctioned --set shape (#1561)"
+fi
+
+# The helper subcommands the fix directs callers to actually exist.
+state_helper="$repo_root/plugins/shipyard/scripts/session-state.sh"
+if grep -qE '^[[:space:]]+set-slot\)' "$state_helper" &&
+   grep -qE '^[[:space:]]+release-slot\)' "$state_helper" &&
+   grep -qF -- '--set-file)' "$state_helper"; then
+  ok "session-state.sh exposes set-slot, release-slot and update --set-file (#1561)"
+else
+  bad "session-state.sh is missing set-slot / release-slot / --set-file (#1561)"
+fi
+
 echo
 echo "  ${pass} passed, ${fail} failed"
 [[ "$fail" -eq 0 ]]

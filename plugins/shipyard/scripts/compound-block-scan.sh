@@ -70,7 +70,20 @@
 # The spec-side fix is to give every expansion a literal suffix, or to
 # substitute the literal outright, which sidesteps the boundary entirely.
 #
-# This scanner flags exactly those three shapes inside ```bash fenced blocks,
+# A FOURTH shape was added by issue #1561:
+#
+#   - a `session-state.sh update --set` whose jq expression assigns a
+#     NON-EMPTY JSON object literal (`--set '.in_flight = {"slot-1": {...}}'`,
+#     `--set ".x = {verdict: ...}"`). The guard refuses it as "too complex to
+#     verify", which silently stops the durable session record updating. The
+#     fix is `session-state.sh set-slot` / `release-slot` for `.in_flight`,
+#     per-field path assignments (`.x.verdict = ...`) elsewhere, or
+#     `update --set-file <path>` with the expression written by the Write
+#     tool. An EMPTY literal (`.in_flight = {}`) is not flagged. Unlike the
+#     other three checks this one reads the RAW block (the literal lives
+#     inside the quoted --set value, which strip_quotes() removes).
+#
+# This scanner flags exactly those four shapes inside ```bash fenced blocks,
 # in the spirit of `fence-balance-scan.sh` / `conflict-marker-scan.sh`: a
 # cheap, deliberately narrow structural check, not a full shell parser.
 #
@@ -169,6 +182,11 @@ repo_root="$(git rev-parse --show-toplevel)"
 # two marked exemptions is strictly better than leaving it unscanned: #1471
 # found step 0.5's post-relocation stash read-back refused on live `main`
 # with nothing in CI able to see it, because the whole file was off the list.
+#
+# do-work.md / session-state-file.md / environmental-pause.md added by issue
+# #1561: they carry the documented `session-state.sh update` hot-path call
+# shapes the object-literal-in-set check guards, and were verified clean of
+# the other three shapes when admitted.
 FILES=(
   "$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
   "$repo_root/plugins/shipyard/commands/do-work/setup/04-backlog-divert.md"
@@ -177,6 +195,9 @@ FILES=(
   "$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
   "$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
   "$repo_root/plugins/shipyard/commands/do-work/d-tail-merge-sweeps.md"
+  "$repo_root/plugins/shipyard/commands/do-work.md"
+  "$repo_root/plugins/shipyard/commands/do-work/session-state-file.md"
+  "$repo_root/plugins/shipyard/commands/do-work/environmental-pause.md"
 )
 
 if [[ $# -gt 0 ]]; then
@@ -342,6 +363,26 @@ _scan_file() {
           # and the quoted (legal) spelling can never match. The `[^()]`
           # inner class keeps arithmetic expansion `$((expr))` from
           # matching, mirroring the same carve-out in command-substitution-scan.sh.
+          # --- Object literal inside an `update --set` value (issue #1561) ---
+          # Line-by-line over the RAW block: find a `--set` flag (not
+          # `--set-file`) and look, in the text after it, for an assignment
+          # (`=`, `+=`, `|=`) or `+` whose right-hand side opens a non-empty
+          # object -- `{` followed by anything but `}` on the same line,
+          # or `{` ending the line (a multi-line literal). A shell `${VAR}`
+          # never matches: its `{` is preceded by `$`, not `=` / `+`.
+          rn = split(block_text, rlines, "\n")
+          for (ri = 1; ri <= rn; ri++) {
+            rl = rlines[ri]
+            if (match(rl, /--set[[:space:]]/)) {
+              rest = substr(rl, RSTART + RLENGTH)
+              if (rest ~ /[=+][[:space:]]*[{]([[:space:]]*$|[[:space:]]*[^}[:space:]])/) {
+                printf "%s:%d: object-literal-in-set — block starting here passes a JSON object literal in a session-state.sh --set value; use set-slot/release-slot, per-field path assignments, or --set-file (issue #1561)\n", FILE, block_start
+                found_any = 1
+                break
+              }
+            }
+          }
+
           if (stripped ~ /\$\([^()]*\)\//) {
             printf "%s:%d: unquoted-substitution-path-suffix — block starting here glues a literal path suffix onto an UNQUOTED command substitution; quote the whole word (issue #1471)\n", FILE, block_start
             found_any = 1

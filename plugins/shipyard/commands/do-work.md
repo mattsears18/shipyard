@@ -66,12 +66,28 @@ plugins/shipyard/scripts/session-state.sh bump-tokens \
 # Degraded path (#279 — <usage> total-only): REPLACE the four breakdown flags
 # with `--input <total_tokens> --degraded-total-only` (mutually exclusive; #320).
 
-# Mirror a state change (slot release, session_prs append, etc.). --set takes a
+# Slot writes use the flag-shaped subcommands, never an `update --set` whose
+# value is a JSON object literal -- post-relocation the worktree-isolation
+# guard refuses that shape as "too complex to verify" and the durable record
+# silently stops updating (issue #1561). set-slot at dispatch, release-slot
+# at step B; both take the same degraded-init / repo-guard flags as update.
+plugins/shipyard/scripts/session-state.sh set-slot \
+  --session-id "<session-id>" --expected-repo "<owner/repo>" \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>" \
+  --slot-id "<slot-id>" --kind issue --target "#<N>" \
+  --agent-id "<agent-id>" --model "<alias-or-default>" --hard-path "<path>"
+plugins/shipyard/scripts/session-state.sh release-slot \
+  --session-id "<session-id>" --expected-repo "<owner/repo>" \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>" --slot-id "<slot-id>"
+
+# Mirror any other state change (session_prs append, etc.). --set takes a
 # jq expression, NOT a --path/--json pair (that's `read`'s shape, not update's).
+# Keep values scalar/array or per-field (`.main_ci.status = "green"`); if an
+# object literal is unavoidable, Write the expression to
+# .shipyard-scratch/<name>.jq and pass `--set-file <path>` instead.
 plugins/shipyard/scripts/session-state.sh update \
   --session-id "<session-id>" --expected-repo "<owner/repo>" \
   --allow-degraded-init --degraded-init-repo "<owner/repo>" \
-  --set '.in_flight = {}' \
   --set '.session_prs = ((.session_prs // []) + [<M>] | unique)'
 
 # Record that THIS agent's own terminal return reached the reconcile
