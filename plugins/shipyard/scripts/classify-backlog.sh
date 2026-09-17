@@ -42,7 +42,14 @@
 #       [--prioritize-label <label>] [--out <path>]
 #     Reads the wide-fetch issue JSON array from --issues-file (the exact
 #     payload setup.md step 4's wide fetch produces — see
-#     `backlog-filter.sh classify`'s own header for the shape). Internally:
+#     `backlog-filter.sh classify`'s own header for the shape, and that
+#     step's literal `gh issue list` command for the projection that
+#     produces it). Internally:
+#       - validates --issues-file against that shape FIRST, via
+#         `backlog-filter.sh validate-issues`, before spending any of the
+#         live-network calls below — a mis-marshalled payload exits 64 with
+#         the offending field, its issue number, and the fix named, rather
+#         than as the raw positional jq error #1555 reports;
 #       - resolves `triage.investigate_dispatch` (fallback true — this key
 #         has no built-in default, so a repo with no config always takes
 #         the fallback), `backlog.respect_assignees` (default false),
@@ -100,10 +107,12 @@
 #     `jq -r 'select(...)' <ndjson-file>` positional-argument call, which
 #     was never the refused shape — only the classify invocation itself
 #     was).
-#     Exit codes: 0 success; 64 bad usage; 65 missing dependency (jq/gh);
-#     66 --issues-file not found/unreadable.
+#     Exit codes: 0 success; 64 bad usage OR --issues-file failing the
+#     wide-fetch shape check; 65 missing dependency (jq/gh); 66
+#     --issues-file not found/unreadable.
 #
-# Exit codes: 0 success; 64 bad usage; 65 missing dependency (jq/gh); 66
+# Exit codes: 0 success; 64 bad usage (including a mis-marshalled
+# --issues-file, issue #1555); 65 missing dependency (jq/gh); 66
 # --issues-file not found/unreadable.
 
 set -u
@@ -173,6 +182,17 @@ case "$sub" in
     if [ ! -f "$issues_file" ] || [ ! -r "$issues_file" ]; then
       echo "classify-backlog.sh run: --issues-file not found or unreadable: $issues_file" >&2
       exit 66
+    fi
+
+    # --- Input-shape check, BEFORE any live-network call (issue #1555) -------
+    # `classify` validates its own stdin too, but by then this script has
+    # already spent two-to-three `gh`-backed subcommand invocations gathering
+    # inputs for a payload that was never going to classify. Failing here
+    # keeps a mechanical marshalling mistake cheap, and surfaces it with the
+    # offending field named instead of as a positional jq error.
+    if ! "$BACKLOG_FILTER" validate-issues < "$issues_file"; then
+      echo "classify-backlog.sh run: --issues-file does not match the wide-fetch shape (see the diagnostics above): $issues_file" >&2
+      exit 64
     fi
 
     # --- Config reads (each falls back to its documented default on any

@@ -54,6 +54,11 @@
 #     milestone TITLE (already flattened from gh's `{number,title,...}`
 #     object by the caller's wide-fetch --jq projection, mirroring how
 #     `labels`/`assignees` are flattened) or null/absent when unmilestoned.
+#     `author`, by contrast, is the ONE field that is deliberately NOT
+#     flattened — it stays the object `{login}`. That three-flattened-one-
+#     not asymmetry is checked up front (issue #1555): a mis-marshalled
+#     payload exits 64 naming the offending field and issue number, rather
+#     than escaping as a raw positional jq error. See `validate-issues`.
 #     Emits one NDJSON line per issue on stdout:
 #       {"number":N,"verdict":"eligible"}
 #       {"number":N,"verdict":"route","reason":"investigate"}
@@ -393,6 +398,29 @@
 #     Exit codes: 0 success (even if no issue carries a marker); 65 if `gh`
 #     or `jq` is missing.
 #
+#   validate-issues
+#     Reads the same wide-fetch JSON array on stdin and checks ONLY its
+#     shape — the marshalling contract `classify` depends on (issue #1555).
+#     Pure, offline, no flags. Exists because the projection is subtly
+#     non-uniform: `labels`, `assignees` and `milestone` flatten to
+#     scalars while `author` stays the object `{login}`, and getting that
+#     asymmetry wrong used to surface as a raw POSITIONAL jq error with no
+#     field name ("Cannot index string with string \"login\""), diagnosable
+#     only by re-reading this header. Emits one `input error: ...` line per
+#     offending field on stderr — each naming the field, the wrong type,
+#     the issue number, and the flattening expression that fixes it —
+#     followed by the canonical `gh issue list` fetch command in full.
+#     Permissive about ABSENT fields (every one is optional to `classify`,
+#     which defaults them) and about extra unknown fields; strict only
+#     about a field that is present, non-null, and the wrong type, so it
+#     can never reject an input `classify` would have handled correctly.
+#     `classify` runs this same check itself before classifying, so a
+#     direct `classify` caller is covered without calling this first;
+#     `classify-backlog.sh run` calls it explicitly to fail BEFORE
+#     spending its live-network input-gathering calls.
+#     Exit codes: 0 valid; 64 invalid shape (or unparseable JSON); 65 if
+#     `jq` is missing.
+#
 #   closed-by-healthy-pr --repo <owner/repo> --me <login>
 #     Live-queries GitHub: the set of issue numbers with an OPEN PR,
 #     authored by --me, that (a) is currently healthy — its latest-per-name
@@ -512,6 +540,9 @@ Usage:
       [--fallback-milestone <title>]
     < wide-fetch-issue-json (array) on stdin
 
+  backlog-filter.sh validate-issues
+    < wide-fetch-issue-json (array) on stdin
+
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
 
   backlog-filter.sh closed-by-open-pr --repo <owner/repo> --me <login>
@@ -550,6 +581,121 @@ _csv_to_json_lower_string_array() {
   jq -nc --arg csv "$csv" '
     ($csv | split(",") | map(select(length > 0)) | map(ascii_downcase))
   '
+}
+
+# --- Wide-fetch input-shape validation (issue #1555) -------------------------
+#
+# The wide-fetch projection every caller must hand `classify` is subtly
+# NON-UNIFORM: `labels`, `assignees` and `milestone` are flattened to
+# scalars, while `author` deliberately stays the object `{login}`. Three
+# flattened, one not. Before this validation existed, a caller that got
+# the asymmetry wrong got a raw POSITIONAL jq error with no field name
+# ("object (...) cannot be matched, as it is not a string" / "Cannot index
+# string with string \"login\"") and had to diagnose it by re-reading this
+# file's header comment. Issue #1555's repro burned two failed invocations
+# on exactly that, on a purely mechanical input-marshalling step.
+#
+# This validator fails up front with the offending FIELD named, the issue
+# number it came from, the flattening expression that fixes it, and the
+# canonical fetch command printed in full.
+#
+# Deliberately permissive about ABSENT fields: `classify` already defaults
+# every optional field (`.labels // []`, `.milestone` null-safe, and
+# `createdAt` is documented-but-unconsumed), and every pre-#1555 fixture
+# omits at least one of them. Only a field that is PRESENT and non-null
+# with the wrong type is an error, so this check can never reject an input
+# the classifier would otherwise have handled correctly. Extra unknown
+# fields are ignored too.
+
+# shellcheck disable=SC2016
+VALIDATE_ISSUES_JQ='
+def tname: if . == null then "null" else type end;
+def shape: if type == "array" then ("array of " + (map(tname) | unique | join("/"))) else tname end;
+
+def loc($v; $i):
+  if (($v | type) == "object") and (($v.number | type) == "number")
+  then "issue #\($v.number)" else "element [\($i)]" end;
+
+def str_or_null($v; $k; $w):
+  if ($v | has($k)) and ($v[$k] != null) and (($v[$k] | type) != "string")
+  then [".\($k) must be a string or null, got \($v[$k] | tname) (\($w))"]
+  else [] end;
+
+def flat_str_array($v; $k; $fix; $w):
+  if ($v | has($k)) and ($v[$k] != null)
+     and ((($v[$k] | type) != "array")
+          or (((($v[$k] | map(tname) | unique) - ["string"]) | length) > 0))
+  then [".\($k) must be an array of plain strings — flatten with `\($fix)` — got \($v[$k] | shape) (\($w))"]
+  else [] end;
+
+if type != "array" then
+  ["top-level value must be a JSON array of issues, got \(tname)"]
+else
+  [ to_entries[]
+    | .key as $i
+    | .value as $v
+    | if ($v | type) != "object" then
+        ["element [\($i)] must be an object, got \($v | tname)"]
+      else
+        loc($v; $i) as $w
+        | (if (($v | has("number")) | not) or (($v.number | type) != "number")
+           then [".number must be a number, got \($v.number | tname) (\($w))"]
+           else [] end)
+          + flat_str_array($v; "labels"; "labels: [.labels[].name]"; $w)
+          + flat_str_array($v; "assignees"; "assignees: [.assignees[].login]"; $w)
+          + (if ($v | has("author")) and ($v.author != null)
+                and ((($v.author | type) != "object") or (($v.author.login | type) != "string"))
+             then [".author must be an object {login: \"<login>\"} — do NOT flatten it to a string the way labels/assignees/milestone are flattened — got \($v.author | tname) (\($w))"]
+             else [] end)
+          + (if ($v | has("milestone")) and ($v.milestone != null) and (($v.milestone | type) != "string")
+             then [".milestone must be the milestone TITLE string or null — flatten with `milestone: (.milestone.title // null)` — got \($v.milestone | tname) (\($w))"]
+             else [] end)
+          + str_or_null($v; "title"; $w)
+          + str_or_null($v; "body"; $w)
+          + str_or_null($v; "createdAt"; $w)
+          + str_or_null($v; "updatedAt"; $w)
+      end
+  ] | (add // [])
+end
+| .[]
+'
+
+# _wide_fetch_hint <label> — prints the canonical wide-fetch command, so the
+# fix is readable at the point of failure rather than one file away.
+_wide_fetch_hint() {
+  local label="$1"
+  {
+    printf '%s: the canonical wide-fetch projection (setup/04-backlog-divert.md step 4) is:\n' "$label"
+    printf '  gh issue list --repo <owner/repo> --state open --limit 200 \\\n'
+    printf '    --json number,title,labels,assignees,body,author,createdAt,updatedAt,milestone \\\n'
+    printf "    --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, createdAt, updatedAt, milestone: (.milestone.title // null)}]'\n"
+    printf '%s: note the asymmetry — labels/assignees/milestone flatten to scalars; author stays the object {login}.\n' "$label"
+  } >&2
+}
+
+# _validate_issues_json <json> <label> — 0 when the payload matches the
+# wide-fetch shape, 64 (with named-field diagnostics on stderr) when it
+# does not. At most 5 field errors are printed, then a count of the rest.
+_validate_issues_json() {
+  local json="$1" label="$2"
+  local errs rc err_count
+  errs=$(printf '%s' "$json" | jq -r "$VALIDATE_ISSUES_JQ" 2>/dev/null)
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    printf '%s: input error: payload is not valid JSON (jq could not parse it)\n' "$label" >&2
+    _wide_fetch_hint "$label"
+    return 64
+  fi
+  if [[ -z "$errs" ]]; then
+    return 0
+  fi
+  err_count=$(printf '%s\n' "$errs" | wc -l | tr -d ' ')
+  printf '%s\n' "$errs" | head -5 | sed "s|^|${label}: input error: |" >&2
+  if [[ "$err_count" -gt 5 ]]; then
+    printf '%s: input error: ... and %s more\n' "$label" "$((err_count - 5))" >&2
+  fi
+  _wide_fetch_hint "$label"
+  return 64
 }
 
 # The symptom-shaped-body regex, verbatim from
@@ -1291,6 +1437,11 @@ cmd_classify() {
     input="[]"
   fi
 
+  # Wide-fetch shape check (issue #1555). Runs BEFORE the classification jq
+  # so a mis-marshalled payload fails with the offending field named, rather
+  # than as a raw positional jq error from deep inside CLASSIFY_JQ.
+  _validate_issues_json "$input" "classify" || return 64
+
   # The AND-gate itself -- milestone-aware ranking requires BOTH knobs
   # true. Either one false reproduces the pre-#1241 sort byte-for-byte
   # (see CLASSIFY_JQ's _sort_key comment above) -- this is what makes the
@@ -1322,6 +1473,29 @@ cmd_classify() {
     --argjson someday_recheck_days "$someday_recheck_days" \
     --arg fallback_milestone "$fallback_milestone" \
     "$CLASSIFY_JQ"
+}
+
+# validate-issues (issue #1555) — the shape check above, exposed as its own
+# subcommand so a caller can fail fast BEFORE spending the live-network
+# calls that `classify-backlog.sh run` gathers on its behalf, and so the
+# check itself is directly fixture-testable.
+cmd_validate_issues() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      *) echo "validate-issues: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+
+  require_jq "backlog-filter.sh"
+
+  local input
+  input=$(cat)
+  if [[ -z "$input" ]]; then
+    input="[]"
+  fi
+
+  _validate_issues_json "$input" "validate-issues" || return 64
+  return 0
 }
 
 cmd_closed_by_healthy_pr() {
@@ -1787,6 +1961,10 @@ main() {
     classify)
       shift
       cmd_classify "$@"
+      ;;
+    validate-issues)
+      shift
+      cmd_validate_issues "$@"
       ;;
     closed-by-healthy-pr)
       shift
