@@ -187,6 +187,18 @@ repo_root="$(git rev-parse --show-toplevel)"
 # #1561: they carry the documented `session-state.sh update` hot-path call
 # shapes the object-literal-in-set check guards, and were verified clean of
 # the other three shapes when admitted.
+#
+# cleanup-summary.md added by issue #1552. End-of-session cleanup runs
+# entirely from the orchestrator's own worktree (dont.md: "Don't run
+# end-of-session cleanup from the user's primary checkout"), so the whole
+# file is post-relocation with no pre-relocation blocks to exempt — yet it
+# sat off this list while carrying the single highest-value instance of the
+# loop shape in the corpus: a `for wt_dir in .git/worktrees/agent-*` sweep
+# wrapping `git worktree unlock` plus a destructive `worktree-reap.sh reap`,
+# refused in the field by the auto-mode classifier with the denial silently
+# skipping the entire reap. #1552 moved that sweep behind a single
+# `reap-stale` invocation and decomposed the two `[gone]`-branch pipelines;
+# admitting the file here is what stops the shape coming back.
 FILES=(
   "$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
   "$repo_root/plugins/shipyard/commands/do-work/setup/04-backlog-divert.md"
@@ -198,6 +210,7 @@ FILES=(
   "$repo_root/plugins/shipyard/commands/do-work.md"
   "$repo_root/plugins/shipyard/commands/do-work/session-state-file.md"
   "$repo_root/plugins/shipyard/commands/do-work/environmental-pause.md"
+  "$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
 )
 
 if [[ $# -gt 0 ]]; then
