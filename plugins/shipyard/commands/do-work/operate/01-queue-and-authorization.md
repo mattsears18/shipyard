@@ -102,6 +102,32 @@ AskUserQuestion:
 
 This is a **one-shot, session-scoped ask**, not a per-action round-trip — it composes with the "no per-action confirmation" promise above: standing authorization alone covers the common (session-owned) case, and this one batched question covers the inherited-PR tail. It fires at most once per session regardless of how many inherited-PR items eventually surface.
 
+### Production-class console actions — one batched confirmation, then stop the class after a denial ([#1563](https://github.com/mattsears18/shipyard/issues/1563))
+
+The inherited-PR batch above has a sibling: **production-class** `toggle-setting` / `console-action` items. An item is production-class when its command or browser action **mutates a production data store or a shared cloud resource**. Examples: enabling PITR or a backup schedule on a prod database, creating scheduler jobs, running a backfill or migration against prod data, or editing prod membership rows. It does not matter whether the item is driven by CLI (`gcloud`, `firebase`, `vercel`) or by browser. A maintainer decision recorded through `/shipyard:my-turn`, with the exact commands, does **not** change the class. The classifier evaluates the command itself, and a decision on a GitHub issue is not a confirmation the classifier can see. Without this section, the operator drains these items one at a time. The first denial then surfaces the problem, and the classifier stays noticeably stricter for the rest of the session. In #1563's repro, a read-only `gh run view` and a prod `firestore_get_document` read were both denied after the first prod mutation was refused.
+
+**This section decides *how* an item is attempted, never *whether* one may be.** A **delete** or an **access-widening** change to a live surface is still a hand-back no matter what the user answers. See `shipyard:worker-preamble` § "Never irreversibly mutate live external state" and the [security/access-control table](./02-execution-and-playbooks.md#claude-safe-to-auto-drive-vs-hand-back-securityaccess-control). This batch covers only the attempt-class remainder: creates, narrowings, and additive writes.
+
+**1. Batch before the first attempt.** Before running the **first** production-class item in a session, collect **every** queued production-class item. What happens next depends on whether the session is attended:
+
+- **Attended** (an interactive session where `AskUserQuestion` is available): ask **one** question that names every item's **exact command**. The explicit naming is what the classifier's "was not named by the user" test keys off, just as it does for inherited PRs:
+
+  ```
+  AskUserQuestion:
+    "N production-class action(s) are queued — each mutates a live prod resource:
+       - #4770  gcloud firestore databases update --project <prod> --enable-pitr
+       - #4752  gcloud scheduler jobs create http <job> --project <prod> ...
+     Run all of these now?"
+    options: ["Run all", "Review one at a time", "Skip — hand them all back"]
+  ```
+
+  The answers follow the same shape as the inherited-PR options: "Run all" sets the session-local `prod_class_confirmed = true` ([`orchestrator-state-reference.md`](../orchestrator-state-reference.md)), and the other two options fall back to per-item confirmation or to a hand-back.
+- **Unattended** (a background job, a scheduled routine, `claude -p`, or any session where `AskUserQuestion` is unavailable): **attempt none of them.** Post one consolidated hand-back, with one `operator_handbacks` entry per item and `reason: "prod-class-unattended"`. Each issue keeps `agent-console` and gets a comment carrying its exact command and the permission-rule remedy from step 3 below.
+
+**2. Stop the class after the first denial.** When a classifier denial's category tag names **`Modify Shared Resources`** or **`Production Reads`**, set the session-local `prod_class_stopped = { category, denied_at }`. For the rest of the session, attempt **no** further production-class action, including **reads** of a prod resource. That means no prod `firestore_get_document` and no `gcloud ... describe` against the prod project. Record the denial **once** in `operator_denials`. Then hand back every remaining production-class item with `reason: "prod-class-stopped"`, each carrying its exact command and the remedy. This **replaces** the one-re-attempt rule in [step 2 below](#2-at-most-one-re-attempt--and-only-to-cite-an-explicit-confirmation-already-on-record) for this class. If the classifier refused an item the user already named in the batch, citing that confirmation again will not change its answer. Keep draining **non**-production items. The stop is scoped to the class, not the session. If an unrelated read is also denied after the stop, handle it on its own path; it is not a reason to end the session.
+
+**3. Name the permission-rule remedy.** Every production-class hand-back comment, and the matching [end-of-session summary](../cleanup-summary.md#end-of-session-summary) entry, names the concrete allow rule that would make the next session automatable. Derive the rule from the handed-back command's leading tokens, for example `Bash(gcloud firestore:*)` or `Bash(gcloud scheduler:*)`, and add it via `/permissions` or `permissions.allow` in `.claude/settings.json`. The remedy is a suggestion for the maintainer. It is not the classifier's reasoning, so it may appear in a public comment, while the verbatim `denial_text` stays local ([step 3 below](#3-on-a-second-denial-or-nothing-to-cite-degrade-to-a-hand-back--never-drop-it)). Never add the rule yourself. Changing permission settings is the maintainer's call.
+
 ## Operator action denied by the harness permission classifier ([#746](https://github.com/mattsears18/shipyard/issues/746))
 
 Even a properly-scoped, batch-confirmed operator action can still be refused outright by the harness classifier — the same layer that can deny the orchestrator's own `Agent` dispatch calls ([#718](../orchestrator-state-reference.md)). A denial here means the mutating call (`gh pr close` / `gh pr merge` / a browser mutation) never executed. **The denial is correct, not a bug** — see the reasoning in the [Scope](#scope-of-standing-authorization--session-owned-artifacts-vs-inherited-third-party-prs-746) section above. This section exists so a denied item has a **defined next step** instead of silently vanishing from `operator_queue`.
@@ -143,4 +169,4 @@ Mirrors [dispatch-rules.md's #718 discipline](../dispatch-rules.md#dispatch-deni
 
 ### 4. The queue does not stay silently short one item
 
-A hand-back removes an item from `operator_queue`, but the item is not *lost* — it stays durably visible as an `agent-console` hand-back. Continue draining the rest of the queue in the same turn; a denial is never a reason to stop draining.
+A hand-back removes an item from `operator_queue`, but the item is not *lost* — it stays durably visible as an `agent-console` hand-back. Continue draining the rest of the queue in the same turn; a denial is never a reason to stop draining. The one narrowing is a production-class denial: it stops that **class** only ([#1563](#production-class-console-actions--one-batched-confirmation-then-stop-the-class-after-a-denial-1563)), and every other item keeps draining.
