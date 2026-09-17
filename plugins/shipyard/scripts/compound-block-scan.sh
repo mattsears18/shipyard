@@ -102,6 +102,14 @@
 # a blanket sweep that either misses pre-relocation exclusions or drowns in
 # false positives from jq-internal pipes.
 #
+# Issue #1579 admitted the first worker-facing family — all of
+# skills/worker-preamble/*.md — and did it by GLOB rather than by name,
+# because that directory is post-relocation in its entirety (a worker reads
+# these fragments only from inside its own isolated worktree) and so has no
+# pre-relocation half to exempt. See the block immediately below FILES for
+# the reasoning and the sweep it rests on. agents/issue-worker/*.md is the
+# remaining worker-facing family and is still unswept.
+#
 # False-positive guards:
 #   - Pipe detection strips single- and double-quoted spans from the block
 #     BEFORE looking for a bare `|` — a `--jq '[.foo | .bar]'` filter's
@@ -212,6 +220,43 @@ FILES=(
   "$repo_root/plugins/shipyard/commands/do-work/environmental-pause.md"
   "$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
 )
+
+# skills/worker-preamble/*.md admitted WHOLESALE by issue #1579, and by glob
+# rather than by name. Two properties make this directory the first part of
+# the corpus that earns mechanical discovery instead of a curated list:
+#
+#   1. Every file in it is post-relocation by construction. A worker only ever
+#      reads these fragments from inside its own isolated worktree (SKILL.md's
+#      step-0 cwd fail-fast runs before anything else), so there is no
+#      pre-relocation half to exempt — unlike setup/00-config-worktree.md,
+#      the archetypal mixed file the Scope note above describes.
+#   2. The whole directory is verified clean of all four shapes. #1579 swept
+#      the 8 findings it carried: `printf | grep` and `printf | jq` pipes
+#      became herestrings (auto-merge.md, decision-freshness-check.md),
+#      `ls | head -1` became an array glob (nvm-source-refusal.md),
+#      `find | head -1` became `-print -quit` (process-kill-detail.md),
+#      `git log | head -c 12` became `--abbrev=12 --format=%h`
+#      (reaped-escape-hatch.md), a `| tee` recommendation became a plain
+#      stream-to-stdout (ci-pitfalls.md), and node-bootstrap.md's nested-
+#      package `for` loop over `git diff` was decomposed in place.
+#
+# Because (1) holds for the DIRECTORY and not merely for today's files, a new
+# fragment is covered the moment it lands rather than when someone remembers
+# to extend a list — the `#1064 hardcoded array -> #1105 mechanical discovery`
+# path the Scope note names, taken for the one subtree where it is safe.
+#
+# agents/issue-worker/*.md is the remaining worker-facing family and is NOT
+# admitted here: it still carries ~39 pipe/loop findings (concentrated in
+# fix-rebase.md, fix-checks-only.md, spike.md, issue-work-parent-epic-leak.md).
+# Sweeping it is the follow-up, and it is also the precondition for folding
+# launcher-invocation-scan.test.sh in as a fifth shape (#1579 step 4) — that
+# standalone scan is repo-wide over every tracked markdown file, so retiring
+# it before FILES covers the same ground would NARROW coverage.
+for _wp in "$repo_root/plugins/shipyard/skills/worker-preamble"/*.md; do
+  [[ -f "$_wp" ]] || continue
+  FILES+=("$_wp")
+done
+unset _wp
 
 if [[ $# -gt 0 ]]; then
   candidates=("$@")

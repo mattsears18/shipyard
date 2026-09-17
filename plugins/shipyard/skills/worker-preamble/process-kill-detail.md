@@ -15,8 +15,11 @@ Worth running before any local process cleanup if you're unsure:
 gh api "repos/<owner>/<repo>/actions/runners" --jq '.total_count' 2>/dev/null
 
 # Signal 2: a runner agent installed under this user's home directory — the
-# strongest local signal that THIS host executes CI.
-find "$HOME" -maxdepth 3 \( -iname 'actions-runner*' -o -iname 'runner-homes' \) 2>/dev/null | head -1
+# strongest local signal that THIS host executes CI. `-print -quit` stops at
+# the first hit rather than piping to `head -1`: a pipe spanning a shell
+# command boundary is refused by the worktree-isolation guard (dont.md's
+# post-relocation rule).
+find "$HOME" -maxdepth 3 \( -iname 'actions-runner*' -o -iname 'runner-homes' \) -print -quit 2>/dev/null
 ```
 
 If either signal is non-empty/non-zero, treat every process on the host as potentially CI's, not just your own, and never reach for a pattern-based kill.

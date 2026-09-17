@@ -199,11 +199,11 @@ After `gh pr create` returns:
    `.github/workflows/<file>.yml` without `workflow` scope (enablePullRequestAutoMerge)
    ```
 
-   Match it case-insensitively against the captured error text:
+   Match it case-insensitively against the captured error text. **Feed the variable to `grep` with a herestring, not a pipe** — `printf '%s' "$MERGE_ARM_ERR" | grep …` is a pipe spanning a shell command boundary, which the worktree-isolation guard refuses ([`dont.md` § "Post-relocation Bash blocks must be plain, single-purpose commands"](../../commands/do-work/dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277)); a command's own input redirection is not. This is the same shape [`inline-trivial.md`](../../commands/do-work/inline-trivial.md)'s orchestrator-side copy of this check already uses:
 
    ```bash
    WORKFLOW_SCOPE_BLOCKED=0
-   if printf '%s' "$MERGE_ARM_ERR" | grep -qi "without .workflow. scope"; then
+   if grep -qi "without .workflow. scope" <<< "$MERGE_ARM_ERR"; then
      WORKFLOW_SCOPE_BLOCKED=1
    fi
    ```

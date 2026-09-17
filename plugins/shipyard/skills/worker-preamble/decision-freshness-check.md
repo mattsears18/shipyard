@@ -26,9 +26,12 @@ Requires the issue's `comments` array (`body`, `createdAt`) — every call site 
 # THIS SAME escalation mechanism posts, not any needs-human-review comment
 # from a different provenance (scope-preflight, external-author-gate, etc.)
 # — those are different questions with their own freshness handling.
-latest_escalation=$(printf '%s' "$COMMENTS_JSON" | jq -r "
+# A HERESTRING, not `printf … | jq` — a pipe spanning a shell command
+# boundary is refused by the worktree-isolation guard, while a command's own
+# input redirection passes cleanly (dont.md's post-relocation rule).
+latest_escalation=$(jq -r "
   [.[] | select(.body | $ESCALATION_MARKER_JQ)]
-  | sort_by(.createdAt) | last.createdAt // empty")
+  | sort_by(.createdAt) | last.createdAt // empty" <<< "$COMMENTS_JSON")
 
 if [ -z "$latest_escalation" ]; then
   # No prior escalation of this kind exists yet — this would be a first-time
@@ -41,11 +44,11 @@ if [ -z "$latest_escalation" ]; then
 else
   # The `contains(...) | not` clause drops a PARTIAL /resolve-decisions run,
   # which carries the same sentinel but left the gate deliberately on (#1557).
-  latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+  latest_decision=$(jq -r '
     [.[] | select((.body | startswith("<!-- shipyard-resolve-decisions -->")
                          or startswith("<!-- do-work-decision-resolved -->"))
                   and ((.body | contains("## Decisions resolved (partial")) | not))]
-    | sort_by(.createdAt) | last.createdAt // empty')
+    | sort_by(.createdAt) | last.createdAt // empty' <<< "$COMMENTS_JSON")
 
   if [ -n "$latest_decision" ] && [ "$latest_decision" \> "$latest_escalation" ]; then
     decision_already_recorded=true

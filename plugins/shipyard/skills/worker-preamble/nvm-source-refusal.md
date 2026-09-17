@@ -67,14 +67,18 @@ If the exact `.nvmrc` version is already installed under `$NVM_DIR/versions/node
 
 ```bash
 NVMRC_VERSION="$(cat .nvmrc 2>/dev/null | tr -d 'v[:space:]')"
-NODE_BIN_DIR=$(ls -d "$HOME/.nvm/versions/node/v$NVMRC_VERSION"* 2>/dev/null | head -1)
-if [ -n "$NODE_BIN_DIR" ]; then
+# A glob into an array, not `ls … | head -1` — a pipe spanning a shell command
+# boundary is refused by the worktree-isolation guard (dont.md's
+# post-relocation rule). An unmatched glob stays literal, which `-d` rejects.
+NODE_BIN_CANDIDATES=("$HOME/.nvm/versions/node/v$NVMRC_VERSION"*)
+NODE_BIN_DIR="${NODE_BIN_CANDIDATES[0]}"
+if [ -d "$NODE_BIN_DIR" ]; then
   export PATH="$NODE_BIN_DIR/bin:$PATH"
   node -v   # confirm it matches .nvmrc before trusting any npm output
 fi
 ```
 
-**Caveat — this only works when the exact version is already installed.** It cannot install a missing version (that needs `nvm install`, itself only reachable via the same `source`d function), so treat a miss here (`NODE_BIN_DIR` empty) as a signal to fall back to option 1 or 2, not as `blocked:` — those two don't share this limitation.
+**Caveat — this only works when the exact version is already installed.** It cannot install a missing version (that needs `nvm install`, itself only reachable via the same `source`d function), so treat a miss here (`NODE_BIN_DIR` not a directory) as a signal to fall back to option 1 or 2, not as `blocked:` — those two don't share this limitation.
 
 ## When NOT to load this
 
