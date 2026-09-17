@@ -54,118 +54,64 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    git fetch --prune
    ```
 
-2. Snapshot what's about to be reaped (for the summary):
+2. Snapshot what's about to be reaped (for the summary). **Two plain, separate `Bash` calls — never one piped into `grep` ([#1552](https://github.com/mattsears18/shipyard/issues/1552)).** `git for-each-ref` renders the `[gone]` upstream marker directly in its own output, so the branch snapshot needs no pipe at all; read the `[gone]`-marked rows out of the output yourself and carry that list into step 4, which deletes them one plain command at a time:
+
    ```bash
-   git branch -v | grep '\[gone\]' || echo "(no gone branches)"
+   git for-each-ref --format='%(refname:short) %(upstream:track)' refs/heads/
+   ```
+
+   ```bash
    ls -d .claude/worktrees/agent-*/ 2>/dev/null || echo "(no agent worktrees)"
    ```
 
-3. **Reap all agent worktrees from THIS session — classify the lock-holding PID first.** Cleanup can fire while a dispatched agent is still in flight; reaping its worktree would destroy unpushed work. Run the helper [`scripts/worktree-reap.sh classify-lock <lock-file>`](../../scripts/worktree-reap.sh) against each worktree's lock file. It returns one of `no-lock` / `dead` / `self-ancestor` / `peer-alive` / `unknown` (issue #1206 — lock exists but couldn't be parsed; fail closed). Reap on the first three; defer on `peer-alive` AND `unknown`.
+3. **Reap all agent worktrees from THIS session — classify the lock-holding PID first.** Cleanup can fire while a dispatched agent is still in flight; reaping its worktree would destroy unpushed work. The classification vocabulary is `no-lock` / `dead` / `self-ancestor` / `peer-alive` / `unknown` (issue #1206 — lock exists but couldn't be parsed; fail closed), plus `no-lock-recent` ([#1147](https://github.com/mattsears18/shipyard/issues/1147)); reap on the first three, defer on the rest. **The orchestrator does not apply that vocabulary by hand** — [`worktree-reap.sh reap-stale`](../../scripts/worktree-reap.sh) does it internally, for every candidate, in one call (3.1 below). Don't hand-roll a per-worktree `classify-lock` loop around it ([#1552](https://github.com/mattsears18/shipyard/issues/1552)).
 
    **3.0 removed — the targeted this-session pass is gone ([#509](https://github.com/mattsears18/shipyard/issues/509) retired).** It existed because the generic sweep below could stall on a busy checkout before reaching this session's own worktrees. Claude Code now removes a subagent worktree automatically when the agent finishes without changes, and its periodic sweep reaps the rest once they pass `cleanupPeriodDays` — skipping any that still hold work. The generic sweep below is retained for prompt, same-session reclamation of worktrees that DID change (a shipped worker commits, so its worktree survives the harness's no-changes auto-clean); the targeted duplicate of it is not. See [Claude Code's worktree cleanup](https://code.claude.com/docs/en/worktrees#clean-up-subagent-and-background-session-worktrees).
 
-   **3.1. Generic sweep — the straggler + safety-net pass.** Now iterate the remaining `.git/worktrees/agent-*`. The `self-ancestor` case is load-bearing: the Claude Code harness writes the **orchestrator's** PID into every dispatched agent's lock file (lock content is literally `claude agent <agent-id> (pid <orchestrator-pid>)`), so at end-of-session cleanup the lock PID is alive by definition — it's the process running cleanup. A strict liveness check would defer every worktree the orchestrator itself owns (see [issue #138](https://github.com/mattsears18/shipyard/issues/138)). `self-ancestor` means the lock PID is the declared orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`, set below from `detect-orchestrator-pid`'s ancestor walk) OR is in our own process ancestor chain — not a peer agent, just the orchestrator about to retire its own worktree. Safe to reap. The env-var declaration was added in [issue #263](https://github.com/mattsears18/shipyard/issues/263) because the ancestor-walk path from #138 mis-classifies whenever an intermediate harness layer returns empty PPID. See [RATIONALE → Liveness check at shutdown](../do-work-RATIONALE.md#end-of-session-cleanup--why-the-orchestrator-worktree-is-reaped-last):
+   **3.1. Generic sweep — the straggler + safety-net pass, as ONE helper invocation ([#1552](https://github.com/mattsears18/shipyard/issues/1552)).** [`worktree-reap.sh reap-stale`](../../scripts/worktree-reap.sh) enumerates, classifies, defers, and reaps the remaining `.git/worktrees/agent-*` in a single call — the same bounded, in-flight-safe sweep [`disk-space-guard.md`](./disk-space-guard.md) already runs mid-session under live disk pressure. It replaces the `for wt_dir in .git/worktrees/agent-*` loop that used to live here, which wrapped `git worktree unlock` and a destructive `worktree-reap.sh reap` call in the **orchestrator's own command text** and was refused outright by Claude Code's auto-mode permission classifier — a denial that silently skipped the entire end-of-session reap. See [`dont.md`'s loop-shape rule](./dont.md) for why the shape, not the `--force` flag, is the trigger; this is the same precedent [#1355](https://github.com/mattsears18/shipyard/issues/1355) / [#1365](https://github.com/mattsears18/shipyard/issues/1365) set when they moved the setup-phase sweeps behind single subcommand calls.
+
+   The `self-ancestor` classification the sweep applies internally is load-bearing: the Claude Code harness writes the **orchestrator's** PID into every dispatched agent's lock file (lock content is literally `claude agent <agent-id> (pid <orchestrator-pid>)`), so at end-of-session cleanup the lock PID is alive by definition — it's the process running cleanup. A strict liveness check would defer every worktree the orchestrator itself owns (see [issue #138](https://github.com/mattsears18/shipyard/issues/138)). `self-ancestor` means the lock PID is the declared orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`, exported below from `detect-orchestrator-pid`'s ancestor walk) OR is in our own process ancestor chain — not a peer agent, just the orchestrator about to retire its own worktree. Safe to reap. The env-var declaration was added in [issue #263](https://github.com/mattsears18/shipyard/issues/263) because the ancestor-walk path from #138 mis-classifies whenever an intermediate harness layer returns empty PPID. See [RATIONALE → Liveness check at shutdown](../do-work-RATIONALE.md#end-of-session-cleanup--why-the-orchestrator-worktree-is-reaped-last):
 
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    cd "$SY_TOPLEVEL"
-   # Seed the running totals from step 3.0's targeted pass so the generic
-   # sweep ADDS to them (don't reset to 0 — that would discard the
-   # this-session worktrees already reaped above).
-   reaped_worktrees=${targeted_reaped:-0}
-   deferred_live=${targeted_deferred:-0}
-   # Declare our orchestrator PID so classify-lock can short-circuit on
-   # our own locks regardless of process-tree shape (issue #263). Every
-   # agent worktree's lock holds the orchestrator's PID (the harness
-   # writes it at dispatch time); without an explicit declaration, the
-   # ancestor walk inside classify-lock can fail to find the orchestrator
-   # whenever an intermediate harness layer returns empty PPID, deferring
-   # the reap and stranding worktrees.
-   export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
-
-   for wt_dir in .git/worktrees/agent-*; do
-     [ -d "$wt_dir" ] || continue
-     name=$(basename "$wt_dir")
-     worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
-     [ -z "$worktree_path" ] && continue
-
-     classification=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" \
-       classify-lock "$wt_dir/locked")
-
-     # Extract the lock PID for the audit log (best effort; null literal
-     # when the lock file is missing or unparseable). Anchor on the literal
-     # `pid` keyword, not "first digit-run before a close-paren" — the
-     # latter misparses a real `(pid <N> start <ctime>)` lock as the
-     # ctime's trailing year (issue #1206). Same fix as `worktree-reap.sh`'s
-     # own `extract_lock_pid` helper.
-     lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
-     [ -z "$lock_pid" ] && lock_pid="null"
-
-     if [ "$classification" = "peer-alive" ] || [ "$classification" = "unknown" ]; then
-       # Lock PID is alive AND not in our ancestor chain — a genuine peer
-       # (another Claude Code instance's orchestrator, or a still-running
-       # dispatched agent whose return hasn't been processed yet). Yanking
-       # its worktree out from under it destroys in-flight or unpushed
-       # work product. Defer. `unknown` (issue #1206 — the lock file exists
-       # but couldn't be parsed at all) gets the identical treatment: fail
-       # closed rather than falling through to "safe to reap" the way an
-       # unparseable lock used to. `--reason` carries the ACTUAL
-       # classification so the audit line doesn't misreport an `unknown`
-       # defer as `peer-alive`.
-       deferred_live=$((deferred_live + 1))
-       "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
-         --action deferred \
-         --worktree-path "$worktree_path" \
-         --worktree-name "$name" \
-         --session-id "<session-id>" \
-         --reason "$classification" \
-         --lock-pid "$lock_pid" 2>/dev/null || true
-       continue
-     fi
-
-     # no-lock / dead / self-ancestor — safe to reap.
-     git worktree unlock "$worktree_path" 2>/dev/null
-     # Issue #284 — the worktree-reap.sh `reap` subcommand performs the
-     # actual `git worktree remove --force` AND writes the audit log in
-     # one transaction. The helper is the single source of truth so the
-     # audit-log write can't be skipped.
-     #
-     # Counting `reaped_worktrees` requires us to know whether the remove
-     # actually succeeded. Probe `git worktree list` for the path after
-     # the helper returns: if it's gone, increment.
-     #
-     # --bypass-return-check (#1237): this is the straggler pass — by
-     # definition it targets worktrees the former targeted pass
-     # pass above did NOT already reach (cross-session leftovers, and any
-     # this-session worktree whose id wasn't in session_agent_ids), so a
-     # .returned_agent_ids record is not guaranteed to exist here.
-     "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
-       --action reaped \
-       --worktree-path "$worktree_path" \
-       --worktree-name "$name" \
-       --session-id "<session-id>" \
-       --classification "$classification" \
-       --lock-pid "$lock_pid" \
-       --bypass-return-check "end-of-session straggler sweep (#1237)" 2>/dev/null || true
-     if ! git worktree list | awk -v n="$name" '$0 ~ n {found=1} END{exit !found}'; then
-       reaped_worktrees=$((reaped_worktrees + 1))
-     fi
-   done
+   # Declare our orchestrator PID so the sweep's classification pass can
+   # short-circuit on our own locks regardless of process-tree shape (issue
+   # #263). Every agent worktree's lock holds the orchestrator's PID (the
+   # harness writes it at dispatch time); without an explicit declaration the
+   # ancestor walk can fail to find the orchestrator whenever an intermediate
+   # harness layer returns empty PPID, deferring the reap and stranding
+   # worktrees.
+   SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
+   export SHIPYARD_ORCHESTRATOR_PID
+   # One helper invocation — never a for-loop wrapping `worktree-reap.sh reap`
+   # (#1552). The cap is deliberately high: this is the TERMINAL reclaim pass,
+   # not a bounded mid-session sweep, so nothing this pass could have taken
+   # should be left checkpointed on disk for a later session.
+   "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-stale \
+     --repo-root "$SY_TOPLEVEL" \
+     --session-id "<session-id>" \
+     --max-per-session 200
    git worktree prune
    ```
 
+   **Read the counters off the sweep's own `summary:` line — don't reconstruct them.** `reap-stale` prints one `reaped:` / `deferred:` / `unreaped:` line per worktree plus a terminal `summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN> tombstones_swept=<TS> tombstones_failed=<TF> tombstones_remaining=<TR>` line. Take `<reaped_worktrees>` from `reaped=` and `<deferred_live>` from `deferred=` for the [end-of-session summary](#end-of-session-summary); step 5.5's independent on-disk probe remains the authoritative `<unreaped_worktrees>` reading, exactly as before. Exit status `3` means the pass ended **partial** (`unreaped>0` and/or `tombstones_failed>0`) — surface it, never retry the identical call, and never read it as "the sweep didn't run" ([#1482](https://github.com/mattsears18/shipyard/issues/1482)).
+
+   **One deliberate behaviour difference from the loop this replaced.** `reap-stale` also defers a `no-lock-recent` worktree — a lock-less candidate whose directory was touched inside the staleness floor, presumed live ([#1147](https://github.com/mattsears18/shipyard/issues/1147)) — where the old inline loop's bare `classify-lock` call saw only `no-lock` and reaped it. That is a strictly conservative change (defer, never destroy): a deferred worktree stays on disk, is counted by step 5.5, and is reaped by the next session's sweep or by [Claude Code's own periodic worktree cleanup](https://code.claude.com/docs/en/worktrees#clean-up-subagent-and-background-session-worktrees). `reap-stale` additionally excludes any agent-id still in this session's `.in_flight` **before** classification is consulted, which the old loop did not — see [`dont.md`'s "Don't reap a live-PID worktree"](./dont.md) for why that ordering is the load-bearing one.
+
    The audit log at `~/.shipyard/reap-audit.jsonl` is append-only JSONL. Each line records: `ts` (ISO-8601 UTC), `session` (orchestrator session id), `actor_pid` (the reaping process), `worktree` (the `.git/worktrees/<name>` directory name), `action` (`reaped` or `deferred`), `classification` (from `worktree-reap.sh` — `no-lock`, `dead`, `self-ancestor`), and `lock_pid` (the PID from the lock file, or `null` if unparseable). The audit-line emission lives inside [`worktree-reap.sh reap`](../../scripts/worktree-reap.sh) (issue #284), so the reap and the audit happen as one transaction the orchestrator can't skip. The log write itself is fire-and-forget — a filesystem permission issue must never abort the cleanup loop. When a worker later returns `reaped: my worktree was reaped while I was running`, the orchestrator can cross-reference this log to understand which session did the reaping and why. The log is not purged automatically; a typical `/do-work` session adds at most a few lines.
 
-4. **Reap `[gone]` branches.** Worktrees that were attached to merged-then-deleted branches are already gone (step 3 cleared them); now delete the orphaned local branch refs. The `[gone]` upstream marker is what makes this safe — only branches whose remote was deleted post-merge match. Open / blocked / in-flight PRs still have live remotes, so they're untouched:
+4. **Reap `[gone]` branches — one plain `git branch -D` per branch, never a piped loop ([#1552](https://github.com/mattsears18/shipyard/issues/1552)).** Worktrees that were attached to merged-then-deleted branches are already gone (step 3 cleared them); now delete the orphaned local branch refs. The `[gone]` upstream marker is what makes this safe — only branches whose remote was deleted post-merge match. Open / blocked / in-flight PRs still have live remotes, so they're untouched.
+
+   The branch list is already in hand from [step 2](#end-of-session-cleanup)'s `git for-each-ref` snapshot: every row whose `%(upstream:track)` column reads `[gone]`. Issue one plain call per branch, substituting the literal branch name — a `git branch -v | grep | while read … git branch -D` pipeline is the refused shape, and its `reaped_branches` counter never escaped the pipeline's subshell anyway, so the number it fed the summary was always `0`:
 
    ```bash
-   reaped_branches=0
-   git branch -v | grep '\[gone\]' | sed 's/^[+* ]//' | awk '{print $1}' | while read branch; do
-     git branch -D "$branch" 2>/dev/null && reaped_branches=$((reaped_branches + 1))
-   done
+   git branch -D <branch-name>
    ```
+
+   Count the calls that succeeded into `<reaped_branches>` for the summary. If the `[gone]` list is empty, skip the step entirely rather than issuing a no-op call. If it is long enough that one call per branch is impractical, that is the signal to run `/clean_gone` instead of batching them back into a loop here.
 
 4.5. **Reap orphan `worktree-agent-*` branch refs ([issue #326](https://github.com/mattsears18/shipyard/issues/326)).** The Claude Code harness creates a `worktree-agent-<id>` local branch ref for every agent dispatched with `isolation: "worktree"`. When the harness reaps the worktree directory it does NOT delete the branch ref — the ref leaks and accumulates indefinitely (`git branch | grep -c worktree-agent-` can reach 100+ on an active machine). Run this sweep **before step 6** (orchestrator worktree reap) so any still-live agent branches are detected as live by `git worktree list --porcelain` at scan time.
 
