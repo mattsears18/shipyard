@@ -3666,8 +3666,37 @@ triage_orphan_branches() {
     [ -z "$path" ] && continue
     idx=$((idx + 1))
 
+    # Issue #1577 — validate the sed extraction ONCE, here, rather than
+    # letting a no-match fall through. `sed` passes its input through
+    # UNCHANGED when the pattern doesn't match, and the candidate set is
+    # every `do-work/*` worktree branch — not just `do-work/issue-<N>`. So a
+    # `do-work/fix-main-ci-<sha>`, `do-work/fix-pr-pileup-<ts>`, or (post-
+    # #1562) `do-work/slice-<N>` candidate yielded `n=do-work/fix-main-ci-…`
+    # and therefore `canonical_branch=do-work/issue-do-work/fix-main-ci-…`.
+    #
+    # That doubled name was never display-only: `canonical_branch` is the
+    # value handed to every downstream `gh`/`git` call for this candidate —
+    # the open-PR query, check 2b's `--state merged` probe, the `git
+    # ls-remote` pushed-check, `git push HEAD:refs/heads/<name>`, and `gh pr
+    # create --head <name>` — so on a non-`issue-N` candidate each one
+    # targeted a ref that cannot exist and the sweep's state reads about that
+    # branch were meaningless. It also made `--dry-run` unauditable: the plan
+    # `00e-pre-relocation-sweeps.md` asks a human to read rendered a name
+    # that `git log` rejects as an unknown revision.
+    #
+    # Falling back to the branch's OWN name keeps every call pointed at a
+    # real ref and keeps the report pasteable. Clearing `n` is what makes the
+    # fallback safe for the issue-number consumers: check 2's own
+    # `''|*[!0-9]*` guard already declines a non-numeric `n`, and it sees an
+    # empty string here rather than a branch name, while the two `gh issue
+    # edit --remove-assignee` call sites below gain the emptiness guard they
+    # never had (they were no-ops on a garbage `n` only because of a
+    # `2>/dev/null || true` swallowing the error).
     n=$(echo "$branch" | sed -E 's|^do-work/issue-([0-9]+).*|\1|')
-    canonical_branch="do-work/issue-$n"
+    case "$n" in
+      ''|*[!0-9]*) n=""; canonical_branch="$branch" ;;
+      *)           canonical_branch="do-work/issue-$n" ;;
+    esac
     ahead=$(git -C "$path" rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || echo 0)
 
     if [ "$ahead" -eq 0 ] 2>/dev/null; then
@@ -3686,7 +3715,11 @@ triage_orphan_branches() {
         git worktree remove "$path" >/dev/null 2>&1 \
           || git worktree remove --force "$path" >/dev/null 2>&1
         git branch -D "$branch" >/dev/null 2>&1
-        "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+        # #1577 — only a branch that actually yielded an issue number has an
+        # assignment to clear. A non-`issue-N` candidate leaves `n` empty.
+        if [ -n "$n" ]; then
+          "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+        fi
       fi
       abandoned_count=$((abandoned_count + 1))
       continue
@@ -3866,9 +3899,12 @@ triage_orphan_branches() {
     if [ -z "$stale_reason" ]; then
       case "$n" in
         ''|*[!0-9]*)
-          # The branch name did not yield an issue number (sed passes the
-          # input through unchanged on no-match), so there is nothing to
-          # look up. Unreadable signal -> not stale.
+          # The branch name did not yield an issue number, so there is
+          # nothing to look up. Unreadable signal -> not stale. Since #1577
+          # normalized the no-match case at the top of the loop, `n` reaches
+          # here as the empty string rather than the branch name itself; the
+          # `*[!0-9]*` arm is kept as a belt-and-braces guard against any
+          # future extraction that forgets to clear it.
           ;;
         *)
           issue_probe=$("$GH" issue view "$n" --repo "$repo" \
@@ -4123,7 +4159,11 @@ triage_orphan_branches() {
           if [ "$stale_action" = "remove-worktree-and-branch" ]; then
             git branch -D "$branch" >/dev/null 2>&1
           fi
-          "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+          # #1577 — same emptiness guard as the `ahead == 0` arm: a
+          # non-`issue-N` candidate has no issue number to unassign.
+          if [ -n "$n" ]; then
+            "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+          fi
         else
           printf '[%s/%s] already-landed %s — worktree NOT removed (dirty or locked); left in place for a human\n' \
             "$idx" "$total" "$canonical_branch"
