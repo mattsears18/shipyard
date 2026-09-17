@@ -349,6 +349,80 @@ expect_steps '[{"name":"detect-paths","conclusion":"success","steps":[
     {"number":4,"name":"Complete job","conclusion":"success"}]}]' vacuous 4 \
   "one real job does not launder a sibling job that skipped everything"
 
+# #1564 — the lightwork shape: ONE path-scoped sibling job (`🧹 Lint (marketing)`,
+# gated on apps/marketing/** via dorny/paths-filter) skips its install/lint/test
+# steps on every non-marketing commit, while the jobs that carry evidence about
+# the tree (Lint & Typecheck, Unit Tests, Web E2E) all run their steps in full.
+# The pre-#1564 "any job vacuous => run vacuous" rule read EVERY such run as
+# vacuous, pinned main_ci to unknown, and silently disabled the fix-main-ci divert.
+jobs_lightwork='[
+  {"name":"🔍 Detect changed paths","conclusion":"success","steps":[
+    {"number":1,"name":"Set up job","conclusion":"success"},
+    {"number":2,"name":"Run actions/checkout@v4","conclusion":"success"},
+    {"number":3,"name":"Run dorny/paths-filter@v3","conclusion":"success"},
+    {"number":4,"name":"Post Run actions/checkout@v4","conclusion":"success"},
+    {"number":5,"name":"Complete job","conclusion":"success"}]},
+  {"name":"🧪 Unit Tests","conclusion":"success","steps":[
+    {"number":1,"name":"Set up job","conclusion":"success"},
+    {"number":2,"name":"Run actions/checkout@v4","conclusion":"success"},
+    {"number":3,"name":"Setup node","conclusion":"success"},
+    {"number":4,"name":"Install deps","conclusion":"success"},
+    {"number":5,"name":"Unit tests - web","conclusion":"success"},
+    {"number":6,"name":"Unit tests - native","conclusion":"success"},
+    {"number":7,"name":"Cloud Functions tests","conclusion":"success"},
+    {"number":8,"name":"Upload coverage","conclusion":"success"},
+    {"number":9,"name":"Upload failure artifacts","conclusion":"skipped"},
+    {"number":10,"name":"Complete job","conclusion":"success"}]},
+  {"name":"🧹 Lint (marketing)","conclusion":"success","steps":[
+    {"number":1,"name":"Set up job","conclusion":"success"},
+    {"number":2,"name":"Skip on non-marketing changes","conclusion":"success"},
+    {"number":3,"name":"Run actions/checkout@v4","conclusion":"skipped"},
+    {"number":4,"name":"Setup node","conclusion":"skipped"},
+    {"number":5,"name":"Install deps","conclusion":"skipped"},
+    {"number":6,"name":"Lint","conclusion":"skipped"},
+    {"number":7,"name":"Typecheck","conclusion":"skipped"},
+    {"number":8,"name":"Complete job","conclusion":"success"}]}]'
+
+run "13b. #1564: a path-scoped sibling skip does not sink a run whose substantive jobs executed"
+expect_steps "$jobs_lightwork" executed 0 \
+  "lightwork shape (path-scoped sibling skipped, Unit Tests ran 7 steps) => executed, exit 0 (#1564)"
+
+# The original #1495 shape at realistic size: detect-paths checks out and runs a
+# few steps, but the test job that would have run far more skipped everything.
+# detect-paths is NOT substantive against it, so the run stays vacuous.
+expect_steps '[
+  {"name":"detect-paths","conclusion":"success","steps":[
+    {"number":1,"name":"Set up job","conclusion":"success"},
+    {"number":2,"name":"Run actions/checkout@v4","conclusion":"success"},
+    {"number":3,"name":"Run dorny/paths-filter@v3","conclusion":"success"},
+    {"number":4,"name":"Complete job","conclusion":"success"}]},
+  {"name":"🧪 Unit Tests","conclusion":"success","steps":[
+    {"number":1,"name":"Set up job","conclusion":"success"},
+    {"number":2,"name":"Require detect-paths to complete","conclusion":"success"},
+    {"number":3,"name":"Skip on docs-only changes","conclusion":"success"},
+    {"number":4,"name":"Run actions/checkout@v4","conclusion":"skipped"},
+    {"number":5,"name":"Setup node","conclusion":"skipped"},
+    {"number":6,"name":"Install deps","conclusion":"skipped"},
+    {"number":7,"name":"Unit tests - meta","conclusion":"skipped"},
+    {"number":8,"name":"Unit tests - product","conclusion":"skipped"},
+    {"number":9,"name":"Cloud Functions tests","conclusion":"skipped"},
+    {"number":10,"name":"Complete job","conclusion":"success"}]}]' vacuous 4 \
+  "#1495 shape (required test job skipped everything, only detect-paths ran) => still vacuous, exit 4"
+
+# A vacuous job whose only "executed" sibling is itself mostly skipped does not
+# count: substantive means a NON-vacuous sibling.
+expect_steps '[
+  {"name":"A","conclusion":"success","steps":[
+    {"number":1,"name":"Run actions/checkout@v4","conclusion":"skipped"},
+    {"number":2,"name":"Lint","conclusion":"skipped"}]},
+  {"name":"B","conclusion":"success","steps":[
+    {"number":1,"name":"Gate","conclusion":"success"},
+    {"number":2,"name":"Gate 2","conclusion":"success"},
+    {"number":3,"name":"Gate 3","conclusion":"success"},
+    {"number":4,"name":"Run actions/checkout@v4","conclusion":"skipped"},
+    {"number":5,"name":"Tests","conclusion":"skipped"}]}]' vacuous 4 \
+  "two vacuous jobs cannot launder each other, however many gate steps they ran"
+
 # An ordinary job-level `if:` skip reports conclusion=skipped with no step detail.
 # It never claimed to have run, so there is no false success to catch.
 expect_steps '[{"name":"deploy","conclusion":"skipped","steps":[]},
@@ -454,6 +528,18 @@ if [[ "$live_word" == "unproven" && "$live_code" -eq 4 ]]; then
 else
   bad "expected 'unproven'/4, got '${live_word}'/${live_code}"
 fi
+
+run "16b. #1564: a window of lightwork-shaped runs resolves green, not unproven"
+printf '%s' "$jobs_lightwork" > "$tmp_live/jobs/300.json"
+printf '%s' "$jobs_lightwork" > "$tmp_live/jobs/200.json"
+run_live "$script"
+if [[ "$live_word" == "green" && "$live_code" -eq 0 ]]; then
+  ok "every run has only a path-scoped sibling skip => green, exit 0 (fix-main-ci divert stays live)"
+else
+  bad "expected 'green'/0 for lightwork-shaped runs, got '${live_word}'/${live_code}"
+fi
+printf '%s' "$jobs_vacuous" > "$tmp_live/jobs/300.json"
+printf '%s' "$jobs_vacuous" > "$tmp_live/jobs/200.json"
 
 run "17. --no-step-check restores the pre-#1495 run-level-only behaviour"
 run_live "$script" --no-step-check

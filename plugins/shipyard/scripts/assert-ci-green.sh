@@ -258,10 +258,30 @@ classify() {
 # common trailing `if: failure()` artifact-upload step (1 skipped, many run) from
 # false-positiving.
 #
-# A run is vacuous when ANY of its jobs is — per-job granularity is load-bearing:
-# in #1495's repro the `detect-paths` job ran for real while the required
-# `🧪 Unit Tests` job skipped everything, so a "were ALL jobs vacuous?" rule
-# would have missed the bug entirely.
+# A run is vacuous when at least one of its jobs is vacuous AND no sibling job
+# executed SUBSTANTIVELY (#1564). A non-vacuous sibling is substantive when the
+# number of user-authored steps it actually ran is >= the user-authored step
+# count of the largest vacuous job — i.e. the run demonstrably did at least as
+# much real work as the skipped job would have done.
+#
+# Both halves are load-bearing:
+#   * #1495: the `detect-paths` job ran for real (a handful of steps) while the
+#     required `🧪 Unit Tests` job skipped everything. A "were ALL jobs vacuous?"
+#     rule would have missed that, and detect-paths is not substantive against a
+#     test job that would have run many more steps, so the run stays VACUOUS.
+#   * #1564: on a single-workflow repo with a legitimately path-scoped sibling
+#     job (`🧹 Lint (marketing)`: 1 step ran, 6 skipped), the plain "ANY job
+#     vacuous => run vacuous" rule marked EVERY run vacuous while Lint &
+#     Typecheck / Unit Tests / Web E2E each ran ~20 steps. The 5-run walk-back
+#     never found an "executed" run, main_ci pinned to `unknown`, and the
+#     fix-main-ci divert went silently dead. Those executed siblings are
+#     substantive, so that run is EXECUTED.
+#
+# Scoring per *required* check instead was considered and rejected: in the
+# #1564 repro the path-scoped `🧹 Lint (marketing)` job IS itself a required
+# check (the standard way to require a path-filtered job is a step-level skip,
+# which is exactly the shape this guard looks for), so a required-only rule
+# would not have fixed the repro — and it would cost an extra API call.
 #
 # A job with zero user-authored steps (the ordinary job-level `if:` skip, where
 # GitHub reports `conclusion: skipped` and no step detail) is NOT vacuous — it
@@ -312,16 +332,24 @@ classify_steps() {
       | ([ $user[] | select(concl == "skipped") ] | length) as $skipped
       | ([ $user[] | select(concl != "" and concl != "skipped") ] | length) as $ran
       | ([ $user[] | select(is_checkout) | select(concl == "skipped") ] | length) as $checkout_skipped
-      | ($skipped > 0 and ($skipped > $ran or $checkout_skipped > 0))
+      | { vacuous: ($skipped > 0 and ($skipped > $ran or $checkout_skipped > 0)),
+          ran: $ran,
+          size: ($user | length) }
     ]
-    | if any(.[]; .) then "vacuous" else "executed" end
+    | ([ .[] | select(.vacuous) | .size ] | max) as $vacuous_size
+    | if $vacuous_size == null then "executed"
+      # #1564: a sibling that ran at least as many steps as the largest vacuous
+      # job would have is substantive evidence about the tree.
+      elif any(.[]; (.vacuous | not) and .ran > 0 and .ran >= $vacuous_size) then "executed"
+      else "vacuous"
+      end
   ' 2>/dev/null)"
   # --- END vacuous-steps guard (#1495) ---
 
   case "$verdict" in
     vacuous)
       printf 'vacuous\n'
-      echo "assert-ci-green: at least one job reported a conclusion but every substantive step was skipped — NO SIGNAL" >&2
+      echo "assert-ci-green: at least one job reported a conclusion but every substantive step was skipped, and no sibling job executed substantively — NO SIGNAL" >&2
       return "$EXIT_UNPROVEN"
       ;;
     executed)
