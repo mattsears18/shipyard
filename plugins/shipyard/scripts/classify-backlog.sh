@@ -78,6 +78,13 @@
 #         underlying probe is a fixed `gh pr view --json state` call, not
 #         the arbitrary allowlisted-verb grammar `eval-probes` guards
 #         (falls back to `{}` on any failure, same posture);
+#       - unconditionally runs `backlog-filter.sh sub-issues` against
+#         --issues-file (issue #1556) — the `tracking` provisional gate's
+#         structured justification signal. Makes no network call at all
+#         unless the backlog actually carries a `tracking`-labeled issue
+#         (falls back to `{}` on any failure, same posture — an
+#         inconclusive read can only surface the gate as
+#         `tracking-unjustified`, never fabricate a justification);
 #       - feeds every resolved input into `backlog-filter.sh classify`,
 #         reading --issues-file as stdin;
 #       - pipes the resulting NDJSON into `backlog-filter.sh
@@ -199,6 +206,8 @@ case "$sub" in
 
     pr_collision_verdicts_json=$("$BACKLOG_FILTER" eval-pr-collision --repo "$repo" < "$issues_file" 2>/dev/null || echo "{}")
 
+    sub_issues_json=$("$BACKLOG_FILTER" sub-issues --repo "$repo" < "$issues_file" 2>/dev/null || echo "{}")
+
     # --- Classify ------------------------------------------------------------
     classify_out=$("$BACKLOG_FILTER" classify \
       --me "$me" \
@@ -214,6 +223,7 @@ case "$sub" in
       --recheck-probe-enabled "$recheck_probe_enabled" \
       --probe-verdicts "$probe_verdicts_json" \
       --pr-collision-verdicts "$pr_collision_verdicts_json" \
+      --sub-issues "$sub_issues_json" \
       --someday-milestone "$someday_milestone" \
       --someday-recheck-days "$someday_recheck_days" \
       --fallback-milestone "$fallback_milestone" \

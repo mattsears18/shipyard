@@ -10,13 +10,16 @@
 # needs-triage label,
 # classified as a drop at two call-sites and a route at the third).
 #
-# This suite exercises `classify` only -- `closed-by-healthy-pr` and its
-# #1389 sibling `closed-by-open-pr` both perform live `gh` network calls by
-# design (see the script's own header comment for why that split exists) and
-# are not fixture-tested here; their bad-usage paths are covered, their
-# network paths are not. The classification DECISION each one feeds -- which
-# is the part that has actually drifted historically -- is fully covered
-# below, including all four rows of #1389's PR-state table.
+# This suite exercises `classify` almost exclusively -- `closed-by-healthy-pr`
+# and its #1389 sibling `closed-by-open-pr` both perform live `gh` network
+# calls by design (see the script's own header comment for why that split
+# exists) and are not fixture-tested here; their bad-usage paths are covered,
+# their network paths are not. The classification DECISION each one feeds --
+# which is the part that has actually drifted historically -- is fully
+# covered below, including all four rows of #1389's PR-state table. The one
+# exception is #1556's `sub-issues` producer, whose tracking-only pre-filter
+# and fail-safe-to-no-key behavior ARE covered, against a PATH-prepended gh
+# stub (the same mocking pattern classify-backlog.test.sh uses).
 #
 # Run with:
 #   bash plugins/shipyard/scripts/tests/backlog-filter.test.sh
@@ -343,6 +346,128 @@ assert_equals "$(verdict_of "$out" 703)" "gate:tracking" "(24d) tracking + a Blo
 assert_contains "$(field_of "$out" 703 "evidence_pointer")" "Blocked by #88" "(24d) evidence_pointer cites the matched Blocked-by reference"
 assert_equals "$(verdict_of "$out" 704)" "gate:tracking-unjustified" "(24e) tracking + a body with no recognized signal gates as tracking-unjustified even though non-empty"
 assert_equals "$(field_of "$out" 704 "evidence_pointer")" "" "(24e) evidence_pointer stays absent on the unjustified case"
+
+# --- #1556: the tracking signal list gains the GitHub sub-issue graph ------
+# (the one STRUCTURED signal, and the definitional case for the label) plus
+# a body task-list of issue references (the pre-sub-issues way of expressing
+# the same decomposition). Before #1556 a correctly-decomposed epic with a
+# real sub-issue graph but no recognized prose signal in its body surfaced
+# as `tracking-unjustified` -- an anomaly channel firing on a healthy epic
+# -- while an issue that merely happened to carry an "Options" heading
+# passed clean. The repro was mattsears18/lightwork#4688 (four phases,
+# #4698-#4701), which flipped to a justified gate after a one-line
+# `Blocked by #4701` body edit that changed nothing about its actual nature.
+
+# The #4688 shape verbatim: a long technical brief, no Decision-required
+# heading, no Options heading, no Blocked-by reference -- justified purely
+# by its sub-issue graph.
+fixture_subissues='[
+  {"number":4688,"title":"t","body":"A long technical brief. Rewrite occurrence generation as field-based date math, widen the schema, ship the UI, then raise the support floor.","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":4689,"title":"t","body":"Same brief, but nothing in the sub-issue map for this one.","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":4690,"title":"t","body":"An empty sub-issue array is NOT a justification.","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+subs_4688='{"4688":[{"number":4698,"state":"CLOSED"},{"number":4699,"state":"CLOSED"},{"number":4700,"state":"CLOSED"},{"number":4701,"state":"OPEN"}],"4690":[]}'
+out=$(printf '%s' "$fixture_subissues" | classify --sub-issues "$subs_4688")
+assert_equals "$(verdict_of "$out" 4688)" "gate:tracking" "(24f) tracking + a populated GitHub sub-issue graph gates as plain tracking (justified) even with zero prose signals in the body (#1556)"
+assert_equals "$(field_of "$out" 4688 "evidence_pointer")" "4 sub-issues (#4698, #4699, #4700, #4701); 1 open" "(24f) evidence_pointer names the sub-issue count, the numbers, and how many are open"
+assert_equals "$(verdict_of "$out" 4689)" "gate:tracking-unjustified" "(24g) an issue absent from the sub-issue map still gates as tracking-unjustified -- a missing read never fabricates a justification"
+assert_equals "$(verdict_of "$out" 4690)" "gate:tracking-unjustified" "(24h) an EMPTY sub-issue array is not a justification -- zero sub-issues means the label is still doing all the work"
+
+# Backward compatibility: the exact same fixture, with --sub-issues omitted
+# entirely, reproduces pre-#1556 behavior byte-for-byte.
+out=$(printf '%s' "$fixture_subissues" | classify)
+assert_equals "$(verdict_of "$out" 4688)" "gate:tracking-unjustified" "(24i) omitting --sub-issues reproduces pre-#1556 behavior (default {} -- no entry for any issue)"
+
+# Precedence: the structured signal outranks every prose signal, so an issue
+# carrying BOTH cites the sub-issue graph.
+fixture_subissue_precedence='[
+  {"number":4691,"title":"t","body":"## Options\n1. do A\n2. do B","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+out=$(printf '%s' "$fixture_subissue_precedence" | classify --sub-issues '{"4691":[{"number":9,"state":"OPEN"}]}')
+assert_equals "$(field_of "$out" 4691 "evidence_pointer")" "1 sub-issue (#9); 1 open" "(24j) the structured sub-issue signal outranks the prose signals, and singular is not pluralized"
+
+# The sub-issue signal is scoped to the `tracking` gate alone -- an entry in
+# the map for a non-tracking issue changes nothing about its verdict.
+fixture_subissue_scope='[
+  {"number":4692,"title":"fix: ordinary work","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+out=$(printf '%s' "$fixture_subissue_scope" | classify --sub-issues '{"4692":[{"number":9,"state":"OPEN"}]}')
+assert_equals "$(verdict_of "$out" 4692)" "eligible" "(24k) --sub-issues is consumed ONLY by the tracking gate -- a non-tracking issue with sub-issues stays eligible"
+
+# Task-list of issue references -- the pre-sub-issues decomposition shape,
+# still common in older epics. Ranked LAST, so it can never displace an
+# evidence_pointer one of the three original prose signals already emitted.
+fixture_tasklist='[
+  {"number":4693,"title":"t","body":"Phases:\n\n- [x] #11\n- [ ] #12\n","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":4694,"title":"t","body":"* [ ] https://github.com/o/r/issues/99 ship it","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":4695,"title":"t","body":"## Options\n\n- [ ] #77","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":4696,"title":"t","body":"A plain bullet list is not a task list:\n\n- #11\n- #12\n","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+out=$(printf '%s' "$fixture_tasklist" | classify)
+assert_equals "$(verdict_of "$out" 4693)" "gate:tracking" "(24l) tracking + a body task-list of issue references gates as plain tracking (justified) (#1556)"
+assert_equals "$(field_of "$out" 4693 "evidence_pointer")" "Task-list issue reference #11 in body" "(24l) evidence_pointer cites the first task-list reference"
+assert_equals "$(verdict_of "$out" 4694)" "gate:tracking" "(24m) the task-list signal also accepts a full issue URL in place of the #N token"
+assert_contains "$(field_of "$out" 4694 "evidence_pointer")" "#99" "(24m) evidence_pointer cites the URL-form reference number"
+assert_equals "$(field_of "$out" 4695 "evidence_pointer")" "Options heading in body" "(24n) the task-list signal ranks LAST -- an issue carrying an Options heading too still cites the heading, unchanged from pre-#1556"
+assert_equals "$(verdict_of "$out" 4696)" "gate:tracking-unjustified" "(24o) a plain bullet list of issue references (no checkbox) is NOT a task list and does not justify the gate"
+
+# --- #1556: `sub-issues` bad-usage paths ------------------------------------
+
+out=$(bash "$helper" sub-issues </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(24p) sub-issues missing --repo exits 64"
+assert_contains "$out" "--repo is required" "(24p) sub-issues missing --repo explains why"
+
+out=$(bash "$helper" sub-issues --repo not-a-slug </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(24q) sub-issues rejects a --repo that is not owner/name"
+
+out=$(bash "$helper" classify --me x --trusted-authors a --sub-issues 'not-json' </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(24r) classify --sub-issues must be a JSON object"
+
+# --- #1556: the `sub-issues` producer, against a stubbed gh -----------------
+# Unlike closed-by-healthy-pr / closed-by-open-pr (whose network paths are
+# deliberately uncovered here), this producer carries real logic worth
+# pinning: the tracking-only pre-filter, and the fail-safe that turns any
+# unusable read into NO key rather than a fabricated justification. Mocked
+# via a PATH-prepended gh stub, the same pattern classify-backlog.test.sh
+# uses. Skipped entirely if mktemp is unavailable.
+
+SUBS_WORK="$(mktemp -d 2>/dev/null || true)"
+if [[ -n "$SUBS_WORK" && -d "$SUBS_WORK" ]]; then
+  mkdir -p "${SUBS_WORK}/bin"
+  cat > "${SUBS_WORK}/bin/gh" <<'SUBSMOCK'
+#!/usr/bin/env bash
+# Stub for `gh api graphql ... -F number=<N> --jq ...`: answers per issue
+# number so the producer's per-issue branches are all reachable.
+num=""
+for a in "$@"; do
+  case "$a" in number=*) num="${a#number=}" ;; esac
+done
+case "$num" in
+  4688) echo '[{"number":4698,"state":"CLOSED"},{"number":4701,"state":"OPEN"}]' ;;
+  4690) echo '[]' ;;
+  4697) exit 1 ;;
+  *)    echo '[]' ;;
+esac
+SUBSMOCK
+  chmod +x "${SUBS_WORK}/bin/gh"
+
+  fixture_producer='[
+    {"number":4688,"title":"t","body":"","labels":["Tracking"],"assignees":[],"author":{"login":"alice"}},
+    {"number":4690,"title":"t","body":"","labels":["tracking"],"assignees":[],"author":{"login":"alice"}},
+    {"number":4697,"title":"t","body":"","labels":["tracking"],"assignees":[],"author":{"login":"alice"}},
+    {"number":4699,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"}}
+  ]'
+  out=$(printf '%s' "$fixture_producer" | PATH="${SUBS_WORK}/bin:${PATH}" bash "$helper" sub-issues --repo o/r 2>/dev/null)
+  assert_equals "$out" '{"4688":[{"number":4698,"state":"CLOSED"},{"number":4701,"state":"OPEN"}]}' "(24s) sub-issues emits one key per tracking issue with a populated graph -- label match is case-insensitive, an empty graph (#4690) and a failed read (#4697) contribute no key, and a non-tracking issue (#4699) is never queried at all"
+
+  out=$(printf '[{"number":1,"labels":[]}]' | PATH="${SUBS_WORK}/bin:${PATH}" bash "$helper" sub-issues --repo o/r 2>/dev/null)
+  assert_equals "$out" "{}" "(24t) sub-issues emits an empty OBJECT (not an empty string) when no issue carries the tracking label -- so --sub-issues \"\$(...)\" composes directly"
+
+  out=$(printf '' | PATH="${SUBS_WORK}/bin:${PATH}" bash "$helper" sub-issues --repo o/r 2>/dev/null)
+  assert_equals "$out" "{}" "(24u) sub-issues emits {} on empty stdin"
+
+  rm -rf "$SUBS_WORK"
+fi
 
 # --- untrusted author ---------------------------------------------------------
 
