@@ -303,6 +303,22 @@
 # do-work-RATIONALE.md rather than here. The file had ~378 bytes of overage
 # against the old ceiling after that trim.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 70000 -> 72000 by
+# #1554 (2026-09-17): a short always-loaded "Fan-out into your own worktree —
+# verification does not delegate" section, plus its fragment's index row
+# (~1470 bytes together, after trimming the section twice). It sits in the
+# core rather than fragment-only because the trigger is a decision the worker
+# makes, not an error it hits: a worker that has already decided to fan out
+# has no reason to go looking for a fragment about fan-out, and the rules
+# only bind subagents whose prompts were written with them in hand — i.e.
+# they have to be in context BEFORE the dispatch, not after the first bad
+# report. Everything that can be deferred already is: the lightwork #4666
+# repro, the seven-point contract, the dispatch-prompt template, and the
+# when-not-to-fan-out guidance all live in fan-out-verification.md
+# (uncapped). The raise is 2000 rather than 1000 deliberately — 71000 would
+# have left 154 bytes, the zero-margin state the #1562 note below warns the
+# next editor about; 72000 restores ~1150 bytes of ordinary editing room.
+#
 # issue-work.md was NOT raised for #1519 (2026-08-24) — its one-line Don't-
 # section mirror (the same shape #1166 added for "Never create a credential",
 # repeated across all seven per-mode files) landed it at EXACTLY 130000
@@ -390,7 +406,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  70000 \
+  72000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
