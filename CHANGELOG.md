@@ -4,6 +4,18 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.55.6 — 2026-09-17
+
+Maintainer-decided production mutations can now get past the operator layer's classifier gate instead of all being handed back one by one (closes #1563). The operator layer used to drain production-class `console-action` items one at a time. These are items that mutate a prod data store or a shared cloud resource, such as enabling PITR, creating scheduler jobs, or running additive backfills. The first `Modify Shared Resources` denial made the classifier stricter for the rest of the session, and it even denied read-only calls. Every item ended as a hand-back with no hint of the allow rule that would unblock the next session, so the maintainer walked `/my-turn` twice for the same work. The operator layer now batches these items into one confirmation that names every exact command, or into one consolidated hand-back when the session is unattended. After a `Modify Shared Resources` or `Production Reads` denial, it stops the class, prod reads included, while non-prod items keep draining. Every hand-back names the permission-rule remedy. `/my-turn` also offers to run a decided prod mutation's commands inline while the maintainer is present. Deletes and access-widening changes remain hand-backs everywhere.
+
+- `plugins/shipyard/commands/do-work/operate/01-queue-and-authorization.md`: new "Production-class console actions" section covering the attended and unattended batch, the class-stop, and the remedy. The "queue does not stay silently short" rule now notes the class-scoped stop.
+- `plugins/shipyard/commands/do-work/operate/02-execution-and-playbooks.md`: the `toggle-setting` / `console-action` playbook routes production-class items through the gate first.
+- `plugins/shipyard/commands/do-work/operate/05-dont.md`: new Don't bullet.
+- `plugins/shipyard/commands/do-work/orchestrator-state-reference.md`: `operator_handbacks` gains the `prod-class-unattended` and `prod-class-stopped` reasons. `operator_denials` documents the `prod_class_stopped` and `prod_class_confirmed` flags.
+- `plugins/shipyard/commands/do-work/cleanup-summary.md`: reason phrases for the two new reasons, plus a `Remedy:` line on production-class entries.
+- `plugins/shipyard/commands/my-turn.md`: Phase 2 offers to run a decided production mutation's exact CLI commands, each approved at the permission prompt. The Don't bullets carve out this one human-directed mutation.
+- `plugins/shipyard/scripts/tests/operator-prod-class-gate-1563.test.sh`: new regression guard.
+
 ### 4.55.4 — 2026-09-17
 
 Restores the durable session record for isolated `/do-work` sessions by giving `session-state.sh` flag-shaped hot-path writes, so no call site has to pass a JSON object literal on the command line (closes #1561). After relocation, the worktree-isolation guard refuses any `session-state.sh update` whose `--set` value carries a non-empty object literal (`.in_flight = {"slot-1": {...}}`) as "too complex to verify". That was the documented shape for the per-dispatch `.in_flight` write, so on every isolated session the state file silently stopped updating at its first use: `/shipyard:status` showed nothing in flight, and `--resume` had nothing to resume from. The new subcommands take plain flags only, build the record with `jq -n --arg` (caller text is never evaluated as jq), and delegate to `update`, so they keep its atomic write, degraded-init recovery, cross-repo guard, and `.updated_at` stamp. `update --set-file` is the general fallback when an object literal can't be avoided. `compound-block-scan.sh` now flags the refused shape, so it can't creep back into the spec.
