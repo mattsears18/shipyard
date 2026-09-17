@@ -10,6 +10,12 @@ A worker escalating an issue to `needs-human-review` never checked whether the h
 
 `<!-- shipyard-resolve-decisions -->` (posted automatically by `/shipyard:resolve-decisions` and by `/shipyard:my-turn`'s reused decision-gated walkthrough) and `<!-- do-work-decision-resolved -->` (the hand-written convention documented in this repo's `CLAUDE.md` § "Decision-resolved sentinel", for a maintainer who records a decision by hand) record **the same fact — a human answered the blocking question — through two different call paths.** `commands/do-work/setup/06-scope-preflight.md`'s freshness check (Signal B, added for issue [#962](https://github.com/mattsears18/shipyard/issues/962)) already treats them identically; this fragment reuses that same equivalence rather than adding a third marker. Always check for both.
 
+## A PARTIAL `/resolve-decisions` run is not a recorded decision ([#1557](https://github.com/mattsears18/shipyard/issues/1557))
+
+`/shipyard:resolve-decisions` posts the **same `<!-- shipyard-resolve-decisions -->` sentinel** when the maintainer skipped a decision or halted the walkthrough — headed `## Decisions resolved (partial — N of M)`, and deliberately **without** removing the gate label, because some blocking decision is still open. A bare sentinel match therefore over-fires: it reads a partial run as a full resolution and suppresses a gate the maintainer explicitly chose to keep.
+
+Exclude it. The discriminator is the partial heading, so the `latest_decision` selector below carries `(.body | contains("## Decisions resolved (partial")) | not`. A partial comment is still useful context — it names which decisions remain — but it must not set `decision_already_recorded=true`.
+
 ## The check
 
 Requires the issue's `comments` array (`body`, `createdAt`) — every call site listed below already has this in context from its own step-0/step-1 issue fetch; no extra `gh` call is needed unless your mode fetched comments long enough ago that a re-fetch is cheap insurance.
@@ -33,9 +39,12 @@ if [ -z "$latest_escalation" ]; then
   # read — this fragment is a backstop for the *repeat* case specifically.)
   decision_already_recorded=false
 else
+  # The `contains(...) | not` clause drops a PARTIAL /resolve-decisions run,
+  # which carries the same sentinel but left the gate deliberately on (#1557).
   latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
-    [.[] | select(.body | startswith("<!-- shipyard-resolve-decisions -->")
-                        or startswith("<!-- do-work-decision-resolved -->"))]
+    [.[] | select((.body | startswith("<!-- shipyard-resolve-decisions -->")
+                         or startswith("<!-- do-work-decision-resolved -->"))
+                  and ((.body | contains("## Decisions resolved (partial")) | not))]
     | sort_by(.createdAt) | last.createdAt // empty')
 
   if [ -n "$latest_decision" ] && [ "$latest_decision" \> "$latest_escalation" ]; then
@@ -65,5 +74,7 @@ If `latest_decision` exists but predates `latest_escalation` (or there is no pri
 | `commands/do-work/steady-state.md`'s blocked→refuse routing | `startswith("<!-- do-work-agent-refuse -->")` |
 | `agents/issue-worker/investigate.md` § 4b | `startswith("<!-- do-work-investigation-disposition -->")` |
 | `agents/issue-worker/spike.md` § 4b | `startswith("<!-- do-work-investigation-disposition -->")` (shared marker — investigate.md and spike.md's 4b are structurally identical and share one provenance marker per issue [#1091](https://github.com/mattsears18/shipyard/issues/1091)) |
+
+**The orchestrator-side scope-preflight defer path is the fourth call site, and it anchors on a timeline event rather than a comment marker.** [`06c-scope-handling-ui.md`'s Recording-path step 3.5](../../commands/do-work/setup/06c-scope-handling-ui.md) compares `RESOLUTION_AT` against the last `labeled` event for `needs-human-review` — equivalent in spirit to a comment-marker anchor (step 4 applies that label immediately after posting the class diagnosis comment), and it must be the **`labeled`** event, never `unlabeled`: `/resolve-decisions` posts its comment *before* clearing the gate, so a genuine resolution is always seconds older than the unlabel event it caused ([#1557](https://github.com/mattsears18/shipyard/issues/1557)). Whichever anchor a site uses, the question is the same — *did a decision land after the escalation this pass is about to repeat?*
 
 Each call site's own marker is what makes the check specific to *that mechanism's* prior escalation — comparing against a needs-human-review comment from an unrelated provenance (e.g. the external-author-trust gate, or a scope-preflight diagnosis) would compare apples to oranges. If a mode gains a new needs-human-review escalation path in the future, give it its own marker (or reuse an existing one only if the two paths are asking the same class of question) and add a row here.

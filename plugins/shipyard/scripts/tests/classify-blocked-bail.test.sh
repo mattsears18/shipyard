@@ -266,6 +266,43 @@ out="$(GH="$GH_MOCK" bash "$script" classify \
 assert_contains "$out" "class=refuse label=needs-human-review" \
   "a STALE decision (predating the last escalation) does NOT suppress a fresh refuse"
 
+# --------------------------------------------------------------------------
+echo
+echo "refuse NOT suppressed (#1557): a PARTIAL /resolve-decisions run is not a decision"
+# --------------------------------------------------------------------------
+# A partial walkthrough posts the SAME <!-- shipyard-resolve-decisions -->
+# sentinel but deliberately leaves the gate on, because a blocking decision
+# is still unanswered. Matching it as a full resolution would suppress a gate
+# the maintainer explicitly chose to keep.
+cat > "${WORK}/issue.17.comments" <<'EOF'
+[
+  {"body": "<!-- do-work-agent-refuse -->\nWorker returned blocked: something.", "createdAt": "2026-08-01T00:00:00Z"},
+  {"body": "<!-- shipyard-resolve-decisions -->\n## Decisions resolved (partial — 2 of 4)\n\nStill open: the retention window, the cohort split.", "createdAt": "2026-08-02T00:00:00Z"}
+]
+EOF
+: > "$GH_LOG"
+out="$(GH="$GH_MOCK" bash "$script" classify \
+  --repo o/r --issue 17 --reason "something entirely unrecognized happened" 2>&1)"
+assert_contains "$out" "class=refuse label=needs-human-review" \
+  "a PARTIAL resolve-decisions comment does NOT suppress the re-gate (#1557)"
+
+# --------------------------------------------------------------------------
+echo
+echo "refuse suppressed (#1557): a FULL run still suppresses, partial sibling notwithstanding"
+# --------------------------------------------------------------------------
+cat > "${WORK}/issue.18.comments" <<'EOF'
+[
+  {"body": "<!-- do-work-agent-refuse -->\nWorker returned blocked: something.", "createdAt": "2026-08-01T00:00:00Z"},
+  {"body": "<!-- shipyard-resolve-decisions -->\n## Decisions resolved (partial — 2 of 4)\n\nStill open: the retention window.", "createdAt": "2026-08-02T00:00:00Z"},
+  {"body": "<!-- shipyard-resolve-decisions -->\n## Decisions resolved (via /resolve-decisions)\n\n1. **Retention window** → **90 days**.", "createdAt": "2026-08-03T00:00:00Z"}
+]
+EOF
+: > "$GH_LOG"
+out="$(GH="$GH_MOCK" bash "$script" classify \
+  --repo o/r --issue 18 --reason "something entirely unrecognized happened" 2>&1)"
+assert_contains "$out" "class=refuse label=none reason=decision-already-recorded-after-escalation" \
+  "a FULL resolve-decisions comment still suppresses the re-gate (#1557)"
+
 echo
 printf '  %s passed, %s failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

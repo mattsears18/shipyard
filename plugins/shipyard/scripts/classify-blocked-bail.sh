@@ -47,7 +47,8 @@
 #     refuse-vs-soft classification per the fragment table, with (3a) the
 #     #1279 decision-freshness check suppressing a redundant re-gate when a
 #     decision was already recorded after the LAST refuse-escalation
-#     comment on this issue. Applies the matching label + posts the
+#     comment on this issue (a PARTIAL /resolve-decisions run does not
+#     count as a recorded decision — issue #1557). Applies the matching label + posts the
 #     matching comment as a side effect (fire-and-forget, `2>/dev/null` /
 #     `|| true` throughout, matching the original block's posture).
 #
@@ -219,9 +220,15 @@ ${issue_body}" 2>/dev/null || true
     latest_escalation=$(jq -r '
       [.[] | select(.body | startswith("<!-- do-work-agent-refuse -->"))]
       | sort_by(.createdAt) | last.createdAt // empty' <<< "$comments_json")
+    # A PARTIAL /resolve-decisions run posts the SAME sentinel but is headed
+    # "## Decisions resolved (partial — N of M)" and deliberately leaves the
+    # gate on, because a blocking decision is still unanswered. It is not a
+    # resolution — exclude it, or this guard suppresses a gate the maintainer
+    # explicitly chose to keep (issue #1557).
     latest_decision=$(jq -r '
-      [.[] | select(.body | startswith("<!-- shipyard-resolve-decisions -->")
-                          or startswith("<!-- do-work-decision-resolved -->"))]
+      [.[] | select((.body | startswith("<!-- shipyard-resolve-decisions -->")
+                           or startswith("<!-- do-work-decision-resolved -->"))
+                    and ((.body | contains("## Decisions resolved (partial")) | not))]
       | sort_by(.createdAt) | last.createdAt // empty' <<< "$comments_json")
 
     if [ -n "$latest_escalation" ] && [ -n "$latest_decision" ] && [ "$latest_decision" \> "$latest_escalation" ]; then

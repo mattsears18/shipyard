@@ -1393,6 +1393,23 @@ if [[ -f "$decision_freshness_path" ]]; then
   assert_contains "$decision_freshness_path" \
     "Guard the other direction" \
     "decision-freshness-check.md documents the non-suppression direction (a stale decision must not block a new escalation)"
+
+  # Issue #1557 — a PARTIAL /resolve-decisions run posts the SAME sentinel
+  # but deliberately leaves the gate on. Matching it as a full resolution
+  # would suppress a gate the maintainer explicitly chose to keep.
+  assert_contains "$decision_freshness_path" \
+    'contains("## Decisions resolved (partial")' \
+    "decision-freshness-check.md excludes a partial resolve-decisions comment from latest_decision (#1557)"
+  assert_contains "$decision_freshness_path" \
+    "PARTIAL \`/resolve-decisions\` run is not a recorded decision" \
+    "decision-freshness-check.md documents the partial-run carve-out (#1557)"
+  # The orchestrator-side scope-preflight call site anchors on the `labeled`
+  # timeline event; anchoring on `unlabeled` made the #962 guard inert.
+  # shellcheck disable=SC2016
+  # Backticks/asterisks are literal markdown punctuation in the needle.
+  assert_contains "$decision_freshness_path" \
+    'must be the **`labeled`** event, never `unlabeled`' \
+    "decision-freshness-check.md records the scope-preflight labeled-not-unlabeled anchor (#1557)"
 fi
 
 # investigate.md §4b must run the freshness check BEFORE applying the label,

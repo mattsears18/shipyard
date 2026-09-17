@@ -2704,12 +2704,38 @@ assert_contains "$setup_path" \
   "setup.md re-gate guard names the failure mode it prevents (#962)"
 
 # The guard must compare the resolution comment's timestamp against the
-# last needs-human-review label removal, using the timeline API.
+# last needs-human-review label APPLICATION, using the timeline API.
+#
+# #1557: the original anchor was the last `unlabeled` event, which made the
+# guard structurally unable to fire — /resolve-decisions posts the decisions
+# comment BEFORE removing the gate, so a genuine resolution is always a few
+# seconds OLDER than the unlabel event it caused, and the
+# `RESOLUTION_AT > LAST_UNGATE_AT` test could never be true on that flow.
 # shellcheck disable=SC2016
 # Literal needle — must NOT expand $(gh api ...); this is markdown prose text.
 assert_contains "$setup_path" \
-  'LAST_UNGATE_AT=$(gh api "repos/<owner>/<repo>/issues/<N>/timeline"' \
-  "setup.md re-gate guard fetches the last needs-human-review unlabel event (#962)"
+  'LAST_GATE_AT=$(gh api "repos/<owner>/<repo>/issues/<N>/timeline"' \
+  "setup.md re-gate guard fetches the last needs-human-review label event (#962, anchor corrected by #1557)"
+
+assert_contains "$setup_path" \
+  'select(.event == "labeled" and .label.name == "needs-human-review")' \
+  "setup.md re-gate guard anchors on the labeled event, not unlabeled (#1557)"
+
+# The inert-anchor regression itself: the guard must no longer carry the old
+# LAST_UNGATE_AT variable at all.
+assert_not_contains "$setup_path" \
+  'LAST_UNGATE_AT' \
+  "setup.md re-gate guard no longer anchors on the unlabel event (#1557)"
+
+# A PARTIAL /resolve-decisions run carries the same sentinel but deliberately
+# leaves the gate on — it must not be read as a resolution.
+assert_contains "$setup_path" \
+  'contains("## Decisions resolved (partial")' \
+  "setup.md re-gate guard excludes a partial resolve-decisions comment from RESOLUTION_AT (#1557)"
+
+assert_contains "$setup_path" \
+  'Only a PARTIAL resolution comment exists' \
+  "setup.md re-gate guard carries a partial-resolution branch (#1557)"
 
 # The guard must require the fresh defer to name what changed, else reject
 # rather than silently re-gate.
