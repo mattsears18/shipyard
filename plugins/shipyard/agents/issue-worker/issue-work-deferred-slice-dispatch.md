@@ -42,12 +42,21 @@ You are here because this PR ships only the completable slice; issue `#<N>` itse
    ```bash
    gh label create shipyard --repo <owner/repo> \
      --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
+   # No `2>&1 | tail -1` — a pipe spanning a shell command boundary is refused
+   # by the worktree-isolation guard (dont.md's post-relocation rule). With
+   # `--json number --jq '.number'` the only thing gh writes to stdout IS the
+   # number, so the tail was never load-bearing; leaving stderr unmerged is
+   # also strictly better, since a gh error now lands on stderr where you can
+   # read it instead of being captured as if it were the issue number.
    FOLLOWUP=$(gh issue create --repo <owner/repo> --label shipyard \
      --title "<deferred-scope title>" \
      --body-file "$WORKTREE_PATH/.shipyard-scratch/followup-issue-body.md" \
      ${MILESTONE_TITLE:+--milestone "$MILESTONE_TITLE"} \
-     --json number --jq '.number' 2>&1 | tail -1)
+     --json number --jq '.number')
    ```
+
+   If `$FOLLOWUP` comes back empty, the create failed — read the error gh
+   printed to stderr and bail rather than referencing an empty issue number.
 
 2. **Reference `#<FOLLOWUP>` in this PR's body** — a plain mention (`Deferred to #<FOLLOWUP>: <one-line reason>`) is fine here. `#<FOLLOWUP>` is a brand-new issue this PR was never going to close, so there's no closing-link leak risk the way there is for the dispatched issue `#<N>` itself — that reference still needs the ordinary [§5](./issue-work.md#5-commit--push--pr) treatment (a `Closes` line if this PR genuinely resolves `#<N>` in full — it doesn't here, so use the bare-URL form for `#<N>` per the same rule §6.5 follows for its own non-closing case).
 

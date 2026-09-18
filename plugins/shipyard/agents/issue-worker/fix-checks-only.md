@@ -212,8 +212,12 @@ Closes [#654](https://github.com/mattsears18/shipyard/issues/654) — the **infr
 
 ```bash
 RUN_ID=<failing-run-id>   # from `gh run list` or the failing check's `link`
+# The "first failing job" reduction happens INSIDE the --jq filter, not through
+# a `| head -1` pipe: a pipe spanning a shell command boundary is refused by the
+# worktree-isolation guard (dont.md's post-relocation rule), while jq's own
+# internal `|` is a filter operator, not a shell pipe.
 JOBID=$(gh api "repos/<owner/repo>/actions/runs/$RUN_ID/jobs" \
-  --jq '.jobs[] | select(.conclusion=="failure") | .id' | head -1)
+  --jq '[.jobs[] | select(.conclusion=="failure") | .id][0] // empty')
 gh api "repos/<owner/repo>/actions/jobs/$JOBID/logs"
 ```
 
@@ -287,11 +291,12 @@ On failure:
    **`--repo-root` MUST resolve to the PRIMARY checkout, never `$(git rev-parse --show-toplevel)` ([#1065](https://github.com/mattsears18/shipyard/issues/1065)).** `.shipyard/flake-suspects.txt` is gitignored, and the orchestrator's setup-time `enforce` pass ([#1059](https://github.com/mattsears18/shipyard/issues/1059)) writes it to the **primary checkout** via its own `SHIPYARD_REPO_ROOT` pin. But *this* worker runs in its **own**, separately-provisioned `agent-*` worktree — a fresh checkout of the PR's head commit that, like every worktree, contains no gitignored files of its own. `$(git rev-parse --show-toplevel)` resolves to *this worktree*, not the primary checkout, so a naive read is **silently vacuous**: `flake-enforce.sh is-suspect` treats a missing file as "not a suspect" (see `cmd_is_suspect`'s `[[ -f "$path" ]] || return 1`), so this check can never see a suspects entry the orchestrator wrote — it would report "not a suspect" for every key, every time, regardless of what's actually on the list. **Do NOT propagate `SHIPYARD_REPO_ROOT` here** — that pin is deliberately scoped to the orchestrator's own session per #1059's phase-1 fix and must never reach a dispatched worker (a worker's config/behavior should stay coherent with its own checkout). Instead, resolve the primary checkout locally via `git worktree list --porcelain`, which — unlike `git rev-parse --show-toplevel` — is **not** scoped to the current working tree: it reads the shared, common `.git` administrative data every worktree of this repo points at, so it always returns the full worktree list, including the primary checkout, no matter which worktree you run it from. Git guarantees the **first** `worktree` entry is always the main/primary checkout:
 
    ```bash
-   PRIMARY_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
-   [ -z "$PRIMARY_CHECKOUT" ] && PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
+   git worktree list --porcelain
    ```
 
-   The fallback to `$(git rev-parse --show-toplevel)` only fires if `git worktree list` itself produced no output at all (not a worktree checkout — shouldn't happen under `/do-work`, but keeps this step from hard-erroring in that case); it does NOT mask the bug above, since when worktrees genuinely exist, the `awk` resolution always wins. Reading `.shipyard/flake-suspects.txt` at that absolute path is a narrow, read-only reference into the primary checkout's local state file — the same "invocation fallback" posture already established for `$CLAUDE_PLUGIN_ROOT/scripts/*.sh` — never a `cd` there and never a write.
+   **Read the primary checkout off that output yourself — don't script it.** A `git worktree list --porcelain | awk …` pipe spans a shell command boundary and is refused by the worktree-isolation guard ([`dont.md` § "Post-relocation Bash blocks must be plain, single-purpose commands"](../../commands/do-work/dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277)), and a shell variable holding the result wouldn't survive to the next `Bash` call anyway — nor could you reference it bare, since a whole-word `"$PRIMARY_CHECKOUT"` expansion is itself refused under the [same file's corrected rule](../../commands/do-work/dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word). The **first** line of the output is `worktree <path>`, and git guarantees that path is the main/primary checkout; take it as a literal and substitute it verbatim into the `--repo-root` argument below.
+
+   If `git worktree list --porcelain` produced no output at all (not a worktree checkout — shouldn't happen under `/do-work`, but keeps this step from hard-erroring in that case), fall back to `git rev-parse --show-toplevel`'s output as the literal instead. That fallback does NOT mask the bug above: when worktrees genuinely exist, the first `worktree` entry always wins. Reading `.shipyard/flake-suspects.txt` at that absolute path is a narrow, read-only reference into the primary checkout's local state file — the same "invocation fallback" posture already established for `$CLAUDE_PLUGIN_ROOT/scripts/*.sh` — never a `cd` there and never a write.
 
    Build the suspect key from the failing check's `(workflow, job, test)` — the same pipe-joined shape `stop-auto-rerunning` wrote (`<workflow>|<job>|<test>`, test component empty when you can't pin it) — and probe the list:
    ```bash
@@ -299,7 +304,9 @@ On failure:
    ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
    if [[ "$ENABLED" == "true" ]]; then
      KEY="<workflowName>|<failing job name>|<test-id-or-empty>"
-     if "$CLAUDE_PLUGIN_ROOT/scripts/flake-enforce.sh" is-suspect --key "$KEY" --repo-root "$PRIMARY_CHECKOUT"; then
+     # <primary-checkout-path> is the literal you just read off `git worktree
+     # list --porcelain` — substituted verbatim, never a bare "$VAR" expansion.
+     if "$CLAUDE_PLUGIN_ROOT/scripts/flake-enforce.sh" is-suspect --key "$KEY" --repo-root <primary-checkout-path>; then
        # Known chronic flake — do NOT auto-rerun. The escalation (tracking issue,
        # blocked:ci label) was already applied by the orchestrator's setup-time
        # enforce pass; your job is to stop, not to burn fix attempts on it.
@@ -313,15 +320,17 @@ On failure:
 
    ```bash
    RUN_ID=<failing-run-id>   # from the failing check's `link` (step 1's `gh pr checks --json name,state,link`)
+   # `[…][0]` inside the --jq filter, never a `| head -1` shell pipe — see
+   # Step A above for why.
    JOBID=$(gh api "repos/<owner/repo>/actions/runs/$RUN_ID/jobs" \
-     --jq '.jobs[] | select(.conclusion=="failure") | .id' | head -1)
+     --jq '[.jobs[] | select(.conclusion=="failure") | .id][0] // empty')
    gh api "repos/<owner/repo>/actions/jobs/$JOBID/logs"
    ```
 
-   **Stream the output rather than redirecting it to a file** — a big log fetch piped to `> /tmp/log` produces zero stream output for its whole duration and can trip the harness's ~600s stall watchdog (worker-preamble § "Heartbeat emission around long-running commands", fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md); issue [#372](https://github.com/mattsears18/shipyard/issues/372)). Pipe through `tee` if you also need the file:
-   ```bash
-   gh api "repos/<owner/repo>/actions/jobs/$JOBID/logs" 2>&1 | tee /tmp/failed.log
-   ```
+   **Stream the output rather than redirecting it to a file** — a big log fetch redirected to `> failed.log` produces zero stream output for its whole duration and can trip the harness's ~600s stall watchdog (worker-preamble § "Heartbeat emission around long-running commands", fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md); issue [#372](https://github.com/mattsears18/shipyard/issues/372)). The plain call above already streams; that is the form to use.
+
+   **Don't reach for `… 2>&1 | tee <file>` to get both.** A pipe spanning a shell command boundary is itself refused by the worktree-isolation guard ([`dont.md` § "Post-relocation Bash blocks must be plain, single-purpose commands"](../../commands/do-work/dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277)), so it trades a watchdog trip for a denied tool call — the same correction `ci-pitfalls.md` carries for its own copy of this advice. You rarely need the file at all: the streamed output is already in the tool result you're reading. When you genuinely do want it on disk (to grep a very large log), write it there with the `Write` tool from that result, into `$WORKTREE_PATH/.shipyard-scratch/` per `shipyard:worker-preamble` § "Scratch directory" — never `/tmp`, which the scratch-directory rule already rules out.
+
    The same heartbeat discipline applies to `npm ci` and to a buffered local test re-run in step 3 — keep stream output flowing so a 5–15 min command doesn't read as a stall.
 
    **If `$JOBID` itself has no `conclusion` yet — the job you actually need, not a sibling, genuinely hasn't finished** — wait for *that job*, not the whole run, then re-fetch:
