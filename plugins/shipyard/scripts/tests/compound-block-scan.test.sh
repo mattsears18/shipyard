@@ -534,6 +534,53 @@ if [[ -d "$wp_dir" ]]; then
   fi
 fi
 
+# (22) Regression (issue #1590): agents/issue-worker/*.md — the second and
+# last worker-facing family admitted to the built-in FILES list — is clean of
+# all four shapes, and is admitted by GLOB so a per-mode file or fragment added
+# later is covered the moment it lands. Three assertions, each guarding a
+# different way the admission could silently rot. Mirrors #1579's trio for
+# skills/worker-preamble/*.md.
+iw_dir="$repo_root/plugins/shipyard/agents/issue-worker"
+
+# (a) The whole directory scans clean. This is the assertion that fails if a
+# future edit reintroduces a pipe or a gh/git-wrapping loop into a per-mode
+# spec — fix-rebase.md most of all, which carried 16 of the 39 findings #1590
+# swept, including both loop findings.
+if [[ -d "$iw_dir" ]]; then
+  if bash "$scanner" "$iw_dir"/*.md >/dev/null 2>&1; then
+    ok "scanner reports every agents/issue-worker/*.md spec as clean (#1590)"
+  else
+    bad "scanner found a compound shape in agents/issue-worker/*.md — see script output for the offending block"
+  fi
+fi
+
+# (b) The glob admission is still wired into FILES. Test (14)'s count proxy is
+# scoped to commands/do-work/ paths and cannot see this one, so without this
+# assertion the whole directory could drop off FILES while the scanner still
+# reported "all scanned file(s) clean" over the remaining list.
+# shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+if grep -qF -- '"$repo_root/plugins/shipyard/agents/issue-worker"/*.md' "$scanner"; then
+  ok "scanner's built-in FILES list still admits agents/issue-worker/*.md by glob (#1590)"
+else
+  bad "scanner no longer admits agents/issue-worker/*.md — #1590's coverage ratchet has regressed"
+fi
+
+# (c) No allow markers in the directory. Every executable spec there is
+# post-relocation by construction, so an exemption could only ever be a
+# shortcut around a real refused shape. The one file that could legitimately
+# want an exemption some day — issue-work-RATIONALE.md, which quotes worked
+# examples — carries no ```bash fences at all today, so the scanner is inert on
+# it. If that changes, this assertion failing is the intended prompt to revisit
+# the scanner's own admission comment, not to quietly relax the rule.
+if [[ -d "$iw_dir" ]]; then
+  iw_marker_count=$(grep -hcF -- '<!-- compound-block-scan: allow -->' "$iw_dir"/*.md 2>/dev/null | awk '{t += $1} END {print t + 0}')
+  if [[ "$iw_marker_count" -eq 0 ]]; then
+    ok "agents/issue-worker/*.md carries no compound-block-scan allow markers (#1590)"
+  else
+    bad "agents/issue-worker/*.md carries $iw_marker_count allow marker(s) — every executable spec there is post-relocation, so an exemption can only be a shortcut around a real refused shape"
+  fi
+fi
+
 echo
 echo "  ${pass} passed, ${fail} failed"
 [[ "$fail" -eq 0 ]]

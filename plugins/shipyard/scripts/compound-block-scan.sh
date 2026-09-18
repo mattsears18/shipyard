@@ -106,9 +106,10 @@
 # skills/worker-preamble/*.md — and did it by GLOB rather than by name,
 # because that directory is post-relocation in its entirety (a worker reads
 # these fragments only from inside its own isolated worktree) and so has no
-# pre-relocation half to exempt. See the block immediately below FILES for
-# the reasoning and the sweep it rests on. agents/issue-worker/*.md is the
-# remaining worker-facing family and is still unswept.
+# pre-relocation half to exempt. Issue #1590 admitted the second and last,
+# agents/issue-worker/*.md, on the same terms after sweeping the 39 findings
+# it carried. See the two blocks immediately below FILES for the reasoning
+# and the sweeps they rest on.
 #
 # False-positive guards:
 #   - Pipe detection strips single- and double-quoted spans from the block
@@ -122,6 +123,15 @@
 #     operator is unquoted and would otherwise false-positive; lines that
 #     look like a case-pattern arm (`^[[:space:]]*[A-Za-z0-9_]+(\|[A-Za-z0-9_]+)*\)`)
 #     are excluded from the pipe check.
+#     KNOWN GAP (issue #1590): the arm heuristic matches on the QUOTE-STRIPPED
+#     line, and its character class has no whitespace, so an arm whose
+#     alternatives are quoted strings — `"" | "diff --git "*)` strips down to
+#     ` | *)`, a bar with spaces around it — is NOT recognized and is reported
+#     as a pipe. Widening the class to admit whitespace would also start
+#     matching genuine pipelines that happen to end in `)`, so #1590 fixed its
+#     two occurrences on the spec side instead (one arm per pattern, which
+#     means exactly what the alternation did). Prefer that spelling; reach for
+#     an allow marker only if a one-arm-per-pattern rewrite is impossible.
 #   - An explicit `<!-- compound-block-scan: allow -->` line immediately
 #     before the opening fence skips that block entirely — for the rare
 #     case a block is intentionally showing the refused shape as a
@@ -245,18 +255,56 @@ FILES=(
 # to extend a list — the `#1064 hardcoded array -> #1105 mechanical discovery`
 # path the Scope note names, taken for the one subtree where it is safe.
 #
-# agents/issue-worker/*.md is the remaining worker-facing family and is NOT
-# admitted here: it still carries ~39 pipe/loop findings (concentrated in
-# fix-rebase.md, fix-checks-only.md, spike.md, issue-work-parent-epic-leak.md).
-# Sweeping it is the follow-up, and it is also the precondition for folding
-# launcher-invocation-scan.test.sh in as a fifth shape (#1579 step 4) — that
-# standalone scan is repo-wide over every tracked markdown file, so retiring
-# it before FILES covers the same ground would NARROW coverage.
+# agents/issue-worker/*.md — the other worker-facing family — was admitted on
+# the same terms by issue #1590; see the block immediately below this loop.
 for _wp in "$repo_root/plugins/shipyard/skills/worker-preamble"/*.md; do
   [[ -f "$_wp" ]] || continue
   FILES+=("$_wp")
 done
 unset _wp
+
+# agents/issue-worker/*.md admitted WHOLESALE by issue #1590, and by GLOB
+# rather than by name — the second and last worker-facing family, on the same
+# terms issue #1579 admitted the first (skills/worker-preamble/*.md). The
+# admission-shape question was asked explicitly rather than inherited by
+# default, and the two properties #1579 named both hold here:
+#
+#   1. Every file in the directory is post-relocation by construction. These
+#      are the per-mode specs and fragments a DISPATCHED WORKER executes from,
+#      and a worker only ever reads them from inside its own isolated worktree
+#      — worker-preamble SKILL.md's step-0 cwd fail-fast runs before anything
+#      else, under both dispatch shapes. So, exactly as with the preamble
+#      fragments, there is no pre-relocation half to exempt and no per-file
+#      judgment to make, unlike setup/00-config-worktree.md.
+#   2. The whole directory is verified clean of all four shapes. #1590 swept
+#      the 39 findings it carried: `echo "$var" | jq` / `printf | jq` /
+#      `printf | sed` / `printf | grep` became herestrings (fix-rebase.md,
+#      investigate.md, spike.md, issue-work-parent-epic-leak.md),
+#      `git log | head -c 12` became `--abbrev=12 --format=%h` (issue-work.md
+#      x4, spike.md, issue-work-parent-epic-leak.md), `--jq … | head -1` became
+#      a `[…][0]` reduction inside the jq filter (fix-checks-only.md),
+#      `| tee /tmp/…` and `| head -200` became a plain stream and a scratch-dir
+#      redirect (fix-checks-only.md, fix-failing-prs-batch.md),
+#      `git worktree list | awk` became a prose read of the command's own
+#      output (fix-checks-only.md), and fix-rebase.md's two `for f in
+#      $conflicted` loops over gh/git were decomposed in place.
+#
+# Property (1) holds for the DIRECTORY, not merely for today's files, so a
+# per-mode file or fragment added later is covered the moment it lands.
+#
+# One difference from skills/worker-preamble/ worth recording: this directory
+# also holds issue-work-RATIONALE.md, a reference doc nothing executes, whose
+# job includes quoting refused shapes as worked examples. It carries no ```bash
+# fences today, so the scanner is inert on it and the companion test's
+# zero-allow-markers assertion is safe. If it ever gains one specifically to
+# show a bad example, that is the single legitimate allow-marker case in this
+# directory — and the failing assertion is the intended prompt to revisit this
+# note rather than to quietly relax it.
+for _iw in "$repo_root/plugins/shipyard/agents/issue-worker"/*.md; do
+  [[ -f "$_iw" ]] || continue
+  FILES+=("$_iw")
+done
+unset _iw
 
 if [[ $# -gt 0 ]]; then
   candidates=("$@")

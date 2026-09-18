@@ -57,7 +57,7 @@ check_closing_ref() {
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
-  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  LAST_PUSH=$(git log -1 --abbrev=12 --format='%h' 2>/dev/null)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi
@@ -75,8 +75,9 @@ LEAKED=$(check_closing_ref "$CURRENT_PR" <owner/repo> <E>)
 if [ "$LEAKED" = "true" ]; then
   CURRENT_BODY=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json body --jq '.body')
   # Replace bare #<E> tokens with the full-URL form (which does NOT auto-close).
-  PATCHED_BODY=$(printf '%s' "$CURRENT_BODY" \
-    | sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g")
+  # Herestring, not `printf … | sed` — a pipe spanning a shell command boundary
+  # is refused by the worktree-isolation guard (dont.md's post-relocation rule).
+  PATCHED_BODY=$(sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g" <<< "$CURRENT_BODY")
 
   # Flag any line that carries the reference AND a closing-keyword-shaped
   # word — including negated phrasing, which the parser treats identically
@@ -85,9 +86,16 @@ if [ "$LEAKED" = "true" ]; then
   # entirely (move the caveat to a separate sentence, or use a neutral
   # synonym like "addresses"/"references"/"tracks"), THEN re-run this tier's
   # patch with the corrected body.
-  printf '%s\n' "$PATCHED_BODY" \
-    | grep -niE "(#<E>([^0-9]|\$)|issues/<E>([^0-9]|\$))" \
-    | grep -iE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b'
+  # Two plain commands staged through a file, not `printf | grep | grep` — a
+  # pipe spanning a shell command boundary is refused by the worktree-isolation
+  # guard, while a command's own input/output redirection is not (dont.md's
+  # post-relocation rule). `.shipyard-scratch/` is the sanctioned worker scratch
+  # dir; seed its self-ignoring `.gitignore` first if you have not already
+  # (worker-preamble § "Scratch directory").
+  grep -niE "(#<E>([^0-9]|\$)|issues/<E>([^0-9]|\$))" <<< "$PATCHED_BODY" \
+    > "$WORKTREE_PATH/.shipyard-scratch/epic-ref-lines.txt"
+  grep -iE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b' \
+    "$WORKTREE_PATH/.shipyard-scratch/epic-ref-lines.txt"
   # ^ if this prints anything, hand-edit PATCHED_BODY to remove the
   # keyword-shaped word from each flagged line before the `gh pr edit` below.
 
@@ -101,9 +109,9 @@ fi
 # body-only rewrite can leave this one untouched. ---
 if [ "$LEAKED" = "true" ]; then
   CURRENT_MSG=$(git log -1 --format='%B')
-  if printf '%s' "$CURRENT_MSG" | grep -qE "#<E>([^0-9]|\$)"; then
-    PATCHED_MSG=$(printf '%s' "$CURRENT_MSG" \
-      | sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g")
+  # Herestrings again, for the same reason as tier 1's body rewrite.
+  if grep -qE "#<E>([^0-9]|\$)" <<< "$CURRENT_MSG"; then
+    PATCHED_MSG=$(sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g" <<< "$CURRENT_MSG")
     git commit --amend -m "$PATCHED_MSG"
     git push --force-with-lease origin "HEAD:refs/heads/${REMOTE_BRANCH:-do-work/issue-<N>}"
   fi

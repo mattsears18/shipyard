@@ -31,7 +31,20 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
 2. **Sample failing logs** — up to 5 PRs (representative mix: oldest, newest, a few middle). For each, grab the failing-check name and a 20-line log excerpt:
    ```bash
    gh pr checks <pr-num> --repo <owner/repo> --json name,state,conclusion,link
-   gh run view <run-id> --repo <owner/repo> --log-failed | head -200
+   ```
+
+   Stage the log to the sanctioned worker scratch dir, then excerpt it — a
+   `… --log-failed | head -200` pipe spans a shell command boundary and is
+   refused by the worktree-isolation guard, while a command's own output
+   redirection (and `head` reading a positional file) is not (`dont.md`'s
+   post-relocation rule). Seed `.shipyard-scratch/.gitignore` first if you
+   haven't already (`shipyard:worker-preamble` § "Scratch directory"):
+
+   ```bash
+   WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+   gh run view <run-id> --repo <owner/repo> --log-failed \
+     > "$WORKTREE_PATH/.shipyard-scratch/pr-<pr-num>-failed.log"
+   head -200 "$WORKTREE_PATH/.shipyard-scratch/pr-<pr-num>-failed.log"
    ```
    The `head -200` here is a deliberate excerpt for sampling, not a claim that 200 lines is the whole log — `gh run view --log-failed` can itself have already truncated silently before `head` ever runs. Treat "I don't see the error in this excerpt" as inconclusive for any one PR, not as proof the failure has no common cause with the others; the cross-PR pattern-match in step 3 is what actually establishes the root cause, not the absence of a string in any single sample (issue [#988](https://github.com/mattsears18/shipyard/issues/988); `shipyard:worker-preamble` § "A truncated read cannot support a negative claim" — fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md)).
 

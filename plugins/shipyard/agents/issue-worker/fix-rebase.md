@@ -28,8 +28,11 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
 2. **Pre-flight: confirm DIRTY is still the state.** State drifts between dispatch and you starting — another merge train tick may have already auto-merged this PR, or someone may have pushed a fix that resolved the dirty state, or new check failures may have appeared:
    ```bash
    preflight=$(gh pr view <M> --repo <owner/repo> --json mergeStateStatus,statusCheckRollup,state)
-   MERGE_STATE=$(echo "$preflight" | jq -r '.mergeStateStatus')
-   PR_STATE=$(echo "$preflight" | jq -r '.state')
+   # Herestrings, not `echo "$preflight" | jq` — a pipe spanning a shell command
+   # boundary is refused by the worktree-isolation guard, while a command's own
+   # input redirection passes cleanly (dont.md's post-relocation rule).
+   MERGE_STATE=$(jq -r '.mergeStateStatus' <<< "$preflight")
+   PR_STATE=$(jq -r '.state' <<< "$preflight")
    ```
    Bail before touching anything if:
    - `state != "OPEN"` → return `noop: PR #<M> already closed/merged`.
@@ -39,13 +42,13 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
      **CRITICAL — use the latest-per-name projection, not the raw rollup walk** (issue [#333](https://github.com/mattsears18/shipyard/issues/333)). `gh pr view --json statusCheckRollup` returns the **union** of every check run for the PR's head SHA, including stale superseded runs. A naïve `.statusCheckRollup[] | select(.conclusion == "FAILURE")` walk false-positives whenever a check ran, failed, was re-triggered, and passed — the first FAILURE entry trips the bail even though the latest run is SUCCESS. De-duplicate by `name` and take the most recent entry per check (by `completedAt`, fallback `startedAt`) BEFORE checking for hard failures:
 
      ```bash
-     fails=$(echo "$preflight" | jq '
+     fails=$(jq '
        [.statusCheckRollup
         | group_by(.name)
         | map(sort_by(.completedAt // .startedAt // "") | last)
         | .[]
         | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
-       | length')
+       | length' <<< "$preflight")
      if [ "$MERGE_STATE" != "DIRTY" ] && [ "${fails:-0}" -gt 0 ]; then
        echo "blocked rebase #<M>: PR has failing checks — needs fix-checks, not rebase"
        exit 0
@@ -121,42 +124,57 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       vc_append_only=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.append_only_paths 2>/dev/null || echo "[]")
       ```
       The manifest/CHANGELOG resolution (items 3–4 below, and the version-bump recipe under "Resolution") is eligible only when `vc_enabled == "true"` AND `vc_manifest` is non-empty. The append-only-doc resolution (item 5 below) is eligible whenever `vc_append_only` is a non-empty JSON array — independent of `vc_enabled`. If **neither** class is eligible, this carve-out does not apply at all — bail per step 4.
-   2. **The conflicted file set is a subset of the recognized set: `{manifest_path, changelog_path}` (when the manifest/CHANGELOG class is eligible) union `append_only_paths` (when non-empty).** List the conflicted paths with `git diff --name-only --diff-filter=U` and confirm every entry falls into a recognized class. If ANY conflicted file is outside that union — a source file, a spec markdown, a test, or a doc not listed in `append_only_paths` — the conflict touches content beyond the coordinated set: `git rebase --abort` and bail, naming the file that tripped it:
+   2. **The conflicted file set is a subset of the recognized set: `{manifest_path, changelog_path}` (when the manifest/CHANGELOG class is eligible) union `append_only_paths` (when non-empty).** List the conflicted paths and confirm every entry falls into a recognized class. If ANY conflicted file is outside that union — a source file, a spec markdown, a test, or a doc not listed in `append_only_paths` — the conflict touches content beyond the coordinated set: `git rebase --abort` and bail, naming the file that tripped it.
+
+      **Read the list, then make the subset judgment yourself — this is deliberately NOT a shell loop ([#1590](https://github.com/mattsears18/shipyard/issues/1590)).** A `for`/`while` loop wrapping `git` calls is one of the shapes the worktree-isolation guard refuses ([`dont.md` § "Post-relocation Bash blocks must be plain, single-purpose commands"](../../commands/do-work/dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277)), and here decomposition beats extraction for the reason `node-bootstrap.md`'s nested-package loop was decomposed rather than extracted: the item count is bounded small by construction (a rebase conflict set, and gate 2's whole purpose is to reject any set bigger than `{manifest, changelog} ∪ append_only_paths`), and the surrounding gates 3–5 are *already* agent-judgment steps with no shell at all — an executable loop over the same list was the odd one out. The four `vc_*` values are also literals you read a moment ago, not live shell variables: they do not survive to the next `Bash` call, and a bare whole-word `"$vc_manifest"` expansion is independently refused under [the corrected rule](../../commands/do-work/dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word).
+
       ```bash
-      conflicted=$(git diff --name-only --diff-filter=U)
-      for f in $conflicted; do
-        is_vc=0
-        if [ "$vc_enabled" = "true" ] && [ -n "$vc_manifest" ]; then
-          if [ "$f" = "$vc_manifest" ] || { [ -n "$vc_changelog" ] && [ "$f" = "$vc_changelog" ]; }; then is_vc=1; fi
-        fi
-        is_append_only=0
-        if printf '%s' "$vc_append_only" | jq -e --arg f "$f" 'type == "array" and (index($f) != null)' >/dev/null 2>&1; then is_append_only=1; fi
-        if [ "$is_vc" -eq 0 ] && [ "$is_append_only" -eq 0 ]; then
-          git rebase --abort 2>/dev/null || true
-          echo "blocked rebase #<M>: conflict extends beyond coordinated manifest+CHANGELOG rows and configured append_only_paths ($f) — needs manual rebase"
-          exit 0
-        fi
-      done
+      git diff --name-only --diff-filter=U
+      ```
+
+      Classify each printed path against the values you read in item 1:
+
+      - It equals `manifest_path`, or equals `changelog_path`, **and** `version_coordination.enabled` is `true` with a non-empty `manifest_path` → recognized (manifest/CHANGELOG class).
+      - It appears in the `append_only_paths` array → recognized (append-only class).
+      - Neither → **not** recognized. Abort and bail immediately, naming that path — don't keep classifying the rest:
+
+      ```bash
+      git rebase --abort 2>/dev/null || true
+      ```
+
+      ```bash
+      echo "blocked rebase #<M>: conflict extends beyond coordinated manifest+CHANGELOG rows and configured append_only_paths (<the unrecognized path>) — needs manual rebase"
       ```
    3. **Within `manifest_path`, the ONLY conflicted hunk is the version row.** A conflict on any other manifest key (a dependency, a permissions block, a description) is a real semantic conflict — abort and bail `blocked rebase #<M>: manifest conflict outside the .version row — needs manual rebase`. Inspect the conflict hunks (`git diff` on the file) and confirm the `<<<<<<<` / `=======` / `>>>>>>>` block brackets only the line carrying the version string the `vc_version_jq` expression selects. (Applies only when the manifest/CHANGELOG class is eligible per item 1 — skip when it isn't.)
    4. **Within `changelog_path` (when coordinated), the ONLY conflict is the top-of-file entry insert** — both sides prepended a new `### <version>` heading block at the top of the same section. A conflict deeper in the file (both sides edited the *same* existing entry's prose) is non-trivial — abort and bail `blocked rebase #<M>: CHANGELOG conflict outside the top-of-file insert — needs manual rebase`. (Same caveat as item 3.)
    5. **Within each conflicted `append_only_paths` file (when that class is eligible per item 1), the conflict must be a pure both-appended shape — resolved and staged here, not deferred to "Resolution" below.** Delegated to a standalone, testable script — [`resolve-append-only-conflict.sh`](../../scripts/resolve-append-only-conflict.sh) — rather than an inline snippet (mirrors this file's own step 5.8's `verify-added-lines-survived.sh` precedent, issue [#1175](https://github.com/mattsears18/shipyard/issues/1175)). It regenerates the file's conflict markers in **diff3 style** (`git checkout --conflict=diff3`), which adds a common-ancestor section per hunk: empty ⇒ neither side touched pre-existing shared content, both sides purely appended — safe to concatenate, exactly "the conflict regions don't overlap" from the issue; non-empty ⇒ a real shared-content edit, not a pure-append shape:
+      Gate 2 above already told you which conflicted paths are in `append_only_paths` — normally zero or one. Run the script **once per such path, as its own plain command**, substituting the path as a literal; this is the same decompose-rather-than-loop call gate 2 makes, for the same reason ([#1590](https://github.com/mattsears18/shipyard/issues/1590)):
+
       ```bash
       export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-      for f in $conflicted; do
-        if printf '%s' "$vc_append_only" | jq -e --arg f "$f" 'type == "array" and (index($f) != null)' >/dev/null 2>&1; then
-          AO_OUT=$("$CLAUDE_PLUGIN_ROOT/scripts/resolve-append-only-conflict.sh" "$f")
-          AO_STATUS=$?
-          if [ "$AO_STATUS" != "0" ]; then
-            git rebase --abort 2>/dev/null || true
-            echo "blocked rebase #<M>: append-only-doc conflict in $f is not a pure both-appended shape ($AO_OUT) — needs manual rebase"
-            exit 0
-          fi
-          git add "$f"
-        fi
-      done
       ```
-      Exit 0 means the script already rewrote `$f` in the working tree (both sides concatenated, markers removed) — `git add` it and move on. Exit 1 (`OVERLAP:$f`) and exit 2 (`INDETERMINATE:...`) are both bail conditions — never treat exit 2 as safe. This item runs its own resolution inline (unlike items 3–4, whose resolution recipe is the separate "Resolution" section below) because the script's check-and-resolve are the same operation: there's no separate "verify eligible, then resolve" split for a pure-append doc the way there is for the version-bump math.
+
+      ```bash
+      "$CLAUDE_PLUGIN_ROOT/scripts/resolve-append-only-conflict.sh" <one conflicted append-only path>
+      ```
+
+      Read the exit status and stdout, then branch:
+
+      - **Exit 0** — the script already rewrote that file in the working tree (both sides concatenated, markers removed). Stage it and move to the next append-only path:
+
+        ```bash
+        git add <that same path>
+        ```
+
+      - **Exit 1 (`OVERLAP:<path>`) or exit 2 (`INDETERMINATE:...`)** — both are bail conditions; never treat exit 2 as safe. Abort and bail, naming the path and the script's output:
+
+        ```bash
+        git rebase --abort 2>/dev/null || true
+        ```
+
+        ```bash
+        echo "blocked rebase #<M>: append-only-doc conflict in <that path> is not a pure both-appended shape (<the script's output>) — needs manual rebase"
+        ``` This item runs its own resolution inline (unlike items 3–4, whose resolution recipe is the separate "Resolution" section below) because the script's check-and-resolve are the same operation: there's no separate "verify eligible, then resolve" split for a pure-append doc the way there is for the version-bump math.
 
    **Resolution — manifest/CHANGELOG class only (applies when the manifest/CHANGELOG class is eligible per item 1 and gates 2–4 all hold; any `append_only_paths` files were already resolved and `git add`-ed by item 5 above, nothing further needed for them):**
 
@@ -165,10 +183,17 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       Infer the PR's intended level from the **ground truth the PR already encodes** — the delta between its own pre-allocated version and its merge-base with main — NOT re-derived from the issue title (by rebase time the version delta is more reliable than prose). `origin/$HEAD_REF` still points at the pre-rebase head (the force-push is step 6, not yet run), so both reads are stable refs independent of the in-progress rebase state:
 
       ```bash
-      floor=$(git show "origin/$DEFAULT_BRANCH:$vc_manifest" | jq -r "$vc_version_jq")
-      pr_version=$(git show "origin/$HEAD_REF:$vc_manifest" | jq -r "$vc_version_jq")
+      # Read each manifest blob into a variable, THEN filter it with a
+      # herestring — `git show … | jq` is a pipe spanning a shell command
+      # boundary, which the worktree-isolation guard refuses, while a command's
+      # own input redirection passes cleanly (dont.md's post-relocation rule).
+      manifest_at_main=$(git show "origin/$DEFAULT_BRANCH:$vc_manifest")
+      floor=$(jq -r "$vc_version_jq" <<< "$manifest_at_main")
+      manifest_at_pr=$(git show "origin/$HEAD_REF:$vc_manifest")
+      pr_version=$(jq -r "$vc_version_jq" <<< "$manifest_at_pr")
       base_sha=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH")
-      base_version=$(git show "$base_sha:$vc_manifest" | jq -r "$vc_version_jq")
+      manifest_at_base=$(git show "$base_sha:$vc_manifest")
+      base_version=$(jq -r "$vc_version_jq" <<< "$manifest_at_base")
 
       # The PR's claimed level = the highest semver component it advanced over
       # its merge-base (major wins over minor wins over patch).
@@ -221,8 +246,14 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       # Assert the raw diff actually looks like `git diff` output before
       # trusting a parse of it.
       manifest_raw_diff=$(git diff "$base_sha" "origin/$HEAD_REF" -- "$vc_manifest")
+      # One arm per pattern rather than a `"" | "diff --git "*)` alternation:
+      # once the quoted spans are stripped, the alternation bar is
+      # indistinguishable from a shell pipe to compound-block-scan.sh's
+      # case-arm heuristic, and a false positive in a CI gate is as expensive
+      # as a real one. The two arms mean exactly what the alternation did.
       case "$manifest_raw_diff" in
-        "" | "diff --git "*) : ;;
+        "") : ;;
+        "diff --git "*) : ;;
         *)
           git rebase --abort 2>/dev/null || true
           echo "blocked rebase #<M>: git diff output for '$vc_manifest' does not look like real git-diff output (missing the leading 'diff --git' header) — a diff-rewriting shell proxy (e.g. rtk) may be active in this environment; bypass it (e.g. run 'rtk proxy git diff ...' directly) before retrying (see https://github.com/mattsears18/shipyard/issues/1333)"
@@ -234,9 +265,10 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       # ($pr_version, computed in item 1 above) — extract it from the
       # pre-rebase diff so the recorded text is exactly what ADDED_LINES will
       # compute, never a hand-reconstructed guess.
-      manifest_line=$(printf '%s\n' "$manifest_raw_diff" \
-        | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' \
-        | grep -F -- "$pr_version" || true)
+      # Extract, then match — two plain commands fed by herestrings rather than
+      # a `printf | awk | grep` pipeline, per the same post-relocation rule.
+      manifest_added=$(awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' <<< "$manifest_raw_diff")
+      manifest_line=$(grep -F -- "$pr_version" <<< "$manifest_added" || true)
       [ -n "$manifest_line" ] && printf '%s\t%s\n' "$vc_manifest" "$manifest_line" >> "$KNOWN_REWRITES"
 
       # The CHANGELOG's PR-added heading is the top-of-file `### <version>`
@@ -245,16 +277,18 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       if [ -n "$vc_changelog" ]; then
         changelog_raw_diff=$(git diff "$base_sha" "origin/$HEAD_REF" -- "$vc_changelog")
         case "$changelog_raw_diff" in
-          "" | "diff --git "*) : ;;
+          "") : ;;
+          "diff --git "*) : ;;
           *)
             git rebase --abort 2>/dev/null || true
             echo "blocked rebase #<M>: git diff output for '$vc_changelog' does not look like real git-diff output (missing the leading 'diff --git' header) — a diff-rewriting shell proxy (e.g. rtk) may be active in this environment; bypass it (e.g. run 'rtk proxy git diff ...' directly) before retrying (see https://github.com/mattsears18/shipyard/issues/1333)"
             exit 0
             ;;
         esac
-        changelog_line=$(printf '%s\n' "$changelog_raw_diff" \
-          | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' \
-          | grep -E '^### ' | head -1 || true)
+        # Same two-step shape as the manifest above; `grep -m1` replaces the
+        # `| head -1` pipe.
+        changelog_added=$(awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' <<< "$changelog_raw_diff")
+        changelog_line=$(grep -m1 -E '^### ' <<< "$changelog_added" || true)
         [ -n "$changelog_line" ] && printf '%s\t%s\n' "$vc_changelog" "$changelog_line" >> "$KNOWN_REWRITES"
       fi
       ```

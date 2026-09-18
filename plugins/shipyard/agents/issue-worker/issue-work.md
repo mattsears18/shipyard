@@ -259,7 +259,7 @@ Closes [#356](https://github.com/mattsears18/shipyard/issues/356) — the **phan
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
-  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  LAST_PUSH=$(git log -1 --abbrev=12 --format='%h' 2>/dev/null)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi
@@ -371,7 +371,7 @@ A dispatch can run long enough for a **concurrent session** — a `/shipyard:my-
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
-  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  LAST_PUSH=$(git log -1 --abbrev=12 --format='%h' 2>/dev/null)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi
@@ -448,7 +448,7 @@ A belt-and-suspenders complement to [§4.5](#45-pre-pr-create-diff-sanity-check)
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
-  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  LAST_PUSH=$(git log -1 --abbrev=12 --format='%h' 2>/dev/null)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi
@@ -481,7 +481,7 @@ Closes [#481](https://github.com/mattsears18/shipyard/issues/481) — the **stuc
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
-  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  LAST_PUSH=$(git log -1 --abbrev=12 --format='%h' 2>/dev/null)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi

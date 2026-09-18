@@ -137,13 +137,16 @@ The crash is real and understood, but the resolution requires something a worker
 
 ```bash
 COMMENTS_JSON='<the comments array from step 0, already in context>'
-latest_escalation=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+# Herestrings, not `printf … | jq` — a pipe spanning a shell command boundary
+# is refused by the worktree-isolation guard, while a command's own input
+# redirection passes cleanly (dont.md's post-relocation rule).
+latest_escalation=$(jq -r '
   [.[] | select(.body | startswith("<!-- do-work-investigation-disposition -->"))]
-  | sort_by(.createdAt) | last.createdAt // empty')
-latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+  | sort_by(.createdAt) | last.createdAt // empty' <<< "$COMMENTS_JSON")
+latest_decision=$(jq -r '
   [.[] | select(.body | startswith("<!-- shipyard-resolve-decisions -->")
                       or startswith("<!-- do-work-decision-resolved -->"))]
-  | sort_by(.createdAt) | last.createdAt // empty')
+  | sort_by(.createdAt) | last.createdAt // empty' <<< "$COMMENTS_JSON")
 ```
 
 **If `latest_escalation` is non-empty AND `latest_decision` is non-empty AND `latest_decision` sorts after `latest_escalation`** (plain string `>` — ISO-8601 UTC timestamps compare correctly), a human already answered this exact question after the last time this issue was escalated. Do NOT apply `needs-human-review` — instead:

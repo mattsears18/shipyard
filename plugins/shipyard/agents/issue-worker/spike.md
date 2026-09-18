@@ -99,13 +99,16 @@ Route here instead of completing the spike when the investigation surfaces somet
 
 ```bash
 COMMENTS_JSON='<the comments array from step 0, already in context>'
-latest_escalation=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+# Herestrings, not `printf … | jq` — a pipe spanning a shell command boundary
+# is refused by the worktree-isolation guard, while a command's own input
+# redirection passes cleanly (dont.md's post-relocation rule).
+latest_escalation=$(jq -r '
   [.[] | select(.body | startswith("<!-- do-work-investigation-disposition -->"))]
-  | sort_by(.createdAt) | last.createdAt // empty')
-latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+  | sort_by(.createdAt) | last.createdAt // empty' <<< "$COMMENTS_JSON")
+latest_decision=$(jq -r '
   [.[] | select(.body | startswith("<!-- shipyard-resolve-decisions -->")
                       or startswith("<!-- do-work-decision-resolved -->"))]
-  | sort_by(.createdAt) | last.createdAt // empty')
+  | sort_by(.createdAt) | last.createdAt // empty' <<< "$COMMENTS_JSON")
 ```
 
 **If `latest_escalation` is non-empty AND `latest_decision` is non-empty AND `latest_decision` sorts after `latest_escalation`** (plain string `>` — ISO-8601 UTC timestamps compare correctly), a human already answered this exact question after the last time this issue was escalated. Do NOT apply `needs-human-review` — instead:
@@ -154,7 +157,10 @@ The common path. Continue to steps 5–10 below regardless of which of the three
 **Locate the repo's existing decision-record convention first** — don't assume one:
 
 ```bash
-git ls-files 'docs/adr/*' 'docs/decisions/*' 'docs/architecture/*' 'docs/design/*' 2>/dev/null | head -5
+# No `| head -5` — a pipe spanning a shell command boundary is refused by the
+# worktree-isolation guard, and these four globs are narrow enough that the
+# full listing is the excerpt. Read the first few paths; that is all this needs.
+git ls-files 'docs/adr/*' 'docs/decisions/*' 'docs/architecture/*' 'docs/design/*' 2>/dev/null
 ls docs/adr docs/decisions docs/architecture docs/design 2>/dev/null
 ```
 
@@ -226,7 +232,7 @@ A pure-research spike with nothing safely committable yet is a completely valid 
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
-  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  LAST_PUSH=$(git log -1 --abbrev=12 --format='%h' 2>/dev/null)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi
@@ -311,8 +317,9 @@ LEAKED=$(gh pr view <pr-num> --repo <owner/repo> --json closingIssuesReferences 
 
 if [ "$LEAKED" = "true" ]; then
   CURRENT_BODY=$(gh pr view <pr-num> --repo <owner/repo> --json body --jq '.body')
-  PATCHED_BODY=$(printf '%s' "$CURRENT_BODY" \
-    | sed -E "s@#<CHILD>@https://github.com/<owner>/<repo>/issues/<CHILD>@g")
+  # Herestring, not `printf … | sed` — a pipe spanning a shell command boundary
+  # is refused by the worktree-isolation guard (dont.md's post-relocation rule).
+  PATCHED_BODY=$(sed -E "s@#<CHILD>@https://github.com/<owner>/<repo>/issues/<CHILD>@g" <<< "$CURRENT_BODY")
   gh pr edit <pr-num> --repo <owner/repo> --body "$PATCHED_BODY"
 
   LEAKED=$(gh pr view <pr-num> --repo <owner/repo> --json closingIssuesReferences \
