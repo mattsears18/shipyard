@@ -493,6 +493,47 @@ else
   bad "session-state.sh is missing set-slot / release-slot / --set-file (#1561)"
 fi
 
+# (21) Regression (issue #1579): skills/worker-preamble/*.md — the first
+# worker-facing family admitted to the built-in FILES list — is clean of all
+# four shapes, and is admitted by GLOB so a newly-added fragment is covered
+# the moment it lands. Three assertions, each guarding a different way the
+# admission could silently rot.
+wp_dir="$repo_root/plugins/shipyard/skills/worker-preamble"
+
+# (a) The whole directory scans clean. This is the assertion that fails if a
+# future edit reintroduces a pipe or a gh/git-wrapping loop into a fragment.
+if [[ -d "$wp_dir" ]]; then
+  if bash "$scanner" "$wp_dir"/*.md >/dev/null 2>&1; then
+    ok "scanner reports every skills/worker-preamble/*.md fragment as clean (#1579)"
+  else
+    bad "scanner found a compound shape in skills/worker-preamble/*.md — see script output for the offending block"
+  fi
+fi
+
+# (b) The glob admission is still wired into FILES. Test (14)'s count proxy
+# is scoped to commands/do-work/ paths and cannot see this one, so without
+# this assertion the whole directory could drop off FILES while the scanner
+# still reported "all scanned file(s) clean" over the remaining list.
+# shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+if grep -qF -- '"$repo_root/plugins/shipyard/skills/worker-preamble"/*.md' "$scanner"; then
+  ok "scanner's built-in FILES list still admits skills/worker-preamble/*.md by glob (#1579)"
+else
+  bad "scanner no longer admits skills/worker-preamble/*.md — #1579's coverage ratchet has regressed"
+fi
+
+# (c) No allow markers in the directory. Every fragment there is
+# post-relocation by construction, so an exemption could only ever be a
+# shortcut around a real refused shape rather than a genuine
+# pre-relocation carve-out like setup/*.md's two.
+if [[ -d "$wp_dir" ]]; then
+  wp_marker_count=$(grep -hcF -- '<!-- compound-block-scan: allow -->' "$wp_dir"/*.md 2>/dev/null | awk '{t += $1} END {print t + 0}')
+  if [[ "$wp_marker_count" -eq 0 ]]; then
+    ok "skills/worker-preamble/*.md carries no compound-block-scan allow markers (#1579)"
+  else
+    bad "skills/worker-preamble/*.md carries $wp_marker_count allow marker(s) — every fragment there is post-relocation, so an exemption can only be a shortcut around a real refused shape"
+  fi
+fi
+
 echo
 echo "  ${pass} passed, ${fail} failed"
 [[ "$fail" -eq 0 ]]

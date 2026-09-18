@@ -15,7 +15,9 @@ The orchestrator's end-of-session cleanup reaps `.claude/worktrees/agent-*` dire
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
-  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
+  # `%h` + `--abbrev=12` rather than `%H | head -c 12`: a pipe spanning a
+  # shell command boundary is refused by the worktree-isolation guard.
+  LAST_PUSH=$(git log -1 --abbrev=12 --format='%h' 2>/dev/null)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi

@@ -100,10 +100,11 @@ The watchdog keys on **stream output**, not on tool-call boundaries — a single
 1. **Don't redirect long-running command output to a file.** The single biggest offender is `... > /tmp/log` on a slow command — the redirect is exactly what starves the watchdog. Let the command stream to the terminal and `tee` if you also need the file:
    ```bash
    # BAD — silent for the whole download, trips the watchdog on a big failed-log fetch.
-   gh run view "$run_id" --repo "$repo" --log-failed > /tmp/failed.log
-   # GOOD — output streams to stdout (feeds the watchdog) AND lands in the file.
-   gh run view "$run_id" --repo "$repo" --log-failed 2>&1 | tee /tmp/failed.log
+   gh run view "$run_id" --repo "$repo" --log-failed > failed.log
+   # GOOD — output streams to stdout, which is what feeds the watchdog.
+   gh run view "$run_id" --repo "$repo" --log-failed
    ```
+   **Don't reach for `... | tee <file>` to get both.** A pipe spanning a shell command boundary is itself refused by the worktree-isolation guard ([`dont.md` § "Post-relocation Bash blocks must be plain, single-purpose commands"](../../commands/do-work/dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277)), so it trades a watchdog trip for a denied tool call. You rarely need the file at all — the streamed output is already in the tool result you're reading. When you genuinely do want it on disk (to grep a very large log), write it there with the `Write` tool from that result, into `$WORKTREE_PATH/.shipyard-scratch/` per [`SKILL.md` § "Scratch directory"](./SKILL.md) — never `/tmp`, which the scratch-directory rule already rules out.
 2. **Prefer the streaming/progress form of the command.** `npm ci` already prints progress to stderr by default — do NOT silence it with `--silent` / `--quiet` / `> /dev/null` on the path where the watchdog is a risk. `gh pr checks <M> --watch --interval 30` emits a status table on every interval tick, so it self-heartbeats and never needs wrapping (this is why the fix-checks-only fix-loop is watchdog-safe as written). For a test runner that buffers, pass its line-reporter / non-quiet flag (`jest --verbose`, `pytest -v`, `vitest --reporter=verbose`) so each test result is a stream write.
 3. **Wrap a genuinely-silent unavoidable command in a heartbeat loop.** When a command *must* run silently for minutes (a compile step with no progress output, a vendor CLI that only prints on completion), background it and emit a heartbeat line on an interval until it exits. The heartbeat lines are the stream output the watchdog needs:
    ```bash

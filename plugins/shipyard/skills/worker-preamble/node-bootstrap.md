@@ -100,26 +100,23 @@ Confirmed repro (issue #708): session `session_01Hs4CqGT53F6kwVasHiyLnH` against
 
 Don't sweep the whole tree for every nested `package.json`. Fire on the intersection of *your diff* and *nested-package dirs*: **if your change modifies files under a directory that has its own `package.json` (e.g. `functions/`), `npm ci` there before running that package's gates.** A Cloud Functions change ⇒ `npm ci` in `functions/`; a nested package your diff doesn't touch is left alone (its gates don't run against your change, so it needs no install).
 
+**Read the changed-file list, then install per directory as separate plain commands — don't script it as a loop.** A `for`/`while` loop wrapping a `git` call is one of the shapes the worktree-isolation guard refuses ([`dont.md` § "Post-relocation Bash blocks must be plain, single-purpose commands"](../../commands/do-work/dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277)), and here the item count is small and bounded by construction — the heuristic above deliberately fires on *your diff's* directories, which is typically zero or one nested package — so decomposition in place is the right call rather than extracting a script.
+
+First, read what your change touched (`DEFAULT_BRANCH` is the repo's default branch, resolved earlier in the flow):
+
 ```bash
-# DEFAULT_BRANCH is the repo's default branch (resolved earlier in the flow).
-# For each dir that (a) owns its own package.json distinct from the root / app
-# workspace you already bootstrapped AND (b) contains at least one file your
-# change touches, bootstrap it. Walk up from each changed file to the nearest
-# package.json and install there if its node_modules is missing.
-CHANGED=$(git diff --name-only "origin/$DEFAULT_BRANCH"...HEAD)
-for f in $CHANGED; do
-  d=$(dirname "$f")
-  while [ "$d" != "." ] && [ "$d" != "/" ]; do
-    if [ -f "$d/package.json" ] && [ ! -d "$d/node_modules" ]; then
-      ( cd "$d" && npm ci --no-audit --no-fund --prefer-offline )
-      break
-    fi
-    d=$(dirname "$d")
-  done
-done
+git diff --name-only "origin/$DEFAULT_BRANCH"...HEAD
 ```
 
-**Bounded search, not a full sweep.** Detect the nested packages to install by (1) walking up from your changed files to the nearest `package.json` (the loop above), or (2) reading any `test:unit:*` / `build` script that `cd`s into a subdir — those scripts name the nested packages whose gates you're expected to run. Do NOT recursively `npm ci` every `package.json` in the tree; install only the nested package(s) your change touches and whose gates you'll actually run before pushing.
+Then, from that list: for each distinct directory, walk *up* to the nearest ancestor that owns its own `package.json` **distinct from the root / app workspace you already bootstrapped**. Skip any whose `node_modules/` already exists. For each one that remains — normally at most one — run its install as its own plain command:
+
+```bash
+cd "$WORKTREE_PATH/<nested-package-dir>" && npm ci --no-audit --no-fund --prefer-offline
+```
+
+`cd` back to `$WORKTREE_PATH` afterwards (each `Bash` call is hermetic, so this matters only within a single call).
+
+**Bounded search, not a full sweep.** Detect the nested packages to install by (1) walking up from your changed files to the nearest `package.json` (the procedure above), or (2) reading any `test:unit:*` / `build` script that `cd`s into a subdir — those scripts name the nested packages whose gates you're expected to run. Do NOT recursively `npm ci` every `package.json` in the tree; install only the nested package(s) your change touches and whose gates you'll actually run before pushing.
 
 **A non-hoisted package needs its own resolved tree — prefer `npm ci` inside it.** The symlink / `cp -al` remediations from the Dependency-bootstrap ladder assume the deps *hoist* (one shared `node_modules`); a non-hoisted package by definition resolves against a *separate* tree, so `npm ci` inside the nested dir is the correct remediation, not a symlink to the app's `node_modules`. The Auto Mode and Turbopack constraints from that ladder apply identically if you do reach for a link strategy.
 
