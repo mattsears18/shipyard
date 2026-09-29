@@ -359,9 +359,10 @@ cat > "$tmp_bin/npm" <<'STUB'
 # Fake `npm view <pkg> <field>` (invoked as `npm view <pkg> <field>`, so the
 # package name is $2, not $1) — returns a fixed value for a known pkg, a
 # nonzero exit for anything containing "missing", and hangs for anything
-# containing "slow" (used by the timeout test).
+# containing "slow" (used by the timeout test). Keep the sleep in sync with
+# SLOW_STUB_SECONDS below.
 case "$2" in
-  *slow*) sleep 5; echo "1.0.0" ;;
+  *slow*) sleep 10; echo "1.0.0" ;;
   *missing*) exit 1 ;;
   *) echo "1.0.0" ;;
 esac
@@ -397,8 +398,14 @@ out="$(printf '<!-- do-work-recheck: gh-api repos/mattsears18/shipyard/issues/1 
   | PATH="$tmp_bin:$PATH" bash "$SCRIPT" "$OWNER_REPO")"
 assert_equals "stubbed gh-api returning a different value -> changed" "changed" "$out"
 
-# Timeout: the stubbed npm sleeps 5s: pin RECHECK_PROBE_TIMEOUT_SECONDS to 1
-# and confirm the call returns quickly with `unknown` rather than hanging.
+# Timeout: the stubbed npm sleeps SLOW_STUB_SECONDS: pin
+# RECHECK_PROBE_TIMEOUT_SECONDS to 1 and confirm the call returns with
+# `unknown` rather than hanging. The bound asserts the property — the timeout
+# cut the stub short (elapsed < SLOW_STUB_SECONDS) — not a tight wall-clock
+# number: a 1s timeout can take several seconds to be scheduled, fire, and
+# reap under host load (issue #1639), and that is still an enforced timeout.
+# The stub sleep is long enough that the jitter headroom is ~9s.
+SLOW_STUB_SECONDS=10
 if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
   start_ts=$(date +%s)
   out="$(printf '<!-- do-work-recheck: npm-view slowpkg version == 1.0.0 -->\n' \
@@ -406,10 +413,10 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
   end_ts=$(date +%s)
   elapsed=$((end_ts - start_ts))
   assert_equals "timed-out probe -> unknown, never changed/unchanged" "unknown" "$out"
-  if [[ "$elapsed" -le 3 ]]; then
-    assert_pass "timeout enforced — returned in ${elapsed}s, not the stub's full 5s sleep"
+  if [[ "$elapsed" -lt "$SLOW_STUB_SECONDS" ]]; then
+    assert_pass "timeout enforced — returned in ${elapsed}s, not the stub's full ${SLOW_STUB_SECONDS}s sleep"
   else
-    assert_fail "timeout enforced — took ${elapsed}s, expected <=3s (RECHECK_PROBE_TIMEOUT_SECONDS=1)"
+    assert_fail "timeout enforced — took ${elapsed}s, expected <${SLOW_STUB_SECONDS}s (RECHECK_PROBE_TIMEOUT_SECONDS=1)"
   fi
 else
   echo "  (skipping timeout-enforcement test — no timeout/gtimeout binary on PATH)"
@@ -439,7 +446,7 @@ case "$url" in
   */servererr) printf '\n500\n' ;;
   */badjson)  printf 'not json at all\n200\n' ;;
   */big)      printf '{"pad":"'; head -c 5000 /dev/zero | tr '\0' 'x'; printf '","n":42}\n200\n' ;;
-  */slow)     sleep 5; printf '{"feed":{"entry":[1]}}\n200\n' ;;
+  */slow)     sleep 10; printf '{"feed":{"entry":[1]}}\n200\n' ;;
   *)          printf '\n404\n' ;;
 esac
 STUB
@@ -492,10 +499,10 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
   end_ts=$(date +%s)
   elapsed=$((end_ts - start_ts))
   assert_equals "url-json timed-out probe -> unknown, never changed/unchanged" "unknown" "$out"
-  if [[ "$elapsed" -le 3 ]]; then
-    assert_pass "url-json timeout enforced — returned in ${elapsed}s, not the stub's full 5s sleep"
+  if [[ "$elapsed" -lt "$SLOW_STUB_SECONDS" ]]; then
+    assert_pass "url-json timeout enforced — returned in ${elapsed}s, not the stub's full ${SLOW_STUB_SECONDS}s sleep"
   else
-    assert_fail "url-json timeout enforced — took ${elapsed}s, expected <=3s"
+    assert_fail "url-json timeout enforced — took ${elapsed}s, expected <${SLOW_STUB_SECONDS}s"
   fi
 else
   echo "  (skipping url-json timeout-enforcement test — no timeout/gtimeout binary on PATH)"

@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.57.2 — 2026-09-29
+
+The recheck-probe timeout tests now assert that the timeout cut the stub short, not that it finished within 3 seconds (closes #1639). Both tests pinned `RECHECK_PROBE_TIMEOUT_SECONDS=1` against a stub that slept 5s and required `elapsed <= 3`. Under host load, such as running the full `*.test.sh` battery in parallel batches, the 1s timeout could take 4s of wall time to fire and reap. That failed the suite even though the timeout was enforced. The stub now sleeps 10s and both sites assert `elapsed < SLOW_STUB_SECONDS`, which leaves about 9s of headroom for scheduling jitter.
+
+- `plugins/shipyard/scripts/tests/eval-recheck-probe.test.sh` — the `npm` and `curl` slow stubs sleep 10s, and a new `SLOW_STUB_SECONDS` bound replaces the `-le 3` check at both the npm-view and url-json timeout assertions.
+
 ### 4.57.1 — 2026-09-29
 
 Two discoverability fixes from one lightwork session (closes #1597). A throwaway config file (Playwright, Vitest, Jest) resolves its imports from its own directory, so in a monorepo one written to the worktree-root `.shipyard-scratch/` can't see a package-local dependency; the scratch-dir convention now says to use `<package>/.shipyard-scratch/`, seeded the same self-ignoring way. Separately, calling `detect-ci-runner-capacity.sh --decide-backpressure <owner/repo>` (the no-flag form's shape, and the natural first guess) now gets a targeted stderr hint naming the five positional inputs, where each comes from, and the `steady-state.md` step C call site, instead of a bare usage line. The `invariant-line.md` entry for the mandatory `ci_backpressure=` token now spells out the positional signature too. The suggested one-argument live form wasn't added: `IN_FLIGHT` is orchestrator-session state the script can't read on its own, and the step C block already documents the full invocation.
