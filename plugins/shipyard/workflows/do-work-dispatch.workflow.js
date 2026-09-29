@@ -349,7 +349,7 @@ const emit = (message) => {
 
 // Per-work-unit shape (issue-work fields documented alongside the builder below):
 //   { number, mode, model, trust, branch, worktreePath,
-//     verifyGate, userFeedback, phase1Scope, tokenBudgetWarning,
+//     verifyGate, userFeedback, phase1Scope, tokenBudgetWarning, sessionConcurrency,
 //     nextAvailableVersion, changelogPath }
 const selectedIssues = Array.isArray(input.issues) ? input.issues : []
 
@@ -495,6 +495,7 @@ const workUnits = selectedIssues.map((it) => ({
   userFeedback: it.userFeedback === true,
   phase1Scope: it.phase1Scope ?? null,
   tokenBudgetWarning: it.tokenBudgetWarning ?? null,
+  sessionConcurrency: concurrency, // #1594 concurrent-tenant paragraph, rendered when > 1
   nextAvailableVersion: it.nextAvailableVersion ?? null,
   changelogPath: it.changelogPath ?? null,
   // fix-checks-only / fix-rebase — target an EXISTING PR's branch, not a fresh one
@@ -1368,6 +1369,25 @@ function buildIssueWorkPrompt(unit, repoSlug) {
       `\`setup-phase-file-token-budget.test.sh\` locally before pushing this file, and`,
       `prefer condensing prose over extending it further. Advisory only — this never`,
       `gates, defers, or reorders your dispatch.`,
+    )
+  }
+
+  // Concurrent-tenant augmentation — mirrors dispatch-rules.md's
+  // "Concurrent-tenant augmentation (#1594)" paragraph verbatim. The core
+  // stamps `sessionConcurrency` onto every unit from the dispatch's own
+  // `concurrency` arg, so no orchestrator-computed field is needed.
+  if (Number(unit.sessionConcurrency) > 1) {
+    const n = Number(unit.sessionConcurrency)
+    lines.push(
+      ``,
+      `**Concurrent tenants on a shared host (orchestrator-supplied, #1594):** this session`,
+      `runs at \`--concurrency ${n}\`, so up to \`${n - 1}\` sibling workers may be live on this`,
+      `same host right now. Worktrees isolate files, not ports: never assume exclusive use`,
+      `of a default port. Before booting any long-lived local service (emulator, dev server,`,
+      `test DB), use the repo's port-isolation wrapper if it ships one, for every`,
+      `service-backed run, not just some. If a service-backed suite fails in a way your`,
+      `diff doesn't explain, rule out a peer tearing down your services before you touch a`,
+      `correct assertion. See \`shipyard:worker-preamble\`'s \`shared-host-services.md\`.`,
     )
   }
 
