@@ -154,6 +154,26 @@ if [[ -f "$fix_rebase" ]]; then
     "fix-rebase.md documents a single known-rewrites truncation point shared by §4.6 and §4.7"
   assert_contains "$fix_rebase" 'only ever APPENDS, never re-truncates' \
     "fix-rebase.md's §4.6 item 5 recipe appends rather than re-truncating the known-rewrites file"
+
+  # Issue #1611: a value-only conflict on a path NOT in generated_paths must
+  # bail with text naming the missing declaration, not the generic
+  # "needs human merge judgment" reason — and must stay a bail.
+  assert_contains "$fix_rebase" 'issues/1611' \
+    "fix-rebase.md links to issue #1611 (value-only conflict recognition)"
+  assert_contains "$fix_rebase" 'Value-only conflict on an undeclared path' \
+    "fix-rebase.md step 4 adds the value-only recognition check before the generic bail"
+  assert_contains "$fix_rebase" 'declare each one in version_coordination.generated_paths with its regeneration command' \
+    "fix-rebase.md's value-only bail text names the generated_paths declaration as the remedy"
+  assert_contains "$fix_rebase" 'no human merge judgment is required for that route' \
+    "fix-rebase.md's value-only bail text says no human merge judgment is required"
+  assert_contains "$fix_rebase" 'This stays a bail, never an auto-resolve.' \
+    "fix-rebase.md keeps the value-only recognition a bail, not an auto-resolve"
+fi
+
+steady_state="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+if [[ -f "$steady_state" ]]; then
+  assert_contains "$steady_state" 'Needs a generated_paths declaration, not a manual rebase.' \
+    "steady-state.md's blocked-rebase comment does not say 'Needs manual rebase.' for the #1611 sub-case"
 fi
 
 # ---------------------------------------------------------------------------
