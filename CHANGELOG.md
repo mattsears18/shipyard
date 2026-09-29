@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.9 — 2026-09-29
+
+`fix-rebase` now names the missing `version_coordination.generated_paths` declaration when a conflict is confined to differing values on the same keys in an undeclared file, instead of bailing with the generic reason that reads as "a human must judge this merge" (closes #1611). A content hash or generated timestamp conflict has only one real remedy: declare the path so §4.7 can regenerate it and exempt it from the line-survival guard. The recognition changes only the hand-back text. It is still a bail, never an auto-resolve, because inferring "this looks generated" from the conflict shape is the filename heuristic §4.7's explicit allowlist rejects.
+
+- `agents/issue-worker/fix-rebase.md`: step 4 adds a value-only recognition check before the generic non-trivial bail. It applies when every blocking file is undeclared and every hunk pairs same-key lines that differ only in value, and it gives a bail template that conditions the "machine-generated" reading unless the worker cites evidence. The worker is told to name every PR-touched output of the same generator. Step 7's `blocked rebase` bullet points at the template.
+- `commands/do-work/steady-state.md`: for this sub-case the blocked-rebase reconcile ends its PR comment with `Needs a generated_paths declaration, not a manual rebase.` instead of `Needs manual rebase.`, which would contradict the reason.
+- `scripts/tests/fix-rebase-generated-files.test.sh`: six assertions pin the recognition, the bail text, the bail-not-resolve rule, and the reconcile comment.
+
 ### 4.56.8 — 2026-09-29
 
 Six orchestrator blocks that run after step 0.5's relocation still opened with the compound `${CLAUDE_PLUGIN_ROOT:-$(...)}` preamble, which is an export of a computed value and is refused once the session is isolated (closes #1625). #1607 and #1619 retired the stash-read exports but never touched the compound one-liner, because check (3) of the preamble test accepts it in any file. Each of those blocks now opens with `export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"`. The issue listed eight sites. Re-checking the step ordering showed that `setup/01c-label-recovery-refine.md`'s step-3c block runs pre-relocation, since its normative call site is `00e-pre-relocation-sweeps.md` step 5. That block keeps the compound form and is allowlisted.
