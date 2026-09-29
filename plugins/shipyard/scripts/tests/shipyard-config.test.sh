@@ -789,6 +789,12 @@ assert_equals "$("$helper" get ci.skip_drain_rebase)" "false" "local layer overr
 assert_equals "$("$helper" get ci.skip_drain_rebase --with-source | cut -f2)" "local" "source reflects local layer after override"
 
 # --------------------------------------------------------------------------
+echo "== scope.inline_incidental_fixes (issue #1623)"
+assert_equals "$("$helper" get scope.inline_incidental_fixes)" "true" "scope.inline_incidental_fixes defaults to true (fix inline, do not force a follow-up issue)"
+"$helper" set scope.inline_incidental_fixes false --repo
+assert_equals "$("$helper" get scope.inline_incidental_fixes)" "false" "scope.inline_incidental_fixes can be set to false at repo layer to restore always-file behavior"
+assert_equals "$("$helper" get scope.inline_incidental_fixes --with-source | cut -f2)" "repo" "source is repo after set"
+
 echo "== scope.diagnosis_reuse_hours (issue #563)"
 repo=$(mktmprepo)
 home=$(mktmprepo)

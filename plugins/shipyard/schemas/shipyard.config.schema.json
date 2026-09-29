@@ -423,8 +423,14 @@
     "scope": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Controls scope-preflight caching and pre-scope detector behavior (issues #563, #591). The freshness window lets the orchestrator skip redundant scope-agent dispatches when a matching marker-tagged diagnosis comment already exists on the issue and is younger than `diagnosis_reuse_hours`. The self-modification path set drives the Detector 2 pre-defer for issues whose deliverable is an Auto-Mode-denied Claude-Code agent-config file.",
+      "description": "Controls scope-preflight caching, pre-scope detector behavior, and worker scope discipline (issues #563, #591, #1623). The freshness window lets the orchestrator skip redundant scope-agent dispatches when a matching marker-tagged diagnosis comment already exists on the issue and is younger than `diagnosis_reuse_hours`. The self-modification path set drives the Detector 2 pre-defer for issues whose deliverable is an Auto-Mode-denied Claude-Code agent-config file.",
       "properties": {
+        "inline_incidental_fixes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether an issue-work worker may fix an incidental problem it finds in the SAME PR instead of filing a follow-up issue (issue #1623). Default true. The original rule mandated filing on the grounds that scope creep 'makes PRs unreviewable and stalls auto-merge'. The reviewability half assumes a human reads the diff, which is false for a repo whose worker PRs land via auto-merge with no reviewer — while the cost is paid on every dispatch: a new issue per incidental finding, plus a second full worker dispatch to apply a fix the first worker had already diagnosed with the file open. The auto-merge half survives, and is preserved as a BOUND rather than a prohibition: a worker still files instead of fixing when the fix reaches an unrelated subsystem, needs a design decision the dispatched issue cannot settle, or is large enough to meaningfully raise the chance of reddening a required check. Set to false to restore the always-file behavior — appropriate for a repo where worker PRs ARE human-reviewed and diff size carries real review cost.",
+          "_comment": "Does NOT relax the separate 'no drive-by refactors, no unrelated cleanups' rule in issue-work.md step 4, which is about design restraint rather than incidental-finding disposition, nor the phase_1_scope slice boundary the orchestrator supplies at dispatch time."
+        },
         "diagnosis_reuse_hours": {
           "type": "integer",
           "minimum": 0,

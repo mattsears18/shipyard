@@ -107,12 +107,16 @@ echo "== verification-incidental-coverage-pr-1044.test.sh =="
 
 # --- (A) The primary fragment named in the issue documents the narrow carve-out ---
 assert_file_exists "$fragment_path" "issue-work-verification-dispatch.md exists"
-assert_contains "$fragment_path" "Incidental test-coverage-only fix — narrow exception" \
-  "fragment documents the narrow incidental-coverage-fix exception"
+assert_contains "$fragment_path" "Incidental fix — narrow exception" \
+  "fragment documents the narrow incidental-fix exception"
 assert_contains "$fragment_path" "zero test coverage that the code itself already acknowledges" \
   "fragment scopes the exception to an already-acknowledged coverage gap, not any trivial fix"
-assert_contains "$fragment_path" "Out of scope — always a follow-up \`bug\` issue, never fixed inline" \
-  "fragment keeps a real behavioral bug routed to a follow-up bug issue, not fixed inline"
+assert_contains "$fragment_path" "Out of scope — file a follow-up \`bug\` issue" \
+  "fragment still routes an out-of-bound finding to a follow-up bug issue"
+assert_contains "$fragment_path" "The bound is CI risk and unresolved design, not the mere fact that the finding is a bug" \
+  "fragment states the bound is CI risk and design, not bug-vs-coverage (#1623)"
+assert_contains "$fragment_path" "In scope — a bug you have already diagnosed" \
+  "fragment admits an already-diagnosed bug to the incidental-fix carve-out (#1623)"
 assert_contains "$fragment_path" "Reference, never close" \
   "fragment states the incidental PR must reference, never close, the verification issue"
 assert_contains "$fragment_path" "\`Refs #<N>\`" \
@@ -128,8 +132,10 @@ assert_not_contains "$fragment_path" \
   "fragment no longer states the never-open-a-PR rule with zero exception"
 
 # The narrowed replacement wording IS present.
-assert_contains "$fragment_path" "beyond the narrow step 3 exception above" \
-  "fragment's closing 'never open a PR' paragraph now names its own narrow exception"
+assert_contains "$fragment_path" "Step 3's incidental carve-out is the only PR this path may produce" \
+  "fragment's closing paragraph names step 3 as the only PR this path may produce"
+assert_contains "$fragment_path" "Never open a *resolving* PR" \
+  "fragment scopes its no-PR rule to a RESOLVING PR, not all PRs"
 assert_contains "$fragment_path" "incidental PR: #<M>" \
   "fragment tells the worker to surface the incidental PR number via step 8's optional suffix"
 

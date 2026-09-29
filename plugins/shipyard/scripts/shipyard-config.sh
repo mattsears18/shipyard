@@ -236,6 +236,7 @@ DEFAULTS_JQ='{
     "prune_window_days": 180
   },
   "scope": {
+    "inline_incidental_fixes": true,
     "diagnosis_reuse_hours": 72,
     "self_modification_paths": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"],
     "orchestrator_only_skills": ["shipyard:update-roadmap", "update-roadmap"],
