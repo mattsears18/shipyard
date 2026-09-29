@@ -1,6 +1,6 @@
-# Worker-preamble fragment — CI / push pitfalls (vacuous verification, git-diff-rewriting proxy, heartbeat, locale parity, fixture branch pin, push-protection)
+# Worker-preamble fragment — CI / push pitfalls (vacuous verification, uncollected test files, git-diff-rewriting proxy, heartbeat, locale parity, fixture branch pin, push-protection)
 
-On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode **verifies a CI result**, builds or debugs a pipeline that parses `git diff` output, runs long-running commands (CI babysitting, full local test suites), adds user-facing strings, authors git-using shell test fixtures, or adds secret-shaped test fixtures. The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "An absence-assertion that observed nothing is not a pass"`, `§ "A `git diff`-rewriting shell proxy may be active"`, `§ "A truncated read cannot support a negative claim"`, `§ "A `##[error]` annotation is not a failure verdict"`, `§ "Heartbeat emission around long-running commands"`, `§ "Mirror new string constants into locale / parity files"`, `§ "Pin the default branch in git-using test fixtures"`, `§ "GitHub push-protection blocking a synthetic test-fixture secret"`).
+On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode **verifies a CI result**, builds or debugs a pipeline that parses `git diff` output, runs long-running commands (CI babysitting, full local test suites), **adds a new test file**, adds user-facing strings, authors git-using shell test fixtures, or adds secret-shaped test fixtures. The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "An absence-assertion that observed nothing is not a pass"`, `§ "A test file the runner never collects is not a passing test"`, `§ "A `git diff`-rewriting shell proxy may be active"`, `§ "A truncated read cannot support a negative claim"`, `§ "A `##[error]` annotation is not a failure verdict"`, `§ "Heartbeat emission around long-running commands"`, `§ "Mirror new string constants into locale / parity files"`, `§ "Pin the default branch in git-using test fixtures"`, `§ "GitHub push-protection blocking a synthetic test-fixture secret"`).
 
 ## An absence-assertion that observed nothing is not a pass
 
@@ -53,6 +53,32 @@ esac
 - `grep -P` is **unsupported on macOS** (BSD grep). The error was swallowed by a `2>/dev/null`, the check false-negatived, and the NUL byte it was looking for went undetected — caught only because `file` reported `data` instead of `UTF-8 text`.
 
 In both, an empty/degenerate tool result was consumed as evidence of absence. When you write a check, ask: *what does this print when it fails to look at anything?* If the answer is "the same thing it prints when everything is fine," the check is broken — add the "I observed N things" precondition, and give any new guard a **negative control** (a test that proves the guard's removal changes the outcome; a test that passes with and without the fix is itself an instance of this bug).
+
+## A test file the runner never collects is not a passing test ([#1599](https://github.com/mattsears18/shipyard/issues/1599))
+
+**A test that was never collected is indistinguishable from a test that passed.** "The suite is green" is evidence only about tests the runner actually picked up — and whether a given file is picked up is a property of the **runner's configuration**, not of the code under test. The two coincide in most repos, which is exactly why the failure is silent when they don't.
+
+**The trap.** A new test file's name is usually chosen by analogy to the source file it covers: a React component (`web-push-card.tsx`) gets `web-push-card.test.tsx`. On a repo whose runner collects only one extension, that file runs **nowhere** — and, unlike the whole-suite `No tests found` case in [`node-bootstrap.md`](./node-bootstrap.md) § "Test-runner silent-pass when the target repo ignores worktree paths", the rest of the suite still runs and reports a healthy non-zero count, so nothing in the output looks wrong. Common shapes: a Jest `testMatch`/`testRegex` that omits an extension; a Jest config whose projects take an **explicit computed file list** (no glob, so no "unmatched file" warning either — the #1599 repro, `mattsears18/lightwork`'s `jest.config.js::classifyTopLevelTests()` filtering on `.endsWith('.test.ts')`); a vitest project with a restricted `include`; pytest `python_files`; a Go `_test.go` file behind a build tag the CI invocation doesn't set.
+
+**It launders negative-control evidence specifically.** A negative control (revert the fix, watch the test fail) run against an uncollected file passes vacuously in **both** directions — it can't fail when the fix is reverted, because it never executes. The strongest evidence a worker produces becomes the emptiest.
+
+**The rules, whenever you ADD a test file:**
+
+1. **Derive the filename from the runner's config, not from the source file's extension.** Read the collection rule (`jest.config.*` `testMatch`/`testRegex`/`projects`, `vitest.config.*` `include`, `pytest.ini`/`pyproject.toml` `python_files`, the CI invocation's build tags). When the rule is computed rather than declarative, match the extension and naming of the **existing test files in the target directory** — a reliable, cheap proxy. A test filename suggested by the dispatch prompt, the issue body, or a scope pass is a hint about *location and subject*; its extension is not authoritative.
+2. **Prove the runner collects the file before trusting any result from it** — including the negative control. Ask the runner for its collection list and confirm your path is in it; a non-match is a local failure to fix, not a pass. Per-runner forms (run from the package root the CI job uses, with the same project/config flags):
+
+   | Runner | Collection check | Collected ⇔ |
+   |---|---|---|
+   | Jest | `npx jest --listTests` (add `--selectProjects <p>` for a multi-project config) | your absolute path appears in the output |
+   | Vitest | `npx vitest list --filesOnly <path>` | your path appears; "No test files found" = not collected |
+   | pytest | `pytest --collect-only -q <path>` | ≥1 test id from your file; exit 5 / `no tests ran` = not collected |
+   | Go | `go test -list '.*' <pkg>` with CI's `-tags` | your `Test…` names appear |
+   | Bash `*.test.sh` suites (this repo) | mirror the CI workflow's `find` discovery command | your path appears |
+
+   Filter the listing by reading it — do not `| grep -q` it into a pass/fail bit you never look at (the degenerate-output rule above applies: an empty listing must read as "not collected", never as "no problem").
+3. **State the project/run your cited evidence came from.** When the PR body cites a test run or a negative control, name the runner project (or package) it ran under, so a reader can check it was the project that actually collects the file.
+
+**Discriminator vs. the worktree-ignore case.** `No tests found` / `0 tests` for the *whole* run → the worktree path itself is ignored ([`node-bootstrap.md`](./node-bootstrap.md)). A healthy suite count that simply never includes your new file → this section.
 
 ## A `git diff`-rewriting shell proxy may be active ([#1333](https://github.com/mattsears18/shipyard/issues/1333))
 

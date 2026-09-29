@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.2 — 2026-09-29
+
+A new test file's name now comes from the repo's test-runner configuration, not from the extension of the source file it covers, and a worker must prove the runner actually collects the file before trusting any result from it (closes #1599). Two workers in one lightwork session were handed a `.test.tsx` suggestion on a repo whose Jest projects collect only `.test.ts` through an explicit computed file list. Such a file runs in no project and triggers no "unmatched file" warning. A negative control against it passes vacuously in both directions. Both workers caught it by reading `jest.config.js` themselves; nothing in shipyard would have.
+
+- `skills/worker-preamble/ci-pitfalls.md`: new section "A test file the runner never collects is not a passing test". It says to name the file from the collection config or from sibling test files. It adds a per-runner collection-check table (Jest `--listTests`, `vitest list`, `pytest --collect-only`, `go test -list`, this repo's `find` discovery). It says to name the runner project that cited evidence came from. The fragment index row in `skills/worker-preamble/SKILL.md` lists the new section.
+- `agents/issue-worker/issue-work.md`: a §4 bullet points at that section on every dispatch. To stay under the `spec-size-budget` ceiling, two historical rationale passages (self-assign is not a lock; the per-PR release-bump deferral repro) moved to `issue-work-RATIONALE.md`.
+- `commands/do-work/setup/06b-scope-carveouts.md`: new "Scoping-agent test-file naming" rule. The scope pass suggests a test's location and subject, or derives the name from the runner config, and never copies the source file's extension.
+- `commands/do-work/dont.md`: new dispatch-hygiene bullet: a test that was never collected is indistinguishable from a test that passed.
+- `scripts/tests/test-file-collection-1599.test.sh` (new): pins the rule at all five sites.
+
 ### 4.56.1 — 2026-09-29
 
 CI triage now attributes Playwright failures from the run summary's `failed` bucket instead of the per-spec `##[error]` annotations (closes #1598). Playwright emits an `##[error]` annotation for every failed attempt, including attempts that pass on retry, so the annotations cannot tell a real failure from a flake. `gh run view --log-failed` returns exactly those annotations. In the #1598 repro, triage read two `flaky` specs off them and blamed the PR's diff in a public comment. It then dispatched a fix-checks worker against them, spending ~176k tokens to get a `noop`. That repo runs `failOnFlakyTests: false`, so a retry-recovered flake could not have reddened the run. The end-of-run summary in the full job log is the only list that decides. A new script parses it, and the triage specs now route through that script.
