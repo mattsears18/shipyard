@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.13 — 2026-09-29
+
+`shipyard:worker-preamble` now makes a worker's **read-only sub-dispatch structural rather than advisory**, and requires the worker to re-verify its own tree after **any** sub-dispatch returns (closes #1604). On lightwork #5189 a worker forked a subagent "research-only" with an explicit "do NOT edit files" instruction; the fork edited the same files the parent was fixing, concurrently, and the two edit sets converged only by luck. The #1554 fan-out contract governed subagents a worker *meant* to write into its tree, but said nothing about one it meant not to — and prose scope is only instruction-following. A read-only sub-dispatch now uses an agent type whose tool set excludes `Edit`/`Write` (`Explore`, `Plan`), never a `fork` or `general-purpose` agent told not to edit; a writing one either runs under the fan-out contract or gets its own `isolation: "worktree"`; and the parent runs `git status` before trusting its tree afterwards.
+
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — a short "Research-only is a tool boundary" paragraph under the fan-out section, plus the fragment index row updated.
+- `plugins/shipyard/skills/worker-preamble/fan-out-verification.md` — a new "Read-only sub-dispatches" section with the #5189 repro, the three rules, and guidance for a subagent that inverts who dispatched whom.
+- `plugins/shipyard/scripts/tests/read-only-sub-dispatch-1604.test.sh` — new regression suite pinning both layers.
+
 ### 4.56.12 — 2026-09-29
 
 `/do-work`'s pre-relocation orphan-branch triage (`worktree-reap.sh triage-orphan-branches`) now has a wall-clock bound, `--time-budget`, default 60 seconds (closes #1608). The `--max-prs` and `--max-removals` count caps bound *how many* slow operations the sweep runs, but not *how slow each one is*. Per-removal cost depends on the repo: lightwork's worktrees carry two `node_modules` install roots. So 3 removals plus 1 salvage still overran the 120s foreground timeout at default settings. The harness then backgrounded the sweep across the `EnterWorktree` boundary that step 0.45 exists to stay in front of. The sweep now stops *starting* new candidates once the budget is spent. Each remaining candidate is `time-deferred`: it is neither classified nor written to, so no duplicate PR can be opened, and it waits on disk for a later session. `--time-budget 0` means unlimited. The bound is not applied under `--dry-run`, which performs no writes. The spec also now says what the orchestrator should do if 5b is backgrounded anyway: hold `EnterWorktree` until the job reports its `summary:` line.
