@@ -70,6 +70,10 @@
 #       {"number":N,"verdict":"drop","reason":"covered-by-open-pr","evidence_pointer":"PR #M closingIssuesReferences includes #N"}
 #       {"number":N,"verdict":"drop","reason":"pr-collision-gated"}
 #       {"number":N,"verdict":"drop","reason":"someday-milestone","evidence_pointer":"milestone <title>","someday_recheck_action":"first-park"|"not-due"|"cheap-reset"}
+#     `route:operator` is emitted only for an `agent-console` issue that no
+#     park clause (blocked-by-open-issue, event-gated, pr-collision-gated,
+#     time-gated, someday-milestone) drops -- a parked operator item gets
+#     that park's `drop:*` line instead (issue #1592; see park_verdict).
 #     The `tracking` shapes are that label's special case (issues #1364 and
 #     #1556) — see has_tracking_justification's own comment block below for
 #     the full, precedence-ordered signal list. Every OTHER gate label (`blocked:ci`, `wontfix`, `discussion`,
@@ -1128,10 +1132,62 @@ def is_pr_collision_gated($issue):
 def pr_collision_verdict($issue; $verdicts):
   ($verdicts[($issue.number | tostring)] // "open");
 
+# park_verdict(...) -- issue #1592. The PARK clauses (blocked-by-open-issue,
+# event-gated, pr-collision-gated, time-gated, someday-milestone) extracted
+# into one def so classify_one can consult them at TWO positions without
+# duplicating a single predicate (the drift shape #1247 extracted this
+# script to eliminate):
+#   1. Inside the agent-console branch, BEFORE emitting route:operator. A
+#      parked issue is parked regardless of which queue it would otherwise
+#      land in -- before #1592 the agent-console branch short-circuited
+#      ahead of every one of these clauses, so a Someday-parked, blocked-by,
+#      or blocked-until operator item was re-enqueued to the operator sweep
+#      every session and every configured park mechanism was inert for it.
+#   2. At its original position in the main chain (after investigate /
+#      peer-claimed / assigned-other), for every non-agent-console issue --
+#      identical ordering to the pre-#1592 inline clauses.
+# Returns the verdict object the first matching park clause would emit, or
+# null when none matches. NOTE the someday "escalate" row returns
+# {verdict:"eligible"} -- that is NOT a drop, so the agent-console caller
+# treats it as "not parked" and routes to the operator (the operator pass IS
+# the one re-check for that issue; a code-worker dispatch would be the wrong queue).
+def park_verdict($issue; $event_gated; $pr_collision_gated; $today; $opennums; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days):
+  if blocked_by_open_issue($issue; $opennums) then
+    {number: $issue.number, verdict: "drop", reason: "blocked-by-open-issue"}
+  elif ($event_gated and (probe_verdict($issue; $probe_verdicts) != "changed")) then
+    {number: $issue.number, verdict: "drop", reason: "event-gated"}
+  elif ($pr_collision_gated and (pr_collision_verdict($issue; $pr_collision_verdicts) != "resolved")) then
+    {number: $issue.number, verdict: "drop", reason: "pr-collision-gated"}
+  elif ((($event_gated | not)) and time_gate_future($issue; $today)) then
+    {number: $issue.number, verdict: "drop", reason: "time-gated"}
+  elif is_someday($issue; $someday_milestone) then
+    (if ($someday_recheck_days > 0) then
+       (someday_recheck_state($issue; $today; $someday_recheck_days)) as $recheck_state
+       | if ($recheck_state == "escalate") then
+           # #1422 -- exactly ONE real scope-agent pass this session, not
+           # permanent dispatch eligibility: the marker gets refreshed
+           # (resetting the cadence clock) wherever the scope-agent own
+           # conclusion is recorded, whatever defer class it lands on --
+           # see 06c-scope-handling-ui.md step 4d.
+           {number: $issue.number, verdict: "eligible"}
+         else
+           {number: $issue.number, verdict: "drop", reason: "someday-milestone",
+            evidence_pointer: ("milestone " + ($issue.milestone // "")),
+            someday_recheck_action: $recheck_state}
+         end
+     else
+       {number: $issue.number, verdict: "drop", reason: "someday-milestone",
+        evidence_pointer: ("milestone " + ($issue.milestone // ""))}
+     end)
+  else
+    null
+  end;
+
 def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days; $unmilestoned_seq; $sub_issues):
   (matches_gate_label($issue)) as $gate_hit
   | is_event_gated($issue; $recheck_probe_enabled) as $event_gated
   | is_pr_collision_gated($issue) as $pr_collision_gated
+  | park_verdict($issue; $event_gated; $pr_collision_gated; $today; $opennums; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days) as $park
   | if is_untrusted($issue; $trusted) then
       {number: $issue.number, verdict: "drop", reason: "untrusted-author"}
     elif ($gate_hit != null) then
@@ -1146,7 +1202,12 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
          {number: $issue.number, verdict: "gate", reason: $gate_hit}
        end)
     elif is_agent_console($issue) then
-      {number: $issue.number, verdict: "route", reason: "operator"}
+      # #1592: a park clause wins over the operator route -- see park_verdict.
+      (if ($park != null and $park.verdict == "drop") then
+         $park
+       else
+         {number: $issue.number, verdict: "route", reason: "operator"}
+       end)
     elif is_investigate_signal($issue; $re) then
       (if $investigate_dispatch then
          {number: $issue.number, verdict: "route", reason: "investigate"}
@@ -1157,33 +1218,8 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
       {number: $issue.number, verdict: "drop", reason: "peer-claimed"}
     elif ($respect_assignees and is_assigned_to_other($issue; $me)) then
       {number: $issue.number, verdict: "drop", reason: "assigned-other"}
-    elif blocked_by_open_issue($issue; $opennums) then
-      {number: $issue.number, verdict: "drop", reason: "blocked-by-open-issue"}
-    elif ($event_gated and (probe_verdict($issue; $probe_verdicts) != "changed")) then
-      {number: $issue.number, verdict: "drop", reason: "event-gated"}
-    elif ($pr_collision_gated and (pr_collision_verdict($issue; $pr_collision_verdicts) != "resolved")) then
-      {number: $issue.number, verdict: "drop", reason: "pr-collision-gated"}
-    elif ((($event_gated | not)) and time_gate_future($issue; $today)) then
-      {number: $issue.number, verdict: "drop", reason: "time-gated"}
-    elif is_someday($issue; $someday_milestone) then
-      (if ($someday_recheck_days > 0) then
-         (someday_recheck_state($issue; $today; $someday_recheck_days)) as $recheck_state
-         | if ($recheck_state == "escalate") then
-             # #1422 -- exactly ONE real scope-agent pass this session, not
-             # permanent dispatch eligibility: the marker gets refreshed
-             # (resetting the cadence clock) wherever the scope-agent own
-             # conclusion is recorded, whatever defer class it lands on --
-             # see 06c-scope-handling-ui.md step 4d.
-             {number: $issue.number, verdict: "eligible"}
-           else
-             {number: $issue.number, verdict: "drop", reason: "someday-milestone",
-              evidence_pointer: ("milestone " + ($issue.milestone // "")),
-              someday_recheck_action: $recheck_state}
-           end
-       else
-         {number: $issue.number, verdict: "drop", reason: "someday-milestone",
-          evidence_pointer: ("milestone " + ($issue.milestone // ""))}
-       end)
+    elif ($park != null) then
+      $park
     elif is_closed_by_healthy_pr($issue; $healthy) then
       {number: $issue.number, verdict: "drop", reason: "closed-by-healthy-pr"}
     elif (covered_by_open_pr($issue; $covered) != null) then
