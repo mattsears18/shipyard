@@ -1,6 +1,6 @@
 # Worker-preamble fragment — fan-out into your own worktree: verification does not delegate
 
-On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md) § "Fan-out into your own worktree — verification does not delegate"). Most dispatches never load this: the default worker shape is a single agent doing its own work in its own worktree, and the rules below are a no-op for it. **Load it before you write the dispatch prompts** for a fan-out — the moment you decide to hand parts of your own implementation to subagents that will edit the same worktree you are sitting in ([#1554](https://github.com/mattsears18/shipyard/issues/1554)).
+On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md) § "Fan-out into your own worktree — verification does not delegate"). Most dispatches never load this: the default worker shape is a single agent doing its own work in its own worktree, and the rules below are a no-op for it. **Load it before you write the dispatch prompts** for a fan-out — the moment you decide to hand parts of your own implementation to subagents that will edit the same worktree you are sitting in ([#1554](https://github.com/mattsears18/shipyard/issues/1554)) — **or** the moment you dispatch any subagent at all, including a research-only one (see [Read-only sub-dispatches](#read-only-sub-dispatches--make-the-scope-structural-not-advisory-1604), [#1604](https://github.com/mattsears18/shipyard/issues/1604)).
 
 Fan-out is **not** forbidden. For a genuinely wide, mechanical, cleanly-partitionable change (one treatment applied across dozens of files), it is the right move and is materially faster than serial. What this fragment governs is what the subagents are allowed to *conclude*, not whether they may exist.
 
@@ -45,6 +45,20 @@ The rules above only bind a subagent that is told about them. A fanned-out subag
 > Do NOT `git add`, `git commit`, `git restore`, clear any shared cache, reinstall dependencies, or kill processes — I own the index and all shared state. If you see something broken outside your files, report it to me; don't act on it.
 >
 > Return: the files you changed, what you ran, and anything you could not finish. Do not return a verdict on whether the change is ready.
+
+## Read-only sub-dispatches — make the scope structural, not advisory ([#1604](https://github.com/mattsears18/shipyard/issues/1604))
+
+Everything above governs subagents you *meant* to write into your tree. The sibling failure is a subagent you meant **not** to write — and did anyway.
+
+**The repro** ([lightwork](https://github.com/mattsears18/lightwork) #5189 → PR #5239, 2026-09-21): an `issue-work` worker forked a subagent to survey `hitSlop=` call sites, with an explicit *"do NOT edit files"* instruction. The fork edited several of the same files the parent was actively fixing, concurrently — then, after being resumed past a turn limit, claimed the parent was *its* fork. The two sets of edits happened to converge on the same fix; nothing in the contract guaranteed that. A fork that made a *different* correct-looking fix would have produced a silently merged hybrid neither agent verified. The parent recovered only because it re-checked its tree by instinct.
+
+Two gaps, both closed here:
+
+1. **"Research-only" in a prompt is an instruction, not a boundary.** A `fork` inherits your full tool set and your full context; a `general-purpose` agent has every tool. Telling either one not to edit relies entirely on instruction-following. **When a sub-dispatch must not write, pick an agent type whose tool set excludes `Edit`/`Write`/`NotebookEdit`** — `Explore` for search and survey, `Plan` for design reasoning. The constraint then holds whether or not the subagent honours the prose. (A read-only type can still mutate through `Bash`; that residual is why rule 3 below still applies.)
+2. **A sub-dispatch that needs to write never silently shares your tree.** Either it is part of a deliberate fan-out and runs under the implements-but-doesn't-gate contract above, with a disjoint file list you assigned — or it gets **its own** worktree via the `Agent` tool's `isolation: "worktree"`, and you bring its result across yourself (a diff or a branch you merge in deliberately). There is no third shape where a helper edits your files as a side effect.
+3. **After ANY sub-dispatch returns — read-only or not — re-verify your working tree before trusting it.** Run `git status --porcelain` (and `git diff --stat` if anything shows) and compare against what *you* changed. An unexpected path is a finding: inspect it, then keep, redo, or `git restore` **that path only**, and re-run your local gates on the settled tree. Do not assume a read-only dispatch left the tree untouched — rule 1's residual `Bash` path, and any subagent that ignored its brief, are exactly the cases where you would otherwise be wrong.
+
+**Don't argue with a subagent about who dispatched whom.** If a subagent claims *you* are its fork (the #5189 inversion — plausibly a harness/model issue rather than a spec one), your own `tool_use`/`tool_result` record is authoritative. Stop sending it work, reconcile its changes per rule 3, and keep owning the index and the push.
 
 ## When NOT to fan out
 
