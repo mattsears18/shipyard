@@ -5,11 +5,19 @@ description: Use when auditing a codebase for missing developer-experience featu
 
 # DX Catalog
 
-Catalog of 25 polished-repo features the `dx-auditor` agent walks. Items are grouped by category. Each item is a self-contained subsection with a stable `id`, stack `applies_to`, severity, detection probe, why-it-matters, suggested approach, and acceptance criteria.
+Catalog of 25 polished-repo features the `dx-auditor` agent walks. Items are grouped by category. Each item is a self-contained subsection with a stable `id`, stack `applies_to`, probe `scope`, severity, detection probe, why-it-matters, suggested approach, and acceptance criteria.
 
 ## How the auditor uses this catalog
 
-1. **Detect stacks once.** Cache the result for the run.
+**Probes are root-plus-projects, not root-only ([#1593](https://github.com/mattsears18/shipyard/issues/1593)).** Every `Detect` probe below is written relative to *a* directory. Run at the repo root alone, the project-scoped ones are structurally blind to a monorepo — a non-workspace repo with its real projects at `apps/<name>/` (root `package.json` with no `workspaces` field) reads as missing a linter, a type-checker, and a setup script when every project has all three one directory down. That produced three near-miss false positives in a `/shipyard:audit all` run against `mattsears18/lightwork` (`audit-20260918T223506Z-0c6b`), caught only by manual verification. So:
+
+1. **Detect project roots once.** Cache the list for the run:
+   ```bash
+   roots=$("$CLAUDE_PLUGIN_ROOT/scripts/dx-project-roots.sh" .)
+   ```
+   It prints `.` first, then every directory holding a stack manifest (`package.json`, `tsconfig.json`, `pyproject.toml`, `requirements.txt`, `go.mod`, `Gemfile`) at most 3 levels deep or matched by the root `package.json`'s `workspaces` patterns — tracked files only, with `node_modules/`, `vendor/`, and test-fixture trees excluded. A single-project repo yields just `.`, and everything below behaves exactly as it did before.
+
+2. **Detect stacks per root.** Run this in each root (`cd "$root"` in a subshell) and keep both the per-root result and the union — the union drives the item-level applicability filter, the per-root result drives per-root applicability in step 3:
    ```bash
    stacks=()
    [ -f package.json ] && stacks+=(js)
@@ -20,10 +28,14 @@ Catalog of 25 polished-repo features the `dx-auditor` agent walks. Items are gro
    [ -d .claude ] && stacks+=(claude)
    ```
 
-2. **For each catalog item:**
-   - If `applies_to` and `stacks` are disjoint → skip (record reason for the summary).
-   - Run the `Detect` probe.
-   - If it returns 0 / matches (i.e., the thing exists) → skip.
+3. **For each catalog item:**
+   - If `applies_to` and the **union** of stacks are disjoint → skip (record reason for the summary).
+   - **`Scope: repo`** — run the `Detect` probe once, at the repo root. These are repo-wide artifacts (`.github/`, `LICENSE`, `CLAUDE.md`, …) that belong at the root regardless of how many projects the repo holds.
+   - **`Scope: project`** — run the `Detect` probe in **every** root whose own stacks intersect `applies_to` (a `*(any)*` item applies to every root). A root is **covered** when the probe passes in that root **or in any ancestor root** — a repo-root lockfile, `eslint.config.js`, or `.husky/` already governs the projects beneath it.
+     - Covered in **at least one** root → the item is **present**. Do not file. If some applicable roots are *not* covered, record the item under "Partial coverage" in the run summary, naming the uncovered roots — that is a different and more useful observation than "missing", and it is not filed as a missing-item issue.
+     - Covered in **no** root → run the confirming check below before concluding absence.
+   - **Confirming check before filing a `project`-scoped miss.** Run one `git ls-files` glob, at any depth, for the filenames the item's probe looks for (e.g. `git ls-files '*eslint.config.*' '*/.eslintrc*' '*biome.json'` for `missing-linter`, `git ls-files '*tsconfig.json' '*jsconfig.json'` for `missing-type-checker`, `git ls-files '*/scripts/setup.sh' '*/bin/setup' '*/.devcontainer/*'` for `missing-setup-script`). Any hit means the thing exists somewhere root discovery didn't reach — record it under "Partial coverage" with the hit paths and do **not** file. Dependency-based probes (the SDK checks under Observability) have no filename to glob; per-root `package.json` / `pyproject.toml` coverage is their confirming check.
+   - If the item is present (the `repo` probe passed; or the `project` probe covered at least one root; or the confirming check hit) → skip.
    - Otherwise file an issue:
      - Title from the item's `Title:` field
      - Body from the standard template (see `shipyard:filing-github-issues`)
@@ -48,6 +60,7 @@ Catalog of 25 polished-repo features the `dx-auditor` agent walks. Items are gro
 - **Category:** tooling
 - **Severity:** P1
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/tooling/missing-ci-workflow`
 - **Needs human review:** no
 
@@ -75,6 +88,7 @@ ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null
 - **Category:** tooling
 - **Severity:** P1
 - **Applies to:** js, ts, py, go
+- **Scope:** project
 - **Audit key:** `dx/tooling/missing-linter`
 - **Needs human review:** no
 
@@ -97,7 +111,7 @@ ls .golangci.yml .golangci.yaml 2>/dev/null
 **Suggested approach:** Adopt the ecosystem standard — ESLint or Biome for js/ts, Ruff for python, golangci-lint for go. Wire `--check` mode into CI.
 
 **Acceptance:**
-- [ ] Linter config file present at repo root.
+- [ ] Linter config file present at the repo root or in each project root.
 - [ ] `<linter> --check .` (or equivalent) runs in CI.
 
 ---
@@ -107,6 +121,7 @@ ls .golangci.yml .golangci.yaml 2>/dev/null
 - **Category:** tooling
 - **Severity:** P1
 - **Applies to:** js, ts, py, go
+- **Scope:** project
 - **Audit key:** `dx/tooling/missing-formatter`
 - **Needs human review:** no
 
@@ -139,6 +154,7 @@ grep -lr "gofmt\|go fmt" .github/workflows/ 2>/dev/null
 - **Category:** tooling
 - **Severity:** P1
 - **Applies to:** js, py
+- **Scope:** project
 - **Audit key:** `dx/tooling/missing-type-checker`
 - **Needs human review:** no
 
@@ -169,6 +185,7 @@ ls mypy.ini pyrightconfig.json pyrightconfig.toml 2>/dev/null
 - **Category:** tooling
 - **Severity:** P1
 - **Applies to:** *(any)*
+- **Scope:** project
 - **Audit key:** `dx/tooling/missing-pre-commit`
 - **Needs human review:** no
 
@@ -197,6 +214,7 @@ ls mypy.ini pyrightconfig.json pyrightconfig.toml 2>/dev/null
 - **Category:** tooling
 - **Severity:** P1
 - **Applies to:** *(any)*
+- **Scope:** project
 - **Audit key:** `dx/tooling/missing-runtime-pin`
 - **Needs human review:** no
 
@@ -224,6 +242,7 @@ ls mypy.ini pyrightconfig.json pyrightconfig.toml 2>/dev/null
 - **Category:** tooling
 - **Severity:** P1
 - **Applies to:** js, ts, py, rb, go
+- **Scope:** project
 - **Audit key:** `dx/tooling/missing-lockfile`
 - **Needs human review:** no
 
@@ -249,7 +268,7 @@ fi
 **Suggested approach:** Run the install command and commit the resulting lockfile. Add it to the repo's `.gitignore` allowlist if it was accidentally excluded.
 
 **Acceptance:**
-- [ ] Lockfile present at repo root.
+- [ ] Lockfile present at the repo root or in each project root (a workspace root lockfile covers its members).
 - [ ] Lockfile is tracked in git (not in `.gitignore`).
 
 ---
@@ -259,6 +278,7 @@ fi
 - **Category:** tooling
 - **Severity:** P1
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/tooling/missing-dep-automation`
 - **Needs human review:** no
 
@@ -288,6 +308,7 @@ fi
 - **Category:** onboarding
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/onboarding/missing-readme-quickstart`
 - **Needs human review:** no
 
@@ -314,6 +335,7 @@ grep -iE '^#+ +(install|quickstart|getting started|setup|usage)' README.md READM
 - **Category:** onboarding
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/onboarding/missing-contributing`
 - **Needs human review:** no
 
@@ -341,6 +363,7 @@ ls CONTRIBUTING.md CONTRIBUTING.rst docs/CONTRIBUTING.md .github/CONTRIBUTING.md
 - **Category:** onboarding
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** project
 - **Audit key:** `dx/onboarding/missing-env-example`
 - **Needs human review:** no
 
@@ -361,7 +384,7 @@ has_example=$(ls .env.example .env.sample .env.template 2>/dev/null)
 **Suggested approach:** Copy `.env` to `.env.example`, then redact every value (replace with placeholder like `CHANGEME` or a description of the value). Commit `.env.example`. Confirm `.env` itself is in `.gitignore`.
 
 **Acceptance:**
-- [ ] `.env.example` exists at repo root.
+- [ ] `.env.example` exists at the repo root or in each project root that reads env vars.
 - [ ] Lists every env var the code reads.
 - [ ] All values are placeholders (no real secrets).
 
@@ -372,6 +395,7 @@ has_example=$(ls .env.example .env.sample .env.template 2>/dev/null)
 - **Category:** onboarding
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/onboarding/missing-pr-template`
 - **Needs human review:** no
 
@@ -400,6 +424,7 @@ ls .github/PULL_REQUEST_TEMPLATE.md .github/pull_request_template.md \
 - **Category:** onboarding
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/onboarding/missing-issue-templates`
 - **Needs human review:** no
 
@@ -426,6 +451,7 @@ ls .github/ISSUE_TEMPLATE/*.md .github/ISSUE_TEMPLATE/*.yml .github/ISSUE_TEMPLA
 - **Category:** onboarding
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/onboarding/missing-codeowners`
 - **Needs human review:** no
 
@@ -459,6 +485,7 @@ ls .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS 2>/dev/null
 - **Category:** onboarding
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/onboarding/missing-license`
 - **Needs human review:** no
 
@@ -485,6 +512,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Category:** onboarding
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** project
 - **Audit key:** `dx/onboarding/missing-setup-script`
 - **Needs human review:** no
 
@@ -514,6 +542,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Category:** observability
 - **Severity:** P2
 - **Applies to:** js, ts, py
+- **Scope:** project
 - **Audit key:** `dx/observability/missing-error-tracking`
 - **Needs human review:** **yes** (vendor choice)
 
@@ -544,6 +573,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Category:** observability
 - **Severity:** P2
 - **Applies to:** js, ts
+- **Scope:** project
 - **Audit key:** `dx/observability/missing-analytics`
 - **Needs human review:** **yes** (vendor choice)
 
@@ -572,6 +602,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Category:** observability
 - **Severity:** P2
 - **Applies to:** js, ts, py, go
+- **Scope:** project
 - **Audit key:** `dx/observability/missing-feature-flags`
 - **Needs human review:** **yes** (vendor choice)
 
@@ -602,6 +633,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Category:** observability
 - **Severity:** P2
 - **Applies to:** js, ts, py, go, rb
+- **Scope:** repo
 - **Audit key:** `dx/observability/missing-health-endpoint`
 - **Needs human review:** no
 
@@ -663,6 +695,7 @@ fi
 - **Category:** observability
 - **Severity:** P2
 - **Applies to:** js, ts, py
+- **Scope:** project
 - **Audit key:** `dx/observability/missing-structured-logging`
 - **Needs human review:** no
 
@@ -695,6 +728,7 @@ fi
 - **Category:** claude-code
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/claude-code/missing-claude-md`
 - **Needs human review:** no
 
@@ -722,6 +756,7 @@ ls CLAUDE.md .claude/CLAUDE.md 2>/dev/null
 - **Category:** claude-code
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/claude-code/missing-claude-settings`
 - **Needs human review:** no
 
@@ -748,12 +783,13 @@ ls CLAUDE.md .claude/CLAUDE.md 2>/dev/null
 - **Category:** claude-code
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/claude-code/missing-recommended-mcp`
 - **Needs human review:** **yes** (which MCPs are appropriate is a judgment call)
 
 **Title:** `chore(dx): wire recommended MCP servers`
 
-**Detect (judgment-based — look for service signals without corresponding MCP config):**
+**Detect (judgment-based — look for service signals without corresponding MCP config; `.mcp.json` lives at the repo root, but gather the service signals from every project root, not just the root `package.json`):**
 
 ```bash
 mcp_present=$(jq -r '.mcpServers | keys[]?' .mcp.json 2>/dev/null)
@@ -789,6 +825,7 @@ echo "vercel=$vercel_signal supabase=$supabase_signal sentry=$sentry_signal mcp_
 - **Category:** claude-code
 - **Severity:** P2
 - **Applies to:** *(any)*
+- **Scope:** repo
 - **Audit key:** `dx/claude-code/missing-stop-hook`
 - **Needs human review:** no
 
