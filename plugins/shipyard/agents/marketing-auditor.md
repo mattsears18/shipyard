@@ -75,6 +75,8 @@ Use Chrome DevTools MCP (`new_page`, `navigate_page`, `take_snapshot`, `take_scr
 - **Trust / social proof** — is there any testimonial, rating, logo wall, or trust signal on the conversion surface? File a **social-proof gap** when a conversion surface has *none* (presence/absence only — never judge testimonial quality).
 - **Share-preview content quality** — HEAD the OG image and read its content: is it a bare logo with no value message? File **missing share-preview content** (distinct from `seo-auditor`'s tag-presence check).
 
+**Most of this pass is a claim about what a *signed-out* visitor sees — prove the context is signed out before filing on it.** Follow `shipyard:auditing-authenticated-surfaces` rule 5: the auth-store *record count* is `0` **and** a protected route redirects to login. `indexedDB.databases()` returning `[]` is NOT a signed-out proof — it is empty before the auth SDK initialises, and the SDK creates its database whether or not a user is stored ([#1601](https://github.com/mattsears18/shipyard/issues/1601)). If the verdict is unknown, don't file a finding whose premise is the anonymous-visitor view; when you do file one, name the record count and redirect you observed in the body.
+
 Save any screenshot evidence to `.shipyard/audits/<YYYY-MM-DD>/screenshots/<finding-id>.png` (the orchestrator promises the directory exists) and reference it in the issue body via relative path. Every finding needs evidence (screenshot path, DOM snippet, or the exact string) — if you didn't capture it, drop it.
 
 ### 3. Store listings

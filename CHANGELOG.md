@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.6 — 2026-09-29
+
+Public-surface audits now have a sound way to prove a browser is signed out (closes #1601). An audit on lightwork used an empty `indexedDB.databases()` as its signed-out proof. The session was in fact signed in the whole time, and two of the filed issue's three headline findings did not reproduce. On a Firebase-Web-SDK app that check fails in both directions. The list is empty before the SDK initialises, and the SDK creates `firebaseLocalStorageDb` whether or not a user is stored. Only the record count inside the auth object store carries the signal. Nothing in shipyard told an auditor how to verify signed-out state, so the auditor improvised the check. The shared skill now carries the correct one.
+
+- `skills/auditing-authenticated-surfaces/SKILL.md`: new rule 5, "Proving a session is SIGNED OUT". It includes a record-count probe with three outcomes, where unknown (`-1`) never counts as signed out. The probe aborts `onupgradeneeded` so it cannot create an absent database and then read it as `0`, which the issue's suggested snippet would have done. A signed-out claim also needs a protected route that redirects to login. When the result is unknown, the rule forbids filing a finding that assumes an anonymous visitor. The description and the "Putting it together" section now cover the signed-out case.
+- `agents/marketing-auditor.md`: the landing-surface pass now requires rule-5 verification before filing any finding about what a signed-out visitor sees, and names the observed evidence in the issue body.
+- `scripts/tests/auditing-authenticated-surfaces.test.sh`: 11 new assertions covering rule 5, the skill description trigger, and the marketing auditor's reference.
+
 ### 4.56.5 — 2026-09-29
 
 Setup step 0.41's staleness gate no longer counts untracked files as a dirty primary checkout, so a stale primary that holds only untracked tool artifacts (`.codex/`, `AGENTS.md`, editor dirs) now fast-forwards instead of ending the session with `dirty-refuse` (closes #1616). A fast-forward cannot lose untracked content: git refuses the merge rather than overwrite an untracked path an incoming commit adds. The gate now surfaces that case as `heal-failed` with a reason that names the untracked-file collision, and nothing is clobbered. Tracked modifications, staged or unstaged, still refuse as before.

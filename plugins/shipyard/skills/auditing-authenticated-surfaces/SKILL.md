@@ -1,13 +1,13 @@
 ---
 name: auditing-authenticated-surfaces
-description: Use when auditing a web URL whose interesting surfaces live behind a login wall (authenticated / signed-in / login-walled pages — dashboard, feed, settings, account). Provides the safe pattern for reaching those surfaces — a login harness that never echoes secrets, a pre-provisioned account, the SPA storageState session gotcha, and asserting on a protected route rather than `/`. Invoked by the live-URL auditors that tour signed-in surfaces (`web-ux`, `a11y`).
+description: Use when auditing a web URL whose interesting surfaces live behind a login wall (authenticated / signed-in / login-walled pages — dashboard, feed, settings, account). Provides the safe pattern for reaching those surfaces — a login harness that never echoes secrets, a pre-provisioned account, the SPA storageState session gotcha, and asserting on a protected route rather than `/` — plus the inverse check for public/anonymous audits: how to actually prove a session is SIGNED OUT (never via `indexedDB.databases()` emptiness). Invoked by the live-URL auditors that tour signed-in or signed-out surfaces (`web-ux`, `a11y`, `marketing`).
 ---
 
 # Auditing authenticated surfaces
 
 The interesting surfaces of most apps — the dashboard, the feed, account settings, the create/edit flows — live **behind a login wall**. A live-URL auditor (`web-ux`, `a11y`, etc.) that only tours the public marketing pages misses the bulk of the app. This skill is the reusable, framework-agnostic kernel for reaching authenticated surfaces *safely and reliably*.
 
-The four rules below are the load-bearing kernel. Project-specific wiring — **which** account, **which** gitignored env file, **which** seed/provision command — stays in the consumer repo (its `CLAUDE.md`, its audit-setup docs). This skill captures only the generic pattern; the consumer repo supplies the particulars.
+The five rules below are the load-bearing kernel — rules 1–4 get you *in*; rule 5 proves you're *out*, for audits whose findings are about what an anonymous visitor sees. Project-specific wiring — **which** account, **which** gitignored env file, **which** seed/provision command — stays in the consumer repo (its `CLAUDE.md`, its audit-setup docs). This skill captures only the generic pattern; the consumer repo supplies the particulars.
 
 ## 1. Auditors must NOT self-authenticate by typing secrets
 
@@ -39,6 +39,43 @@ The landing page (`/`) renders the **public marketing view when logged out** —
 
 **Assert on a route that genuinely requires auth** — one that **302s / redirects to the login page when unauthenticated** (`/dashboard`, `/settings`, `/account`, an app-specific protected path the consumer repo names). After the harness logs in, navigate to the protected route and confirm it **renders the authenticated view** (not a redirect to login). That round-trip — protected route renders → you're authenticated; protected route 302s to login → you're not — is the reliable session check. `/` is not.
 
+## 5. Proving a session is SIGNED OUT — record count, not database existence
+
+Audits of public / anonymous surfaces ("a signed-out visitor has no way to sign up", "the landing page shows signed-in chrome") are only as good as the claim that the browser really was signed out. Verify that claim — and never with `indexedDB.databases()`.
+
+**`indexedDB.databases()` returning `[]` is not a signed-out proof, and a non-empty list is not a signed-in proof.** On a Firebase-Web-SDK app the auth database's *existence* is uncorrelated with auth state in both directions: the list is empty on a fresh origin *before the SDK has initialised* (an early probe sees `[]` whatever the auth state), and once it initialises the SDK creates `firebaseLocalStorageDb` whether or not a user record is stored in it. Only the **record count inside the auth object store** carries the signal. Getting this wrong is not a quiet miss — it produces a *confidently* wrong finding that carries a stated verification step and reads as evidence-backed ([#1601](https://github.com/mattsears18/shipyard/issues/1601): an audit "verified signed-out" via `databases() → []` while the auth store held a live user record the whole time; two of the resulting issue's three headline findings did not reproduce once the store was genuinely empty).
+
+**The check, for Firebase Web SDK** (other SDKs: the consumer repo names its own store or key — the shape is the same). Run it only **after the page has fully loaded**, so the SDK has initialised:
+
+```js
+// -1 = unknown. Never create the database as a side effect of probing it.
+const authRecords = await new Promise((resolve) => {
+  const req = indexedDB.open('firebaseLocalStorageDb');
+  req.onupgradeneeded = () => req.transaction.abort(); // DB absent → abort, don't create it
+  req.onerror = () => resolve(-1);                     // includes that aborted-absent case
+  req.onblocked = () => resolve(-1);
+  req.onsuccess = () => {
+    const db = req.result;
+    try {
+      if (!db.objectStoreNames.contains('firebaseLocalStorage')) return resolve(-1);
+      const c = db.transaction('firebaseLocalStorage', 'readonly')
+        .objectStore('firebaseLocalStorage').count();
+      c.onsuccess = () => resolve(c.result);
+      c.onerror = () => resolve(-1);
+    } catch { resolve(-1); } finally { db.close(); }
+  };
+});
+// 0 → no stored user (signed out); > 0 → SIGNED IN; -1 → unknown
+```
+
+Three properties are load-bearing:
+
+- **Fail closed on unknown.** `-1` — an unreadable store, a missing database, a missing object store — means *unknown*, never "signed out". A plain `indexedDB.open()` on a name that doesn't exist silently **creates** an empty database; the `onupgradeneeded` abort is what keeps an absent database in the unknown bucket instead of letting the probe manufacture one (and leave it behind for the app to trip over).
+- **Corroborate with a protected route — the inverse of rule 4.** Navigate to a route that requires auth and confirm it **redirects to the login page**. A signed-out claim needs both: a record count of `0` *and* the protected route bouncing to login. Either one disagreeing → unknown. `/` rendering the public landing proves nothing in either direction.
+- **Mind rule 3 from the other side.** A reloaded `storageState` comes back logged out because the IndexedDB token was never serialised — a context the record count correctly reports as `0`. It is genuinely signed out, but it says nothing about what a real signed-in user sees; don't reuse it to reason about the authenticated view, and don't mistake the logged-out render for an authenticated-surface finding.
+
+**If the verdict is unknown, do not file a finding whose premise is "a signed-out visitor sees X".** Either re-establish a verified signed-out context (a fresh browser profile or incognito context, then re-run both checks) or drop the finding. When you do file one, name the evidence in the issue body — the record count and the protected-route redirect you observed — not merely "verified signed-out".
+
 ## Putting it together
 
 A correct authenticated-surface audit:
@@ -47,5 +84,7 @@ A correct authenticated-surface audit:
 2. Runs the consumer repo's **login harness**, which reads the secret from that file, logs in **without echoing it**, and keeps **one live context** alive (rule 3).
 3. **Verifies the session against a protected route** that 302s when logged out (rule 4) — not against `/`.
 4. Within that same live context, tours the authenticated surfaces and captures **artifacts** (screenshots / axe-core JSON / DOM probes) for the auditor to judge (rule 1).
+
+For a **signed-out** (public / anonymous-surface) audit, replace steps 1–3 with rule 5: start a fresh context, confirm the auth-store record count is `0` *and* a protected route redirects to login, and only then attribute what you see to an anonymous visitor.
 
 The auditor never holds the secret; the harness never holds the judgment.
