@@ -547,6 +547,12 @@ When filling a slot, walk this decision tree:
 
    The text comes verbatim from the scope-agent's `phase_1_scope` field; the orchestrator does not re-derive it. This makes the slice-vs-defer bias load-bearing at dispatch time: a worker told it's on a phase-1 slice still has the issue-work.md scope-discipline rules ("If you spot another problem while in the code, you may fix it in this PR when it sits in the same area and needs no design decision; file a follow-up issue when it reaches an unrelated subsystem or would meaningfully raise CI risk.") and the explicit slice description tells the worker *which* items count as scope creep for this particular candidate. Absent a `phase_1_scope` field (the common case — single-phase issues), no paragraph is added and dispatch proceeds with the unmodified prompt.
 
+   **Co-scoped bundle augmentation ([#1596](https://github.com/mattsears18/shipyard/issues/1596)).** When the `ready_issues` entry carries `bundled_issues` (a validated `one-pr` / `partial` co-scope verdict — see [`06h-co-scope-grouping.md`](./setup/06h-co-scope-grouping.md)), `<N>` is the bundle's `primary_issue`, the branch stays `do-work/issue-<N>`, and this Context paragraph is appended between the `mode:` line and the Return values line:
+
+   > **Co-scoped bundle (scope-agent-supplied, #1596):** Issue(s) `<bundled_issues, comma-separated with #>` were scoped together with #<N> as one change — shared surface `<shared_surface>`: `<grouping_rationale>`. This PR must resolve and close ALL of them: one `Closes #<X>` line per issue in the PR body, #<N> first. Follow `agents/issue-worker/issue-work-co-scoped-bundle.md`.
+
+   Absent `bundled_issues` (every non-bundle dispatch), no paragraph is added. The orchestrator checks the shipped PR's `closingIssuesReferences` against the bundle at reconcile ([06h §5](./setup/06h-co-scope-grouping.md#5-after-ship--verify-every-bundled-issue-is-actually-closed-by-the-pr)).
+
    **Claimed-paths token-budget-warn augmentation (advisory only, [#1443](https://github.com/mattsears18/shipyard/issues/1443)).** After `claimed_paths` is computed for the candidate (step 6), check each hard/soft path against the warn band [`setup-phase-file-token-budget.test.sh`](../../scripts/tests/setup-phase-file-token-budget.test.sh) already enforces, via that script's own `--warn-check <path>` mode — never re-derive the 60,000-byte cap as a second literal:
 
    ```bash

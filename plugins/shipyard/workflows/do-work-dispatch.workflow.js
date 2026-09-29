@@ -350,7 +350,8 @@ const emit = (message) => {
 // Per-work-unit shape (issue-work fields documented alongside the builder below):
 //   { number, mode, model, trust, branch, worktreePath,
 //     pluginRoot, pluginRootStale, skillCacheStale,
-//     verifyGate, userFeedback, splitDispatch, phase1Scope,
+//     verifyGate, userFeedback, splitDispatch, phase1Scope, bundledIssues,
+//     sharedSurface, groupingRationale,
 //     stalePremisePhrase, stalePremiseCorrection, tokenBudgetWarning, sessionConcurrency,
 //     nextAvailableVersion, changelogPath }
 const selectedIssues = Array.isArray(input.issues) ? input.issues : []
@@ -504,6 +505,9 @@ const workUnits = selectedIssues.map((it) => ({
   userFeedback: it.userFeedback === true,
   splitDispatch: it.splitDispatch === true, // #1562 neutral-branch paragraph
   phase1Scope: it.phase1Scope ?? null,
+  bundledIssues: Array.isArray(it.bundledIssues) ? it.bundledIssues : [], // #1596 co-scoped bundle paragraph
+  sharedSurface: it.sharedSurface ?? null,
+  groupingRationale: it.groupingRationale ?? null,
   stalePremisePhrase: it.stalePremisePhrase ?? null, // #1491 stale-premise paragraph
   stalePremiseCorrection: it.stalePremiseCorrection ?? null,
   tokenBudgetWarning: it.tokenBudgetWarning ?? null,
@@ -1352,6 +1356,22 @@ function buildIssueWorkPrompt(unit, repoSlug) {
       `change. You are working **only** the phase-1 slice described below. Items explicitly`,
       `listed as out-of-scope MUST be filed as follow-up issues rather than included in`,
       `this PR. Slice: \`${unit.phase1Scope}\`.`,
+    )
+  }
+
+  // Co-scoped bundle augmentation — mirrors dispatch-rules.md's
+  // "Co-scoped bundle augmentation (#1596)" paragraph verbatim. Set when the
+  // ready_issues entry carries a validated one-pr / partial co-scope verdict
+  // (setup/06h-co-scope-grouping.md); unit.number is the bundle's primary.
+  if (Array.isArray(unit.bundledIssues) && unit.bundledIssues.length > 0) {
+    const others = unit.bundledIssues.map((n) => `#${n}`).join(', ')
+    lines.push(
+      ``,
+      `**Co-scoped bundle (scope-agent-supplied, #1596):** Issue(s) ${others} were scoped`,
+      `together with #${unit.number} as one change — shared surface \`${unit.sharedSurface ?? 'unspecified'}\`:`,
+      `${unit.groupingRationale ?? ''} This PR must resolve and close ALL of them: one`,
+      `\`Closes #<X>\` line per issue in the PR body, #${unit.number} first. Follow`,
+      `\`agents/issue-worker/issue-work-co-scoped-bundle.md\`.`,
     )
   }
 

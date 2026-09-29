@@ -113,6 +113,22 @@ export function buildIssueWorkPrompt(unit, repoSlug) {
     )
   }
 
+  // Co-scoped bundle augmentation — mirrors dispatch-rules.md's
+  // "Co-scoped bundle augmentation (#1596)" paragraph verbatim. Set when the
+  // ready_issues entry carries a validated one-pr / partial co-scope verdict
+  // (setup/06h-co-scope-grouping.md); unit.number is the bundle's primary.
+  if (Array.isArray(unit.bundledIssues) && unit.bundledIssues.length > 0) {
+    const others = unit.bundledIssues.map((n) => `#${n}`).join(', ')
+    lines.push(
+      ``,
+      `**Co-scoped bundle (scope-agent-supplied, #1596):** Issue(s) ${others} were scoped`,
+      `together with #${unit.number} as one change — shared surface \`${unit.sharedSurface ?? 'unspecified'}\`:`,
+      `${unit.groupingRationale ?? ''} This PR must resolve and close ALL of them: one`,
+      `\`Closes #<X>\` line per issue in the PR body, #${unit.number} first. Follow`,
+      `\`agents/issue-worker/issue-work-co-scoped-bundle.md\`.`,
+    )
+  }
+
   // Next-available-version coordination — mirrors dispatch-rules.md's
   // "Coordination-managed paths" paragraph verbatim.
   if (unit.nextAvailableVersion) {

@@ -931,6 +931,29 @@ JSON
 assert_exit_code "$?" 70 "scope.orchestrator_only_skills rejects non-string array items (#1294)"
 
 # --------------------------------------------------------------------------
+echo "== scope.co_scope_keys (issue #1596)"
+repo=$(mktmprepo)
+home=$(mktmprepo)
+export SHIPYARD_REPO_ROOT="$repo"
+export SHIPYARD_HOME="$home"
+
+assert_equals "$("$helper" get scope.co_scope_keys)" '["audit-run"]' \
+  "scope.co_scope_keys default is the audit-run marker (#1596)"
+
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "co_scope_keys": [] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 0 "scope.co_scope_keys accepts an empty array (disable co-scoping) (#1596)"
+assert_equals "$("$helper" get scope.co_scope_keys)" "[]" "scope.co_scope_keys can be emptied to [] (#1596)"
+
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "co_scope_keys": "audit-run" } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "scope.co_scope_keys rejects a non-array value (#1596)"
+
+# --------------------------------------------------------------------------
 echo "== merge_gate — local-only-CI merge gate (issue #643)"
 repo=$(mktmprepo)
 home=$(mktmprepo)

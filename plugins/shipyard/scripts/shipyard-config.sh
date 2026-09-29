@@ -245,6 +245,7 @@ DEFAULTS_JQ='{
     "diagnosis_reuse_hours": 72,
     "self_modification_paths": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"],
     "orchestrator_only_skills": ["shipyard:update-roadmap", "update-roadmap"],
+    "co_scope_keys": ["audit-run"],
     "external_dependency_recheck_days": 14,
     "recheck_probe_enabled": true,
     "recheck_probe_timeout_seconds": 15,
