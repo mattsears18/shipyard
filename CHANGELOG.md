@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.55.32 — 2026-09-29
+
+Post-relocation `/do-work` orchestrator blocks now open with `export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"` instead of reading the `.shipyard-plugin-root` stash into an exported variable (closes #1607). Step 0.3's callout described that two-statement stash read (`CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null); export CLAUDE_PLUGIN_ROOT`) as measured to run after relocation. On current Claude Code builds it is refused, because the worktree-isolation guard rejects exporting a value the command computes. The template sat in 109 blocks, so an orchestrator that copied it verbatim got one refused call per block. The trigger was re-measured one variable at a time in an isolated worktree. Exporting a computed value is refused whether it takes one statement or two, and even when nothing but `echo` follows. Exporting a literal runs, and so does direct-exec with the literal path. The stash file stays as the session's durable record of the literal: a plain `cat .shipyard-plugin-root` recovers it, and the value gets substituted, never exported.
+
+- `plugins/shipyard/commands/do-work/**`: all 109 stash-read two-liners replaced with the literal export, across `steady-state.md`, `dispatch-rules.md`, `drain.md`, `cleanup-summary.md`, `inline-trivial.md`, `version-release.md`, `environmental-pause.md`, `disk-space-guard.md` and `setup/*`.
+- `setup/00-config-worktree.md`: the step-0.3 callout now names the stash read as refused and states the literal-export form. Step 0.5 says to carry its resolved literal forward.
+- `dont.md`: the "fine and stays fine" claim is replaced with a "Never `export` a computed value" rule and the measurement table. The #1471 row that recorded the stash read as running is annotated.
+- `setup/01-repo-recovery.md`: the three pre-relocation timing notes point at the new line shape.
+- `do-work-RATIONALE.md`: the #1471 and #1474 passages that called the stash read safe are marked superseded.
+- `scripts/tests/claude-plugin-root-preamble.test.sh`: accepted form (c) is now the literal export. New check (7) fails if any orchestrator-phase bash block still reads the stash into `CLAUDE_PLUGIN_ROOT`, asserts the literal export is actually in use (non-vacuity), and confirms a fixture holding the retired two-liner is reported. `compound-block-scan.test.sh`'s fixture and comment are updated to match.
+
 ### 4.55.31 — 2026-09-29
 
 A worker whose worktree turns out to be the `/do-work` orchestrator's own worktree now stops at step 0, and reports the problem as a retryable bail (closes #1613). In one lightwork session, two dispatches landed in the orchestrator's tree. Both were Agent-tool dispatches against `isolation: worktree` shims; one was `fix-checks-only` and one was `issue-work`, while four sibling dispatches were isolated correctly. The first worker wrote there: it detached the tree at a PR head, left an edit behind, and the orchestrator's `.shipyard-session-id` stash was gone afterwards. The step-0 fail-fast did not catch this, because it only detects the *primary* checkout (git-dir == git-common-dir), and the orchestrator's tree is a linked worktree like any other. The pin itself happens in the harness, at launch, so this change can't fix it. What it adds is the shipyard-side tripwire, the routing for the resulting bail, and documentation of why escaping is not a sanctioned option.

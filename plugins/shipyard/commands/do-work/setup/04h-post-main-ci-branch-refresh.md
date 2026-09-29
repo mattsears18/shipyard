@@ -16,8 +16,7 @@ GitHub does **not** re-run a PR's already-completed required check just because 
 Resolve the pin, read the fix commit's SHA and date, then call the script — all in **one** `Bash` call (plain sequential statements, no loop/pipe/`if`, so keeping them together avoids re-deriving `$fix_commit_sha` / `$fix_commit_date` in a second call that could never see them otherwise — a shell variable does not survive between separate `Bash` tool calls):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 fix_commit_sha=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.sha')
 fix_commit_date=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.commit.committer.date')
 "$CLAUDE_PLUGIN_ROOT/scripts/stale-check-refresh.sh" run \

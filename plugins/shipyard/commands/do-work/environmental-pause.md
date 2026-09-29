@@ -19,8 +19,7 @@
 When the trigger holds:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064) before the
 # shipyard-config.sh reads below — each Bash-tool call is a fresh, hermetic
 # subshell, so nothing set in an earlier call survives into this one.

@@ -72,8 +72,7 @@ Closes [#385](https://github.com/mattsears18/shipyard/issues/385) — phase 2 of
 **Gate on `flake_registry.enabled`.** Skip this step entirely unless the effective config has `flake_registry.enabled == true` (it defaults to `false`, preserving pre-#378 behavior). The check is one config read against the already-loaded `EFFECTIVE_CONFIG` (step 0.4). **No shell `if` wraps the enforcement calls below, and no pipe carries `flake-enforce.sh`'s output into `sed` ([#1277](https://github.com/mattsears18/shipyard/issues/1277))** — the gate branches in prose instead (same style as step 6.a's ungated-admin-direct-merge check), and the output prefix runs as a second, file-argument `sed` call. See [`dont.md`'s post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277).
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive the SHIPYARD_REPO_ROOT pin from the step-0.56 stash rather than
 # `git rev-parse --show-toplevel` (issue #1059) — the latter resolves to
 # the orchestrator worktree post-relocation, not the primary checkout where
@@ -95,8 +94,7 @@ Read crossed flakes and enforce the per-row actions. The helper computes `crosse
 Re-derive both pins (variables don't survive across separate Bash calls), read `PRUNE_WINDOW_DAYS`, then run the enforcement call — one plain sequence, output redirected to a scratch log rather than piped into `sed`:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 PRUNE_WINDOW_DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)

@@ -119,7 +119,7 @@ bash <plugin-root>/scripts/classify-backlog.sh run … --me "$ME_LOGIN" …     
 | Line count / multi-statement compoundness | **Not it** | The 5-statement preamble plus `classify-backlog.sh --help` RUNS. The same preamble plus a *one*-flag `run --repo <literal>` RUNS. |
 | Flag/argument count | **Not it** | The full 8-flag `run … --out …` invocation RUNS when every argument is a literal, preamble and all. |
 | Backslash line continuations | **Not it** | The refused block collapsed onto one line is refused identically; the accepted block split across continuations runs identically. |
-| Assignment-RHS `$(cmd)` ([#1352](https://github.com/mattsears18/shipyard/issues/1352)'s stated axis) | **Not it, as a general rule** | `ME=$(pwd)` runs. `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` + `export` + use runs. #1352's sweep was still worth having, but its stated cause does not reproduce. |
+| Assignment-RHS `$(cmd)` ([#1352](https://github.com/mattsears18/shipyard/issues/1352)'s stated axis) | **Not it, as a general rule** | `ME=$(pwd)` runs. (This row also recorded `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` + `export` + use as running — **no longer true**: current builds refuse the `export` of a computed value, see [#1607](https://github.com/mattsears18/shipyard/issues/1607) below.) #1352's sweep was still worth having, but its stated cause does not reproduce. |
 
 **One genuinely new, cleanly-isolated syntactic shape** (single variable toggled, 3 refusals vs 4 acceptances) — an **unquoted** command substitution with a literal path suffix glued on:
 
@@ -149,7 +149,21 @@ Quoting is the whole difference; it holds across both `export VAR=…` and split
 - **Any adjacent literal text in the same word rescues it** — `"$VAR/foo"`, `"prefix-$VAR"`, `"value=$VAR"`, `"$VAR-suffix"` all RUN. (One measured exception: a lone trailing `.` does *not* rescue it — `"$VAR."` is refused.)
 - **Position is irrelevant.** A bare `"$VAR"` refuses as a script path, a flag value, a positional argument, a second word, or inside a `[ -z "$VAR" ]` test. The intuition that only path-shaped positions matter is backwards: the *path-suffixed* use is the safe one.
 
-**What this means when you author a post-relocation block.** The two-statement stash read (`CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` + `export CLAUDE_PLUGIN_ROOT`) is fine and stays fine — it contains no bare whole-word expansion. What breaks a block is the *use*:
+**Never `export` a computed value — open a block with the literal instead ([#1607](https://github.com/mattsears18/shipyard/issues/1607)).** This section previously blessed the two-statement stash read (`CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` + `export CLAUDE_PLUGIN_ROOT`) as fine. Current Claude Code builds **refuse** it, on an axis separate from #1474's whole-word rule: the guard objects to *exporting a value the command computes to every later program*. Re-measured one variable at a time in an isolated worktree (2026-09-29):
+
+```
+V=$(cat <stash>); export V; "$V/scripts/x.sh" --help       → REFUSED ("export V exporting a value this command computes")
+export V=$(cat <stash>); "$V/scripts/x.sh" --help          → REFUSED (same trigger, one statement)
+V=$(cat <stash>); "$V/scripts/x.sh" --help                 → RUNS    (no export — but V never reaches the child's env)
+V=$(cat <stash>); V="$V" "$V/scripts/x.sh" --help          → REFUSED (computed command name inside an env prefix)
+export V=/literal/root; "$V/scripts/x.sh" --help           → RUNS
+V=/literal/root /literal/root/scripts/x.sh --help          → RUNS
+X=$(cat <file> || pwd); export X; echo "$X/x"              → REFUSED (any exported computed value, no script call needed)
+```
+
+So every post-relocation orchestrator block opens with `export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"`, substituting the root step 0.5 resolved post-relocation. `.shipyard-plugin-root` stays the durable record of that literal — read it with a plain `cat .shipyard-plugin-root` and substitute what it prints, never into an `export`. Regression-guarded by [`claude-plugin-root-preamble.test.sh`](../../scripts/tests/claude-plugin-root-preamble.test.sh) check (3)(c) and the corpus-wide stash-read assertion in [`compound-block-scan.test.sh`](../../scripts/tests/compound-block-scan.test.sh). The same trigger hits any other `VAR=$(…)` + `export VAR` pair in this corpus (e.g. `SHIPYARD_REPO_ROOT`'s stash read), tracked as its own follow-up.
+
+**What this means when you author a post-relocation block.** Beyond the export rule above, what breaks a block is the *use*:
 
 ```
 "$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag         → RUNS    (literal suffix, direct exec)

@@ -7,8 +7,7 @@
 **Timing instrumentation (issue #238).** The parallel batch as a whole is one timing window. Open the window just before firing the burst; close it once `wait` (or all parallel tool calls) return.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_0_7_parallel_batch 2>/dev/null || true
 # ... fire all parallel gh calls ...
@@ -34,8 +33,7 @@ The following steps are cleanup-only — they don't affect dispatch correctness 
 **Narrowed to 1.6 + 3a only ([#1202](https://github.com/mattsears18/shipyard/issues/1202)).** This group used to also carry 1.6.5 (orphan orchestrator-worktree sweep), 3b (stale agent-worktree reap), and 3c (orphan `do-work/*` branch triage) — all three moved to [00-config-worktree.md's new step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), which runs **before** `EnterWorktree` (step 0.5) relocates the session. Reason: every one of those three sweeps performs `git -C <other-worktree>`-shaped operations, which the worktree-isolation guard refuses once this session has isolated — a refusal this background group's own post-relocation position made unavoidable. 1.6 (pure `$SHIPYARD_HOME/sessions/*.json` housekeeping) and 3a (pure `gh label create`) touch no worktree path, so neither needed to move.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
 # (issue #1059/#1064) — every shipyard-config.sh get below (warn_threshold,
 # max_per_session, auto_merge_method) would otherwise silently drop
@@ -127,8 +125,7 @@ The `(...) &` block above is submitted as **one** Bash tool call. The permission
 2. **Run the read-only verification immediately, as its own separate foreground call.** `report-unreaped` only enumerates directories — it removes nothing — so it is not a plausible denial candidate on its own, and it doesn't need to wait for anything else to finish (nothing else ran):
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    setup_reap_denial_unreaped=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" report-unreaped \
      --repo-root "$SY_TOPLEVEL" \
@@ -204,8 +201,7 @@ Within a single orchestrator session (typically 5–15 minutes), GitHub state do
 **Shape.** Run `gh` through the wrapper instead of calling `gh` directly:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" run \
   --session-id "<session-id>" --ttl 60 -- \
   gh-args-without-the-gh-prefix
@@ -231,8 +227,7 @@ These are *suggestions*. A caller that needs harder freshness should pass a smal
 
 - **Conservative (default).** Flush the entire session cache after any state-changing call:
   ```bash
-  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-  export CLAUDE_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
   "$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" invalidate --session-id "<session-id>"
   ```
   Burns one extra round of cold reads on the next refresh but never serves stale data after a write. Use this when in doubt — the cost is "one re-read per shipyard write," which is small compared to the savings on the hot read paths.
@@ -241,8 +236,7 @@ These are *suggestions*. A caller that needs harder freshness should pass a smal
 **End-of-session cleanup.** The cache directory at `$SHIPYARD_HOME/cache/<session-id>/` is reaped by the [End-of-session cleanup](../cleanup-summary.md#end-of-session-cleanup) sequence:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" cleanup --session-id "<session-id>"
 ```
 
@@ -266,8 +260,7 @@ Where `gh-cached.sh` reduces redundant *re-fetches* across phases, `gh-batch.sh`
 **Shape.**
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Batch PR status — same projection as `gh pr view <M> --json
 # number,state,mergeable,mergeStateStatus,statusCheckRollup,headRefName,headRefOid`
 # but for N PRs in one query. Emits one JSON object keyed by PR number string.
@@ -302,8 +295,7 @@ export CLAUDE_PLUGIN_ROOT
 The compose pattern (cached batch read):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" run \
   --session-id "<session-id>" --ttl 10 -- \
   "$CLAUDE_PLUGIN_ROOT/scripts/gh-batch.sh" pr-status \

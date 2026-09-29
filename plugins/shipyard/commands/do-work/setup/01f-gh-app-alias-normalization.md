@@ -12,8 +12,7 @@ GitHub returns **two different login shapes** for the same GH App account depend
 The two strings have nothing in common after lowercasing, which silently broke bot-author trust before [#296](https://github.com/mattsears18/shipyard/issues/296) — see [RATIONALE → GH App alias normalization](../../do-work-RATIONALE.md#gh-app-alias-normalization--why-it-was-needed-296) for the failure story. The fix is alias normalization at allowlist-load time. The helper `$CLAUDE_PLUGIN_ROOT/scripts/trusted-authors-normalize.sh` reads the cleaned set and, for every `<name>[bot]` or `app/<name>` entry, **adds the other shape** to the set. So a file with `sentry[bot]` produces `{sentry[bot], app/sentry}`; a file with `app/sentry` produces `{app/sentry, sentry[bot]}`. Either form matches the GraphQL `author.login` value the orchestrator compares against. Human logins (no `[bot]` suffix, no `app/` prefix) pass through unchanged.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Branch 1 (override file present) — read + normalize in one pipeline:
 allowlist_file=".shipyard/trusted-authors.txt"
 trusted_authors=$(

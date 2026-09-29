@@ -15,8 +15,7 @@
 By this point `CLAUDE_PLUGIN_ROOT` has already been re-resolved post-relocation (step 0.5) and stashed at `.shipyard-plugin-root`; that stash — not step 0.4's pre-relocation value — is the source for these re-reads:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 ```
 
 Then `Read` (not `cat` — these are spec files the orchestrator reasons over, not text to pipe) each of the three files below, treating the fresh content as authoritative and superseding whatever was read pre-relocation:
@@ -32,8 +31,7 @@ Three `Read` calls — cheap, and only on the dogfooding-and-stale path. Steps 0
 Compare the just-`Read` fresh `00-config-worktree.md` against the primary checkout's on-disk copy — still reachable via the `.shipyard-primary-root` stash [step 0.56](./00k-repo-root-pin.md#056-pin-shipyard_repo_root-to-the-primary-checkout-1059) wrote, since the primary checkout itself is untouched by relocation:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 PRIMARY_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
 if [ -n "$PRIMARY_ROOT" ]; then
   SY_STILL_MISSED=$(diff -u \

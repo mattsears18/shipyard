@@ -7,8 +7,7 @@
 **Timing instrumentation (issue #238).** Bracket this step including the auto-triage label-apply loop and client-side filter pass:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_4_backlog_fetch_and_rank 2>/dev/null || true
 # ... run step 4 ...

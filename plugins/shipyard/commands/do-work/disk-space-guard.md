@@ -9,8 +9,7 @@
 Read `worktree_reap.disk_free_floor_mb` (config default `10240` MB / 10 GiB) and probe free space on the volume holding `.claude/worktrees` via the `worktree-reap.sh disk-check` subcommand:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 SHIPYARD_REPO_ROOT=$(cat "$REPO_ROOT/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$REPO_ROOT"
