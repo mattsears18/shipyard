@@ -40,6 +40,7 @@ fi
 skill_path="$repo_root/plugins/shipyard/skills/auditing-authenticated-surfaces/SKILL.md"
 web_ux_path="$repo_root/plugins/shipyard/agents/web-ux-auditor.md"
 a11y_path="$repo_root/plugins/shipyard/agents/a11y-auditor.md"
+marketing_path="$repo_root/plugins/shipyard/agents/marketing-auditor.md"
 
 pass=0
 fail=0
@@ -136,6 +137,36 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md rule 4: the protected route 302s when unauthenticated"
   assert_contains "$skill_path" "marketing view" \
     "SKILL.md rule 4: / renders the public marketing view when logged out"
+
+  # Rule 5 (#1601) — proving a session is SIGNED OUT: indexedDB.databases()
+  # emptiness is not a proof (DB existence is uncorrelated with auth state in
+  # both directions); count records in the auth object store, fail closed on
+  # unknown, never create the DB while probing, and corroborate with a
+  # protected route that redirects to login.
+  assert_contains "$skill_path" "## 5. Proving a session is SIGNED OUT" \
+    "SKILL.md rule 5: signed-out verification section present"
+  # shellcheck disable=SC2016  # literal needle — backticks are markdown, must NOT expand
+  assert_contains "$skill_path" 'indexedDB.databases()` returning `[]` is not a signed-out proof' \
+    "SKILL.md rule 5: databases() emptiness is explicitly not a signed-out proof"
+  assert_contains "$skill_path" "record count inside the auth object store" \
+    "SKILL.md rule 5: the record count is the only signal"
+  assert_contains "$skill_path" ".objectStore('firebaseLocalStorage').count()" \
+    "SKILL.md rule 5: probe counts records in firebaseLocalStorage"
+  assert_contains "$skill_path" "req.transaction.abort()" \
+    "SKILL.md rule 5: probe aborts the upgrade so it never creates the DB"
+  assert_contains "$skill_path" "Fail closed on unknown" \
+    "SKILL.md rule 5: unknown (-1) fails closed, never 'signed out'"
+  assert_contains "$skill_path" "redirects to the login page" \
+    "SKILL.md rule 5: corroborate with a protected route redirecting to login"
+  if grep -m1 '^description:' "$skill_path" | grep -qF 'SIGNED OUT'; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+      "SKILL.md description triggers on signed-out verification"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+      "SKILL.md description triggers on signed-out verification"
+    fail=$((fail+1))
+  fi
 fi
 
 # (2) The two live-URL auditors that tour signed-in surfaces must reference the
@@ -150,6 +181,17 @@ fi
 if [[ -f "$a11y_path" ]]; then
   assert_contains "$a11y_path" "shipyard:auditing-authenticated-surfaces" \
     "a11y-auditor.md references the auditing-authenticated-surfaces skill"
+fi
+
+# (3) The marketing auditor's landing pass files findings about what a
+# signed-out visitor sees — it must route its signed-out verification through
+# rule 5, not indexedDB.databases() emptiness (#1601).
+assert_file_exists "$marketing_path" "marketing-auditor.md exists"
+if [[ -f "$marketing_path" ]]; then
+  assert_contains "$marketing_path" "shipyard:auditing-authenticated-surfaces\` rule 5" \
+    "marketing-auditor.md routes signed-out verification through skill rule 5"
+  assert_contains "$marketing_path" "is NOT a signed-out proof" \
+    "marketing-auditor.md forbids indexedDB.databases() emptiness as proof"
 fi
 
 echo
