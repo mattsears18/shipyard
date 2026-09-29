@@ -275,6 +275,16 @@ main() {
   if [ "${1:-}" = "--decide-backpressure" ]; then
     if [ "$#" -ne 6 ]; then
       echo "usage: $0 --decide-backpressure <POOL_TOTAL> <QUEUED> <IN_FLIGHT> <MULTIPLIER> <MIN_IN_FLIGHT>" >&2
+      # The natural wrong guess is the no-flag form's shape — a single
+      # <owner/repo> (issue #1597). This mode is a pure decision: it never
+      # reads the repo, so name where the five inputs come from instead of
+      # leaving the caller to reverse-engineer them.
+      if [ "$#" -eq 2 ] && [[ "$2" == */* ]]; then
+        echo "  '$2' looks like <owner/repo> — --decide-backpressure takes no repo; it is a pure decision over five numbers:" >&2
+        echo "    POOL_TOTAL=.ci_capacity.pool_total (session state)  QUEUED=live 'gh run list --status queued' count" >&2
+        echo "    IN_FLIGHT=.in_flight count before filling the slot   MULTIPLIER=ci.backpressure_multiplier  MIN_IN_FLIGHT=ci.backpressure_min_in_flight" >&2
+        echo "  Full call site: commands/do-work/steady-state.md step C (queue-depth backpressure check)." >&2
+      fi
       exit 1
     fi
     decide_backpressure "$2" "$3" "$4" "$5" "$6"
