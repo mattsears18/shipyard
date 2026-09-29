@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.11 — 2026-09-29
+
+`fix-checks-only`'s infra-flake classification now recognizes a **contended-host in-test step timeout** as a fifth re-runnable signature, `contended-host-step-timeout` (closes #1609). This is a job that starts cleanly and then sees its heaviest route's `page.goto`, or another in-test step, time out under load. On a small self-hosted pool it is the likeliest flake shape, and the previous four-signature list forced workers to classify it by analogy. A test timeout can be a real defect, unlike a cancelled job, so the signature matches only when two things hold. First, a cheap contention probe corroborates it: an unrelated trivial command such as `git cat-file` timed out in the same job, or a `detect-ci-runner-capacity.sh` read shows `pool_idle=0` with a queue at least as deep as the pool. Second, the timed-out spec passes locally. Weakening the test to clear the timeout is explicitly forbidden. The orchestrator now also hands `fix-checks-only` workers a fresh pool-state read on self-hosted repos, so the contention probe is in hand at dispatch time.
+
+- `plugins/shipyard/agents/issue-worker/fix-checks-only.md` — the fifth Step B signature, its two preconditions, and the no-test-weakening rule; the `flake` return vocabulary, fix-loop step 2.5, and the Don't section updated to match.
+- `plugins/shipyard/commands/do-work/dispatch-rules.md` — a "CI pool state at dispatch" paragraph appended to the `fix-checks-only` prompt on a self-hosted pool (a fresh read, not the stale session-start snapshot), plus the `ciPoolState` work-unit field.
+- `plugins/shipyard/workflows/prompt-templates/fix-checks-only.mjs`, `do-work-dispatch.core.js`, and the regenerated `do-work-dispatch.workflow.js` — render and pass through `ciPoolState` on the `Workflow` substrate.
+- `plugins/shipyard/scripts/tests/fix-checks-infra-flake-classification.test.sh` — regression assertions for the new signature, its probes, and the dispatch wiring.
+
 ### 4.56.10 — 2026-09-29
 
 `shipyard-config.sh get` now warns on stderr when the checkout it reads from is behind its upstream on `shipyard.config.json`, so a config read from a stale working tree no longer passes silently as the repo's agreed state (closes #1610). The repo layer resolves from a working tree. Before this, a checkout that had not pulled the commit declaring `version_coordination.generated_paths` returned `[]`, and consumers read that as "not declared". In the #1610 repro a fix-rebase worker was told to verify against the orchestrator's frozen primary checkout, which would have thrown away a correct rebase. The warning is advisory only: stdout and the exit status do not change. The check is commit-based (`HEAD..origin/<default>` limited to the config path), so a branch's own config edits are never flagged, and it stays silent whenever it cannot resolve an upstream ref.

@@ -181,6 +181,40 @@ assert_contains "$fix_checks_path" \
   "runner-level error" \
   "signature: runner-lost / shutdown"
 
+# --- #1609: contended-host in-test step timeout ------------------------------
+# The likeliest self-hosted flake shape (a clean job start, then the heaviest
+# route's page.goto times out under load) was missing from the list, so a
+# worker had to classify it by analogy. It is admitted ONLY with a
+# corroborating contention probe and a local pass of the timed-out spec — a
+# test timeout, unlike the other four, can be a real defect.
+assert_contains "$fix_checks_path" \
+  "contended-host in-test step timeout" \
+  "#1609 signature: contended-host in-test step timeout"
+assert_contains "$fix_checks_path" \
+  "contended-host-step-timeout" \
+  "#1609 signature tag listed in the flake return vocabulary"
+assert_contains "$fix_checks_path" \
+  "git cat-file -e <sha>^{commit}" \
+  "#1609 corroborating probe (a): unrelated trivial command timed out in the same job"
+assert_contains "$fix_checks_path" \
+  "detect-ci-runner-capacity.sh" \
+  "#1609 corroborating probe (b): saturated-pool read"
+assert_contains "$fix_checks_path" \
+  "The timed-out spec(s) pass locally." \
+  "#1609 signature requires the timed-out spec to pass locally"
+assert_contains "$fix_checks_path" \
+  "Never \"fix\" a contention timeout by weakening the test" \
+  "#1609 forbids weakening the test to satisfy a contention timeout"
+assert_contains "$dispatch_rules_path" \
+  "CI pool state at dispatch" \
+  "#1609 dispatch-rules hands the fix-checks worker fresh pool state on a self-hosted pool"
+assert_contains "$repo_root/plugins/shipyard/workflows/prompt-templates/fix-checks-only.mjs" \
+  "unit.ciPoolState" \
+  "#1609 workflow-substrate fix-checks prompt renders ciPoolState"
+assert_contains "$repo_root/plugins/shipyard/workflows/do-work-dispatch.core.js" \
+  "ciPoolState: it.ciPoolState" \
+  "#1609 core.js passes ciPoolState through the unit normalizer (#1615)"
+
 # Local gates MUST pass — the proof the diff is not the cause.
 assert_contains "$fix_checks_path" \
   "Local gates pass." \

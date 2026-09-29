@@ -57,5 +57,18 @@ export function buildFixChecksOnlyPrompt(unit, repoSlug) {
     `workflow-substrate return contract — NOT the free-text return string the Agent-tool`,
     `path uses.`,
   )
+  // #1609: on a self-hosted pool the orchestrator hands over a fresh
+  // detect-ci-runner-capacity.sh read so the worker has the contention probe
+  // for fix-checks-only.md's contended-host step-timeout signature without
+  // inferring it from log archaeology. Omitted on hosted/unknown.
+  if (unit.ciPoolState) {
+    lines.push(
+      ``,
+      `CI pool state at dispatch (orchestrator-observed): ${unit.ciPoolState}. A saturated pool`,
+      `(pool_idle=0, queued >= pool_total) satisfies the contention-probe half of`,
+      `fix-checks-only.md's contended-host step-timeout signature; it is evidence for the`,
+      `contention hypothesis, not a substitute for the rest of Step B.`,
+    )
+  }
   return lines.join('\n')
 }
