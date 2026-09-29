@@ -44,9 +44,8 @@ The executable implementation is [`backlog-filter.sh`](../../../scripts/backlog-
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-# Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
+# Re-export the SHIPYARD_REPO_ROOT pin as a literal (issue #1059/#1064, #1619).
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 investigate_dispatch=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
 ```
 

@@ -13,12 +13,15 @@ printf '%s\n' "<primary-root literal, 0.4>" > .shipyard-primary-root
 export SHIPYARD_REPO_ROOT="<primary-root literal, 0.4>"
 ```
 
-**Every subsequent orchestrator Bash block calling `shipyard-config.sh` (directly or via `resolve-dispatch-model.sh` / `flake-enforce.sh`) should re-derive and export it from the stash** — hermetic Bash-tool calls don't carry shell state forward (see [step 0.3](./00-config-worktree.md#03-claude_plugin_root-re-export-preamble-every-bash-tool-call)):
+**Every subsequent orchestrator Bash block calling `shipyard-config.sh` (directly or via `resolve-dispatch-model.sh` / `flake-enforce.sh`) re-exports it as the same literal** — hermetic Bash-tool calls don't carry shell state forward (see [step 0.3](./00-config-worktree.md#03-claude_plugin_root-re-export-preamble-every-bash-tool-call)). Substitute the primary root you wrote above for the placeholder:
 
 ```bash
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
-export SHIPYARD_REPO_ROOT
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 ```
+
+**Never re-derive it from the stash with `SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root …)` + `export SHIPYARD_REPO_ROOT` ([#1619](https://github.com/mattsears18/shipyard/issues/1619)).** That pair — the form every consumer used until #1619 — is refused post-relocation for the same reason #1607 retired the `CLAUDE_PLUGIN_ROOT` stash read: the worktree-isolation guard rejects exporting a value the command computes (see [`dont.md`'s "Never `export` a computed value"](../dont.md)). A per-command env prefix fed a computed value (`SHIPYARD_REPO_ROOT="$X" "$CLAUDE_PLUGIN_ROOT/scripts/…"`) is refused too; a prefix whose value **and** command path are both literals runs (the shape [`04-backlog-divert.md`](./04-backlog-divert.md) uses). `.shipyard-primary-root` stays the durable record of the literal — a plain `cat .shipyard-primary-root` recovers it if the orchestrator has lost track of the value — and `resolve-dispatch-model.sh` still reads it internally (below).
+
+**The retired form's `|| pwd` fallback was dead, and wrong where it wasn't.** The pin block above runs immediately after step 0.5's relocation and step 0.55's session-id storage, before any post-relocation block that reads config, and it writes the stash unconditionally — so every consumer that used to `cat` it found it present. The only case the fallback could have covered is a stash that failed to write, and there `pwd` (or the `git rev-parse --show-toplevel` variant some blocks used) resolves to the **orchestrator worktree** — exactly the #1059 misdirection the pin exists to prevent, applied silently. Substituting the literal the orchestrator already holds removes that silent degradation rather than preserving it.
 
 **Scope: orchestrator session only — never propagate into a dispatched worker.** `SHIPYARD_REPO_ROOT` redirects the whole repo config layer. A worker's own `agent-*` worktree must resolve its own config against its own cwd; inheriting this pin would silently misdirect it. Never add `SHIPYARD_REPO_ROOT` to a dispatch prompt.
 
@@ -41,14 +44,12 @@ Two costs, and the second is the dangerous one:
 
 **Do NOT "fix" this by unpinning `SHIPYARD_REPO_ROOT` or by refreshing the primary checkout.** Unpinning re-opens #1059 (the local layer silently drops out of every read); refreshing mutates the user's own checkout, which this session must never do. The pin is correct behavior — the silence around it was the defect, and the warning is what closes it.
 
-**Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer exists and changes the merged result (re-derived from stash files, not shell vars — #1182):
+**Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer exists and changes the merged result (substituted literals, not shell vars — #1182). Every value is a literal the orchestrator already holds, because a per-command env prefix carrying a computed value, or ahead of a computed command path, is refused post-relocation (#1619). `<orchestrator-worktree literal>` is the worktree root step 0.5 relocated into:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-PINNED_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
-if [ -n "$PINNED_ROOT" ] && [ -f "$PINNED_ROOT/.shipyard/config.local.json" ]; then
-  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$(pwd)" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)
-  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$PINNED_ROOT" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)
+if [ -f "<primary-root literal>/.shipyard/config.local.json" ]; then
+  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="<orchestrator-worktree literal>" <plugin-root literal>/scripts/shipyard-config.sh load 2>/dev/null)
+  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="<primary-root literal>" <plugin-root literal>/scripts/shipyard-config.sh load 2>/dev/null)
   if [ "$UNPINNED_CONFIG" != "$PINNED_CONFIG" ]; then
     echo "warning: .shipyard/config.local.json in the primary checkout changes the effective config (issue #1059). SHIPYARD_REPO_ROOT is pinned for THIS session, but a call site that skips re-exporting it (see above) will still read the un-pinned config. Verify trust/auto-merge/model behavior this session." >&2
   fi

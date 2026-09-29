@@ -38,13 +38,20 @@
 # the plugin-root preamble test's own fence walker). A block "counts" if it
 # invokes `${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh"` or
 # `${CLAUDE_PLUGIN_ROOT}/scripts/resolve-dispatch-model.sh"` literally. A
-# counting block passes if it ALSO contains the `.shipyard-primary-root`
-# stash-file marker somewhere in the same block — the shared substring both
-# the canonical `SHIPYARD_REPO_ROOT=$(cat ".../.shipyard-primary-root" ...)`
-# re-derivation and a block-local-variable-prefixed variant (e.g.
-# `$REPO_ROOT/.shipyard-primary-root`, disk-space-guard.md) both carry, so the
-# test doesn't hardcode one exact snippet shape and reject an equally-valid
-# alternative.
+# counting block passes if it ALSO pins SHIPYARD_REPO_ROOT to the
+# `<primary-root literal>` placeholder somewhere in the same block — either
+# the canonical `export SHIPYARD_REPO_ROOT="<primary-root literal>"` or a
+# per-command `SHIPYARD_REPO_ROOT=<primary-root literal>` env prefix.
+#
+# Issue #1619: until then the pin was re-derived from the step-0.56 stash
+# (`SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)` +
+# `export SHIPYARD_REPO_ROOT`) and this check accepted any block carrying the
+# `.shipyard-primary-root` marker. Current harness builds refuse exporting a
+# computed value post-relocation (same trigger #1607 retired for
+# CLAUDE_PLUGIN_ROOT), so the stash read no longer counts as a pin, and
+# check (5) asserts the retired form — and the sibling
+# `SHIPYARD_ORCHESTRATOR_PID=$(...)` + export — is gone from every
+# orchestrator-phase bash block.
 #
 # Block-local variable check (issue #1276). A bareword-variable prefix
 # (`$VAR/.shipyard-primary-root` or `${VAR}/.shipyard-primary-root`) is only
@@ -237,8 +244,9 @@ done
 
 # (2) Walk every bash code block in every scanned file, IN FILE ORDER. A
 # block that invokes shipyard-config.sh or resolve-dispatch-model.sh must
-# also carry the .shipyard-primary-root stash marker somewhere in the same
-# block — AND, if that marker is reached via a bareword variable prefix
+# also pin SHIPYARD_REPO_ROOT to the <primary-root literal> somewhere in the
+# same block (#1619) — AND, if a .shipyard-primary-root read appears via a
+# bareword variable prefix
 # (`$VAR/.shipyard-primary-root` / `${VAR}/.shipyard-primary-root`), that
 # variable must itself be assigned earlier in the SAME block (issue #1276 —
 # see the header comment above for why: a variable assigned in a different
@@ -277,7 +285,9 @@ walk_blocks() {
           line ~ /\$CLAUDE_PLUGIN_ROOT\/scripts\/resolve-dispatch-model\.sh"/) {
         has_call = 1
       }
-      if (line ~ /\.shipyard-primary-root/) {
+      # The pin is the substituted literal (issue #1619) — never the retired
+      # stash read, which current harness builds refuse to export.
+      if (line ~ /SHIPYARD_REPO_ROOT="?<primary-root literal>/) {
         has_pin = 1
       }
 
@@ -349,10 +359,10 @@ scan_repo_root_file() {
       else
         local msg
         if (( last_pin_line > 0 )); then
-          msg="${file#"$repo_root"/}: bash block at line $fence_line calls shipyard-config.sh/resolve-dispatch-model.sh but does not itself re-derive SHIPYARD_REPO_ROOT from the .shipyard-primary-root stash
+          msg="${file#"$repo_root"/}: bash block at line $fence_line calls shipyard-config.sh/resolve-dispatch-model.sh but does not itself pin SHIPYARD_REPO_ROOT (expected: export SHIPYARD_REPO_ROOT=\"<primary-root literal>\" — #1619)
          nearest re-derivation in this file: line $last_pin_line — REJECTED: it is a DIFFERENT bash block; every Bash-tool call is its own hermetic subshell (#354), so this block must re-derive the pin itself (no two-block idiom exception here, unlike the sibling \$CLAUDE_PLUGIN_ROOT preamble test) (issue #1059/#1064)"
         else
-          msg="${file#"$repo_root"/}: bash block at line $fence_line calls shipyard-config.sh/resolve-dispatch-model.sh but never re-derives SHIPYARD_REPO_ROOT from the .shipyard-primary-root stash — no re-derivation found anywhere earlier in this file either (issue #1059/#1064)"
+          msg="${file#"$repo_root"/}: bash block at line $fence_line calls shipyard-config.sh/resolve-dispatch-model.sh but never pins SHIPYARD_REPO_ROOT (expected: export SHIPYARD_REPO_ROOT=\"<primary-root literal>\" — #1619) — no re-derivation found anywhere earlier in this file either (issue #1059/#1064)"
         fi
         OFFENSE_MSGS+=("$msg")
       fi
@@ -395,8 +405,7 @@ if [[ -n "$fixture_dir" && -d "$fixture_dir" ]]; then
     echo
     echo '```bash'
     # shellcheck disable=SC2016  # literal fixture text — must NOT expand
-    echo 'SHIPYARD_REPO_ROOT=$(cat ".shipyard-primary-root" 2>/dev/null)'
-    echo 'export SHIPYARD_REPO_ROOT'
+    echo 'export SHIPYARD_REPO_ROOT="<primary-root literal>"'
     echo '```'
     echo
     echo "Some prose in between."
@@ -486,6 +495,80 @@ if $found_origin; then
   assert_pass "setup/$origin_name still documents the .shipyard-primary-root stash (step 0.56 origin)"
 else
   assert_fail "setup/*.md must document the .shipyard-primary-root stash (step 0.56 origin) — cannot find it in any setup file"
+fi
+
+# (5) Issue #1619 — the retired computed-value exports must not survive in
+# any orchestrator-phase bash block. `SHIPYARD_REPO_ROOT=$(cat
+# .shipyard-primary-root ...)` + `export SHIPYARD_REPO_ROOT` and
+# `SHIPYARD_ORCHESTRATOR_PID=$(... detect-orchestrator-pid)` + export are
+# both refused post-relocation ("exporting a value this command computes"),
+# the same trigger #1607 retired for CLAUDE_PLUGIN_ROOT. Prose may still
+# NAME the retired forms (00k-repo-root-pin.md and dont.md do, to explain
+# why they're gone) — only fenced bash blocks are scanned. Scans every
+# commands/do-work/ file, including the two pre-relocation exclusions above:
+# neither has a reason to carry these forms either.
+retired_scan() {
+  awk '
+    /^[ \t]*```bash[ \t]*$/ { inb = 1; next }
+    /^[ \t]*```[ \t]*$/ { inb = 0; next }
+    inb && ($0 ~ /(^|[ \t;])(export[ \t]+)?(SHIPYARD_REPO_ROOT|SHIPYARD_ORCHESTRATOR_PID)="?\$\(/ ||
+             $0 ~ /^[ \t]*export[ \t]+(SHIPYARD_REPO_ROOT|SHIPYARD_ORCHESTRATOR_PID)[ \t]*$/) {
+      print FILENAME ":" NR
+    }
+  ' "$@"
+}
+
+ALL_DO_WORK=()
+while IFS= read -r -d '' f; do
+  ALL_DO_WORK+=("$f")
+done < <(find "$DO_WORK_DIR" -type f -name '*.md' -print0 2>/dev/null | sort -z)
+
+retired_hits=$(retired_scan "${ALL_DO_WORK[@]}")
+if [[ -z "$retired_hits" ]]; then
+  assert_pass "no orchestrator-phase bash block exports a computed SHIPYARD_REPO_ROOT / SHIPYARD_ORCHESTRATOR_PID (issue #1619)"
+else
+  assert_fail "orchestrator-phase bash block(s) still export a computed SHIPYARD_REPO_ROOT / SHIPYARD_ORCHESTRATOR_PID (issue #1619) — replace with export SHIPYARD_REPO_ROOT=\"<primary-root literal>\" / export SHIPYARD_ORCHESTRATOR_PID=\"<orchestrator-pid literal>\":"
+  printf '%s\n' "$retired_hits" | sed "s|^$repo_root/|         |"
+fi
+
+# Non-vacuity: the literal export must actually be the form in use, so a
+# future rename of the placeholder can't leave check (2) matching nothing.
+literal_count=0
+for f in "${ALL_DO_WORK[@]}"; do
+  n=$(grep -cF -- 'export SHIPYARD_REPO_ROOT="<primary-root literal>"' "$f" || true)
+  literal_count=$((literal_count + n))
+done
+if (( literal_count >= 25 )); then
+  assert_pass "orchestrator-phase files carry the SHIPYARD_REPO_ROOT literal export in $literal_count place(s) (issue #1619)"
+else
+  assert_fail "orchestrator-phase files carry the SHIPYARD_REPO_ROOT literal export in only $literal_count place(s) — expected >= 25 (issue #1619)"
+fi
+
+# The scan must actually detect each retired shape (fixture), and must not
+# flag the literal forms that replaced them.
+retired_fixture_dir=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-1619)
+if [[ -n "$retired_fixture_dir" && -d "$retired_fixture_dir" ]]; then
+  retired_fixture="$retired_fixture_dir/retired.md"
+  {
+    echo '```bash'
+    # shellcheck disable=SC2016  # literal fixture text — must NOT expand
+    echo 'SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)'
+    echo 'export SHIPYARD_REPO_ROOT'
+    # shellcheck disable=SC2016  # literal fixture text — must NOT expand
+    echo '  export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)'
+    echo 'export SHIPYARD_REPO_ROOT="<primary-root literal>"'
+    echo 'export SHIPYARD_ORCHESTRATOR_PID="<orchestrator-pid literal>"'
+    echo '```'
+  } > "$retired_fixture"
+  fixture_hits=$(retired_scan "$retired_fixture" | wc -l | tr -d ' ')
+  if [[ "$fixture_hits" == "3" ]]; then
+    assert_pass "retired-form scan flags the stash read, its bare export, and the computed PID export, and passes the literal forms (issue #1619)"
+  else
+    assert_fail "retired-form scan should flag exactly 3 fixture lines, flagged $fixture_hits (issue #1619)"
+  fi
+  rm -rf "$retired_fixture_dir"
+else
+  assert_fail "could not create sandbox for retired-form fixture (issue #1619)"
 fi
 
 echo

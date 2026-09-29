@@ -539,9 +539,8 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-  # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-  SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-  export SHIPYARD_REPO_ROOT
+  # Re-export the SHIPYARD_REPO_ROOT pin as a literal (issue #1059/#1064, #1619).
+  export SHIPYARD_REPO_ROOT="<primary-root literal>"
   EXPECTED_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
   case "$EXPECTED_METHOD" in squash|merge|rebase) ;; *) EXPECTED_METHOD=squash ;; esac
 
@@ -586,9 +585,8 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-  # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-  SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-  export SHIPYARD_REPO_ROOT
+  # Re-export the SHIPYARD_REPO_ROOT pin as a literal (issue #1059/#1064, #1619).
+  export SHIPYARD_REPO_ROOT="<primary-root literal>"
   # cost_tracking.comment_on_pr opt-out (#855) — checked first, cheaply,
   # before any session-id derivation or gh call. Defaults to true (fail
   # OPEN on a config-read error) so a read failure never silently swallows
@@ -983,7 +981,11 @@ worktree_path="$PRIMARY_CHECKOUT/.claude/worktrees/agent-$completed_agent_id"
 if [ -d "$wt_dir" ]; then
   # Bootstrap the orchestrator PID so classify-lock can short-circuit on
   # our own session's locks (issue #263 — same pattern as A.1's reap).
-  export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
+  # Substitute the literal `session-identity.sh detect-orchestrator-pid`
+  # printed when run as its own plain command (fixed for the session; ""
+  # if it printed nothing). Exporting the command-substitution result directly is refused
+  # post-relocation — see dont.md's "Never export a computed value" (#1619).
+  export SHIPYARD_ORCHESTRATOR_PID="<orchestrator-pid literal>"
 
   classification=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" \
     classify-lock "$wt_dir/locked")
@@ -1105,9 +1107,8 @@ FETCH_TS=$(date -u +%H:%M:%S)
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-# Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
+# Re-export the SHIPYARD_REPO_ROOT pin as a literal (issue #1059/#1064, #1619).
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 # blocked_agent.soft_retry_minutes — default 30 — from shipyard-config.sh.
 soft_retry_minutes=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" \
   get blocked_agent.soft_retry_minutes 2>/dev/null || echo "30")
@@ -1156,12 +1157,11 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
     run list --repo "<owner/repo>" --status queued --limit 100 \
     --json databaseId --jq 'length' 2>/dev/null)
 
-  # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064) before the
-  # shipyard-config.sh reads below — each Bash-tool call is a fresh,
-  # hermetic subshell, so nothing set in an earlier call (including step
-  # 0.56's original stash-and-export) survives into this one.
-  SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-  export SHIPYARD_REPO_ROOT
+  # Re-export the SHIPYARD_REPO_ROOT pin (issue #1059/#1064) as the step-0.56
+  # literal (#1619) before the shipyard-config.sh reads below — each
+  # Bash-tool call is a fresh, hermetic subshell, so nothing set in an
+  # earlier call survives into this one.
+  export SHIPYARD_REPO_ROOT="<primary-root literal>"
   multiplier=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.backpressure_multiplier 2>/dev/null)
   min_in_flight=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.backpressure_min_in_flight 2>/dev/null)
 

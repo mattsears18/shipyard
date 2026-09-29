@@ -20,11 +20,10 @@ When the trigger holds:
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-# Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064) before the
+# Re-export the SHIPYARD_REPO_ROOT pin (issue #1059/#1064, literal per #1619) before the
 # shipyard-config.sh reads below — each Bash-tool call is a fresh, hermetic
 # subshell, so nothing set in an earlier call survives into this one.
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 max_hours=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get paused_on_environment.max_hours 2>/dev/null)
 poll_interval=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get paused_on_environment.poll_interval_seconds 2>/dev/null)
 paused_at="<iso-8601 UTC now>"

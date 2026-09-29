@@ -73,15 +73,14 @@ Closes [#385](https://github.com/mattsears18/shipyard/issues/385) — phase 2 of
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-# Re-derive the SHIPYARD_REPO_ROOT pin from the step-0.56 stash rather than
+# Pin SHIPYARD_REPO_ROOT to the step-0.56 primary-root literal (#1619) rather than
 # `git rev-parse --show-toplevel` (issue #1059) — the latter resolves to
 # the orchestrator worktree post-relocation, not the primary checkout where
 # the gitignored flake-suspects.txt persists across sessions, and every
 # shipyard-config.sh call in this step (including this very FLAKE_ENABLED
 # read) must read repo-level config from the primary, not the orchestrator
 # worktree.
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 FLAKE_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
 ```
 
@@ -91,12 +90,11 @@ Read crossed flakes and enforce the per-row actions. The helper computes `crosse
 
 `--prune-window-days` (issue #863): `flake-registry.sh` has always shipped a `prune` subcommand, but nothing ever called it — with flake_registry enabled, `~/.shipyard/flake-registry.jsonl` grew unbounded forever. This is the scheduled call: once per session, gated on the same `flake_registry.enabled` flag as the rest of this step, opted into `flake-enforce.sh`'s own `--prune-window-days` flag so a bare `enforce` invocation elsewhere (tests, manual runs) still leaves the registry untouched by default. `PRUNE_WINDOW_DAYS` reads `flake_registry.prune_window_days` (default 90 — generous; the registry is cheap to keep).
 
-Re-derive both pins (variables don't survive across separate Bash calls), read `PRUNE_WINDOW_DAYS`, then run the enforcement call — one plain sequence, output redirected to a scratch log rather than piped into `sed`:
+Re-export both pins as literals (variables don't survive across separate Bash calls), read `PRUNE_WINDOW_DAYS`, then run the enforcement call — one plain sequence, output redirected to a scratch log rather than piped into `sed`:
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 PRUNE_WINDOW_DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)
 case "$PRUNE_WINDOW_DAYS" in ''|*[!0-9]*) PRUNE_WINDOW_DAYS=90 ;; esac
 "$CLAUDE_PLUGIN_ROOT/scripts/flake-enforce.sh" enforce \
