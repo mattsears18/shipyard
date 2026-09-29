@@ -25,7 +25,7 @@ In [step D's periodic refresh](../steady-state.md#d-periodic-refresh), additiona
    **Before applying a `<!-- do-work-blocked-until: YYYY-MM-DD -->` calendar skip to an `agent-console` issue, evaluate a companion recorded-probe marker if one is present ([#1198](https://github.com/mattsears18/shipyard/issues/1198), extending the calendar-only gate [#1195](https://github.com/mattsears18/shipyard/issues/1195) added).** A `<!-- do-work-blocked-until: -->` marker (any class that writes one — currently `time-gated`; `external-dependency` gets the same marker once [#1199](https://github.com/mattsears18/shipyard/issues/1199) lands) can optionally be paired with a second, independent body marker: `<!-- do-work-recheck: <verb> <args...> -->`, naming a mechanically-checkable command that tests the actual blocking condition instead of just waiting out a date. When `scope.recheck_probe_enabled` is `true` (the default) and the issue body contains this marker, evaluate it BEFORE the plain date comparison:
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    
    VERDICT=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body' \
      | "$CLAUDE_PLUGIN_ROOT/scripts/eval-recheck-probe.sh" <owner/repo>)

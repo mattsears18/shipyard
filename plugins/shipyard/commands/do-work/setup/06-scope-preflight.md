@@ -173,7 +173,7 @@ Real repro ([#1491](https://github.com/mattsears18/shipyard/issues/1491), sessio
 Run the check. It is a **script, not a rule for you to re-derive**:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 gh issue view <N> --repo <owner/repo> --json body --jq '.body' > .shipyard-scratch/issue-<N>-body.md
 "$CLAUDE_PLUGIN_ROOT/scripts/detect-stale-agent-limitation.sh" .shipyard-scratch/issue-<N>-body.md
 ```

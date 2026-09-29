@@ -210,7 +210,7 @@ $CURRENT_BODY"
   4b. **Write a self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker** when `$DEFER_REASON_CLASS == "external-dependency"` ([#1195](https://github.com/mattsears18/shipyard/issues/1195)). Same line-1-only constraint as 4a ([#1434](https://github.com/mattsears18/shipyard/issues/1434)):
 
      ```bash
-     export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+     export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
      export SHIPYARD_REPO_ROOT="<primary-root literal>"
      DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get scope.external_dependency_recheck_days 2>/dev/null || echo 14)
      DAYS=${DAYS//[!0-9]/14}
@@ -246,7 +246,7 @@ $CURRENT_BODY"
      Check whether this issue's milestone (the flattened title already in hand from the wide-fetch payload, or a fresh `gh issue view <N> --repo <owner/repo> --json milestone --jq '.milestone.title // ""'` if not) matches `backlog.someday_milestone`'s configured value — bare-title comparison (strip the leading `N · ` prefix, compare case-insensitively and trimmed), mirroring `is_someday` in `backlog-filter.sh`. When it matches AND `backlog.someday_recheck_days` resolves non-zero:
 
      ```bash
-     export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+     export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
      export SHIPYARD_REPO_ROOT="<primary-root literal>"
      DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.someday_recheck_days 2>/dev/null || echo 30)
      DAYS=${DAYS//[!0-9]/30}
