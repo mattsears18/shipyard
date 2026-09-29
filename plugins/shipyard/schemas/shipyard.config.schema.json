@@ -449,6 +449,12 @@
           "default": ["shipyard:update-roadmap", "update-roadmap"],
           "description": "Skill/command name tokens that Detector 3 (setup.md step 6 pre-scope detector batch, issue #1294) treats as orchestrator-only — a dispatched `/shipyard:do-work` worker is spec-prohibited from ever invoking them (see `skills/worker-preamble/milestone-prohibition.md` and each named skill's own 'Who runs this'/frontmatter boundary). When an issue's DELIVERABLE explicitly instructs a worker to invoke one of these tokens, the orchestrator synthesizes a `human-decision-required` defer instead of burning a worker dispatch that can only discover the prohibition and bail. Matched as a case-insensitive substring against the issue body in a deliverable context (a suggested-fix/acceptance-criteria framing), ignoring a leading `/` slash-command prefix. Set to an EMPTY array (`[]`) to disable Detector 3 entirely. Default covers the one known orchestrator-only skill, `shipyard:update-roadmap`."
         },
+        "co_scope_keys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["audit-run"],
+          "description": "Body-marker keys that make issues co-scope candidates for scope pre-flight (issue #1596, commands/do-work/setup/06h-co-scope-grouping.md). Eligible issues whose bodies carry the same `<!-- <key>=<value> -->` marker (by default `audit-run`, which every /shipyard:audit filing stamps) are scoped by ONE scope agent over the whole set, which returns a `separate` / `one-pr` / `partial` grouping verdict alongside the unchanged per-issue entries — so two sibling findings that are one change (e.g. two bugs that both need the same version-constant bump) ship as one PR instead of two PRs conflicting on the same line. The default verdict is `separate`; a bundle stands only when scripts/co-scope-groups.sh validate confirms a shared file in every bundled issue's scoped `files`. Keys must match [a-z0-9][a-z0-9_-]*. Set to an EMPTY array (`[]`) to disable co-scoping and scope every candidate individually."
+        },
         "external_dependency_recheck_days": {
           "type": "integer",
           "minimum": 1,

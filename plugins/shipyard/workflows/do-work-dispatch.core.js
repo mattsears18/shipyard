@@ -350,7 +350,8 @@ const emit = (message) => {
 // Per-work-unit shape (issue-work fields documented alongside the builder below):
 //   { number, mode, model, trust, branch, worktreePath,
 //     pluginRoot, pluginRootStale, skillCacheStale,
-//     verifyGate, userFeedback, splitDispatch, phase1Scope,
+//     verifyGate, userFeedback, splitDispatch, phase1Scope, bundledIssues,
+//     sharedSurface, groupingRationale,
 //     stalePremisePhrase, stalePremiseCorrection, tokenBudgetWarning, sessionConcurrency,
 //     nextAvailableVersion, changelogPath }
 const selectedIssues = Array.isArray(input.issues) ? input.issues : []
@@ -504,6 +505,9 @@ const workUnits = selectedIssues.map((it) => ({
   userFeedback: it.userFeedback === true,
   splitDispatch: it.splitDispatch === true, // #1562 neutral-branch paragraph
   phase1Scope: it.phase1Scope ?? null,
+  bundledIssues: Array.isArray(it.bundledIssues) ? it.bundledIssues : [], // #1596 co-scoped bundle paragraph
+  sharedSurface: it.sharedSurface ?? null,
+  groupingRationale: it.groupingRationale ?? null,
   stalePremisePhrase: it.stalePremisePhrase ?? null, // #1491 stale-premise paragraph
   stalePremiseCorrection: it.stalePremiseCorrection ?? null,
   tokenBudgetWarning: it.tokenBudgetWarning ?? null,
