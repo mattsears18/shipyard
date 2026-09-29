@@ -62,10 +62,19 @@
 # that same clean-tree-only posture to a fast-forward, which is strictly
 # weaker: it discards nothing by construction.
 #
-#   - Heals ONLY when the primary is on the default branch AND its working
-#     tree is clean. A user parked on a feature branch is doing deliberate
-#     work; moving their HEAD would be a surprise, not a correction — so
-#     that case refuses with an actionable message instead.
+#   - Heals ONLY when the primary is on the default branch AND it has no
+#     TRACKED modifications (staged or unstaged). A user parked on a
+#     feature branch is doing deliberate work; moving their HEAD would be a
+#     surprise, not a correction — so that case refuses with an actionable
+#     message instead.
+#   - UNTRACKED files do not block the heal (issue #1616). A fast-forward
+#     cannot lose untracked content: git refuses the merge outright rather
+#     than overwrite an untracked path the incoming commits would add, and
+#     that refusal surfaces as `heal-failed` (with a reason naming the
+#     collision), never a clobber. Untracked tool artifacts (`.codex/`,
+#     `AGENTS.md`, editor dirs, scratch notes) are the common case on a
+#     maintainer checkout, so treating them as "possible real edits"
+#     turned a routine lossless fast-forward into a session-ending refusal.
 #   - The merge is `--ff-only` against the already-fetched remote-tracking
 #     ref. Local commits ahead of origin make the fast-forward impossible,
 #     which surfaces as `heal-failed` rather than a merge commit.
@@ -224,17 +233,27 @@ case "$sub" in
       exit 1
     fi
 
-    if [ -n "$(git -C "$PRIMARY_CHECKOUT" status --porcelain 2>/dev/null)" ]; then
-      emit "dirty-refuse" "stale primary checkout: $BEHIND_BEFORE commit(s) behind origin/$DEFAULT_BRANCH, and its working tree has uncommitted changes — NOT auto-updating (possible real edits). Commit or set them aside, then run 'git -C \"$PRIMARY_CHECKOUT\" pull --ff-only' and re-run /shipyard:do-work"
+    # Tracked modifications only (#1616): `--untracked-files=no` keeps an
+    # untracked-only tree healable, since the fast-forward below cannot lose
+    # untracked content — git aborts rather than overwrite one.
+    if [ -n "$(git -C "$PRIMARY_CHECKOUT" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+      emit "dirty-refuse" "stale primary checkout: $BEHIND_BEFORE commit(s) behind origin/$DEFAULT_BRANCH, and its working tree has uncommitted changes to tracked files — NOT auto-updating (possible real edits). Commit or set them aside, then run 'git -C \"$PRIMARY_CHECKOUT\" pull --ff-only' and re-run /shipyard:do-work"
       exit 1
     fi
 
-    # CLEAN tree on the default branch — the fast-forward discards nothing.
+    # No tracked modifications on the default branch — the fast-forward
+    # discards nothing (untracked paths survive, or git refuses the merge).
     # `merge --ff-only <remote-tracking ref>` rather than `pull --ff-only`:
     # same effect, no dependency on branch upstream configuration, and no
     # second fetch. The human-facing remedy stays spelled `git pull
     # --ff-only` because that is what a human would type.
-    if ! git -C "$PRIMARY_CHECKOUT" merge --ff-only "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+    # LC_ALL=C pins git's message language so the untracked-collision
+    # match below isn't defeated by a localized host.
+    if ! MERGE_ERR=$(LC_ALL=C git -C "$PRIMARY_CHECKOUT" merge --ff-only "origin/$DEFAULT_BRANCH" 2>&1 >/dev/null); then
+      if printf '%s' "$MERGE_ERR" | grep -q "untracked working tree files would be overwritten"; then
+        emit "heal-failed" "fast-forward of $PRIMARY_BRANCH to origin/$DEFAULT_BRANCH refused by git — an untracked file in the primary would be overwritten by an incoming commit (nothing was changed). Move or delete the colliding untracked path(s) that 'git -C \"$PRIMARY_CHECKOUT\" pull --ff-only' names, then re-run /shipyard:do-work"
+        exit 2
+      fi
       emit "heal-failed" "fast-forward of $PRIMARY_BRANCH to origin/$DEFAULT_BRANCH failed — the primary likely has local commits not on origin (a fast-forward would not be lossless). Reconcile it by hand (git -C \"$PRIMARY_CHECKOUT\" status; git -C \"$PRIMARY_CHECKOUT\" log --oneline origin/$DEFAULT_BRANCH..HEAD) and re-run /shipyard:do-work"
       exit 2
     fi
