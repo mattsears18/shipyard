@@ -1842,7 +1842,7 @@ Neither half is refused alone. What refuses is the *reference to `$ME_LOGIN`* �
 - **Line count / multi-statement compoundness.** The 5-statement preamble runs fine with a `--help` or a one-flag invocation.
 - **Flag or argument count.** The full 8-flag invocation runs fine with every argument literal, preamble included.
 - **Backslash line continuations.** The refused block collapsed to one line is refused identically; the accepted block split across continuations runs identically. Line structure is orthogonal.
-- **Assignment-RHS `$(cmd)`** — [#1352](https://github.com/mattsears18/shipyard/issues/1352)'s stated axis. `ME=$(pwd)` runs. `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` followed by `export CLAUDE_PLUGIN_ROOT` and a use of `"$CLAUDE_PLUGIN_ROOT/scripts/…"` runs. #1352's sweep was still worth having as hygiene, but its stated cause does not reproduce as a general rule, and continuing to believe it is part of why these two blocks stayed broken.
+- **Assignment-RHS `$(cmd)`** — [#1352](https://github.com/mattsears18/shipyard/issues/1352)'s stated axis. `ME=$(pwd)` runs. `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` followed by `export CLAUDE_PLUGIN_ROOT` and a use of `"$CLAUDE_PLUGIN_ROOT/scripts/…"` runs *(at #1471's measurement time — current builds refuse the `export` of a computed value, so that stash-read idiom was retired in favour of exporting the substituted literal; see [#1607](https://github.com/mattsears18/shipyard/issues/1607) and `dont.md`'s "Never `export` a computed value")*. #1352's sweep was still worth having as hygiene, but its stated cause does not reproduce as a general rule, and continuing to believe it is part of why these two blocks stayed broken.
 - **A `.sh`-shaped token in argument position.** `echo plugins/shipyard/scripts/compound-block-scan.sh` runs.
 
 **One genuinely new syntactic shape, cleanly isolated.** An **unquoted** command substitution with a literal path suffix glued on is refused; quoting it is sufficient:
@@ -1947,7 +1947,7 @@ Under the measured predicate this is not mysterious: `--me "$ME_LOGIN"` is a bar
 
 **#1471's secondary observation was the same rule, generalized one notch wrong.** It recorded special parameters and unset variables as refusing "when they form a path-shaped word" but passing "inside a `label=value`-shaped word." The real axis is **whole-word vs. literal-adjacent**, not path-shaped vs. label-shaped — `echo "rc=$?"` passes because `rc=` is adjacent literal text, and `echo "$?"` fails because nothing else is in the word.
 
-**A directly useful corollary.** The stash-read pattern the orchestrator spec uses everywhere is safe *provided every use carries a literal suffix* — the two-statement read is not the risk, the bare use is:
+**A directly useful corollary.** The stash-read pattern the orchestrator spec uses everywhere is safe *provided every use carries a literal suffix* — the two-statement read is not the risk, the bare use is. *(Superseded by [#1607](https://github.com/mattsears18/shipyard/issues/1607): on later Claude Code builds the two-statement read itself is refused — the guard now objects to `export`ing a computed value — so the orchestrator spec replaced it with `export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"`. The table below is the #1474-era measurement, kept as history.)*
 
 | Block (identical two-statement stash-read preamble) | Verdict |
 |---|---|

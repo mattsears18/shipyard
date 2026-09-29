@@ -44,8 +44,7 @@ Two costs, and the second is the dangerous one:
 **Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer exists and changes the merged result (re-derived from stash files, not shell vars — #1182):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 PINNED_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
 if [ -n "$PINNED_ROOT" ] && [ -f "$PINNED_ROOT/.shipyard/config.local.json" ]; then
   UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$(pwd)" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)

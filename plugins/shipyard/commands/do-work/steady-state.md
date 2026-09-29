@@ -122,8 +122,7 @@ Extract the `usage` payload from the dispatch tool result — the harness emits 
 **Run it as its own plain Bash call and read the id off stdout ([#1479](https://github.com/mattsears18/shipyard/issues/1479) — provenance in [RATIONALE → #1479 residual decomposition](../do-work-RATIONALE.md#the-1479-residual-decomposition-the-last-9-bucket-4-findings)).** [`session-identity.sh resolve-session-id`](../../scripts/session-identity.sh) folds the derive, the `.shipyard-session-id` fallback, and #548's loud-empty diagnostic into one call, so this preamble carries no bare whole-word expansion for the guard to refuse:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" resolve-session-id
 ```
 
@@ -138,8 +137,7 @@ export CLAUDE_PLUGIN_ROOT
 Invoke (after the A.0 required preamble above — `<session-id>` is the literal it resolved; skip this call entirely if it came back empty):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" bump-tokens \
   --session-id <session-id> \
   --issue <N>            `# present for issue-work and fix-checks-only on issue-anchored PRs` \
@@ -161,8 +159,7 @@ The strict path requires the harness to emit `input_tokens` / `output_tokens` / 
 When the `<usage>` block has `total_tokens` but no breakdown, fall back to the **degraded path** rather than skipping the bump entirely:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" bump-tokens \
   --session-id <session-id> \
   --issue <N> --pr <M> \
@@ -226,8 +223,7 @@ Both failure modes leave the worktree path unreusable for the remainder of the s
 **Run this via the `inspect-unpushed` subcommand, not an inline `git -C` — the orchestrator is itself worktree-isolated (setup step 0.5) and its own harness guard unconditionally refuses a `git -C <other-worktree>` issued directly from its Bash tool call, read-only or not (issue [#1316](https://github.com/mattsears18/shipyard/issues/1316); `git -C` INSIDE a helper script's own bash process is unaffected — see [`scripts/worktree-reap.sh`'s `inspect_unpushed`](../../scripts/worktree-reap.sh) docstring for why):**
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 inspect_out=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" inspect-unpushed \
   --worktree-path "<worktree_path>" --default-branch "<default-branch>")
 ```
@@ -244,8 +240,7 @@ Parse line 1 of `$inspect_out` (`ahead_count=<N> dirty_count=<N> verdict=<clean|
 1. **Bound it first — retry cap 1 per target per session.** Track `stalled_resume_counts[<slot-target>]` (keyed by the slot's issue/PR number — same convention as `main_ci_fix_attempts`) in orchestrator working memory, initialized to 0 the first time a slot's target is seen. If the count is already `>= 1`, do NOT resume again — this target already had its one resume. **Hand it back** by falling through to the crash-recovery path below, which still salvages any committed/dirty work into a PR (see "Recovery semantics, in order" further down) — it just does so via auto-commit-and-push rather than a second live resume. A target that stalls twice is genuinely wedged; looping resumes on it wastes tokens without addressing the underlying cause.
 2. Otherwise, increment `stalled_resume_counts[<slot-target>]` by 1 and **gather the orchestrator's own reading of the worktree BEFORE composing the resume message.** The stalled agent's last self-report is not trustworthy about how far it actually got — it may have been mid-sentence when the stall watchdog killed it. **Same guard as the mechanical check above — a direct `git -C "$worktree_path" ...` is refused by the orchestrator's own worktree-isolation guard (issue [#1316](https://github.com/mattsears18/shipyard/issues/1316)), so gather this reading via `inspect-unpushed --fetch` instead**, which fetches `origin/$DEFAULT_BRANCH` internally (best-effort) before computing the ahead-count and diffing, read-only against `$worktree_path`:
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    inspect_out=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" inspect-unpushed \
      --worktree-path "<worktree_path>" --default-branch "<default-branch>" --fetch)
    # When version_coordination is enabled, also read the manifest's current
@@ -341,8 +336,7 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 **Extracted to [`scripts/crash-recovery-reap.sh`](../../scripts/crash-recovery-reap.sh) (issue [#1291](https://github.com/mattsears18/shipyard/issues/1291), the deliberately-deferred follow-up to #1289) — the block below is a translation, not a rewrite.** At ~420 lines (crash-recovery reap, and an embedded version-bump helper function) this was by a wide margin the single largest and most complex block in the whole corpus — the exact "too large to do safely in one PR" case #1289's own scope guidance sanctioned deferring at the time, the same judgment #1277's worker exercised for the two blocks #1289 itself went on to resolve. The script's own header comment restates the two invariants that govern any future edit here — never reap before inspecting, and the is_terminal gate is a genuine no-op path, not a shortcut — and preserves every recovery branch, every fire-and-forget guard, and every log-line prefix exactly as they read here before extraction. `${a05_bump_applied:+...}` in the dirty-worktree commit message is a pre-existing bug carried over unchanged (it checks non-empty, not `= true`, so the "release bump" suffix appears even when no bump was applied, since `a05_bump_applied` is always the literal string `"true"` or `"false"`) — tracked as a separate follow-up rather than fixed in this extraction, per the "don't change behavior while reshaping" rule.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # The agent's last-line return text from the harness notification, and the
 # harness task-notification's own status field ("completed" or "failed") —
 # the orchestrator already has both in working memory for A.1's parse
@@ -364,8 +358,7 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** Skip this call entirely when `crash_result` was `terminal=true` — there was no reap to verify. The `2>/dev/null || true` inside the script is fire-and-forget against an ordinary filesystem race, but it cannot surface a classifier denial: when Claude Code's auto-mode permission classifier denies the reap call outright (a real, reproduced outcome against `.claude/worktrees/agent-*` — see the issue), the ENTIRE Bash tool call is refused before any of its own code runs, so no audit line is ever written and the denial is indistinguishable from success to anything that only inspects this call's own exit path. A verification step written *inside* the same call would never run either — it has to be a genuinely separate call the orchestrator issues next, regardless of what the reap call above returned. This one performs no destructive operation (a read plus, at most, an audit-log JSONL append), so it should never itself be denied. Substitute the literal `worktree_path` / `worktree_name` / `classification` / `lock_pid` / `session_id` values parsed from `crash_result` above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
 
     ```bash
-    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-    export CLAUDE_PLUGIN_ROOT
+    export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
     if [ -e "$worktree_path" ]; then
       "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
         --action reaped-failed \
@@ -424,8 +417,7 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     **Mirror the same entry to the durable session-state file** ([#1302](https://github.com/mattsears18/shipyard/issues/1302)) via the typed `record-stall` subcommand — a single-entry, all-scalar-args call, never a hand-built `.stalled_dispatches = [...]` `--set` literal (that shape is exactly what got denied outright by Auto Mode's classifier in the #1302 repro). Fire-and-forget: never block this turn on it.
 
     ```bash
-    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-    export CLAUDE_PLUGIN_ROOT
+    export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
     DEGRADED_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     RESUMED_PR_ARG=()
     [ -n "${recovered_pr:-}" ] && RESUMED_PR_ARG=(--resumed-pr "$recovered_pr")
@@ -493,8 +485,7 @@ Closes [#387](https://github.com/mattsears18/shipyard/issues/387). The Claude Co
 **Run this via `primary-leak-guard.sh run`, not inline `git -C` — the orchestrator is itself worktree-isolated (setup step 0.5) and its own harness guard unconditionally refuses a `git -C <other-path>` issued directly from its Bash tool call, read-only or not (issue [#1316](https://github.com/mattsears18/shipyard/issues/1316), the same asymmetry [#1317](https://github.com/mattsears18/shipyard/pull/1317) already fixed for A.0.5's inspection sites; `git -C` INSIDE a helper script's own bash process is unaffected — see [`scripts/primary-leak-guard.sh`](../../scripts/primary-leak-guard.sh)'s own header for why, and issue [#1323](https://github.com/mattsears18/shipyard/issues/1323) for why this site was the one left unconverted):**
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 guard_out=$("$CLAUDE_PLUGIN_ROOT/scripts/primary-leak-guard.sh" run --repo <owner/repo>)
 ```
 
@@ -525,8 +516,7 @@ Once A.0.6 has run, proceed to A.1.
 **Persist the return record before any per-mode handling below — the mechanical gate `worktree-reap.sh` enforces ([#1237](https://github.com/mattsears18/shipyard/issues/1237)).** A reap this step (or step B, or a later turn's pre-dispatch reap) issues below only succeeds when `.returned_agent_ids[<agent-id>]` is set in this session's state — proof THIS agent's own terminal return reached the reconcile, not merely that some other signal (a PR observed `MERGED`) looked like completion. A.0.5's crash-recovery reap and the end-of-session sweeps are the documented exceptions and pass `--bypass-return-check` instead, because by construction the agent they reap never reached this line. Write the record once here, for every mode, before any branch below runs:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # One-call derive + .shipyard-session-id fallback (#1479). The pre-#1479
 # inline form passed the repo root and then tested the derived id for
 # emptiness; both words were bare whole-word expansions the
@@ -548,8 +538,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Verify the armed merge method — don't trust the worker's own claim ([#989](https://github.com/mattsears18/shipyard/issues/989)).** A worker can arm auto-merge with the wrong method (`--merge` instead of the configured `--squash`, or vice versa) despite every per-mode spec resolving `auto_merge.method` before its own `gh pr merge` call — the #989 repro shows this is **intermittent**: two workers in the same session both mis-armed `mergeMethod: MERGE` while every sibling PR that session correctly armed `SQUASH`. The worker's return string never carries the armed method, so there's nothing to parse here — re-read the PR directly and correct it before moving on. Skip this check entirely for a `disposition:`/`verified:` return (no PR) and for `auto-merge: gated — external-author origin`, `auto-merge: unarmed — policy-override: <control>` ([#1088](https://github.com/mattsears18/shipyard/issues/1088) — intentionally never armed), or `auto-merge: unavailable*` (nothing armed to check).
 
   ```bash
-  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-  export CLAUDE_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
   # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
   export SHIPYARD_REPO_ROOT
@@ -596,8 +585,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Then post a cost-tracking comment on the resulting PR — gated on `cost_tracking.comment_on_pr` ([#855](https://github.com/mattsears18/shipyard/issues/855)).** The session-state file's `.tokens.per_pr[<M>]` bucket was populated by every `bump-tokens` call made while the worker was in flight (see [Cost-tracking write-through](./session-state-file.md#cost-tracking-write-through)). Before posting, read the effective `cost_tracking.comment_on_pr` value — same shell-out-to-`shipyard-config.sh` pattern [setup's flake-registry gate](./setup/04j-failing-pr-snapshot.md#58-enforce-the-flake-registry-chronic-flake-escalation) uses for `flake_registry.enabled` — and skip the post entirely when it's `false`. This is independent of the ledger-write gate `cost-history.sh flush` enforces on `cost_tracking.enabled` (issue #855): a user might want the local `~/.shipyard/cost-history.jsonl` record but not a public, on-the-PR token/cost comment on a shared or externally-visible repo, so the two knobs are checked separately rather than one implying the other. When `comment_on_pr` is true (or unset — the schema default), read it as a Markdown body via the helper and post on the PR with edit-or-create semantics keyed on the `<!-- do-work-cost-tracking -->` sentinel:
 
   ```bash
-  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-  export CLAUDE_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
   # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
   export SHIPYARD_REPO_ROOT
@@ -654,8 +642,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Extracted to [`scripts/shipped-immediate-branch-reap.sh`](../../scripts/shipped-immediate-branch-reap.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in .../agent-*` loop wrapping several pipes — the same shapes the worktree-isolation guard refuses post-relocation. Same family as dispatch-rules.md §2d's and drain.md's extractions; the script's own header comment restates why this site deliberately skips the #832 in-flight guard (it targets exactly one worktree, unique per issue number by construction) and preserves every classification branch exactly as it read here before extraction:
 
   ```bash
-  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-  export CLAUDE_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
   reap_result=$("$CLAUDE_PLUGIN_ROOT/scripts/shipped-immediate-branch-reap.sh" reap --issue <N>)
   ```
 
@@ -664,8 +651,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** Same reasoning as A.0.5's own verify step: a classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Skip entirely when `reap_result` was `reaped=false`. Substitute the literal `worktree_path` / `worktree_name` / `classification` / `lock_pid` / `session_id` values parsed from `reap_result` above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
 
   ```bash
-  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-  export CLAUDE_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
   if [ -n "${worktree_path:-}" ] && [ -e "$worktree_path" ]; then
     "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
       --action reaped-failed \
@@ -698,8 +684,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   2. **Re-validate the probe — the worker's own validation is not evidence.** The worker hands you a command string and asks you to *execute* it, repeatedly, on your host. That inverts the usual trust direction, and the worker's context legitimately contains untrusted issue bodies and comment threads. Re-run the allowlist yourself at the trust boundary:
 
      ```bash
-     CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-     export CLAUDE_PLUGIN_ROOT
+     export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
      "$CLAUDE_PLUGIN_ROOT/scripts/validate-awaiting-external-probe.sh" "<probe>"
      ```
 
@@ -751,8 +736,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Extracted to [`scripts/classify-blocked-bail.sh`](../../scripts/classify-blocked-bail.sh) (issue #1289) — the block below is a translation, not a rewrite.** The dependency-wait discriminator's blocker-reference resolution is a data-dependent `for b in $blocker_refs` loop with an internal `gh issue view || gh pr view` fallback per candidate, plus several pipe chains elsewhere in the classification — the same shapes the worktree-isolation guard refuses post-relocation. The script performs the full classification AND its associated label/comment mutations (the two are the same atomic decision in the original block); every branch — dependency-wait, operator, refuse-vs-soft, and the #1279 decision-freshness re-gate suppression — is preserved exactly as it read here before extraction:
 
   ```bash
-  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-  export CLAUDE_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
   bail_class=$("$CLAUDE_PLUGIN_ROOT/scripts/classify-blocked-bail.sh" classify \
     --repo <owner/repo> --issue <N> --reason "<the worker's reason string, lowercased>")
   ```
@@ -785,8 +769,7 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 - **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed — no re-add needed.) **Refresh the cost-tracking comment** for `<M>` so the cumulative total includes this fix-checks dispatch's tokens (A.0 bumped them into `.tokens.per_pr[<M>]`). Same edit-or-create semantics as the `shipped` hook:
 
   ```bash
-  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-  export CLAUDE_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
   # resolve-session-id folds in the .shipyard-session-id fallback (#1479).
@@ -958,8 +941,7 @@ The single-point reap below covers every one of these. The A.1 `shipped #<N>` pa
 **Force-reap even on `peer-alive` here — closes the general-reap gap #576 left open (issue [#771](https://github.com/mattsears18/shipyard/issues/771)).** By the time step B runs, step A has already parsed this turn's **terminal** return string (every mode's completion contract: `shipped` / `green` / `noop` / `rebased` / `blocked`), so the agent is done by definition regardless of which mode produced the release — the same reasoning A.1 and drain's #370 already apply. A `peer-alive` classification at this call site means the lock PID is a transient harness subprocess that outlived the agent's own return by milliseconds, not a genuine still-working peer. Force-reap and audit with classification `peer-alive-force` (same token A.1 uses — the `phase` field, already `steady-state-B-completion`, is what distinguishes the two call sites in `~/.shipyard/reap-audit.jsonl`). See [RATIONALE → Force-reap on peer-alive (#576/#771)](../do-work-RATIONALE.md#force-reap-on-peer-alive-576771) for the PR#2598/#2701 repro that motivated this.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Capture the agent id BEFORE the in-memory slot removal — the path
 # derivation needs it. The agent_id is the same task-id the harness uses
 # end-to-end (see step A.−1 for the keying convention) and matches the
@@ -1053,8 +1035,7 @@ fi
 **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** Same reasoning as A.0.5's own verify step: a classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Substitute the literal `$worktree_path` / `$local_classification` / `$lock_pid` / `$completed_agent_id` values already known from the block above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 if [ -e "$worktree_path" ]; then
   "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
     --action reaped-failed \
@@ -1100,8 +1081,7 @@ gh issue list --repo <owner/repo> --state open --limit 200 \
 `Write` that array to `.shipyard-fetched-issues.json` in the orchestrator worktree root — the same scratch path step 4 already uses, overwritten by design on each re-check. (`Write` and `Bash` are different tools, so there's no variable-survival concern between them.) Then summarize, redirecting the result to a second scratch file so the extraction needs neither a pipe nor a herestring:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me <me-login literal, from the call above> \
   < .shipyard-fetched-issues.json > .shipyard-backlog-summary.json
 jq -r '"\(.unfiltered_open_count) \(.me_assigned_open)"' .shipyard-backlog-summary.json
@@ -1110,8 +1090,7 @@ jq -r '"\(.unfiltered_open_count) \(.me_assigned_open)"' .shipyard-backlog-summa
 Read the two counts off that last line and stamp them as literals (`<session-id>` is the A.0 preamble's resolved literal):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 FETCH_TS=$(date -u +%H:%M:%S)
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
   --set ".unfiltered_open_count = <unfiltered_open_count literal>" \
@@ -1125,8 +1104,7 @@ FETCH_TS=$(date -u +%H:%M:%S)
 **Soft-blocked in-window filter (per [#300](https://github.com/mattsears18/shipyard/issues/300)).** Step 4's workable filter does NOT exclude `blocked:agent-soft` — by design, so the label doesn't leak across sessions — but within a session, immediately re-dispatching a worker against an issue another worker just bailed soft on would just re-encounter the same ambiguity. The in-memory `session_blocked_soft` map (populated by step A.1's `blocked` handler — `{issue_number → ISO-8601 timestamp of the bail}`) gates this. Before appending any net-new issue to `raw_backlog`, check:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
@@ -1160,8 +1138,7 @@ Filter applies to net-new issues from the lightweight re-check ONLY — issues a
 Skip this check entirely unless `.ci_capacity.shape == "self-hosted"` **and** `.ci_capacity.pool_total > 0` (both from session state, written once at [step 1.5](./setup/01-repo-recovery.md#15-initialise-the-session-state-file)) — on `hosted` (GitHub-hosted runners are elastic) or `unknown` (the pool size was never readable), there is nothing to hold back against and the check is a no-op:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 ci_shape=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.shape" 2>/dev/null)
 pool_total=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.pool_total" 2>/dev/null)
 
@@ -1238,8 +1215,7 @@ Skip this bias entirely (fall straight through to the "no compatible job" park b
 When both hold, scan `ready_issues` **in its existing priority order** — do not re-rank it — for the first candidate that is BOTH otherwise dispatch-eligible (passes the same collision / soft-cap / label checks any other candidate this turn would) AND CI-cheap:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 cheap_globs=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.cheap_ci_globs" 2>/dev/null)
 
 # For each candidate <N> in ready_issues, in existing priority order:
@@ -1249,8 +1225,7 @@ cheap_globs=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "
 Call that output `<candidate_paths>`, then match it as its own plain call (#1476):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --match "<candidate_paths>" "<cheap_globs>"
 ```
 
@@ -1271,8 +1246,7 @@ Apply the **dispatch rules** to pick the next job:
 **`model`** ([#978](https://github.com/mattsears18/shipyard/issues/978)) is the exact value [the per-dispatch model-resolution rule](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) computed for this dispatch a moment earlier — `<dispatch_model>` (`opus`/`sonnet`/`haiku`/`fable`) if non-empty, or the literal string `"default"` if the resolver returned empty (meaning the shim's frontmatter pin, or the `Workflow` runtime's own default, applies instead). Write it through **unconditionally** — never omit the field, and never write it *only* when it differs from a mode's usual tier. The whole point is that a slot's recorded `model` is now a durable, inspectable claim about what this dispatch was told to run on, independent of whether the model was actually attached to the dispatch call correctly: a repo with `models.issue_work` configured but a dispatch call that (through orchestrator error) omitted the `model` parameter still ran on *some* model, and recording what was *supposed* to be attached here — rather than skipping the write because "it's just the default" — is what makes that class of silent omission inspectable after the fact via `/shipyard:status` or the end-of-session summary, instead of undetectable (the exact gap #978 reports; this in_flight field cannot itself confirm which model the dispatch call actually invoked — the harness exposes no such signal — but it stops the intended model from disappearing without a trace). Example shape — see [the schema doc](./session-state-file.md#schema) for the canonical fields:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # set-slot, never an update whose --set value is an object literal --
 # post-relocation the isolation guard refuses that shape (#1561).
 # One --hard-path / --soft-path per path; started_at defaults to now;

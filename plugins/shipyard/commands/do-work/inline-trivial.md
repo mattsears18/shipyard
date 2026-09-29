@@ -57,8 +57,7 @@ When a candidate passes all 7 rules, dispatch the inline path instead of a `Work
 Same as the normal dispatch path, **before** the first file write — self-assignment is gated on `backlog.self_assign` (config default `false`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248)); the `shipyard` label is always applied:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
@@ -117,8 +116,7 @@ Commit message: subject line matches the issue title (or a clean truncation if t
 Same as the worker-dispatched path's [issue-work step 6](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust). Since rule 2 of the eligibility check guarantees `originating_author_trust == "trusted"`, only the trusted branch applies — but the trust gate and the **ungated-merge gate** are orthogonal, so [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust)'s pre-check still applies here ([#720](https://github.com/mattsears18/shipyard/issues/720)). Run the detector **before** any merge call — it is a script, not a rule to re-derive:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
 # (issue #1059/#1064) — otherwise this read silently drops
 # .shipyard/config.local.json post-relocation.
@@ -167,8 +165,7 @@ Inline execution has no agent return to reconcile in [step A](./steady-state.md#
 - Take a single check-rollup snapshot (`gh pr view <M> --json statusCheckRollup,mergeStateStatus`) — record the `checks: green|pending|failing` state for the cost-tracking comment.
 - Post the cost-tracking comment via the same [edit-or-create flow as `shipped` returns](./steady-state.md#a-reconcile-the-return). Use the helper:
   ```bash
-  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-  export CLAUDE_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
   "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read-tokens \
     --session-id "<session-id>" --pr <M> --format comment --mode inline
   ```

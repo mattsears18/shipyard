@@ -84,8 +84,7 @@ Once every row above reports empty (subject to row 8's degraded-path exception),
    ```
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    "$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me <me-login literal, from the call above> \
      < .shipyard-fetched-issues.json > .shipyard-backlog-summary.json
    jq -r '"\(.unfiltered_open_count) \(.me_assigned_open)"' .shipyard-backlog-summary.json
@@ -94,8 +93,7 @@ Once every row above reports empty (subject to row 8's degraded-path exception),
    Read the two counts off that last line and stamp them as literals:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    FETCH_TS=$(date -u +%H:%M:%S)
    "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
      --set ".unfiltered_open_count = <unfiltered_open_count literal>" \
@@ -259,8 +257,7 @@ Every poll loop this file describes — the drain protocol's own "every 60s, sna
 1. **Prefer the shipped helper — [`scripts/watch-pr-terminal.sh`](../../scripts/watch-pr-terminal.sh) — over hand-authoring a new loop.** It implements exactly this pattern for the single-PR case: poll `gh pr view <N> --repo <owner/repo>` on a bounded interval (default 60s, matching this file's own per-poll cadence) up to a bounded max-wait ceiling (default 7200s = 2h), and emit exactly one stdout line when the PR reaches a terminal state — `merged`, `closed`, or a `failing` check — or a `timeout` line if it never does within the ceiling. Invoke it as one plain command:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    "$CLAUDE_PLUGIN_ROOT/scripts/watch-pr-terminal.sh" --pr <M> --repo <owner/repo> --interval 60 --max-wait 7200
    ```
 
@@ -288,8 +285,7 @@ Also initialize six per-session structures that gate fix-rebase re-dispatch, pro
 Read the two #374 duration knobs once at drain entry (they don't change mid-session):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
 # (issue #1059/#1064) — otherwise this read silently drops
 # .shipyard/config.local.json post-relocation.
@@ -318,8 +314,7 @@ This intentionally **does NOT filter `-label:blocked:ci`** — `blocked:ci` PRs 
 **Batching the per-PR refresh.** When the drain loop has already snapshotted the open-PR list (above) but needs to re-resolve per-PR fields *for a known subset* — e.g. the "did this `D_dirty` PR's `mergeStateStatus` flip to `CLEAN` since the previous poll, or did its `headRefOid` move?" check that powers the forward-progress rule below — use `plugins/shipyard/scripts/gh-batch.sh pr-status` instead of N sequential `gh pr view <M>`:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # One round-trip + one tool-result block instead of N. Same projection
 # fields the per-PR `gh pr view` would return.
 "$CLAUDE_PLUGIN_ROOT/scripts/gh-batch.sh" pr-status \
@@ -380,8 +375,7 @@ Closes [#370](https://github.com/mattsears18/shipyard/issues/370). Before dispat
 **Extracted to [`scripts/drain-pre-dispatch-branch-reap.sh`](../../scripts/drain-pre-dispatch-branch-reap.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in $(find ...)` loop wrapping several pipes, plus a preceding primary-checkout-leak restore section with its own `git worktree list --porcelain | awk` pipes — the same shapes the worktree-isolation guard refuses post-relocation. This is the drain-phase sibling of dispatch-rules.md §2d's extraction, kept as a **separate script** (not a shared abstraction) because the two reap policies genuinely differ — this one additionally handles the primary-checkout leak and conditions its peer-alive/unknown override on the `do-work/issue-*` branch pattern, where §2d's force-reaps unconditionally. The script's own header comment restates both hard prohibitions (#832's in-flight-before-classify-lock ordering, #836's never-infer-from-branch-name-alone rule) and every classification branch is preserved exactly as it read here before extraction. `<headRefName>` is the PR's head branch — **substituted as a literal, never read from a `"$head_ref"` variable** ([#1476](https://github.com/mattsears18/shipyard/issues/1476)): it is already in the drain snapshot's `headRefName` field (no extra `gh` round-trip needed), and a bare whole-word `"$head_ref"` is refused post-relocation per [`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word) — as well as being empty in practice, since a shell variable set in an earlier `Bash` call does not survive into this one:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 reap_result=$("$CLAUDE_PLUGIN_ROOT/scripts/drain-pre-dispatch-branch-reap.sh" reap \
   --head-ref "<headRefName>" --repo <owner/repo> --session-id "<session-id>")
 ```
@@ -403,8 +397,7 @@ Before the per-poll actions below dispatch anything, scan for a **mutually-block
 **Run the detector.** It is a **script, not a rule to re-derive** — the same single-executable-source-of-truth convention as [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh) / [`detect-ci-gate-narrowing.sh`](../../scripts/detect-ci-gate-narrowing.sh) / [`detect-stale-node-modules.sh`](../../scripts/detect-stale-node-modules.sh), with a pure `--decide-pair` mode so the truth table is unit-testable without a live `gh`:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 mb_pairs=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-mutually-blocking-prs.sh" <owner/repo> <candidate PR numbers, space-separated>)
 mb_exit=$?
 ```
@@ -453,8 +446,7 @@ The repo is **POSITIONAL** — there is no `--repo` flag ([#1502](https://github
    **In-process resolution attempt FIRST, before the pre-dispatch reap, the CI-minute gates, or any worker dispatch (issue [#1377](https://github.com/mattsears18/shipyard/issues/1377)).** Allocating the coordinated manifest version at dispatch time rather than land time means, on a `version_coordination`-enabled repo, most `D_dirty` PRs are DIRTY for exactly one deterministic, mechanical reason: a sibling PR merged first and advanced the manifest `.version` row + CHANGELOG top entry past what this PR pre-allocated — precisely the case [`fix-rebase.md` §4.6](../../agents/issue-worker/fix-rebase.md#46-version-coordinated-manifest--changelog-re-number--trivial-resolution-issue-466) already resolves deterministically. Paying for a full worker dispatch (a fresh isolated worktree, an agent turn, a model call) to run that two-line renumber is expensive — one measured session spent 8 of 25 dispatches (~32%, ~1.11M input tokens) on exactly this. For each `D_dirty` PR, before anything else in this action, try [`scripts/resolve-manifest-only-dirty.sh`](../../scripts/resolve-manifest-only-dirty.sh): it runs the same rebase-and-resolve logic §4.6 documents, but in-process from the orchestrator's own worktree against a short-lived, ephemeral `git worktree add --detach` — no fresh agent worktree, no worker dispatch. It also resolves the (cheaper, more common than it sounds) case of a DIRTY PR whose rebase turns out conflict-free once actually attempted, with no manifest/CHANGELOG config needed at all. Because it never claims the PR's branch NAME (a detached-HEAD checkout, never `git switch`), it does **not** need the pre-dispatch head-branch reap below first — a live lock on the branch from another worker can't block it:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    resolve_result=$("$CLAUDE_PLUGIN_ROOT/scripts/resolve-manifest-only-dirty.sh" resolve \
      --repo <owner/repo> --pr <M> --head-ref "<headRefName>" --default-branch <default-branch> \
      --manifest "<vc_manifest>" --version-jq "<vc_version_jq>" --changelog "<vc_changelog>")
@@ -471,8 +463,7 @@ The repo is **POSITIONAL** — there is no `--repo` flag ([#1502](https://github
    **CI-minute pre-dispatch gates (gated on `ci.*` config keys).** Before the per-PR re-dispatch policy below, check the config keys in this order — both default to off (preserves pre-#323 behavior); flip them in `shipyard.config.json`'s `ci.*` block to engage:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
@@ -532,8 +523,7 @@ The repo is **POSITIONAL** — there is no `--repo` flag ([#1502](https://github
    **CHANGELOG-serialization gate (gated on `version_coordination.serialize_drain_rebase`).** On a repo where every PR appends a top-of-file `### <version>` CHANGELOG entry (the canonical version-coordinated shape — `version_coordination.enabled` AND a non-empty `changelog_path`), **parallel drain rebases cannot converge**: each merge moves the CHANGELOG insert point, so the moment one rebased PR lands, every sibling that just rebased onto the previous CHANGELOG head goes DIRTY again on the CHANGELOG-append row. When the gate is engaged, drain dispatches a fix-rebase for **at most one** DIRTY PR per poll and does not dispatch the next until the in-flight one has merged (or settled out of DIRTY). This runs **after** the CI-minute truncation above — it caps the already-truncated `D_dirty` set to its single lowest-numbered member. See [RATIONALE → CHANGELOG-serialization gate](../do-work-RATIONALE.md#changelog-serialization-gate-438) for the [#438](https://github.com/mattsears18/shipyard/issues/438) repro that motivated it:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
@@ -621,8 +611,7 @@ The default drain protocol assumes **cloud CI auto-runs on every PR push** — p
 **Engagement.** The loop is gated entirely on `merge_gate.command` (config `merge_gate.*`, schema in `shipyard.config.schema.json`). Read it once at drain entry:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
@@ -672,8 +661,7 @@ Never infer "release PR" from a version bump *inside a feature PR* — on this r
 **Arming.** For a trusted release PR not already armed this session, branch on the drain-entry `merge_gating` verdict ([#720](https://github.com/mattsears18/shipyard/issues/720) — read once at drain entry per the [deferred-merge lander](#deferred-merge-lander-merge-unarmed-green-session-prs--720) below; do NOT re-probe per poll):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
@@ -754,8 +742,7 @@ Closes the orchestrator-turn half of [#720](https://github.com/mattsears18/shipy
 **Engagement.** Read the verdict **once at drain entry** (a per-repo property — do NOT re-probe per poll):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 merge_gating=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
 # The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
 # prints `USAGE_ERROR: ...` on stdout and exits 64, which the `|| echo ungated`

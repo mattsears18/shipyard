@@ -38,8 +38,7 @@ A dispatch **claimed** its slot iff this turn's [A.1](./steady-state.md#a1-parse
 **Skip entirely** when `version_coordination.enabled` is `false` or no `manifest_path` is configured (set `version_release=n/a`), or when the slot claimed its PR per the gate above (set `version_release=none`). Otherwise run it, substituting the literal `version_slot` value read off the entry:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 release_result=$("$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" release \
   --version "<version_slot>" \
   --cursor-file .shipyard-version-cursor 2>/dev/null || echo "release=noop-no-version")

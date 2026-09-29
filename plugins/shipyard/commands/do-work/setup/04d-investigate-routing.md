@@ -43,8 +43,7 @@ The executable implementation is [`backlog-filter.sh`](../../../scripts/backlog-
 ## Config-gated routing (unchanged config surface, generalized behavior)
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT

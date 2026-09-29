@@ -5,7 +5,7 @@
 # fallback-export (or a bare script-invocation block immediately preceded by
 # a preamble-only block — the two-block idiom used in a few places, see (3)
 # below), OR, for ORCHESTRATOR-PHASE files only (commands/do-work/**), the
-# post-relocation stash-read two-liner (issue #1181 — see below).
+# post-relocation literal export (issue #1181, reshaped by #1607 — see below).
 #
 # Background — issue #354: $CLAUDE_PLUGIN_ROOT expands to the empty string
 # inside the Bash-tool subprocess shells the orchestrator uses. The very
@@ -90,11 +90,11 @@
 # The one place the braced spelling legitimately survives is the canonical
 # preamble itself (`${CLAUDE_PLUGIN_ROOT:-...}`) — `${VAR:-default}` has no
 # unbraced spelling in POSIX shell. That is exactly why the preamble is
-# PRE-RELOCATION-ONLY and why the stash-read form below exists for everything
+# PRE-RELOCATION-ONLY and why the literal-export form below exists for everything
 # after it. Check (8) matches the braced form with a CLOSING brace only, so
 # the `:-` default form is untouched.
 #
-# --- Post-relocation stash-read form (issue #1181) --------------------------
+# --- Post-relocation literal-export form (issue #1181, #1607) -----------------------
 #
 # The compound preamble above is refused by the harness once the orchestrator
 # session is isolated in its own worktree ("this command is too complex to
@@ -106,13 +106,19 @@
 # `<orch-worktree>/.shipyard-plugin-root` — every other ORCHESTRATOR-PHASE
 # block (everything under commands/do-work/, recursively — steady-state.md,
 # drain.md, cleanup-summary.md, inline-trivial.md, dispatch-rules.md, and the
-# rest of setup/) reads it back with the plain, non-compound two-liner:
+# rest of setup/) opens with an export of that resolved LITERAL, which the
+# orchestrator substitutes for the placeholder:
 #
-#   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-#   export CLAUDE_PLUGIN_ROOT
+#   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
+#
+# (Issue #1607: until then these blocks read the stash back with
+# `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` +
+# `export CLAUDE_PLUGIN_ROOT`. Current harness builds refuse that — they
+# object to exporting a value the command computes — so check (7) now
+# asserts the retired form is absent from every orchestrator-phase block.)
 #
 # WORKER-SIDE files (skills/worker-preamble/**, agents/issue-worker/**) are a
-# separate case and are NOT eligible for this stash-read form: a dispatched
+# separate case and are NOT eligible for this literal-export form: a dispatched
 # worker runs in its own agent-* worktree with no .shipyard-plugin-root
 # stash of its own (it gets the resolved literal via its dispatch prompt
 # instead, per issue #965) — the compound block there is the worker's own
@@ -196,12 +202,17 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 PREAMBLE_EOF
 )
 
-# The post-relocation stash-read preamble (issue #1181) — the ONLY other
-# valid form, and only for orchestrator-phase files (see ORCH_PHASE_DIR
-# below). Two lines: a `cat` of the step-0.5 stash, then a plain export.
+# The post-relocation literal export (issue #1181, reshaped by #1607) — the
+# ONLY other valid form, and only for orchestrator-phase files (see
+# ORCH_PHASE_DIR below). One line: an export of the placeholder the
+# orchestrator substitutes with the root step 0.4 echoed.
+EXPECTED_LITERAL_EXPORT='export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"'
+
+# The retired stash-read (#1607): exporting a computed value is refused by
+# current harness builds, so no orchestrator-phase bash block may read the
+# stash back into CLAUDE_PLUGIN_ROOT. Check (7) asserts its absence.
 # shellcheck disable=SC2016  # literal text — must NOT expand $(...)
-EXPECTED_STASH_LINE1='CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)'
-EXPECTED_STASH_LINE2='export CLAUDE_PLUGIN_ROOT'
+RETIRED_STASH_READ='CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root'
 
 # Orchestrator-phase scope: everything under commands/do-work/ (recursively).
 # Worker-side files (skills/worker-preamble/**, agents/issue-worker/**) are
@@ -291,10 +302,11 @@ fi
 #       by skills/worker-preamble/SKILL.md's step-0 / mid-session-anchoring
 #       sections, which document the preamble once and then show two
 #       different follow-up commands that reuse it), OR
-#   (c) — ORCHESTRATOR-PHASE FILES ONLY (issue #1181) — its own first two
-#       non-blank lines are the post-relocation stash-read two-liner
-#       (`CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root ...)` then
-#       `export CLAUDE_PLUGIN_ROOT`). NOT a valid form for worker-side files
+#   (c) — ORCHESTRATOR-PHASE FILES ONLY (issue #1181, reshaped by #1607) —
+#       its own first non-blank line is the post-relocation literal export
+#       (`export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"`). Before #1607
+#       this was a stash-read two-liner, which current harness builds
+#       refuse. NOT a valid form for worker-side files
 #       (skills/worker-preamble/**, agents/issue-worker/**) — those keep (a)
 #       or (b) only.
 #
@@ -398,13 +410,13 @@ build_offending_message() {
       lines+=("         fix: move the preamble at line $last_preamble_line into this block as its own first line(s), or remove/merge whatever sits between them")
     fi
     if (( is_orch_phase )); then
-      lines+=("         note: this file is orchestrator-phase — the post-relocation stash-read two-liner is also a valid alternative form here; see bash-refusal-triggers.md § The convention for which applies to this step")
+      lines+=("         note: this file is orchestrator-phase — the post-relocation literal export ($EXPECTED_LITERAL_EXPORT) is also a valid alternative form here (#1607)")
     fi
   else
     lines+=("$file: bash block at line $fence_line uses \$CLAUDE_PLUGIN_ROOT but no preamble was found anywhere earlier in this file")
     lines+=("         expected either: $EXPECTED_PREAMBLE")
     if (( is_orch_phase )); then
-      lines+=("                     or: $EXPECTED_STASH_LINE1 / $EXPECTED_STASH_LINE2   (orchestrator-phase files only — see bash-refusal-triggers.md § The convention)")
+      lines+=("                     or: $EXPECTED_LITERAL_EXPORT   (orchestrator-phase files only — see dont.md § \"Never export a computed value\", #1607)")
     fi
     lines+=("         got:             $first_line")
   fi
@@ -443,8 +455,8 @@ scan_file_for_offenses() {
         : # (a) inline compound preamble — pass
       elif (( prev_is_preamble_only )); then
         : # (b) two-block idiom — pass
-      elif (( is_orch_phase )) && [[ "$stripped_first" == "$EXPECTED_STASH_LINE1" && "$stripped_second" == "$EXPECTED_STASH_LINE2" ]]; then
-        : # (c) post-relocation stash-read two-liner, orchestrator-phase only — pass
+      elif (( is_orch_phase )) && [[ "$stripped_first" == "$EXPECTED_LITERAL_EXPORT" ]]; then
+        : # (c) post-relocation literal export, orchestrator-phase only — pass (#1607)
       else
         local msg
         msg=$(build_offending_message "$file" "$fence_line" "$is_orch_phase" "$block_idx" "$last_preamble_idx" "$last_preamble_line" "$first_line" "${trail[*]:-}")
@@ -757,29 +769,67 @@ else
   assert_fail "could not create sandbox for malformed-installed_plugins.json sanity check (#883)"
 fi
 
-# (7) The post-relocation stash-read two-liner (issue #1181) must actually
-# work: given a `.shipyard-plugin-root` stash file in cwd containing a
-# resolved path, the two-liner reads it back into $CLAUDE_PLUGIN_ROOT
-# unchanged. This is the runtime contract the docs encode for every
-# orchestrator-phase block from step 0.5 onward — if the stash-read literal
-# text drifts from what step 0.5 actually writes, this catches it.
-stash_sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-1181)
-if [[ -n "$stash_sandbox" && -d "$stash_sandbox" ]]; then
-  printf '%s\n' "$stash_sandbox/plugins/shipyard" > "$stash_sandbox/.shipyard-plugin-root"
-  stash_resolved=$(env -i HOME="$HOME" PATH="$PATH" bash -c "
-    cd '$stash_sandbox'
-    $EXPECTED_STASH_LINE1
-    $EXPECTED_STASH_LINE2
-    echo \"\$CLAUDE_PLUGIN_ROOT\"
-  ")
-  if [[ "$stash_resolved" == "$stash_sandbox/plugins/shipyard" ]]; then
-    assert_pass "post-relocation stash-read two-liner reads back .shipyard-plugin-root unchanged (issue #1181)"
-  else
-    assert_fail "post-relocation stash-read two-liner should read back the stash file unchanged (got '$stash_resolved', expected '$stash_sandbox/plugins/shipyard')"
-  fi
-  rm -rf "$stash_sandbox"
+# (7) The retired stash-read (#1607) must not survive in any
+# orchestrator-phase bash block. `CLAUDE_PLUGIN_ROOT=$(cat
+# .shipyard-plugin-root ...)` + `export CLAUDE_PLUGIN_ROOT` was documented
+# as measured-safe post-relocation and is refused by current harness builds
+# ("exporting a value this command computes"). Prose may still NAME the
+# retired form (dont.md does, to explain why it's gone) — only fenced bash
+# blocks are scanned.
+retired_hits=""
+for f in "${FILES[@]}"; do
+  [[ "$f" == "$ORCH_PHASE_DIR"/* ]] || continue
+  hits=$(awk -v needle="$RETIRED_STASH_READ" '
+    /^[ \t]*```bash[ \t]*$/ { inb = 1; next }
+    /^[ \t]*```[ \t]*$/ { inb = 0; next }
+    inb && index($0, needle) { print FILENAME ":" NR }
+  ' "$f")
+  [[ -n "$hits" ]] && retired_hits+="$hits"$'\n'
+done
+if [[ -z "$retired_hits" ]]; then
+  assert_pass "no orchestrator-phase bash block reads .shipyard-plugin-root into an exported CLAUDE_PLUGIN_ROOT (issue #1607)"
 else
-  assert_fail "could not create sandbox for stash-read sanity check (#1181)"
+  assert_fail "orchestrator-phase bash block(s) still use the refused stash-read export (issue #1607) — replace with $EXPECTED_LITERAL_EXPORT:"
+  printf '%s' "$retired_hits" | sed 's/^/         /'
+fi
+
+# Non-vacuity: the literal export must actually be the form in use, so a
+# future rename of the placeholder can't make check (3)(c) silently match
+# nothing while (7) passes on an empty corpus.
+literal_count=0
+for f in "${FILES[@]}"; do
+  [[ "$f" == "$ORCH_PHASE_DIR"/* ]] || continue
+  n=$(grep -cF -- "$EXPECTED_LITERAL_EXPORT" "$f" || true)
+  literal_count=$((literal_count + n))
+done
+if (( literal_count >= 50 )); then
+  assert_pass "orchestrator-phase files carry the literal export in $literal_count place(s) (issue #1607)"
+else
+  assert_fail "orchestrator-phase files carry the literal export in only $literal_count place(s) — expected >= 50 (issue #1607)"
+fi
+
+# The retired two-liner, placed in a synthetic orchestrator-phase file, must
+# now be reported as an offense by check (3) — it is no longer form (c).
+retired_fixture_dir=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-1607)
+if [[ -n "$retired_fixture_dir" && -d "$retired_fixture_dir" ]]; then
+  retired_fixture="$retired_fixture_dir/retired.md"
+  {
+    echo '```bash'
+    echo "$RETIRED_STASH_READ 2>/dev/null)"
+    echo 'export CLAUDE_PLUGIN_ROOT'
+    # shellcheck disable=SC2016  # literal fixture text
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/foo.sh" --help'
+    echo '```'
+  } > "$retired_fixture"
+  scan_file_for_offenses "$retired_fixture" 1
+  if (( ${#OFFENSE_MSGS[@]} == 1 )); then
+    assert_pass "check (3) rejects the retired stash-read two-liner in an orchestrator-phase block (issue #1607)"
+  else
+    assert_fail "check (3) should reject the retired stash-read two-liner (got ${#OFFENSE_MSGS[@]} offense(s), expected 1)"
+  fi
+  rm -rf "$retired_fixture_dir"
+else
+  assert_fail "could not create sandbox for retired-stash-read fixture (#1607)"
 fi
 
 echo

@@ -20,7 +20,7 @@ Cache all three for the session.
 
 ### 1.3 Detect the silent-direct-merge repo shape (admin + ungated-merge config)
 
-> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this detector's read and the `$EFFECTIVE_CONCURRENCY` clamp now execute PRE-relocation, as part of [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — [step 1.5](#15-initialise-the-session-state-file)'s `session-state.sh init --concurrency` needs this clamp's output, and 1.5 itself moved pre-relocation to unblock the *1.6.5 (removed — the harness reaps worktrees)* / *3b (removed — the harness reaps worktrees)* sweeps. **One resolution detail changes with the timing:** the `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` line below reads a stash file step 0.5 writes — it doesn't exist yet at this pre-relocation point. Use the pre-relocation compound preamble (step 0.3's form) instead. Everything else — the detector call, the clamp logic — is unchanged.
+> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this detector's read and the `$EFFECTIVE_CONCURRENCY` clamp now execute PRE-relocation, as part of [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — [step 1.5](#15-initialise-the-session-state-file)'s `session-state.sh init --concurrency` needs this clamp's output, and 1.5 itself moved pre-relocation to unblock the *1.6.5 (removed — the harness reaps worktrees)* / *3b (removed — the harness reaps worktrees)* sweeps. **One resolution detail changes with the timing:** the `export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"` line below takes the root step 0.4 echoed, which is already known here even though step 0.5's `.shipyard-plugin-root` stash doesn't exist yet at this pre-relocation point. Substitute that literal, or use the pre-relocation compound preamble (step 0.3's form) instead ([#1607](https://github.com/mattsears18/shipyard/issues/1607)). Everything else — the detector call, the clamp logic — is unchanged.
 
 Closes issues [#438](https://github.com/mattsears18/shipyard/issues/438) and [#465](https://github.com/mattsears18/shipyard/issues/465). When the dispatching user has admin permissions, the worker's `gh pr merge --auto` can silently fall through to a **direct merge** instead of queuing (the `merged-direct` outcome documented in `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.5 — fragment [`auto-merge.md`](../../../skills/worker-preamble/auto-merge.md) — and issue [#340](https://github.com/mattsears18/shipyard/issues/340)). At `--concurrency ≥ 2` this produces the **steady-state leapfrog**: the first PR to direct-merge advances `main`'s version and changes the top-of-file CHANGELOG entry, re-DIRTYing every other in-flight PR even when distinctly versioned (the cascade the [drain CHANGELOG-serialization gate](../drain.md#drain-protocol) addresses). See [RATIONALE → Step 1.3 mechanics](../../do-work-RATIONALE.md#step-13--silent-direct-merge-version-coordination-mechanics-438-465) for the full two-part breakdown.
 
@@ -29,8 +29,7 @@ This is a **warning, not a behavior change** — the orchestrator does not flip 
 **The condition lives in exactly one place.** Do **not** re-derive the two-shape rule here. It is one executable script — [`scripts/detect-ungated-admin-direct-merge.sh`](../../../scripts/detect-ungated-admin-direct-merge.sh) — which owns the whole rule (both shapes, the `#645` ruleset-aware fallback, the `#479` numeric normalize, and the fail-safe posture that an unreadable signal resolves toward *ungated*). This step calls it:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 verdict=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
 # The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
 # prints `USAGE_ERROR: ...` on stdout and exits 64, which the `|| echo ungated`
@@ -91,8 +90,7 @@ A **worker** can afford a multi-minute `--watch` — it owns a dispatch slot and
 **Cheap, cached alongside the other repo-config preflight reads above (step 1.3).** GitHub blocks `enablePullRequestAutoMerge` for an OAuth-app token when the PR's diff touches `.github/workflows/*`, unless the token carries the `workflow` scope — `repo` alone is not enough. This step is the **proactive** half of the fix (a one-time session-start warning, before any workflow-touching PR is opened); [#812](https://github.com/mattsears18/shipyard/issues/812) separately landed the **reactive** half (a worker-side failure report). See [RATIONALE → Step 1.35 reactive vs proactive](../../do-work-RATIONALE.md#step-135--reactive-vs-proactive-workflow-scope-warning-812-716) for how the two halves fit together.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 
 verdict=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-missing-workflow-scope.sh" <owner/repo> <default-branch> 2>/dev/null || echo silent)
 # The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
@@ -136,15 +134,14 @@ fi
 
 ### 1.36 Detect CI executor pool capacity and clamp toward it ([#1141](https://github.com/mattsears18/shipyard/issues/1141))
 
-> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this detector's read and the second `$EFFECTIVE_CONCURRENCY` clamp now execute PRE-relocation, as part of [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — same reason as [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) above, and the same `CLAUDE_PLUGIN_ROOT` resolution-detail change applies: use the pre-relocation compound preamble (step 0.3's form), not the `.shipyard-plugin-root` stash below (doesn't exist yet at this point). Everything else is unchanged.
+> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this detector's read and the second `$EFFECTIVE_CONCURRENCY` clamp now execute PRE-relocation, as part of [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — same reason as [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) above, and the same `CLAUDE_PLUGIN_ROOT` resolution-detail change applies: substitute the root step 0.4 echoed into the line below, or use the pre-relocation compound preamble (step 0.3's form) — never a read of the `.shipyard-plugin-root` stash (doesn't exist yet at this point). Everything else is unchanged.
 
 `--concurrency N` bounds how many **workers** the orchestrator keeps in flight. It says nothing about how many **CI runs** those workers generate, or whether the repo's CI executor can absorb them. On a repo whose CI runs on a small, fixed self-hosted runner pool — a maintainer's own Macs is the observed case — worker throughput and CI-landing throughput decouple: the session dispatches happily while the queue behind the runners grows without bound, and the session's own landing-based termination condition ([`do-work.md`'s completion contract](../../do-work.md)) becomes unreachable purely on CI capacity, not correctness. See [RATIONALE → CI executor pool capacity repro](../../do-work-RATIONALE.md#step-136--ci-executor-pool-capacity-repro-1141) for the session that motivated this.
 
 **The read lives in exactly one place** — [`scripts/detect-ci-runner-capacity.sh`](../../../scripts/detect-ci-runner-capacity.sh), the same single-executable-source-of-truth pattern as [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config)'s merge-shape detector. It reads `repos/{owner}/{repo}/actions/runners` for the self-hosted runner pool's online/idle counts and `gh run list --status queued` for the current repo-wide queue depth, and fails safe toward `unknown` on any unreadable signal — never toward a fabricated pool size.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 CI_POOL_LINE=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-runner-capacity.sh" <owner/repo> 2>/dev/null || echo unknown)
 CI_POOL_SHAPE=$(printf '%s' "$CI_POOL_LINE" | awk '{print $1}')
 CI_POOL_TOTAL=0
@@ -179,8 +176,7 @@ Follow-up to [step 1.36](#136-detect-ci-executor-pool-capacity-and-clamp-toward-
 **The read lives in exactly one place** — [`scripts/detect-ci-cheap-path.sh`](../../../scripts/detect-ci-cheap-path.sh)'s repo-shape mode, the same single-executable-source-of-truth pattern as steps 1.3 and 1.36's detectors. It scans `.github/workflows/*.yml` / `*.yaml` in the checked-out repo (a local file read — no network call, unlike the other two detectors) for any `paths-ignore:` glob list and reports the union, deduplicated. **Deliberately narrow**: only `paths-ignore:` (an exclude list, directly invertible: "the diff matches the ignore list" ⇒ "this workflow doesn't even run") counts as a cheap path. A workflow that instead uses an include-only `paths:` allowlist is NOT treated as evidence of a cheap path — its implicit complement isn't safely invertible without also knowing every other path in the repo. A repo with no `paths-ignore:` anywhere reports `no-cheap-path` honestly rather than guessing one — the bias is a no-op on such a repo, exactly the "should probably be a no-op on a repo where every PR runs the full CI matrix" design question the originating issue raised.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 CI_CHEAP_LINE=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" "<repo-checkout>/.github/workflows" 2>/dev/null || echo no-cheap-path)
 CI_CHEAP_GLOBS=""
 if [ "${CI_CHEAP_LINE%% *}" = "cheap-path-available" ]; then
@@ -196,13 +192,12 @@ fi
 
 ### 1.5 Initialise the session state file
 
-> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this `session-state.sh init` call (and its `.ci_capacity` write-through) now executes PRE-relocation, as part of [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — before `EnterWorktree`, so the *1.6.5 (removed — the harness reaps worktrees)* / *3b (removed — the harness reaps worktrees)* sweeps (which now also run pre-relocation) have a session-state file to consult for *step 3b's `.in_flight` guard (removed — the harness reaps worktrees)* by the time they run. Use the pre-relocation `CLAUDE_PLUGIN_ROOT` form (step 0.3's compound preamble) here, NOT the `.shipyard-plugin-root` stash below — that stash is a step-0.5-and-later artifact that doesn't exist yet at this point in the session. Commands are otherwise unchanged; only the execution point (and that one resolution detail) moved.
+> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this `session-state.sh init` call (and its `.ci_capacity` write-through) now executes PRE-relocation, as part of [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — before `EnterWorktree`, so the *1.6.5 (removed — the harness reaps worktrees)* / *3b (removed — the harness reaps worktrees)* sweeps (which now also run pre-relocation) have a session-state file to consult for *step 3b's `.in_flight` guard (removed — the harness reaps worktrees)* by the time they run. Substitute the root step 0.4 echoed into the line below, or use the pre-relocation `CLAUDE_PLUGIN_ROOT` form (step 0.3's compound preamble) here — NOT a read of the `.shipyard-plugin-root` stash, which is a step-0.5-and-later artifact that doesn't exist yet at this point in the session. Commands are otherwise unchanged; only the execution point (and that one resolution detail) moved.
 
 Stand up the durable JSON mirror (see [Session state file](../../do-work.md#session-state-file) and the full [schema + helper reference](../session-state-file.md)). One-shot setup write — every subsequent mutation routes through `session-state.sh update`.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # <session-id> is the orchestrator's session identifier — the same value
 # step 0.5 used in the orchestrator-worktree path. Stable across the run.
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" init \
@@ -217,8 +212,7 @@ export CLAUDE_PLUGIN_ROOT
 **Immediately after `init` returns successfully**, write through the CI-capacity observation step 1.36 computed (`CI_POOL_SHAPE` / `CI_POOL_TOTAL` / `CI_POOL_QUEUED`) plus [step 1.37](#137-detect-ci-cheap-path-availability-1157)'s `CI_CHEAP_GLOBS` — unconditionally, regardless of either value, so the end-of-session summary and steady-state.md step C always have a `.ci_capacity.shape` / `.ci_capacity.cheap_ci_globs` to branch on:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update \
   --session-id "<session-id>" \
   --set ".ci_capacity = { shape: \"$CI_POOL_SHAPE\", pool_total: ${CI_POOL_TOTAL:-0}, queued_at_start: ${CI_POOL_QUEUED:-0}, cheap_ci_globs: \"${CI_CHEAP_GLOBS:-}\" }"
@@ -239,8 +233,7 @@ The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.ship
 **Extracted into [`scripts/sweep-orphan-sessions.sh`](../../../scripts/sweep-orphan-sessions.sh) (issue #1182)** — this section used to duplicate the sweep as an inline `find | while read` loop calling `session-state.sh` / `cost-history.sh` per iteration, directly contradicting its own "Do NOT duplicate the implementation here" callout above (and, independent of the duplication, a multi-statement compound shape Auto Mode's classifier can refuse outright as part of the larger step-0.7 background group — the concrete repro that motivated the extraction). The canonical call, run from inside the step-0.7 background group:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/sweep-orphan-sessions.sh" sweep \
   --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" \
   --current-session-id "<session-id>" \
@@ -252,8 +245,7 @@ export CLAUDE_PLUGIN_ROOT
 **Orphan atomic-write `.tmp` sweep (issue #858).** The sweep above only discovers stale `*.json` session files — it has no way to discover a `.tmp.<pid>` leftover whose target `.json` never successfully landed (a crash between `atomic_write`'s `cat > "$tmp"` and its `mv -f "$tmp" "$target"`, most commonly during `session-state.sh init`). That file matches no session id the sweep above could hand to `cleanup --session-id`, so under that sweep alone it would linger forever. `cost-history.sh`'s reconcile-rewrite path (`mktemp "${session_target}.XXXXXX"` / `.err.XXXXXX`) and `flake-registry.sh`'s prune rewrite (`<path>.tmp.$$`) have the identical structural gap, with no sweep anywhere for either. [`scripts/sweep-orphan-tmp.sh`](../../../scripts/sweep-orphan-tmp.sh) closes all three in one pass, right after the sweep above, in the same background bash group:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/sweep-orphan-tmp.sh" sweep \
   --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}"
 ```
@@ -286,8 +278,7 @@ Nothing before this step looked for another `/shipyard:do-work` session working 
 The session-state file at `$SHIPYARD_HOME/sessions/<id>.json` already carries everything needed: `.repo`, `.in_flight[].target`, and mtime as a liveness proxy. This step walks the same directory [step 1.6](#16-reap-orphan-session-files-cost-ledger-recovery) already globs (no second walk), applying its mtime-staleness convention in the opposite direction — a file is a LIVE peer candidate only when its mtime is fresh, not stale:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 PEER_LINES=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-peer-sessions.sh" check \
   --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" \
   --repo "<owner/repo>" \
@@ -300,8 +291,7 @@ PEER_CLAIMED_TARGETS=$(printf '%s\n' "$PEER_LINES" | grep -o 'claimed_targets=.*
 Write through unconditionally, holding the value for the rest of the session (same posture as `trusted_authors` — resolved once, never re-resolved mid-session):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 PEER_TARGETS_JSON=$(printf '%s' "$PEER_CLAIMED_TARGETS" | jq -R 'split(",") | map(select(length>0) | tonumber)')
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
   --set ".peer_sessions.count = ${PEER_COUNT:-0}" \
@@ -318,8 +308,7 @@ PEER_TARGETS_JSON=$(printf '%s' "$PEER_CLAIMED_TARGETS" | jq -R 'split(",") | ma
 **Timing instrumentation (issue #238).** Bracket this step:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_1_7_trusted_authors 2>/dev/null || true
 # ... run resolution logic ...

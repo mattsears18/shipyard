@@ -36,8 +36,7 @@ Every shim agent under [`agents/`](../../agents/) forwards to the same per-mode 
 **Per-dispatch model resolution — honor `models.<mode>` ([#727](https://github.com/mattsears18/shipyard/issues/727)).** The plugin's built-in per-mode defaults (the frontmatter pins on the shim agents) are plugin-owned, so a consumer repo cannot edit them in place — which is precisely what the `models.*` config block exists for. **Every** dispatch in the table above — step 7's initial pool fill and step C's replacement dispatch alike — resolves the mode's model from the merged config. See [RATIONALE → The models config surface was dead until #727](../do-work-RATIONALE.md#dispatch-rules--the-models-config-surface-was-dead-until-727) for how this surface sat unread for a release:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
 # (issue #1059/#1064) — resolve-dispatch-model.sh shells out to
 # shipyard-config.sh, and a bare call here would silently read the
@@ -109,8 +108,7 @@ When filling a slot, walk this decision tree:
    Compute `originating_author_trust` exactly as in step 3 (look up `author.login` against `trusted_authors`; default `"trusted"` — these issues were already gated to `trusted_authors` at setup-step-4 routing time, so this is belt-and-suspenders). Read `triage.auto_close` from the merged config:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
@@ -132,8 +130,7 @@ When filling a slot, walk this decision tree:
    **2a. Stale-failure check (`ci.verify_check_failing_on_head_before_dispatch`).** When the config key is `true`, fetch the failing check's run-SHA and compare against the PR's current `headRefOid`. The rollup fetch + per-check run-SHA walk is a data-dependent loop over a dynamic set of failing checks — exactly the for-loop-wraps-gh-calls shape the worktree-isolation guard refuses post-relocation, so it's extracted to [`scripts/stale-failure-check.sh`](../../scripts/stale-failure-check.sh) (issue #1289, mirrors #1277's `stale-check-refresh.sh` precedent) rather than inlined:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
@@ -156,8 +153,7 @@ When filling a slot, walk this decision tree:
    **2b. In-progress-settle check (`ci.require_in_progress_check_to_settle`).** When the config key is `true`, defer the dispatch when any check is still running on the current SHA:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
@@ -196,8 +192,7 @@ When filling a slot, walk this decision tree:
    **Extracted to [`scripts/pre-dispatch-branch-reap.sh`](../../scripts/pre-dispatch-branch-reap.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in $(find ...)` loop wrapping several `gh`/git-adjacent calls with internal pipes — exactly the two shapes the worktree-isolation guard refuses post-relocation. This is precisely the block #1277's worker deferred as needing "a dedicated review/test pass" rather than a rushed edit — the script's own header comment restates, verbatim, the two hard prohibitions that govern it (#832's in-flight-before-classify-lock ordering, #836's never-infer-from-branch-name-alone rule) and every classification branch is preserved exactly as it read here before extraction. `<headRefName>` is the PR's head branch — **substituted as a literal, never read from a `"$head_ref"` variable** ([#1476](https://github.com/mattsears18/shipyard/issues/1476)): it is already known from the failed-PR scan's snapshot (no extra `gh` round-trip needed), and a bare whole-word `"$head_ref"` is refused post-relocation per [`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word) — as well as being empty in practice, since a shell variable set in an earlier `Bash` call does not survive into this one:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    reap_result=$("$CLAUDE_PLUGIN_ROOT/scripts/pre-dispatch-branch-reap.sh" reap \
      --head-ref "<headRefName>" --session-id "<session-id>" --phase "steady-state-pre-dispatch")
    ```
@@ -207,8 +202,7 @@ When filling a slot, walk this decision tree:
    **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** A classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Skip entirely when `reap_result` was `reaped=false`. Substitute the literal `worktree_path` / `worktree_name` / `classification` / `lock_pid` values parsed from `reap_result` above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    if [ -n "${worktree_path:-}" ] && [ -e "$worktree_path" ]; then
      "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
        --action reaped-failed \
@@ -315,8 +309,7 @@ When filling a slot, walk this decision tree:
    - Otherwise (no lockfile sections claimed, no hard/soft collisions): **run the concurrent-session guard** (see below), then claim the issue before dispatching — gated on `backlog.self_assign` (config default `false`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248)):
 
      ```bash
-     CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-     export CLAUDE_PLUGIN_ROOT
+     export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
      # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
      SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
      export SHIPYARD_REPO_ROOT
@@ -335,8 +328,7 @@ When filling a slot, walk this decision tree:
    **Extracted to [`scripts/concurrent-session-guard.sh`](../../scripts/concurrent-session-guard.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in $(find ...)` loop — the same shape the worktree-isolation guard refuses post-relocation. This is the second of the two blocks #1277's worker deferred as needing "a dedicated review/test pass" (alongside the pre-dispatch head-branch reap above); the script's own header comment restates the `unknown`-fails-closed posture (issue #1206) this block has always used, unchanged:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    guard_result=$("$CLAUDE_PLUGIN_ROOT/scripts/concurrent-session-guard.sh" check --issue <N>)
    ```
 
@@ -356,8 +348,7 @@ When filling a slot, walk this decision tree:
    **Remote in-flight-claim guard (per-dispatch, before self-assign) — issue [#1606](https://github.com/mattsears18/shipyard/issues/1606).** The concurrent-session guard sees only this checkout's worktree locks, and [step 1.65](./setup/01-repo-recovery.md#165-detect-live-peer-sessions-on-this-repo-1204)'s peer detector sees only sessions that write `$SHIPYARD_HOME/sessions/*.json`, once, at setup. A plain Claude Code session dispatching its own `shipyard:issue-worker` agents writes neither, so it is invisible to both — the #1606 repro (lightwork, 2026-09-26) reported `peers=0` throughout and shipped a near-identical competing PR, second data-migration script included. The one trace every session leaves, whatever its tooling, is on the remote, so check it immediately before each issue-work dispatch. It subsumes the covered-by-open-PR query above (its `open-pr-closing` signal is that exact `closingIssuesReferences` check), so run it **in place of** that `gh pr list`, not in addition to it:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    claim_result=$("$CLAUDE_PLUGIN_ROOT/scripts/remote-claim-check.sh" check --repo <owner/repo> --issue <N>)
    ```
 
@@ -383,8 +374,7 @@ When filling a slot, walk this decision tree:
    Gated on three config keys from the merged effective config:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
@@ -399,8 +389,7 @@ When filling a slot, walk this decision tree:
    **Self-heal the cursor BEFORE the `compute` call below, once per dispatch-decision round ([#1417](https://github.com/mattsears18/shipyard/issues/1417)).** The cursor advances on what `compute` *computed*, not on what a worker actually *claimed* — a worker legitimately taking a different bump level than the orchestrator inferred (the "the level is yours to raise" contract two paragraphs up) leaves the old computed slot unclaimed forever, and every later `compute` floors above that phantom. This drift is permanent-and-compounding across a session unless something re-seeds the cursor. Call `reseed-if-idle` — which discards a stale `--cursor-file` whenever `session_prs` has no currently-OPEN member, since nothing this session can then be relying on the persisted value — **exactly once per round**, before whichever `compute` call follows (the single call below for an ordinary per-dispatch, or once before [step 7](./setup/07-pool-fill.md#7-initial-pool-fill)'s sequential per-slot batch loop). **Never call it from inside a batch loop** — see the note in the script's own header for why: a batch's `session_prs` value is typically identical (and often has zero OPEN members) across all N sequential slots, so re-seeding on every slot would silently re-collide them, exactly the failure [#437](https://github.com/mattsears18/shipyard/issues/437) closed.
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    "$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" reseed-if-idle \
      --repo <owner/repo> \
      --session-prs "<session_prs, space or comma separated>" \
@@ -410,8 +399,7 @@ When filling a slot, walk this decision tree:
    Then compute the slot. **`<vc_manifest>` / `<vc_version_jq>` / `<default-branch>` are substituted literals, not `"$vc_manifest"`-style variable reads ([#1476](https://github.com/mattsears18/shipyard/issues/1476)).** The two `vc_*` values came from the config-read block above — a *separate* `Bash` tool call, so those shell variables are already empty here — and a bare whole-word expansion is refused post-relocation per [`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word). The orchestrator holds all three values and pastes them in, exactly as the neighbouring `reseed-if-idle` call already does for `<owner/repo>` and `<session_prs>`:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    version_result=$("$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" compute \
      --repo <owner/repo> --manifest "<vc_manifest>" --version-jq "<vc_version_jq>" \
      --default-branch <default-branch> --issue <N> \
@@ -448,8 +436,7 @@ When filling a slot, walk this decision tree:
    **Spike-shape detection — before composing the worker prompt ([#774](https://github.com/mattsears18/shipyard/issues/774), matcher made executable in [#1475](https://github.com/mattsears18/shipyard/issues/1475)).** Check whether the candidate is **spike-shaped**, using the `labels` and `title` already fetched for this candidate (no extra `gh` round-trip needed):
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    spike_verdict=$("$CLAUDE_PLUGIN_ROOT/scripts/spike-shape-detect.sh" --title "<candidate title>" --labels "<comma-separated labels>")
    ```
 
@@ -467,8 +454,7 @@ When filling a slot, walk this decision tree:
    **If spike-shaped** (`spike_verdict == "spike"`) → dispatch `mode: spike` instead of `mode: issue-work` (default model — same tier as issue-work, no cheaper pin; see [`spike-worker.md`'s "Why no model pin"](../../agents/spike-worker.md#why-no-model-pin) for the reasoning, which the `models.spike` default carries forward). Read the fan-out cap from the merged config:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
@@ -504,8 +490,7 @@ When filling a slot, walk this decision tree:
    `Write` the fully-composed prompt (every augmentation already appended) to `.shipyard-scratch/dispatch-prompt-<N>.md` — the same untracked worktree-local scratch convention [`setup/06-scope-preflight.md`](./setup/06-scope-preflight.md) already uses to hand an issue body to `detect-stale-agent-limitation.sh` — then run the gate over it:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    "$CLAUDE_PLUGIN_ROOT/scripts/verify-dispatch-claims.sh" --repo <owner/repo> --self <N> .shipyard-scratch/dispatch-prompt-<N>.md
    ```
 
@@ -528,8 +513,7 @@ When filling a slot, walk this decision tree:
    **Verify-gate augmentation (opt-in via `verify_gate.enabled`).** Before composing the prompt, read the flag from the merged config:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
@@ -834,8 +818,7 @@ Fire-and-forget, exactly like the other reap blocks. The same cleanup applies to
 **Release the version slot too, when the denied dispatch had one ([#1420](https://github.com/mattsears18/shipyard/issues/1420)).** A denial is a non-claiming terminal exactly like a `blocked` return — but it is the one shape that never reaches [step B's release hook](./steady-state.md#b-release-the-slot), because per the ordering rule above no `.in_flight` slot is ever written for it. The `compute` call that produced this dispatch's coordination paragraph has nonetheless already advanced the cursor, so skipping the release here leaks the slot for the rest of the session. Run it as its own plain call, right after the worktree cleanup above, substituting the literal `next_available_version` you pasted into the denied prompt. Skip entirely when the denied dispatch carried no coordination paragraph (`vc_enabled` false, or `next_available_version` was empty):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" release \
   --version "<next_available_version>" \
   --cursor-file .shipyard-version-cursor 2>/dev/null || true
@@ -856,8 +839,7 @@ A denial that is not recorded is invisible: the slot goes unfilled and the targe
 ```
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 DEGRADED_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-denial \
   --session-id "<session-id>" --expected-repo "<owner/repo>" \

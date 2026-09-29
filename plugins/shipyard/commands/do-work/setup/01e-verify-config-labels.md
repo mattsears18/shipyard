@@ -18,8 +18,7 @@ Runs right here, immediately after step 1.7's collaborator-permission resolution
 `--repo` is the natural guess, because every neighbouring setup detector (`detect-ungated-admin-direct-merge.sh`, `detect-missing-workflow-scope.sh`, `detect-ci-runner-capacity.sh`) also takes `<owner/repo>` positionally while `gh` itself spells the same argument `--repo`. The script now rejects the flag form explicitly (exit `64`, `EX_USAGE`) instead of forwarding it to `gh` and misreporting the resulting failure as `INDETERMINATE` — see the `64` branch below.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_1_75_verify_labels 2>/dev/null || true
 VERIFY_LABELS_OUT=$("$CLAUDE_PLUGIN_ROOT/scripts/verify-config-labels.sh" "<owner/repo>" 2>&1)

@@ -60,8 +60,7 @@ cat > "$clean_md" <<'FIXTURE'
 # Heading
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 ME_LOGIN=$(gh api user --jq '.login')
 INVESTIGATE_DISPATCH=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
 ```
@@ -420,10 +419,11 @@ else
 fi
 
 # The step-0.5 read-back specifically must not re-read the plugin root into
-# a shell variable. This one assertion CANNOT scan across setup/*.md: the
-# two-statement stash read is the correct, measured-to-run convention for
-# every OTHER post-relocation block, and a corpus-wide scan would flag those
-# legitimate uses. Pinned to the fragment that owns step 0.5, deliberately.
+# a shell variable. Pinned to the fragment that owns step 0.5 (#1471). The
+# corpus-wide form of this assertion — no orchestrator-phase block may read
+# the stash into an exported CLAUDE_PLUGIN_ROOT, since current builds refuse
+# exporting a computed value — lives in claude-plugin-root-preamble.test.sh
+# check (7) (#1607).
 # setup-fragment-content-scan: allow
 if [[ -f "$config_worktree_real" ]]; then
   # shellcheck disable=SC2016  # literal needle — matched verbatim in the spec, not expanded

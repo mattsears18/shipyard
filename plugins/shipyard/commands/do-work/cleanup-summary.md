@@ -35,8 +35,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    **`completed` is not itself the whole story — carry the ledger's `empty`/`fully-gated` terminal-state naming into `--detail` too ([#1358](https://github.com/mattsears18/shipyard/issues/1358)).** A `completed` reason covers two opposite health signals that read identically from the reason token alone: `<total_open>` == 0 (nothing is open — `empty`) and `<total_open>` > 0 with every open issue parked in one of the ledger's buckets 1–9 (nothing is dispatchable, but plenty remains open and gated — `fully-gated`). Compute `TERMINAL_STATE` from the same `<total_open>` the ledger's [termination-assertion build](./drain.md#termination-assertion) already produced (`empty` when it's 0, `fully-gated` when it's > 0 — `n/a` for `bounded-exit`/`user-stop`, since the distinction only applies to a genuine `completed` exit) and fold it into `--detail`:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-session-end \
      --session-id "<session-id>" \
      --reason "<completed|bounded-exit|user-stop>" \
@@ -73,8 +72,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    The `self-ancestor` classification the sweep applies internally is load-bearing: the Claude Code harness writes the **orchestrator's** PID into every dispatched agent's lock file (lock content is literally `claude agent <agent-id> (pid <orchestrator-pid>)`), so at end-of-session cleanup the lock PID is alive by definition — it's the process running cleanup. A strict liveness check would defer every worktree the orchestrator itself owns (see [issue #138](https://github.com/mattsears18/shipyard/issues/138)). `self-ancestor` means the lock PID is the declared orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`, exported below from `detect-orchestrator-pid`'s ancestor walk) OR is in our own process ancestor chain — not a peer agent, just the orchestrator about to retire its own worktree. Safe to reap. The env-var declaration was added in [issue #263](https://github.com/mattsears18/shipyard/issues/263) because the ancestor-walk path from #138 mis-classifies whenever an intermediate harness layer returns empty PPID. See [RATIONALE → Liveness check at shutdown](../do-work-RATIONALE.md#end-of-session-cleanup--why-the-orchestrator-worktree-is-reaped-last):
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    cd "$SY_TOPLEVEL"
    # Declare our orchestrator PID so the sweep's classification pass can
@@ -118,8 +116,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    The helper [`scripts/worktree-reap.sh reap-orphan-branches`](../../scripts/worktree-reap.sh) enumerates all local `worktree-agent-*` branches, checks each against `git worktree list --porcelain`, and `git branch -D`s any that have no live worktree referencing them. A successful deletion emits one JSONL line to `~/.shipyard/reap-audit.jsonl` with `"action":"reaped-orphan-branch"`, `"branch"`, `"session"`, and `"reason":"no-live-worktree"`, and a matching `reaped-branch: <name>` line on stdout. A `git branch -D` failure (e.g. an unmerged commit, a permission error, or a concurrent-delete race) does NOT emit either — it instead writes an `"action":"reaped-branch-failed"` audit line with `"reason":"branch-delete-failed"` and no stdout line, so a failed delete is never mistaken for a successful reap (issue #874). The sweep is idempotent — a second pass is a no-op. It is safe — branches with a live worktree are skipped unconditionally.
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    reaped_orphan_branches=0
    while IFS= read -r branch_line; do
@@ -146,8 +143,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    The only mechanism that catches this is an independent, after-the-fact probe of the filesystem — assert on the **end state**, not on any step's exit code. That uniformly covers a classifier denial, a git failure, the force-evidence gate declining, and a sweep that never ran:
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    unreaped_worktrees=0
    while IFS= read -r leftover_path; do
@@ -207,8 +203,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
 
    <!-- orchestrator-git-dash-c-scan: allow -->
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 
    # Capture both paths BEFORE we move
    ORCH_WT_ABS="$(git -C "<repo-root>/.claude/worktrees/orchestrator-<session-id>" rev-parse --show-toplevel)"
@@ -255,8 +250,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    **Wait on the setup background group first.** Step 0.7's background group (`$SETUP_BACKGROUND_PID`) includes the step 1.6 orphan-session-file sweep, which also writes to `cost-history.jsonl`. Both the sweep and this flush are idempotent, but they can race on the same session file if the background group is still running when end-of-session cleanup reaches step 7. The `wait` costs nothing when the group has already finished (the typical case — ~2s of background work vs. the full session duration):
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Wait for the setup background group to finish before flushing, to avoid
    # a race between step 1.6's orphan sweep and this flush writing to the same
    # cost-history.jsonl. Both are idempotent, but the wait eliminates the race.
@@ -270,8 +264,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
 7.5. **Reap the `gh-cached.sh` cache directory** — drop the session-scoped `gh` response cache from [step 0.9](./setup/00b-parallelization-cache.md#09-gh-cachedsh-wrapper-opt-in-per-call-site):
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    "$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" cleanup --session-id "<session-id>"
    ```
 
@@ -282,8 +275,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    **Gate on `operator_denial_registry.enabled` (default `false`) — opt-in, same posture as `flake_registry`:**
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
    OPERATOR_DENIAL_REGISTRY_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get operator_denial_registry.enabled 2>/dev/null || echo "false")
@@ -292,8 +284,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    When `false` (the default), this step is a complete no-op — nothing is read, nothing is written, and the in-session `Operator denied (#746)` block below is entirely unaffected either way (it always reads from session-local working memory, never from the registry). When `true`, append one `record` call per entry in the session-local `operator_denials` list (re-derived on its own first line — variables don't survive across `Bash` tool calls):
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    "$CLAUDE_PLUGIN_ROOT/scripts/operator-denial-registry.sh" record \
      --repo "<owner/repo>" \
      --kind "<entry.kind>" \
@@ -309,8 +300,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
 8. **Remove the session state file** — close out the durable mirror from [step 1.5](./setup/01-repo-recovery.md#15-initialise-the-session-state-file):
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" cleanup --session-id "<session-id>"
    ```
 
@@ -321,8 +311,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    **Gate — both keys, not just `enabled`:**
 
    ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
    # (issue #1059/#1064) — otherwise this read silently drops
    # .shipyard/config.local.json post-relocation.

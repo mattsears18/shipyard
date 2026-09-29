@@ -170,8 +170,7 @@ The rule of thumb is: banners are LOUD and one-shot (printed when the transition
 **Before dispatching the first wave of workers**, flush the setup-timing sidecar into the session state file's `setup` block. This ensures the timing data survives even if the session terminates mid-run (e.g. a Claude Code crash between pool fill and the first completion notification). The flush is fire-and-forget — a failure must NOT block pool fill.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 "$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" flush \
   --session-id "<session-id>" 2>/dev/null || true
 ```
