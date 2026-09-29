@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.4 — 2026-09-29
+
+Under the `Workflow`-substrate dispatch shape, every field a prompt builder reads now reaches the builder (closes #1615). `do-work-dispatch.core.js` builds each work unit field by field in STAGE 1's `workUnits` map, and a field the map left out was silently dropped, so its paragraph could never render even when the orchestrator passed it. The issue named two such fields: `stalePremisePhrase` and `stalePremiseCorrection`, which gate the #1491 stale-premise paragraph. The new guard found four more: `splitDispatch` (the #1562 neutral-branch paragraph), and `pluginRoot`, `pluginRootStale`, and `skillCacheStale` (the #969 orchestrator-supplied plugin root and the #1319 staleness warnings, which every mode renders). All six now pass through. The default `Agent`-tool dispatch shape was never affected.
+
+- `workflows/do-work-dispatch.core.js`: the `workUnits` map copies the six fields, and the unit-shape comment lists them. `workflows/do-work-dispatch.workflow.js` is regenerated.
+- `scripts/tests/workflow-unit-field-passthrough-1615.test.sh` (new): asserts that every `unit.<field>` read anywhere in `workflows/prompt-templates/` is a key of the `workUnits` map, so a future builder field that skips the map fails CI. It also runs the generated workflow with a fully populated unit and checks that each affected paragraph renders. `check-dispatch-prompt-parity.mjs` could not catch this class, because it checks for anchor text in the builder and never checks whether the builder's gating field survives normalization.
+- `commands/do-work/dispatch-rules.md`: the `issue-work` Workflow payload shape now documents `stalePremisePhrase`, `stalePremiseCorrection`, and `tokenBudgetWarning`. Before this, the orchestrator had no documented slot to pass them in.
+
 ### 4.56.2 — 2026-09-29
 
 A new test file's name now comes from the repo's test-runner configuration, not from the extension of the source file it covers, and a worker must prove the runner actually collects the file before trusting any result from it (closes #1599). Two workers in one lightwork session were handed a `.test.tsx` suggestion on a repo whose Jest projects collect only `.test.ts` through an explicit computed file list. Such a file runs in no project and triggers no "unmatched file" warning. A negative control against it passes vacuously in both directions. Both workers caught it by reading `jest.config.js` themselves; nothing in shipyard would have.

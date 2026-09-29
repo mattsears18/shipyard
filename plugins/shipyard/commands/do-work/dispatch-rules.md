@@ -663,6 +663,8 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
      "verifyGate": <bool>, "userFeedback": <bool>,
      "splitDispatch": <true when operator_residual or verification_slice is set — renders the #1562 neutral-branch paragraph; omit otherwise>,
      "phase1Scope": "<phase_1_scope, or omit>",
+     "stalePremisePhrase": "<#1491 verdict=stale phrase, or omit>", "stalePremiseCorrection": "<#1491 per-class correction, or omit>",
+     "tokenBudgetWarning": "<#1443 warn-band notice, or omit>",
      "nextAvailableVersion": "<computed value, or omit>", "changelogPath": "<or omit>" }
    ```
 
