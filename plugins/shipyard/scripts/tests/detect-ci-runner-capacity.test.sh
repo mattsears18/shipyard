@@ -460,6 +460,29 @@ if [[ -f "$DETECTOR" ]]; then
     assert_fail "--decide-backpressure with wrong arg count exits non-zero (got exit 0)"
   fi
   rm -f /tmp/detect-ci-runner-capacity-bp-usage.$$
+
+  # Issue #1597: the natural wrong guess is a single <owner/repo> (the
+  # no-flag form's shape). It must still fail, print nothing on stdout, and
+  # name the five positional inputs plus where the call site lives.
+  bp_repo_out="$(bash "$DETECTOR" --decide-backpressure owner/repo 2>/dev/null)"
+  bp_repo_rc=$?
+  bp_repo_err="$(bash "$DETECTOR" --decide-backpressure owner/repo 2>&1 >/dev/null)"
+  if [[ "$bp_repo_rc" -ne 0 && -z "$bp_repo_out" ]]; then
+    assert_pass "--decide-backpressure <owner/repo> exits non-zero with empty stdout"
+  else
+    assert_fail "--decide-backpressure <owner/repo> exits non-zero with empty stdout (rc=$bp_repo_rc stdout='$bp_repo_out')"
+  fi
+  if [[ "$bp_repo_err" == *"looks like <owner/repo>"* && "$bp_repo_err" == *"ci.backpressure_min_in_flight"* && "$bp_repo_err" == *"steady-state.md step C"* ]]; then
+    assert_pass "--decide-backpressure <owner/repo> names the five inputs and the step C call site"
+  else
+    assert_fail "--decide-backpressure <owner/repo> names the five inputs and the step C call site (stderr: $bp_repo_err)"
+  fi
+  bp_num_err="$(bash "$DETECTOR" --decide-backpressure 4 10 2 5 2>&1 >/dev/null)"
+  if [[ "$bp_num_err" != *"looks like <owner/repo>"* ]]; then
+    assert_pass "--decide-backpressure wrong numeric arity does not emit the owner/repo hint"
+  else
+    assert_fail "--decide-backpressure wrong numeric arity does not emit the owner/repo hint"
+  fi
 else
   assert_fail "--decide-backpressure usage handling (detector missing)"
 fi
