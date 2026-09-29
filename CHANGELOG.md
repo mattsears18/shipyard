@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.14 — 2026-09-29
+
+`shipyard:dx-catalog`'s presence probes now run against **every project root in a monorepo**, not just the repo root (closes #1593). On a non-workspace monorepo — a root `package.json` with no `workspaces` field, real projects at `apps/<name>/` — the root-only probes reported a linter, a type-checker, and a setup script as missing when every project had all three one directory down; a `/shipyard:audit all` run against lightwork produced three such near-miss false positives, caught only by the auditor's manual verification. Each catalog item now carries a `Scope:` line: `repo` items (CI, license, templates, `CLAUDE.md`, …) still probe the root once, while `project` items probe every applicable project root, count a root as covered when it or an ancestor root passes, report present-in-some-roots as "Partial coverage" in the run summary instead of filing, and run one confirming `git ls-files` glob before any project-scoped miss is filed. A single-project repo yields only `.`, so its behavior is unchanged.
+
+- `plugins/shipyard/scripts/dx-project-roots.sh` — new helper enumerating project roots (`.` first, then manifest directories ≤3 levels deep or matched by `workspaces`, tracked files only, `node_modules`/`vendor`/fixture trees excluded).
+- `plugins/shipyard/skills/dx-catalog/SKILL.md` — root-plus-projects procedure in "How the auditor uses this catalog", a `Scope:` line on all 25 items, and root-agnostic acceptance wording on the linter / lockfile / `.env.example` items.
+- `plugins/shipyard/agents/dx-auditor.md` — stack detection and the catalog walk defer to the new procedure; issue body and run summary name the project roots checked and gain a "Partial coverage" section.
+- `plugins/shipyard/scripts/tests/dx-project-roots.test.sh` — new suite covering the lightwork repro shape, workspaces (array and object forms), the depth bound, excluded trees, untracked manifests, the non-git fallback, and usage errors.
+
 ### 4.56.13 — 2026-09-29
 
 `shipyard:worker-preamble` now makes a worker's **read-only sub-dispatch structural rather than advisory**, and requires the worker to re-verify its own tree after **any** sub-dispatch returns (closes #1604). On lightwork #5189 a worker forked a subagent "research-only" with an explicit "do NOT edit files" instruction; the fork edited the same files the parent was fixing, concurrently, and the two edit sets converged only by luck. The #1554 fan-out contract governed subagents a worker *meant* to write into its tree, but said nothing about one it meant not to — and prose scope is only instruction-following. A read-only sub-dispatch now uses an agent type whose tool set excludes `Edit`/`Write` (`Explore`, `Plan`), never a `fork` or `general-purpose` agent told not to edit; a writing one either runs under the fan-out contract or gets its own `isolation: "worktree"`; and the parent runs `git status` before trusting its tree afterwards.
