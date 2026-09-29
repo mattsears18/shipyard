@@ -119,7 +119,9 @@ investigate_candidates=$(jq -r 'select(.verdict == "route" and .reason == "inves
 
 route:operator entries need no further action here (the agent-console
 label, already on the issue, is what the operator phase's own sweep
-reads); gate:*/drop:* entries need no further action either — each is
+reads — and it skips any agent-console issue classify emitted as drop:*,
+since the park clauses outrank the operator route per #1592); gate:*/drop:*
+entries need no further action either — each is
 already excluded from raw_backlog by construction. Log
 `.shipyard-classified.ndjson` (or at least each gate:*/drop:* line's reason) so the
 unfiltered_open_count invariant token stays auditable. The two scratch files are untracked, ephemeral orchestrator-worktree artifacts — safe to leave (next pass overwrites them) or `rm -f`.

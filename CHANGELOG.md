@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.15 — 2026-09-29
+
+`backlog-filter.sh classify` no longer lets the `agent-console` operator route short-circuit every park clause (closes #1592). The `is_agent_console` branch sat above `blocked-by-open-issue`, `event-gated`, `pr-collision-gated`, `time-gated` and `someday-milestone`, so a Someday-milestoned or `Blocked by #<open>` operator item always came back `route:operator` and every park mechanism a repo had configured was inert for it. On lightwork#4701 (a Someday issue carrying `agent-console`), that re-enqueued the item every session and produced three near-identical premise-check comments in under three weeks. The park clauses now live in one `park_verdict` def. The operator branch consults it first and emits the park's `drop:*` line when one matches. The main chain still calls it at its original position, so no predicate is duplicated and non-operator ordering is unchanged. A Someday-recheck `escalate` on an operator item still routes to the operator (its one re-check), never to a code worker. The operator phase's proactive label sweep now also skips an `agent-console` issue that classify dropped, so the parked item is not re-enqueued through that second path.
+
+- `plugins/shipyard/scripts/backlog-filter.sh` — new `park_verdict` def, consulted by the `agent-console` branch before `route:operator` and reused in place of the inline park clauses. The header documents when `route:operator` is emitted.
+- `plugins/shipyard/scripts/tests/backlog-filter.test.sh` — cases (19a)–(19h): Someday, blocked-by-open, time-gated, event-gated, elapsed-gate, Someday-escalate, gate-label precedence, and Someday-off for `agent-console` issues.
+- `plugins/shipyard/commands/do-work/operate/04-steady-state-hooks.md` — the proactive sweep skips an `agent-console` candidate whose `.shipyard-classified.ndjson` verdict is `drop`.
+- `plugins/shipyard/commands/do-work/setup/04-backlog-divert.md`, `plugins/shipyard/commands/do-work/setup/04g-operator-routing.md` — document the parked-operator-item exception.
+
 ### 4.56.14 — 2026-09-29
 
 `shipyard:dx-catalog`'s presence probes now run against **every project root in a monorepo**, not just the repo root (closes #1593). On a non-workspace monorepo — a root `package.json` with no `workspaces` field, real projects at `apps/<name>/` — the root-only probes reported a linter, a type-checker, and a setup script as missing when every project had all three one directory down; a `/shipyard:audit all` run against lightwork produced three such near-miss false positives, caught only by the auditor's manual verification. Each catalog item now carries a `Scope:` line: `repo` items (CI, license, templates, `CLAUDE.md`, …) still probe the root once, while `project` items probe every applicable project root, count a root as covered when it or an ancestor root passes, report present-in-some-roots as "Partial coverage" in the run summary instead of filing, and run one confirming `git ls-files` glob before any project-scoped miss is filed. A single-project repo yields only `.`, so its behavior is unchanged.

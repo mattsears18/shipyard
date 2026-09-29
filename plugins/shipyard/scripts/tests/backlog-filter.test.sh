@@ -303,6 +303,35 @@ fixture_console='[{"number":401,"title":"t","body":"","labels":["agent-console"]
 out=$(printf '%s' "$fixture_console" | classify)
 assert_equals "$(verdict_of "$out" 401)" "route:operator" "(19) agent-console labeled issue routes to operator, never a plain drop"
 
+# --- #1592: park clauses win over the operator route --------------------------
+# Before #1592 the agent-console branch short-circuited ahead of every park
+# clause, so a parked operator item was re-enqueued to the operator sweep every
+# session. A park verdict must now take precedence; an un-parked operator item
+# (and the someday "escalate" row -- one real re-check, which for an operator
+# item IS the operator pass) still routes to the operator.
+fixture_console_parked='[
+  {"number":1592,"title":"t","body":"","labels":["agent-console"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01","milestone":"6 · Someday"},
+  {"number":1593,"title":"t","body":"Blocked by #1599 pending the sibling.","labels":["agent-console"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":1599,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":1594,"title":"t","body":"<!-- do-work-blocked-until: 2099-01-01 -->\nrest","labels":["agent-console"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":1595,"title":"t","body":"<!-- do-work-blocked-until: 2099-01-01 -->\n<!-- do-work-recheck: npm-view foo version == 1.0.0 -->\nrest","labels":["agent-console"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":1596,"title":"t","body":"<!-- do-work-blocked-until: 2000-01-01 -->\nrest","labels":["agent-console"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":1597,"title":"t","body":"<!-- do-work-someday-recheck: 2026-08-01 -->\n\nbody","labels":["agent-console"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-07-15T00:00:00Z","milestone":"6 · Someday"},
+  {"number":1598,"title":"t","body":"","labels":["agent-console","needs-human-review"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01","milestone":"6 · Someday"}
+]'
+out=$(printf '%s' "$fixture_console_parked" | classify --someday-milestone "Someday" --someday-recheck-days 30)
+assert_equals "$(verdict_of "$out" 1592)" "drop:someday-milestone" "(19a) #1592: agent-console issue in the Someday milestone drops as someday-milestone, not route:operator"
+assert_equals "$(field_of "$out" 1592 "someday_recheck_action")" "first-park" "(19a) ...and carries the recheck action so the caller still writes the cadence marker"
+assert_equals "$(verdict_of "$out" 1593)" "drop:blocked-by-open-issue" "(19b) #1592: agent-console issue Blocked by an OPEN sibling drops -- not enqueued out of order"
+assert_equals "$(verdict_of "$out" 1594)" "drop:time-gated" "(19c) #1592: agent-console issue with a future do-work-blocked-until drops as time-gated"
+assert_equals "$(verdict_of "$out" 1595)" "drop:event-gated" "(19d) #1592: agent-console issue with an unchanged recheck probe drops as event-gated"
+assert_equals "$(verdict_of "$out" 1596)" "route:operator" "(19e) #1592: agent-console issue whose blocked-until date elapsed routes to operator again"
+assert_equals "$(verdict_of "$out" 1597)" "route:operator" "(19f) #1592: Someday-recheck ESCALATE on an agent-console issue routes to operator (its one re-check), never eligible for a code worker"
+assert_equals "$(verdict_of "$out" 1598)" "gate:needs-human-review" "(19g) #1592: gate labels still outrank both the park clauses and the operator route"
+
+out=$(printf '%s' "$fixture_console_parked" | classify)
+assert_equals "$(verdict_of "$out" 1592)" "route:operator" "(19h) #1592: with --someday-milestone off (the default), a Someday-milestoned operator item still routes to operator"
+
 # --- dispatch-gate labels ----------------------------------------------------
 
 fixture_gates='[
