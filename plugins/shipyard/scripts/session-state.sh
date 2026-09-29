@@ -53,6 +53,11 @@
 #              skipped. Pass `--skip-timing-autoflush` to disable (used
 #              by setup-timing.sh's own flush to avoid recursion).
 #
+#   reconcile — every per-return write of one reconcile turn in ONE plain
+#              call (issue #1595): bump-tokens, the .returned_agent_ids
+#              record, the .session_prs append, and the slot release.
+#              See cmd_reconcile below.
+#
 #   cleanup  — remove the session file at end-of-session. Idempotent
 #              (re-runs after the file is gone exit 0 — the failure mode
 #              we're guarding against is a half-cleanup, not a missing
@@ -278,6 +283,15 @@ Usage:
                                [--allow-degraded-init] [--degraded-init-repo <r>]
                                [--expected-repo <owner/repo>] [--skip-repo-check]
   session-state.sh release-slot --session-id <id> --slot-id <id>
+                               [--allow-degraded-init] [--degraded-init-repo <r>]
+                               [--expected-repo <owner/repo>] [--skip-repo-check]
+  session-state.sh reconcile   --session-id <id>
+                               (--input N --output N --cache-read N
+                                --cache-creation N | --input N
+                                --degraded-total-only | --skip-tokens)
+                               [--issue N] [--pr N] [--mode <kind>] [--model <id>]
+                               [--agent-id <id> [--returned-at <RFC3339>]]
+                               [--session-pr N] [--slot-id <id>]
                                [--allow-degraded-init] [--degraded-init-repo <r>]
                                [--expected-repo <owner/repo>] [--skip-repo-check]
   session-state.sh cleanup     --session-id <id>
@@ -1718,6 +1732,143 @@ cmd_release_slot() {
     ${passthrough[@]+"${passthrough[@]}"}
 }
 
+# cmd_reconcile — every per-return session-state write in ONE plain call
+# (issue #1595).
+#
+# A reconcile turn needs up to four durable-record writes: the A.0 token
+# attribution (bump-tokens), A.1's `.returned_agent_ids[<agent>]` return
+# record (#1237), the shipped-return `.session_prs` append, and step B's
+# slot release. Issued as separate calls, a reader naturally combines them
+# into one Bash call — `;`/`&&`-chained, or with a shared shell variable —
+# and the worktree-isolation guard refuses every such shape as "too complex
+# to verify". The #1595 repro burned a refused call per shape before
+# converging on three separate calls per return, and the friction let
+# `.in_flight` drift out of sync with the real dispatch set.
+#
+# This subcommand takes plain literal flags and performs the writes
+# internally: bump-tokens first (its own write — it carries the pricing
+# and per-invocation machinery), then ONE atomic `update` for the return
+# record, the session_prs append, and the slot release together. Every
+# piece is optional, but token attribution must be either supplied or
+# explicitly waived with --skip-tokens: A.0 is mandatory (#197), and a
+# silent skip is the failure mode this repo has already paid for.
+#
+# Output (stdout, one key=value line each, always in this order):
+#   tokens=bumped|skipped|failed:<rc>
+#   released_version_slot=<X.Y.Z>|none   — the released slot's
+#       `.version_slot`, read BEFORE the delete so step B.0 (#1420) still
+#       has it after the entry is gone.
+#   state=written|skipped|failed:<rc>
+# Exit: the update's rc if it failed, else bump-tokens' rc, else 0.
+cmd_reconcile() {
+  local session_id="" agent_id="" returned_at="" session_pr="" slot_id=""
+  local skip_tokens=0 have_tokens=0
+  local -a token_args=() passthrough=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) session_id="${2:-}"; shift 2 ;;
+      --agent-id) agent_id="${2:-}"; shift 2 ;;
+      --returned-at) returned_at="${2:-}"; shift 2 ;;
+      --session-pr) session_pr="${2:-}"; shift 2 ;;
+      --slot-id) slot_id="${2:-}"; shift 2 ;;
+      --skip-tokens) skip_tokens=1; shift ;;
+      --input|--output|--cache-read|--cache-creation)
+        have_tokens=1; token_args+=("$1" "${2:-}"); shift 2 ;;
+      --issue|--pr|--mode|--model) token_args+=("$1" "${2:-}"); shift 2 ;;
+      --degraded-total-only) token_args+=("$1"); shift ;;
+      --allow-degraded-init|--skip-repo-check) passthrough+=("$1"); shift ;;
+      --degraded-init-repo|--expected-repo) passthrough+=("$1" "${2:-}"); shift 2 ;;
+      *) echo "reconcile: unknown arg $1" >&2; usage_error "reconcile" ;;
+    esac
+  done
+
+  if [[ -z "$session_id" ]]; then
+    echo "reconcile: --session-id is required" >&2
+    usage_error "reconcile"
+  fi
+  if [[ "$have_tokens" -eq 1 && "$skip_tokens" -eq 1 ]]; then
+    echo "reconcile: --skip-tokens is exclusive with --input/--output/--cache-read/--cache-creation" >&2
+    usage_error "reconcile"
+  fi
+  if [[ "$have_tokens" -eq 0 && "$skip_tokens" -eq 0 ]]; then
+    echo "reconcile: pass the dispatch's token counts (--input/--output/--cache-read/--cache-creation, or --input + --degraded-total-only), or --skip-tokens when the dispatch had no <usage> payload" >&2
+    usage_error "reconcile"
+  fi
+  if [[ -n "$session_pr" ]] && ! [[ "$session_pr" =~ ^[0-9]+$ ]]; then
+    echo "reconcile: --session-pr must be a PR number (got: $session_pr)" >&2
+    usage_error "reconcile"
+  fi
+  if [[ -n "$returned_at" && -z "$agent_id" ]]; then
+    echo "reconcile: --returned-at requires --agent-id" >&2
+    usage_error "reconcile"
+  fi
+
+  # 1. Token attribution — a subshell, so bump-tokens' own `exit` on a
+  #    failure path can't take the state writes below down with it (A.0's
+  #    posture: a failed bump is logged and the reconcile proceeds).
+  local tokens_rc=0 tokens_status="skipped"
+  if [[ "$have_tokens" -eq 1 ]]; then
+    ( cmd_bump_tokens --session-id "$session_id" "${token_args[@]}" \
+        ${passthrough[@]+"${passthrough[@]}"} ) >&2 || tokens_rc=$?
+    if [[ "$tokens_rc" -eq 0 ]]; then
+      tokens_status="bumped"
+    else
+      tokens_status="failed:${tokens_rc}"
+    fi
+  fi
+  echo "tokens=${tokens_status}"
+
+  # 2. One atomic update for everything else.
+  local -a sets=()
+  if [[ -n "$agent_id" ]]; then
+    [[ -n "$returned_at" ]] || returned_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local agent_json at_json
+    agent_json=$(jq -n -c --arg s "$agent_id" '$s')
+    at_json=$(jq -n -c --arg s "$returned_at" '$s')
+    sets+=(".returned_agent_ids = ((.returned_agent_ids // {}) + {${agent_json}: ${at_json}})")
+  fi
+  if [[ -n "$session_pr" ]]; then
+    sets+=(".session_prs = ((.session_prs // []) + [${session_pr}] | unique)")
+  fi
+  local released_version="none"
+  if [[ -n "$slot_id" ]]; then
+    local slot_json target
+    slot_json=$(jq -n -c --arg s "$slot_id" '$s')
+    target=$(session_path "$session_id")
+    if [[ -f "$target" ]]; then
+      released_version=$(jq -r --arg s "$slot_id" \
+        '(.in_flight // {})[$s].version_slot // "none"' "$target" 2>/dev/null || echo "none")
+      [[ -n "$released_version" ]] || released_version="none"
+    fi
+    sets+=(".in_flight = ((.in_flight // {}) | del(.[${slot_json}]))")
+  fi
+  echo "released_version_slot=${released_version}"
+
+  local state_rc=0
+  if [[ ${#sets[@]} -eq 0 ]]; then
+    echo "state=skipped"
+  else
+    local -a set_args=()
+    local s
+    for s in "${sets[@]}"; do set_args+=(--set "$s"); done
+    ( cmd_update --session-id "$session_id" "${set_args[@]}" \
+        ${passthrough[@]+"${passthrough[@]}"} ) || state_rc=$?
+    if [[ "$state_rc" -eq 0 ]]; then
+      echo "state=written"
+    else
+      echo "state=failed:${state_rc}"
+    fi
+  fi
+
+  if [[ "$state_rc" -ne 0 ]]; then
+    exit "$state_rc"
+  fi
+  if [[ "$tokens_rc" -ne 0 ]]; then
+    exit "$tokens_rc"
+  fi
+}
+
 cmd_set_progress() {
   local session_id=""
   local slot=""
@@ -2404,6 +2555,7 @@ case "$subcmd" in
   set-progress) cmd_set_progress "$@" ;;
   set-slot)     cmd_set_slot "$@" ;;
   release-slot) cmd_release_slot "$@" ;;
+  reconcile)    cmd_reconcile "$@" ;;
   record-session-end) cmd_record_session_end "$@" ;;
   record-stall) cmd_record_stall "$@" ;;
   record-denial) cmd_record_denial "$@" ;;

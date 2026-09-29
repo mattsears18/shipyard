@@ -2702,6 +2702,66 @@ out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "slot-gone" --pa
 assert_equals "$out" "#5" "set-slot --allow-degraded-init recovers a missing session file"
 rm -rf "$tmphome"
 
+echo "== issue #1595 — reconcile: every per-return write in one plain call"
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "rec-1595" --repo "owner/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "rec-1595" \
+  --slot-id "slot-1" --kind issue --target "#4910" --agent-id "agent-x" \
+  --version-slot "4.56.16" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "rec-1595" \
+  --slot-id "slot-2" --kind issue --target "#4911" >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" reconcile --session-id "rec-1595" \
+  --expected-repo "owner/repo" --allow-degraded-init --degraded-init-repo "owner/repo" \
+  --issue 4910 --pr 77 --input 100 --output 20 --cache-read 300 --cache-creation 40 \
+  --mode issue-work --model claude-opus-4-8 \
+  --agent-id "agent-x" --returned-at "2026-09-29T10:00:00Z" \
+  --session-pr 77 --slot-id "slot-1" 2>/dev/null; echo "rc=$?")
+assert_equals "$out" "$(printf 'tokens=bumped\nreleased_version_slot=4.56.16\nstate=written\nrc=0')" \
+  "reconcile reports each write on stdout and exits 0"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "rec-1595" --path '.tokens.totals.output')
+assert_equals "$out" "20" "reconcile attributes tokens via bump-tokens"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "rec-1595" --path '.returned_agent_ids["agent-x"]')
+assert_equals "$out" "2026-09-29T10:00:00Z" "reconcile records the return in .returned_agent_ids"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "rec-1595" --path '.session_prs | map(tostring) | join(",")')
+assert_equals "$out" "77" "reconcile appends --session-pr to .session_prs"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "rec-1595" --path '.in_flight | keys | join(",")')
+assert_equals "$out" "slot-2" "reconcile releases only the named slot"
+
+# Idempotent re-append; --skip-tokens; a slot with no version_slot.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" reconcile --session-id "rec-1595" \
+  --skip-tokens --session-pr 77 --slot-id "slot-2" --agent-id 'agent-"y' 2>/dev/null; echo "rc=$?")
+assert_equals "$out" "$(printf 'tokens=skipped\nreleased_version_slot=none\nstate=written\nrc=0')" \
+  "reconcile --skip-tokens still writes the state and reports a versionless slot as none"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "rec-1595" --path '[(.session_prs|length), (.in_flight|length), (.returned_agent_ids|has("agent-\"y"))] | map(tostring) | join(",")')
+assert_equals "$out" "1,0,true" "reconcile dedupes session_prs and stores a jq-metacharacter agent id literally"
+
+# Token attribution is mandatory unless explicitly waived.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" reconcile --session-id "rec-1595" --slot-id "slot-9" 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=64" "reconcile refuses a call with neither token counts nor --skip-tokens"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" reconcile --session-id "rec-1595" --skip-tokens --input 5 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=64" "reconcile rejects --skip-tokens alongside token counts"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" reconcile --session-id "rec-1595" --skip-tokens --session-pr "7; rm" 2>&1; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=64" "reconcile rejects a non-numeric --session-pr"
+
+# A failed bump is reported but does not block the state writes.
+SHIPYARD_HOME="$tmphome" bash "$helper" set-slot --session-id "rec-1595" \
+  --slot-id "slot-3" --kind issue --target "#4912" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" reconcile --session-id "rec-1595" \
+  --input 0 --degraded-total-only --slot-id "slot-3" 2>/dev/null; echo "rc=$?")
+assert_equals "$out" "$(printf 'tokens=failed:64\nreleased_version_slot=none\nstate=written\nrc=64')" \
+  "reconcile surfaces a bump-tokens failure without skipping the slot release"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "rec-1595" --path '.in_flight | length')
+assert_equals "$out" "0" "reconcile released the slot despite the failed bump"
+
+# The cross-repo guard applies to the whole call.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" reconcile --session-id "rec-1595" \
+  --skip-tokens --session-pr 88 --expected-repo "owner/other" 2>/dev/null; echo "rc=$?")
+assert_equals "$(printf '%s' "$out" | tail -1)" "rc=66" "reconcile honors the cross-repo write guard"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "rec-1595" --path '.session_prs | length')
+assert_equals "$out" "1" "a cross-repo-refused reconcile writes nothing"
+rm -rf "$tmphome"
+
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]

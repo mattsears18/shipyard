@@ -55,6 +55,23 @@ The orchestrator mirrors every [orchestrator-state](#orchestrator-state) structu
 
 Three pieces stay reachable here because they're consulted on the reconcile hot path every turn — the two writes below (token attribution, plus state mirroring — `.in_flight` slot release and `.session_prs` shipped-return append fire on literally every reconcile turn) and the exit-code list they share ([step A.0](./do-work/steady-state.md#a0-attribute-the-dispatchs-token-usage-mandatory--before-any-return-string-parsing) and [step A reconcile](./do-work/steady-state.md#a-reconcile-the-return)):
 
+**The reconcile path is ONE call, not the blocks below ([#1595](https://github.com/mattsears18/shipyard/issues/1595)).** Every return needs a token bump, the `.returned_agent_ids` record, a `.session_prs` append (PR-bearing returns), and the slot release. Combining the separate calls into one `Bash` call — `;`/`&&`-chained, or sharing a shell variable — is refused post-relocation as "too complex to verify" (the refusal text misleadingly names *git*); issued one by one, they cost three-plus tool calls per return and invite `.in_flight` drift. `reconcile` does all four internally from plain literal flags, issued once at [A.1's persist-the-return-record point](./do-work/steady-state.md#a1-parse-the-return-string):
+
+```bash
+plugins/shipyard/scripts/session-state.sh reconcile \
+  --session-id "<session-id>" --expected-repo "<owner/repo>" \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>" \
+  --issue <N> --pr <M> --input <N> --output <N> --cache-read <N> --cache-creation <N> \
+  --mode <mode> --model <model-id> \
+  --agent-id "<agent-id>" --session-pr <M> --slot-id "<slot-id>"
+# stdout: tokens=bumped|skipped|failed:<rc> / released_version_slot=<v>|none /
+# state=written|failed:<rc>. Token flags are mandatory: degraded path swaps
+# them for `--input <total> --degraded-total-only`, no-<usage> for
+# `--skip-tokens`. A failed bump never blocks the state writes.
+```
+
+The blocks below are the underlying reference — each write on its own, for the turns that need exactly one (a standalone A.0 bump when A.0.5 resumes a worker in place, `set-slot` at dispatch, a non-reconcile mirror write):
+
 ```bash
 # Bump token-usage counts after an Agent dispatch returns. --issue / --pr
 # optional. --allow-degraded-init + --degraded-init-repo REQUIRED (see
@@ -117,7 +134,7 @@ plugins/shipyard/scripts/session-state.sh update \
 
 ## Phase routing
 
-This file is the **thin entry**: it carries the [args](#args), the **hot** [orchestrator-state struct list](#orchestrator-state) (thirteen structures + refresh tracker — read or written most turns), a short pointer into the [session state file](#session-state-file) (plus the three per-turn-hot pieces — the `bump-tokens` call shape, the `update --set` call shape, and the `session-state.sh` exit codes), and the routing table below. The **cold** long-tail reference material — eight orchestrator-state structures each owned by exactly one other phase file, and the session-state JSON schema / full helper subcommand reference / write-through site table / cost-tracking attribution rules — lives in [`do-work/orchestrator-state-reference.md`](./do-work/orchestrator-state-reference.md) and [`do-work/session-state-file.md`](./do-work/session-state-file.md) respectively, split out under [#808](https://github.com/mattsears18/shipyard/issues/808) so this entry stays small enough to read on every turn. The actual phase semantics live in [`commands/do-work/`](./do-work/) — load **only** the file(s) you need for the current invocation.
+This file is the **thin entry**: it carries the [args](#args), the **hot** [orchestrator-state struct list](#orchestrator-state) (thirteen structures + refresh tracker — read or written most turns), a short pointer into the [session state file](#session-state-file) (plus the per-turn-hot pieces — the single-call `reconcile` shape, the `bump-tokens` / `update --set` call shapes it composes, and the `session-state.sh` exit codes), and the routing table below. The **cold** long-tail reference material — eight orchestrator-state structures each owned by exactly one other phase file, and the session-state JSON schema / full helper subcommand reference / write-through site table / cost-tracking attribution rules — lives in [`do-work/orchestrator-state-reference.md`](./do-work/orchestrator-state-reference.md) and [`do-work/session-state-file.md`](./do-work/session-state-file.md) respectively, split out under [#808](https://github.com/mattsears18/shipyard/issues/808) so this entry stays small enough to read on every turn. The actual phase semantics live in [`commands/do-work/`](./do-work/) — load **only** the file(s) you need for the current invocation.
 
 | Phase file | Owns | When to load |
 |---|---|---|

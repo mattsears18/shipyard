@@ -127,6 +127,19 @@ plugins/shipyard/scripts/session-state.sh set-slot --session-id "<session-id>" \
 # Remove one .in_flight slot (#1561). Idempotent on an absent slot.
 plugins/shipyard/scripts/session-state.sh release-slot --session-id "<session-id>" --slot-id "<slot-id>"
 
+# The per-return hot path in ONE plain call (#1595): bump-tokens, then one
+# atomic update for .returned_agent_ids[<agent-id>], the .session_prs append
+# (--session-pr) and the slot release (--slot-id). Every piece but the token
+# attribution is optional; token flags are mandatory unless --skip-tokens
+# (no <usage> payload). Takes bump-tokens' --issue/--pr/--input/--output/
+# --cache-read/--cache-creation/--degraded-total-only/--mode/--model and the
+# degraded-init / repo-guard flags. Prints tokens=… / released_version_slot=…
+# (read before the delete, for step B.0) / state=…. A failed bump never
+# blocks the state writes. Called once at steady-state.md's A.1.
+plugins/shipyard/scripts/session-state.sh reconcile --session-id "<session-id>" \
+  --input <N> --output <N> --cache-read <N> --cache-creation <N> \
+  --agent-id "<agent-id>" --session-pr <M> --slot-id "<slot-id>"
+
 # Liveness check for the orphan-sweep (setup.md step 1.6). Exit 0 when file
 # exists AND .pid is alive (kill -0); exit 1 otherwise.
 plugins/shipyard/scripts/session-state.sh is-active --session-id "<session-id>"

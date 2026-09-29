@@ -193,7 +193,7 @@ The `--model` value should be the harness-reported model id verbatim — `bump-t
 
 **If the dispatch had no `usage` payload at all** (the entire `<usage>` block is missing — distinct from the #279 case where the block exists but only carries `total_tokens`; a true full-payload-missing event is much rarer), still proceed to A.1; log `[bump-tokens] no usage payload in dispatch result; skipping attribution` and leave `tokens_attributed=false`. Same don't-block-on-observational-data posture as the helper-error path. The degraded-total-only path above handles the more common case where the block exists but lacks the four breakdown fields.
 
-Once A.0 has fired (or its skip has been logged), proceed to A.0.5.
+**Normally A.0's bump rides A.1's single `reconcile` call ([#1595](https://github.com/mattsears18/shipyard/issues/1595)); issue the standalone `bump-tokens` above only when the turn ends before A.1 (A.0.5 resumed a stalled worker).** Once A.0 has fired, been deferred to A.1, or its skip has been logged, proceed to A.0.5.
 
 #### A.0.5. Post-return worktree reap for crashed / narrative-non-terminal returns (fires BEFORE A.1's return-string parsing)
 
@@ -513,21 +513,17 @@ Once A.0.6 has run, proceed to A.1.
 
 **A `stalled` return is not classified here — and it is never `blocked` ([#813](https://github.com/mattsears18/shipyard/issues/813)).** A narrative, non-terminal return exhibiting *pending intent* (future tense / a numbered plan / "waiting for") is a distinct, non-terminal outcome named `stalled`, detected and handled at [step A.0.5's stalled-worker check](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1s-return-string-parsing) — which runs BEFORE this step, on every reconcile turn. That check either **resumes** the same worker in place (when the worktree holds recoverable work and the per-target retry cap of 2 hasn't been hit) or falls through to A.0.5's ordinary crash-recovery/reap path (when there's nothing resumable, or the cap is exhausted). By the time this step runs, a `stalled` return has therefore already been converted into either a fresh in-flight dispatch (this turn's A.0.5 handling ends there — A.1 never sees it) or one of this step's ordinary terminal branches (typically `shipped`, via A.0.5's crash-recovery auto-commit-and-push; occasionally a plain reap with nothing to classify here, when the worktree held no diff to recover). **`stalled` must never fall through to the `blocked #<N>` branch below.** `blocked` is reserved for a worker's own deliberate, terminal `blocked: <reason>` return — conflating a pending-intent narrative with `blocked` would mislabel near-complete, resumable work (`needs-human-review` or a soft label) as a dead end, exactly the mis-handling [#813](https://github.com/mattsears18/shipyard/issues/813) identified in the spec's literal reading before this paragraph existed.
 
-**Persist the return record before any per-mode handling below — the mechanical gate `worktree-reap.sh` enforces ([#1237](https://github.com/mattsears18/shipyard/issues/1237)).** A reap this step (or step B, or a later turn's pre-dispatch reap) issues below only succeeds when `.returned_agent_ids[<agent-id>]` is set in this session's state — proof THIS agent's own terminal return reached the reconcile, not merely that some other signal (a PR observed `MERGED`) looked like completion. A.0.5's crash-recovery reap and the end-of-session sweeps are the documented exceptions and pass `--bypass-return-check` instead, because by construction the agent they reap never reached this line. Write the record once here, for every mode, before any branch below runs:
+**Persist the return record before any per-mode handling below — the mechanical gate `worktree-reap.sh` enforces ([#1237](https://github.com/mattsears18/shipyard/issues/1237)).** A reap this step (or step B, or a later turn's pre-dispatch reap) issues below only succeeds when `.returned_agent_ids[<agent-id>]` is set in this session's state — proof THIS agent's own terminal return reached the reconcile, not merely that some other signal (a PR observed `MERGED`) looked like completion. A.0.5's crash-recovery reap and the end-of-session sweeps are the documented exceptions and pass `--bypass-return-check` instead, because by construction the agent they reap never reached this line. Write the record once here, for every mode, before any branch below runs — with **one `reconcile` call ([#1595](https://github.com/mattsears18/shipyard/issues/1595))** that also carries A.0's token flags (A.0's bump folds in here; `tokens=bumped` sets `tokens_attributed`), the `session_prs` append for a PR-bearing return, and the durable slot release (step B's in-memory removal is unchanged; B.0 reads `released_version_slot=` off stdout). Chaining the separate calls in one Bash call is refused. Substitute literals from the A.0 preamble and working memory; plain command, no variables:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-# One-call derive + .shipyard-session-id fallback (#1479). The pre-#1479
-# inline form passed the repo root and then tested the derived id for
-# emptiness; both words were bare whole-word expansions the
-# worktree-isolation guard refuses. See dont.md's #1474 corrected rule.
-SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" resolve-session-id)
-agent_id="${.in_flight[<slot-id>].agent_id}"
-RETURNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "${SESSION_ID:-unknown}" \
-  --set ".returned_agent_ids[\"$agent_id\"] = \"$RETURNED_AT\"" \
-  >/dev/null 2>&1 || true
+"<plugin-root literal>/scripts/session-state.sh" reconcile --session-id "<session-id>" \
+  --expected-repo "<owner/repo>" --allow-degraded-init --degraded-init-repo "<owner/repo>" \
+  --issue <N> --pr <M> --input <N> --output <N> --cache-read <N> --cache-creation <N> \
+  --mode <mode> --model <model-id> \
+  --agent-id "<agent-id>" --session-pr <M> --slot-id "<slot-id>"
 ```
+
+`--session-pr` only on a return that appends to `session_prs` below. Degraded/no-usage paths swap the token flags for `--input <total> --degraded-total-only` / `--skip-tokens`.
 
 Fire-and-forget, same posture as every other write-through in this file — a failed write just means a later reap fails closed (leaves the worktree for a subsequent sweep) rather than fails open. See [`worktree-reap.sh`](../../scripts/worktree-reap.sh)'s `reap` docstring and [RATIONALE → Enforcing the merged-PR-is-not-worker-done invariant](../do-work-RATIONALE.md#enforcing-the-merged-pr-is-not-worker-done-invariant-issue-1237) for the full call-site classification.
 
