@@ -82,6 +82,20 @@
 # the composer genuinely checked and wants to keep unconditional, cite the
 # evidence inline with a `(grounded: <command>)` marker on the same line — the
 # same `evidence_pointer` convention `backlog-filter.sh` already uses.
+#
+# Conditional clauses (issue #1621)
+# ---------------------------------
+# A merge/close keyword preceded IN THE SAME CLAUSE by a conditional
+# introducer (`if `, `when `, `once `, `after `, `unless `) is a branch of an
+# instruction, not an assertion: "if #1620 has merged by then, resolve against
+# its content" says nothing about #1620's live state. `if it` in HEDGE_RE is
+# one instance of that rule, not the rule — the referent can be `#<N>` or
+# `PR #<N>` just as well. A clause ends at `;`, an em dash, or one of `. , : ! ?`
+# followed by whitespace, so "When I checked, #4662 has merged" is still
+# reported. A line is suppressed only when EVERY assertive match on it is
+# conditional; one unconditional match anywhere on the line still reports it.
+# Findings are also deduplicated per (line, referent): a line naming the same
+# `#<N>` several times yields one finding, not one per mention.
 set -u
 
 HEDGE_RE="should have|may |might |could |assum|expect|presumably|likely|probably|verify|re-check|recheck|check with|confirm with|unverified|by the time|once it|if it|unless |whether |grounded:"
@@ -143,6 +157,34 @@ scan_prompt() {
       if (length(p) > 100) { p = substr(p, 1, 97) "..." }
       return p
     }
+    # conditional_prefix(prefix) — 1 when the clause ending at the keyword
+    # contains a conditional introducer (#1621). `prefix` is the lowercased
+    # text up to and including the match start.
+    function conditional_prefix(prefix,    clause) {
+      clause = prefix
+      gsub(/[.,:!?][ \t]/, "|", clause)
+      gsub(/;/, "|", clause)
+      gsub(/—/, "|", clause)
+      sub(/^.*[|]/, "", clause)
+      return (clause ~ /(^|[^a-z])(if|when|once|after|unless)[ ]/)
+    }
+    # unconditional_match(s, re) — the first match of `re` in `s` that is NOT
+    # inside a conditional clause. Sets MSTART/MLEN and returns 1, else 0.
+    function unconditional_match(s, re,    rest, off, abs) {
+      rest = s
+      off = 0
+      while (match(rest, re)) {
+        abs = off + RSTART
+        if (!conditional_prefix(substr(s, 1, abs))) {
+          MSTART = abs
+          MLEN = RLENGTH
+          return 1
+        }
+        off = off + RSTART + RLENGTH - 1
+        rest = substr(s, off + 1)
+      }
+      return 0
+    }
     function emit(kind, ref, phrase) {
       printf "kind=%s line=%d ref=%s phrase=%s\n", kind, NR, ref, trim_phrase(phrase)
       found = 1
@@ -162,16 +204,23 @@ scan_prompt() {
       if (lower ~ hedge_re) next
 
       kind = ""
-      if (match(lower, merged_re)) { kind = "merged" }
-      else if (match(lower, closed_re)) { kind = "closed" }
+      if (unconditional_match(lower, merged_re)) { kind = "merged" }
+      else if (unconditional_match(lower, closed_re)) { kind = "closed" }
+      else if (match(lower, merged_re) || match(lower, closed_re)) {
+        # Every assertive match on the line sits in a conditional clause.
+        next
+      }
 
       if (kind != "") {
-        phrase = substr(stripped, RSTART, RLENGTH)
+        phrase = substr(stripped, MSTART, MLEN)
         rest = stripped
+        split("", seen)
         while (match(rest, /#[0-9]+/)) {
           num = substr(rest, RSTART + 1, RLENGTH - 1)
           rest = substr(rest, RSTART + RLENGTH)
           if (self != "" && num == self) continue
+          if (num in seen) continue
+          seen[num] = 1
           emit(kind, num, phrase)
         }
         next
@@ -326,9 +375,10 @@ while IFS= read -r claim; do
         *)       subcmd="pr" ;;
       esac
       # shellcheck disable=SC2016  # backticks are literal markdown, not substitution
-      printf 'CONTRADICTED: line %s claims #%s %s ("%s") but its live state is %s. Rewrite conditionally per #1062: "#%s should have %s by the time you start; verify with `gh %s view %s --json state,mergedAt` before relying on it."\n' \
+      printf 'CONTRADICTED: line %s claims #%s %s ("%s") but its live state is %s. Rewrite conditionally per #1062: "#%s should have %s by the time you start; verify with `gh %s view %s --json state,mergedAt` before relying on it." If the line is really a conditional branch ("if #%s has %s, ..."), keep the if/when/once/after/unless introducer in the same clause as the keyword — no comma, colon, or semicolon between them — and it is not reported (#1621).\n' \
         "$lineno" "$ref" "$kind" "$phrase" "$probe" \
-        "$ref" "$kind" "$subcmd" "$ref"
+        "$ref" "$kind" "$subcmd" "$ref" \
+        "$ref" "$kind"
       ;;
     *)
       indeterminate=$((indeterminate + 1))
