@@ -145,6 +145,7 @@ if [[ -f "$skill_path" ]]; then
   # protected route that redirects to login.
   assert_contains "$skill_path" "## 5. Proving a session is SIGNED OUT" \
     "SKILL.md rule 5: signed-out verification section present"
+  # shellcheck disable=SC2016  # literal needle — backticks are markdown, must NOT expand
   assert_contains "$skill_path" 'indexedDB.databases()` returning `[]` is not a signed-out proof' \
     "SKILL.md rule 5: databases() emptiness is explicitly not a signed-out proof"
   assert_contains "$skill_path" "record count inside the auth object store" \
