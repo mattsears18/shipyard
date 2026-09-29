@@ -566,7 +566,8 @@ Usage:
                                           --repo <owner/repo> \
                                           --default-branch <name> \
                                           [--max-prs <N>] \
-                                          [--max-removals <N>] [--dry-run] \
+                                          [--max-removals <N>] \
+                                          [--time-budget <secs>] [--dry-run] \
                                           [--arm-auto-merge]
   worktree-reap.sh report-unreaped --repo-root <path> \
                                    [--current-session-id <id>]
@@ -727,6 +728,35 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                               `--max-removals 0` means unlimited (explicit
                               opt-in). Applies under `--dry-run` too, so 5a's
                               plan shows exactly which removals 5b will defer.
+                            * `--time-budget <secs>` (default 60) stops the
+                              sweep STARTING new candidates once that many
+                              seconds have elapsed since the invocation began
+                              (issue #1608). The two count caps bound HOW MANY
+                              slow operations run, not how slow each one is —
+                              per-removal cost is a property of the repo (a
+                              monorepo with two install roots per worktree
+                              unlinks two dependency trees per removal), so
+                              3 removals + 1 salvage still overran a 120s
+                              foreground budget. A wall-clock bound is the one
+                              that matches that constraint and self-tunes
+                              across repo shapes. Past the budget each
+                              remaining candidate gets one
+                              `[k/T] time-deferred <branch> — ...` line and a
+                              `time-deferred: <branch>` report line, is NOT
+                              classified or written to at all (so no PR can be
+                              opened for it — #1517 is not resurrected), and
+                              counts toward no summary field; a single
+                              `time-budget-reached: ...` line follows. It
+                              bounds when a new candidate may START, not how
+                              long an in-flight one runs, so worst-case
+                              wall-clock is the budget plus one candidate's
+                              cost. `--time-budget 0` means unlimited
+                              (explicit opt-in). NOT applied under
+                              `--dry-run`: the plan performs no writes, so it
+                              is fast and cannot predict 5b's wall-clock; the
+                              `heavy-worktrees:` line is the up-front signal.
+                              An unreadable clock fails OPEN (the count caps
+                              still bound the sweep).
                             * A `heavy-worktrees: <H> of <T> ...` header line
                               (issue #1559), emitted when at least one
                               candidate worktree carries a `node_modules`
@@ -3449,6 +3479,26 @@ reap_stale() {
 # node_modules tree, because that count — not the candidate count — is what
 # predicts this sweep's runtime, and #1559 asks for it to be visible in the
 # 5a plan rather than discovered by a timeout during 5b.
+# triage_time_budget_spent <start-epoch> <budget-secs> — issue #1608.
+# Exit 0 (and print the elapsed seconds) when the wall-clock budget is spent;
+# exit 1 otherwise. Fails OPEN — a budget of 0, or an unreadable start/now
+# clock, is reported as NOT spent — because the --max-prs / --max-removals
+# count caps still bound the sweep, and a broken clock must never silently
+# turn every session's triage into a no-op.
+triage_time_budget_spent() {
+  local start="$1" budget="$2" now elapsed
+  [ "$budget" -eq 0 ] 2>/dev/null && return 1
+  case "$start" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(date +%s 2>/dev/null || echo "")
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  elapsed=$((now - start))
+  if [ "$elapsed" -ge "$budget" ]; then
+    printf '%s' "$elapsed"
+    return 0
+  fi
+  return 1
+}
+
 triage_orphan_branches() {
   local repo_root=""
   local repo=""
@@ -3463,6 +3513,14 @@ triage_orphan_branches() {
   # a genuinely stranded backlog is small, so a LARGE one is itself evidence
   # to act on only part of it unattended.
   local max_removals=3
+  # Issue #1608 — wall-clock budget. The count caps above bound HOW MANY slow
+  # operations run; this bounds how LONG the sweep keeps starting new ones,
+  # which is the quantity the caller's 120s foreground timeout actually
+  # constrains. 60s leaves the other half of that timeout for the one
+  # candidate already in flight when the budget runs out. 0 = unlimited.
+  local time_budget=60
+  local start_epoch
+  start_epoch=$(date +%s 2>/dev/null || echo "")
   local dry_run=0
   local arm_auto_merge=0
 
@@ -3522,6 +3580,14 @@ triage_orphan_branches() {
         max_removals="${1#--max-removals=}"
         shift
         ;;
+      --time-budget)
+        time_budget="${2:-}"
+        shift 2
+        ;;
+      --time-budget=*)
+        time_budget="${1#--time-budget=}"
+        shift
+        ;;
       --dry-run)
         dry_run=1
         shift
@@ -3572,6 +3638,12 @@ triage_orphan_branches() {
       return 64
       ;;
   esac
+  case "$time_budget" in
+    ''|*[!0-9]*)
+      echo "triage-orphan-branches: --time-budget must be a non-negative integer number of seconds (got: '$time_budget')" >&2
+      return 64
+      ;;
+  esac
 
   if ! cd "$repo_root" 2>/dev/null; then
     echo "triage-orphan-branches: cannot cd to --repo-root: $repo_root" >&2
@@ -3597,6 +3669,10 @@ triage_orphan_branches() {
   # 01c-label-recovery-refine.md's orchestrator-side parser reads positionally.
   local removals_done=0
   local removals_deferred_count=0
+  # Issue #1608 — same off-the-summary-line posture as the two count caps.
+  local time_deferred_count=0
+  local time_elapsed=""
+  local -a time_deferred_lines=()
   local -a failed_pr_lines=()
   local -a stale_assign_lines=()
   local -a deferred_lines=()
@@ -3697,6 +3773,21 @@ triage_orphan_branches() {
       ''|*[!0-9]*) n=""; canonical_branch="$branch" ;;
       *)           canonical_branch="do-work/issue-$n" ;;
     esac
+    # Issue #1608 — wall-clock budget, checked BEFORE any per-candidate work
+    # (the classification probes are `gh` round-trips too). A time-deferred
+    # candidate is neither classified nor written to: no removal, no push, no
+    # PR — so deferring it cannot resurrect #1517's duplicate-PR generator,
+    # and the on-disk worktree is its own checkpoint for a later session.
+    # Skipped under --dry-run, which performs no writes and cannot predict
+    # the real sweep's wall-clock anyway.
+    if [ "$dry_run" -eq 0 ] && time_elapsed=$(triage_time_budget_spent "$start_epoch" "$time_budget"); then
+      printf '[%s/%s] time-deferred %s — --time-budget (%ss) spent after %ss, not classified or actioned\n' \
+        "$idx" "$total" "$canonical_branch" "$time_budget" "$time_elapsed"
+      time_deferred_lines+=("$canonical_branch")
+      time_deferred_count=$((time_deferred_count + 1))
+      continue
+    fi
+
     ahead=$(git -C "$path" rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || echo 0)
 
     if [ "$ahead" -eq 0 ] 2>/dev/null; then
@@ -4338,6 +4429,13 @@ triage_orphan_branches() {
   if [ "$deferred_count" -gt 0 ]; then
     printf 'cap-reached: %s candidate(s) remaining, not actioned; re-run or raise --max-prs (current: %s)\n' \
       "$deferred_count" "$max_prs"
+  fi
+  for x in "${time_deferred_lines[@]+"${time_deferred_lines[@]}"}"; do
+    printf 'time-deferred: %s\n' "$x"
+  done
+  if [ "$time_deferred_count" -gt 0 ]; then
+    printf 'time-budget-reached: %s candidate(s) not classified or actioned after %ss elapsed; a later session picks them up, or raise --time-budget (current: %ss)\n' \
+      "$time_deferred_count" "$time_elapsed" "$time_budget"
   fi
 
   printf 'summary: salvaged=%s abandoned=%s stale_assigns=%s already_landed=%s\n' \
