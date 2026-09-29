@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.10 — 2026-09-29
+
+`shipyard-config.sh get` now warns on stderr when the checkout it reads from is behind its upstream on `shipyard.config.json`, so a config read from a stale working tree no longer passes silently as the repo's agreed state (closes #1610). The repo layer resolves from a working tree. Before this, a checkout that had not pulled the commit declaring `version_coordination.generated_paths` returned `[]`, and consumers read that as "not declared". In the #1610 repro a fix-rebase worker was told to verify against the orchestrator's frozen primary checkout, which would have thrown away a correct rebase. The warning is advisory only: stdout and the exit status do not change. The check is commit-based (`HEAD..origin/<default>` limited to the config path), so a branch's own config edits are never flagged, and it stays silent whenever it cannot resolve an upstream ref.
+
+- `scripts/shipyard-config.sh`: new `warn_if_repo_layer_behind` / `default_upstream_ref` helpers, called from `get`. The warning is tagged `[config-behind]` and can be turned off with `SHIPYARD_CONFIG_BEHIND_WARN=0`.
+- `agents/issue-worker/fix-rebase.md` §4.7: the `generated_paths` read no longer discards stderr. The worker must confirm an empty result against `origin/<default-branch>` before a bail asserts "not declared".
+- `commands/do-work/setup/00k-repo-root-pin.md`: never point a dispatched worker's config-precondition check at the pinned primary checkout. Use the worker's own worktree or `git show origin/<default-branch>:shipyard.config.json`.
+- `scripts/tests/config-behind-upstream-warning-1610.test.sh`: 19 assertions (static wiring, plus git fixtures for the #1610 repro, the opt-out, path-limiting, local edits, and the no-git and no-origin cases).
+
 ### 4.56.9 — 2026-09-29
 
 `fix-rebase` now names the missing `version_coordination.generated_paths` declaration when a conflict is confined to differing values on the same keys in an undeclared file, instead of bailing with the generic reason that reads as "a human must judge this merge" (closes #1611). A content hash or generated timestamp conflict has only one real remedy: declare the path so §4.7 can regenerate it and exempt it from the line-survival guard. The recognition changes only the hand-back text. It is still a bail, never an auto-resolve, because inferring "this looks generated" from the conflict shape is the filename heuristic §4.7's explicit allowlist rejects.

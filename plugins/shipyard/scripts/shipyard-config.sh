@@ -65,6 +65,9 @@
 #                       `$PWD/.shipyard-config-schema-failure`, and only when
 #                       `$PWD/.shipyard-plugin-root` exists (the orchestrator
 #                       worktree's own signature). Used by the test suite.
+#   SHIPYARD_CONFIG_BEHIND_WARN — set to 0 to silence `get`'s stderr warning
+#                       when the resolved repo root's HEAD lacks upstream
+#                       commits touching shipyard.config.json (issue #1610).
 #
 # Exit codes:
 #
@@ -106,6 +109,8 @@ Environment:
                       override the session-local schema-failure record path
                       (default: $PWD/.shipyard-config-schema-failure, written
                       only inside the orchestrator worktree)
+  SHIPYARD_CONFIG_BEHIND_WARN
+                      0 silences get's [config-behind] stderr warning (#1610)
 
 Exit codes:
   0    success
@@ -308,6 +313,60 @@ local_config_path() {
     return 1
   fi
   printf '%s/.shipyard/config.local.json\n' "$root"
+}
+
+# --------------------------------------------------------------------------
+# Behind-upstream warning for the committed repo layer (issue #1610).
+#
+# The repo layer is read from a WORKING TREE, so a checkout that has not
+# pulled the commit declaring a key returns the pre-declaration value with
+# total confidence. For declarative opt-in keys (version_coordination.
+# generated_paths, append_only_paths, ...) an empty value means "not opted
+# in", so a stale read is indistinguishable from a genuine "not declared" —
+# the #1610 repro discarded a correct fix-rebase on exactly that.
+#
+# The predicate is commit-based, not content-based: "does origin/<default>
+# carry a commit touching shipyard.config.json that HEAD lacks?" That
+# ignores a checkout's own deliberate local edits (a PR branch changing the
+# config is not stale) and needs no JSON parsing, so it is cheap enough to
+# run on every `get`. detect-config-staleness.sh (#1493) is the heavier,
+# key-naming drift check the orchestrator runs per refresh tick; this is
+# the read-time signal every consumer gets for free.
+#
+# Advisory only: stderr, never a change to stdout or the exit status.
+# Fail-silent on anything it cannot resolve (not a git tree, no origin
+# default ref) — it must never produce a false positive. Opt out with
+# SHIPYARD_CONFIG_BEHIND_WARN=0.
+# --------------------------------------------------------------------------
+default_upstream_ref() {
+  local root="$1" ref
+  ref=$(git -C "$root" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)
+  if [[ -n "$ref" ]] && git -C "$root" rev-parse -q --verify "$ref^{commit}" >/dev/null 2>&1; then
+    printf '%s\n' "$ref"
+    return 0
+  fi
+  for ref in origin/main origin/master; do
+    if git -C "$root" rev-parse -q --verify "$ref^{commit}" >/dev/null 2>&1; then
+      printf '%s\n' "$ref"
+      return 0
+    fi
+  done
+  return 1
+}
+
+warn_if_repo_layer_behind() {
+  [[ "${SHIPYARD_CONFIG_BEHIND_WARN:-1}" == "0" ]] && return 0
+  local root ref behind
+  root=$(repo_root) || return 0
+  [[ -n "$root" && -d "$root" ]] || return 0
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  ref=$(default_upstream_ref "$root") || return 0
+  behind=$(git -C "$root" rev-list --count "HEAD..$ref" -- shipyard.config.json 2>/dev/null) || return 0
+  [[ "$behind" =~ ^[0-9]+$ ]] || return 0
+  if (( behind > 0 )); then
+    echo "shipyard-config: WARNING [config-behind]: $root is behind $ref on shipyard.config.json ($behind upstream commit(s) touching it that this checkout's HEAD lacks). Values read here are this checkout's, not the repo's agreed state — an empty/absent opt-in key may be declared upstream. Read from an up-to-date worktree or 'git show $ref:shipyard.config.json' before treating such a value as authoritative. (#1610)" >&2
+  fi
+  return 0
 }
 
 # atomic_write() (same-fs tmp + rename; POSIX-atomic) now lives in
@@ -880,6 +939,8 @@ cmd_get() {
 
   local effective
   effective=$(cmd_load) || exit $?
+
+  warn_if_repo_layer_behind
 
   local jq_path
   # Convert dot-path to jq path; pre-validate that components are safe
