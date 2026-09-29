@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.55.30 — 2026-09-29
+
+`/shipyard:do-work` now checks the remote for an in-flight claim immediately before each issue-work dispatch, so a peer session it can't otherwise see no longer causes a duplicate worker (closes #1606). The peer-session detector reads only `~/.shipyard/sessions/*.json`, once, at setup. A plain Claude Code session dispatching its own `shipyard:issue-worker` agents writes no session file, so it always counted as `peers=0`. In the lightwork repro, that let a `/do-work` session ship a near-identical competing PR, including a second data-migration script. The remote is the one place every session leaves a trace, so the new guard reads it there.
+
+- `plugins/shipyard/scripts/remote-claim-check.sh` (new) — a read-only `check --repo --issue` that reports `remote_claimed=true` on the first of three signals: an open PR that closes the issue, an open PR whose head branch names `issue-<N>` / `slice-<N>` as a path segment, or a pushed `do-work/issue-<N>` / `do-work/slice-<N>` branch with no PR whose tip is within a 120-minute freshness window (older branches count as abandoned). A failed `gh` read reports `unknown` and fails open. A pure `classify` subcommand keeps the decision logic testable without the network.
+- `plugins/shipyard/scripts/tests/remote-claim-check.test.sh` (new) — 26 assertions over `classify` and over `check` against a stubbed `gh`.
+- `plugins/shipyard/commands/do-work/dispatch-rules.md` — a new per-dispatch **Remote in-flight-claim guard** that parks a claimed candidate, the same way the concurrent-session guard does. It replaces the covered-by-open-PR `gh pr list`, which its `open-pr-closing` signal subsumes. It also states the limit: a peer that has neither pushed nor opened a PR leaves no remote trace.
+- `plugins/shipyard/commands/do-work/setup/04e-peer-session-drop.md` — names the session-file blind spot and points to the new guard.
+
 ### 4.55.29 — 2026-09-29
 
 Workers are now told that they share a host, and a worker that shares one gets rules for handling it (closes #1594). At `--concurrency ≥ 2`, two workers running emulator-backed gates against a repo whose test runner binds **fixed** ports (and kills stale listeners before booting) tore down each other's services. The victim then saw its own suite fail on its own diff, which made this a wrong-diagnosis generator rather than a flake. The repro target repo already shipped a port-isolation wrapper. Nothing in the dispatch contract told a worker it was one of N tenants, so the worker used the wrapper for one run and skipped it for the one that collided. The gap was discovery, so this change adds no port-allocation mechanism, only the two discovery surfaces the issue proposed.

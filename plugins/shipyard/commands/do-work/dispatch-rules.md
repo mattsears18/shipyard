@@ -353,6 +353,22 @@ When filling a slot, walk this decision tree:
 
    Empty output → not covered; proceed to self-assign and dispatch. A PR number → that PR already closes `#<N>`. **Park the candidate** exactly as the concurrent-session guard does: log `[covered-by-open-pr] #<N> skipped — already closed by open PR #<M>; the PR's own health is fix-checks/fix-rebase work, not issue-work.` and move to the next candidate in `ready_issues`. Do **not** widen this into a health check — an open PR covers its issue whether green, red, or `DIRTY`, and re-deriving health here would reintroduce exactly the conflation #1389 exists to remove. Use `closingIssuesReferences`, never a PR-body substring search ([#301](https://github.com/mattsears18/shipyard/issues/301)).
 
+   **Remote in-flight-claim guard (per-dispatch, before self-assign) — issue [#1606](https://github.com/mattsears18/shipyard/issues/1606).** The concurrent-session guard sees only this checkout's worktree locks, and [step 1.65](./setup/01-repo-recovery.md#165-detect-live-peer-sessions-on-this-repo-1204)'s peer detector sees only sessions that write `$SHIPYARD_HOME/sessions/*.json`, once, at setup. A plain Claude Code session dispatching its own `shipyard:issue-worker` agents writes neither, so it is invisible to both — the #1606 repro (lightwork, 2026-09-26) reported `peers=0` throughout and shipped a near-identical competing PR, second data-migration script included. The one trace every session leaves, whatever its tooling, is on the remote, so check it immediately before each issue-work dispatch. It subsumes the covered-by-open-PR query above (its `open-pr-closing` signal is that exact `closingIssuesReferences` check), so run it **in place of** that `gh pr list`, not in addition to it:
+
+   ```bash
+   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+   export CLAUDE_PLUGIN_ROOT
+   claim_result=$("$CLAUDE_PLUGIN_ROOT/scripts/remote-claim-check.sh" check --repo <owner/repo> --issue <N>)
+   ```
+
+   [`scripts/remote-claim-check.sh`](../../scripts/remote-claim-check.sh) prints one line:
+
+   - `remote_claimed=false` → proceed to self-assign and dispatch.
+   - `remote_claimed=true signal=<signal> ref=<ref>` → **park the candidate** exactly as the two guards above do: log `[remote-claim] #<N> skipped — <signal> (<ref>); another session is already working this issue.` and move to the next candidate in `ready_issues`. `<signal>` is `open-pr-closing` (an open PR closes `#<N>` — the #1389 case), `open-pr-branch` (an open PR's head branch names `issue-<N>` / `slice-<N>` as a path segment, closing keyword or not), or `remote-branch` (a pushed `do-work/issue-<N>` / `do-work/slice-<N>` with no PR yet, tip commit within the freshness window — default 120 min, `SHIPYARD_REMOTE_CLAIM_WINDOW_MIN`; an older branch is treated as abandoned so it can't starve the issue forever).
+   - `remote_claimed=unknown reason=<why>` → a `gh` read failed. **Fail open — proceed with the dispatch.** Unlike the concurrent-session guard's unparseable-lock case, parking here would stall every candidate for the length of a GitHub API blip, and [`issue-work.md` step 0](../../agents/issue-worker/issue-work.md#0-pre-flight-confirm-the-issue-is-still-workable)'s own duplicate-PR check still runs inside the worker as the backstop.
+
+   **What this can't see:** a peer worker that has neither pushed nor opened a PR leaves no remote trace, so the check closes the "peer pushed or opened a PR since our backlog fetch" window, not the pre-push one. The script is read-only — it never writes a claim to GitHub.
+
    **Author-trust computation (per-dispatch).** Before composing the prompt, compute `originating_author_trust` for the candidate:
 
    - `originating_author_trust = "trusted"` when `author.login` (lowercased) is in the cached `trusted_authors` set (see [step 1.7](./setup/01-repo-recovery.md#17-resolve-trusted-author-allowlist)).
