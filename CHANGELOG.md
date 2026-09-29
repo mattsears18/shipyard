@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.57.3 — 2026-09-29
+
+`issue-work.md` and `steady-state.md` get real size headroom back, via one deliberate split instead of piecemeal trims (closes #1643). `issue-work.md` had 27 bytes left under its 131,000-byte ceiling and `steady-state.md` about 400 under the 240 KiB phase-file cap, so the next routine fix to either would have failed a size check unrelated to its own change. This is a pure restructuring: three reference blocks that are only consulted in specific situations moved into on-demand fragments, each replaced by a pointer that keeps the load-bearing rule inline, and no behavior changed. `issue-work.md` goes from 130,973 to 118,879 bytes, and its ceiling drops from 131,000 to 127,000 so it can't quietly grow back into the same corner. `steady-state.md` goes from 245,364 to 222,836 bytes, about 23 KB under the cap.
+
+- `plugins/shipyard/agents/issue-worker/issue-work-release-bump.md` (new) — step 4's version-bump and CHANGELOG rules: the authority of `next_available_version`, bumping in this PR under a per-PR release rule, releases for follow-up PRs, the issue-only CHANGELOG citation, and the monotonicity scan.
+- `plugins/shipyard/agents/issue-worker/issue-work-external-trust.md` (new) — step 6's external-author branch and the live-permission fallback when `originating_author_trust` is missing.
+- `plugins/shipyard/commands/do-work/a1-fix-checks-reconcile.md` (new) — A.1's `fix-checks-only` return reconcile: the fabrication pre-check, the head-SHA citation check, trust-but-verify, the false-green telemetry, and the `pending`/`dirty`/`flake`/`blocked`/narrative branches.
+- `plugins/shipyard/agents/issue-worker/issue-work.md`, `plugins/shipyard/commands/do-work/steady-state.md` — the moved blocks are replaced by pointers.
+- `plugins/shipyard/scripts/tests/spec-size-budget.test.sh` — `issue-work.md`'s ceiling lowered to 127,000, the first reduction in this suite's history.
+- `plugins/shipyard/scripts/tests/do-work-split.test.sh`, `fix-checks-infra-flake-classification.test.sh`, `changelog-monotonicity-scan.test.sh` — content assertions now look in the fragments, and new assertions check that each parent still points at its fragment.
+
 ### 4.57.2 — 2026-09-29
 
 The recheck-probe timeout tests now assert that the timeout cut the stub short, not that it finished within 3 seconds (closes #1639). Both tests pinned `RECHECK_PROBE_TIMEOUT_SECONDS=1` against a stub that slept 5s and required `elapsed <= 3`. Under host load, such as running the full `*.test.sh` battery in parallel batches, the 1s timeout could take 4s of wall time to fire and reap. That failed the suite even though the timeout was enforced. The stub now sleeps 10s and both sites assert `elapsed < SLOW_STUB_SECONDS`, which leaves about 9s of headroom for scheduling jitter.

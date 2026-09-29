@@ -353,6 +353,21 @@
 # split dispatch's leftover PR. 131000 (not 130500) restores real headroom
 # instead of the zero-byte margin that made this raise necessary.
 #
+# issue-work.md's ceiling was LOWERED 131000 -> 127000 by #1643 (2026-09-29),
+# the first reduction in this file's history. Six raises in a row had left
+# the file ~27 bytes under its cap, so every routine fix touching it paid a
+# restructuring tax unrelated to its own issue. #1643 did the split once,
+# deliberately: two consulted-not-executed reference blocks moved to on-demand
+# fragments — the version-bump / CHANGELOG / monotonicity-scan rules
+# (issue-work-release-bump.md, needed only when a PR bumps a release) and
+# step 6's external-author branch + missing-trust-field fallback
+# (issue-work-external-trust.md, needed only off the common `trusted` path) —
+# each replaced by a pointer that keeps the load-bearing rule in one line.
+# That took the file to ~118900 bytes; the ceiling is set to that size plus an
+# ~8 KB margin rather than left at 131000, so the file cannot silently re-grow
+# into the same corner. A red here means: move the next rare block out, don't
+# raise.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -412,7 +427,7 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  131000 \
+  127000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \
