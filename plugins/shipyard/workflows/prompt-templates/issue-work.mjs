@@ -156,6 +156,25 @@ export function buildIssueWorkPrompt(unit, repoSlug) {
     )
   }
 
+  // Concurrent-tenant augmentation — mirrors dispatch-rules.md's
+  // "Concurrent-tenant augmentation (#1594)" paragraph verbatim. The core
+  // stamps `sessionConcurrency` onto every unit from the dispatch's own
+  // `concurrency` arg, so no orchestrator-computed field is needed.
+  if (Number(unit.sessionConcurrency) > 1) {
+    const n = Number(unit.sessionConcurrency)
+    lines.push(
+      ``,
+      `**Concurrent tenants on a shared host (orchestrator-supplied, #1594):** this session`,
+      `runs at \`--concurrency ${n}\`, so up to \`${n - 1}\` sibling workers may be live on this`,
+      `same host right now. Worktrees isolate files, not ports: never assume exclusive use`,
+      `of a default port. Before booting any long-lived local service (emulator, dev server,`,
+      `test DB), use the repo's port-isolation wrapper if it ships one, for every`,
+      `service-backed run, not just some. If a service-backed suite fails in a way your`,
+      `diff doesn't explain, rule out a peer tearing down your services before you touch a`,
+      `correct assertion. See \`shipyard:worker-preamble\`'s \`shared-host-services.md\`.`,
+    )
+  }
+
   lines.push(
     ``,
     `Return a STRUCTURED result matching schemas/worker-return.schema.json — e.g.`,

@@ -349,7 +349,7 @@ const emit = (message) => {
 
 // Per-work-unit shape (issue-work fields documented alongside the builder below):
 //   { number, mode, model, trust, branch, worktreePath,
-//     verifyGate, userFeedback, phase1Scope, tokenBudgetWarning,
+//     verifyGate, userFeedback, phase1Scope, tokenBudgetWarning, sessionConcurrency,
 //     nextAvailableVersion, changelogPath }
 const selectedIssues = Array.isArray(input.issues) ? input.issues : []
 
@@ -495,6 +495,7 @@ const workUnits = selectedIssues.map((it) => ({
   userFeedback: it.userFeedback === true,
   phase1Scope: it.phase1Scope ?? null,
   tokenBudgetWarning: it.tokenBudgetWarning ?? null,
+  sessionConcurrency: concurrency, // #1594 concurrent-tenant paragraph, rendered when > 1
   nextAvailableVersion: it.nextAvailableVersion ?? null,
   changelogPath: it.changelogPath ?? null,
   // fix-checks-only / fix-rebase — target an EXISTING PR's branch, not a fresh one
