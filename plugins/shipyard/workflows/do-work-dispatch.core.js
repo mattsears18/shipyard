@@ -514,6 +514,7 @@ const workUnits = selectedIssues.map((it) => ({
   pr: it.pr ?? null,
   headRefName: it.headRefName ?? null,
   versionCoordinationParagraph: it.versionCoordinationParagraph ?? null, // fix-rebase §4.6 carve-out
+  ciPoolState: it.ciPoolState ?? null, // #1609 fix-checks-only contention probe (self-hosted pool only)
   // fix-main-ci — synthetic divert, no originating issue
   earliestRedRunUrl: it.earliestRedRunUrl ?? null,
   earliestRedSha: it.earliestRedSha ?? null,
