@@ -832,6 +832,109 @@ else
   assert_fail "could not create sandbox for retired-stash-read fixture (#1607)"
 fi
 
+# (9) The compound preamble is PRE-RELOCATION ONLY (issue #1625). #1607 and
+# #1619 retired the refused "export a computed value" stash-reads, but the
+# compound `${CLAUDE_PLUGIN_ROOT:-$(...)}` one-liner is itself an export of a
+# computed value, and step 0.3's own callout says it is refused post-isolation.
+# Check (3)(a) still accepts it in any file, so eight post-relocation blocks
+# kept it unnoticed. This check fails on any fenced bash block under
+# commands/do-work/** that carries the compound form, outside an explicit
+# allowlist of files whose compound blocks genuinely run before step 0.5's
+# EnterWorktree:
+#
+#   setup/00-config-worktree.md       steps 0.3 / 0.4 / the 0.5 timing bracket
+#   setup/00i-staleness-gate.md       the pre-relocation staleness gate
+#   setup/01c-label-recovery-refine.md step 3c, whose normative call site is
+#                                      00e-pre-relocation-sweeps.md step 5
+#
+# Anything else under commands/do-work/ opens with the literal export instead.
+# The needle is the loose `CLAUDE_PLUGIN_ROOT:-$(` so a reworded variant of
+# the compound form is caught too, not only the canonical text.
+# shellcheck disable=SC2016  # literal search text — must NOT expand $(...)
+COMPOUND_NEEDLE='CLAUDE_PLUGIN_ROOT:-$('
+PRE_RELOCATION_ALLOWLIST=(
+  "$ORCH_PHASE_DIR/setup/00-config-worktree.md"
+  "$ORCH_PHASE_DIR/setup/00i-staleness-gate.md"
+  "$ORCH_PHASE_DIR/setup/01c-label-recovery-refine.md"
+)
+
+# find_post_relocation_compound FILE — prints FILE:LINE for each fenced bash
+# block line carrying the compound needle. Prose mentions are ignored.
+find_post_relocation_compound() {
+  awk -v needle="$COMPOUND_NEEDLE" '
+    /^[ \t]*```bash[ \t]*$/ { inb = 1; next }
+    /^[ \t]*```[ \t]*$/ { inb = 0; next }
+    inb && index($0, needle) { print FILENAME ":" NR }
+  ' "$1"
+}
+
+is_pre_relocation_allowlisted() {
+  local f="$1" a
+  for a in "${PRE_RELOCATION_ALLOWLIST[@]}"; do
+    [[ "$f" == "$a" ]] && return 0
+  done
+  return 1
+}
+
+# Every allowlisted file must exist and still carry the compound form: a
+# rename would otherwise leave a dead entry, and an entry whose file no
+# longer needs the exemption is a hole a future post-relocation block could
+# slip through.
+for a in "${PRE_RELOCATION_ALLOWLIST[@]}"; do
+  if [[ -f "$a" && -n "$(find_post_relocation_compound "$a")" ]]; then
+    assert_pass "pre-relocation allowlist entry ${a#"$repo_root/"} exists and still carries the compound preamble (issue #1625)"
+  else
+    assert_fail "pre-relocation allowlist entry ${a#"$repo_root/"} is missing or no longer carries the compound preamble — drop it from PRE_RELOCATION_ALLOWLIST (issue #1625)"
+  fi
+done
+
+compound_hits=""
+for f in "${FILES[@]}"; do
+  [[ "$f" == "$ORCH_PHASE_DIR"/* ]] || continue
+  is_pre_relocation_allowlisted "$f" && continue
+  hits=$(find_post_relocation_compound "$f")
+  [[ -n "$hits" ]] && compound_hits+="$hits"$'\n'
+done
+if [[ -z "$compound_hits" ]]; then
+  assert_pass "no post-relocation orchestrator-phase bash block uses the compound CLAUDE_PLUGIN_ROOT preamble (issue #1625)"
+else
+  assert_fail "post-relocation orchestrator-phase bash block(s) still use the compound preamble, which is refused post-isolation (issue #1625) — replace with $EXPECTED_LITERAL_EXPORT, or add the file to PRE_RELOCATION_ALLOWLIST only if the block genuinely runs before step 0.5:"
+  printf '%s' "$compound_hits" | sed "s|^$repo_root/|         |"
+fi
+
+# Fixture: prove the detector actually fires. A synthetic block carrying the
+# canonical compound preamble must be reported; the same text in prose, and
+# a literal-export block, must not.
+compound_fixture_dir=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-1625)
+if [[ -n "$compound_fixture_dir" && -d "$compound_fixture_dir" ]]; then
+  compound_fixture="$compound_fixture_dir/post-relocation.md"
+  {
+    echo "Prose that names the form: $EXPECTED_PREAMBLE"
+    echo
+    echo '```bash'
+    echo "$EXPECTED_LITERAL_EXPORT"
+    # shellcheck disable=SC2016  # literal fixture text
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/foo.sh" --help'
+    echo '```'
+    echo
+    echo '```bash'
+    echo "  $EXPECTED_PREAMBLE"
+    # shellcheck disable=SC2016  # literal fixture text
+    echo '  "$CLAUDE_PLUGIN_ROOT/scripts/foo.sh" --help'
+    echo '```'
+  } > "$compound_fixture"
+  fixture_hits=$(find_post_relocation_compound "$compound_fixture")
+  expected_hit="$compound_fixture:9"
+  if [[ "$fixture_hits" == "$expected_hit" ]]; then
+    assert_pass "fixture: the post-relocation detector reports exactly the indented compound block, not the prose mention or the literal-export block (issue #1625)"
+  else
+    assert_fail "fixture: the post-relocation detector reported '$fixture_hits', expected '$expected_hit' (issue #1625)"
+  fi
+  rm -rf "$compound_fixture_dir"
+else
+  assert_fail "could not create sandbox for post-relocation compound-preamble fixture (#1625)"
+fi
+
 echo
 printf 'passed: %d, failed: %d\n' "$pass" "$fail"
 if (( fail > 0 )); then

@@ -16,7 +16,7 @@ Runs immediately after [step 4a/4b](06c-scope-handling-ui.md#handling-each-retur
 - The merged-config knob `scope.recheck_probe_enabled` is `true` (the default — same knob the read side checks; skip this step entirely when it's `false`, since a marker written while the read side is disabled would sit dead).
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
 export SHIPYARD_REPO_ROOT="<primary-root literal>"
 RECHECK_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get scope.recheck_probe_enabled 2>/dev/null || echo true)
 if { [ "$DEFER_REASON_CLASS" != "external-dependency" ] && [ "$DEFER_REASON_CLASS" != "time-gated" ]; } || [ "$RECHECK_ENABLED" != "true" ]; then
@@ -47,7 +47,7 @@ where `<verb> <args...>` is **exactly** the marker-body grammar `eval-recheck-pr
 2. **Validate against the shared evaluator — never construct the marker text by hand.**
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # (re-derived here — variables don't survive across Bash tool calls)
    PROBE_CLAUSE="<extracted text after 'Recheck probe: '>"
    # shellcheck disable=SC2086 — word-splitting on whitespace is exactly what

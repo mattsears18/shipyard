@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.8 — 2026-09-29
+
+Six orchestrator blocks that run after step 0.5's relocation still opened with the compound `${CLAUDE_PLUGIN_ROOT:-$(...)}` preamble, which is an export of a computed value and is refused once the session is isolated (closes #1625). #1607 and #1619 retired the stash-read exports but never touched the compound one-liner, because check (3) of the preamble test accepts it in any file. Each of those blocks now opens with `export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"`. The issue listed eight sites. Re-checking the step ordering showed that `setup/01c-label-recovery-refine.md`'s step-3c block runs pre-relocation, since its normative call site is `00e-pre-relocation-sweeps.md` step 5. That block keeps the compound form and is allowlisted.
+
+- `commands/do-work/dispatch-rules.md`: the claimed-paths token-budget check (#1443) now uses the literal export. It is also one plain `--warn-check` call per claimed path, replacing a `for` loop with a command substitution and `read` per iteration.
+- `commands/do-work/operate/04-steady-state-hooks.md`, `setup/06-scope-preflight.md`, `setup/06c-scope-handling-ui.md` (2 blocks), `setup/06d-recheck-probe-authorship.md` (2 blocks): compound preamble replaced with the literal export.
+- `scripts/tests/claude-plugin-root-preamble.test.sh`: new check (9). It fails on any fenced bash block under `commands/do-work/**` that carries `CLAUDE_PLUGIN_ROOT:-$(` outside a pre-relocation allowlist (`00-config-worktree.md`, `00i-staleness-gate.md`, `01c-label-recovery-refine.md`). It also fails when an allowlist entry is missing or no longer needs its exemption. A fixture proves that the detector flags a compound block and ignores prose and literal-export blocks.
+
 ### 4.56.7 — 2026-09-29
 
 `verify-dispatch-claims.sh` no longer reports a conditional merge instruction as a contradicted claim when the condition names the PR by number (closes #1621). "If #1620 has merged by then, resolve against its content" says nothing about #1620's live state; the gate recognized `if it` but not `if #<N>`, so it refused the dispatch and pushed the composer toward the vaguer #1062 template, even though the worker needed both branches. A merge or close keyword preceded in the same clause by `if`, `when`, `once`, `after`, or `unless` is now hedged, whatever the referent. The gate also printed one finding per mention, so a line naming the same PR three times refused with three identical lines and a count of 3.
