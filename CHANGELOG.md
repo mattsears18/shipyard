@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.7 — 2026-09-29
+
+`verify-dispatch-claims.sh` no longer reports a conditional merge instruction as a contradicted claim when the condition names the PR by number (closes #1621). "If #1620 has merged by then, resolve against its content" says nothing about #1620's live state; the gate recognized `if it` but not `if #<N>`, so it refused the dispatch and pushed the composer toward the vaguer #1062 template, even though the worker needed both branches. A merge or close keyword preceded in the same clause by `if`, `when`, `once`, `after`, or `unless` is now hedged, whatever the referent. The gate also printed one finding per mention, so a line naming the same PR three times refused with three identical lines and a count of 3.
+
+- `scripts/verify-dispatch-claims.sh`: the scanner checks each assertive match for a conditional introducer earlier in its clause. A clause ends at `;`, an em dash, or `. , : ! ?` before whitespace. A line is suppressed only when every assertive match on it is conditional. Findings are deduplicated per (line, referent), and the `CONTRADICTED:` line now explains how a genuine conditional is recognized. The header documents the rule.
+- `scripts/tests/verify-dispatch-claims.test.sh`: new cases for `if #N has merged`, `if PR #N has merged`, `once #N merges`, `when PR #N has landed`, `after #N was merged`, and `if #N has closed` (all OK). Negative controls cover an unconditional `#N has merged`, an introducer in an earlier clause, and a line mixing a conditional with an unconditional match (all still refused). A dedup case checks that three mentions give one finding.
+- `commands/do-work/dispatch-rules.md`: the gate description says conditional branches scan clean.
+
 ### 4.56.6 — 2026-09-29
 
 Public-surface audits now have a sound way to prove a browser is signed out (closes #1601). An audit on lightwork used an empty `indexedDB.databases()` as its signed-out proof. The session was in fact signed in the whole time, and two of the filed issue's three headline findings did not reproduce. On a Firebase-Web-SDK app that check fails in both directions. The list is empty before the SDK initialises, and the SDK creates `firebaseLocalStorageDb` whether or not a user is stored. Only the record count inside the auth object store carries the signal. Nothing in shipyard told an auditor how to verify signed-out state, so the auditor improvised the check. The shared skill now carries the correct one.

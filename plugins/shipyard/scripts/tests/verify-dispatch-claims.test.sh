@@ -293,7 +293,93 @@ else
   bad "dispatch-rules.md does not cite #1553"
 fi
 
-# --- (14) shellcheck-clean -------------------------------------------------
+# --- (14) conditional clauses are hedged, whatever the referent (#1621) ----
+# #1621's repro: "if #1620 has merged by then, resolve against its content"
+# was reported CONTRADICTED because HEDGE_RE only knew `if it`. A conditional
+# introducer in the same clause as the keyword makes it a branch of an
+# instruction, not a claim about live state. PR #4662 is OPEN in the stub.
+conditional_case() {
+  local label="$1" text="$2"
+  local f="$tmproot/cond.md" out code
+  printf '%s\n' "$text" > "$f"
+  # No --self: #4663 (an OPEN issue) must be hedged on its own merits too.
+  out="$(PATH="$stub_bin:$PATH" bash "$script" --repo mattsears18/lightwork "$f" 2>/dev/null)"
+  code=$?
+  if [[ "$code" -eq 0 && "$out" == OK:* ]]; then
+    ok "conditional is hedged: $label"
+  else
+    bad "conditional '$label' was reported; exit=$code out=$out"
+  fi
+}
+conditional_case "if #N has merged" \
+  "Before opening your PR, fetch origin main and rebase; if #4662 has merged by then, resolve against its content rather than overwriting it."
+conditional_case "if PR #N has merged" \
+  "If PR #4662 has merged, rebase onto origin/main first."
+conditional_case "once #N merges" \
+  "Once #4662 merges, drop the local shim."
+conditional_case "when PR #N has landed" \
+  "When PR #4662 has landed, take the next patch version."
+conditional_case "after #N was merged" \
+  "Rebase after #4662 was merged into main."
+conditional_case "if #N has closed" \
+  "If #4663 has closed, return noop; otherwise proceed."
+
+# The negative control: the same PR with no introducer is still refused.
+f="$tmproot/cond-neg.md"
+printf '%s\n' "Note: #4662 has merged, so main carries the fix." > "$f"
+out="$(PATH="$stub_bin:$PATH" bash "$script" --repo mattsears18/lightwork --self 4663 "$f" 2>/dev/null)"
+code=$?
+if [[ "$code" -eq 1 ]] && grep -qF "CONTRADICTED: line 1 claims #4662 merged" <<<"$out"; then
+  ok "an unconditional '#N has merged' on an OPEN PR is still CONTRADICTED"
+else
+  bad "unconditional merge claim not refused; exit=$code out=$out"
+fi
+
+# A clause boundary ends the conditional: the introducer in an earlier clause
+# does not hedge an assertion in a later one.
+printf '%s\n' "When I checked, #4662 has merged into main." > "$f"
+out="$(PATH="$stub_bin:$PATH" bash "$script" --repo mattsears18/lightwork --self 4663 "$f" 2>/dev/null)"
+code=$?
+if [[ "$code" -eq 1 ]]; then
+  ok "an introducer in an EARLIER clause does not hedge the assertion"
+else
+  bad "clause boundary ignored; exit=$code out=$out"
+fi
+
+# One conditional and one unconditional match on the same line: still reported.
+printf '%s\n' "If #4700 has merged, rebase; note #4662 has merged already." > "$f"
+out="$(PATH="$stub_bin:$PATH" bash "$script" --repo mattsears18/lightwork --self 4663 "$f" 2>/dev/null)"
+code=$?
+if [[ "$code" -eq 1 ]] && grep -qF "claims #4662 merged" <<<"$out"; then
+  ok "an unconditional match later on a line with a conditional is still reported"
+else
+  bad "mixed conditional/unconditional line not refused; exit=$code out=$out"
+fi
+
+# The refusal tells the composer how a real conditional is recognized.
+if grep -qF "same clause as the keyword" <<<"$out"; then
+  ok "CONTRADICTED line explains how to phrase a genuine conditional"
+else
+  bad "CONTRADICTED line omits the conditional-phrasing hint; got: $out"
+fi
+
+# --- (15) findings are deduplicated per (line, referent) (#1621) ----------
+printf '%s\n' "Note: #4662 has merged (see #4662, and #4662's diff)." > "$f"
+out="$(bash "$script" --scan "$f" 4663 2>/dev/null)"
+n="$(grep -c "ref=4662" <<<"$out")"
+if [[ "$n" -eq 1 ]]; then
+  ok "--scan reports a repeated referent once per line"
+else
+  bad "--scan reported #4662 $n times on one line; got: $out"
+fi
+out="$(PATH="$stub_bin:$PATH" bash "$script" --repo mattsears18/lightwork --self 4663 "$f" 2>/dev/null)"
+if grep -qF "REFUSE: 1 unverified claim(s)" <<<"$out"; then
+  ok "the live gate counts one claim for a thrice-mentioned referent"
+else
+  bad "live gate miscounted the repeated referent; got: $out"
+fi
+
+# --- (16) shellcheck-clean -------------------------------------------------
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "$script" >"$tmproot/shellcheck.out" 2>&1; then
     ok "shellcheck clean"
