@@ -319,6 +319,17 @@
 # have left 154 bytes, the zero-margin state the #1562 note below warns the
 # next editor about; 72000 restores ~1150 bytes of ordinary editing room.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 72000 -> 73500 by
+# #1613 (2026-09-29): a three-sentence step-0 addition telling every worker
+# to run assert-not-orchestrator-worktree.sh right after the git-dir check,
+# plus its fragment's index row (~710 bytes together). It has to be in the
+# core: the check must run before the first write, and a worker whose cwd is
+# the orchestrator's worktree has no way to know it should go looking for a
+# fragment. The reasoning, the #1613 evidence, and the no-escape guidance all
+# live in orchestrator-worktree-pin.md (uncapped). The file sat 354 bytes over
+# the old ceiling; 73500 leaves ~1150 bytes of editing room, the same margin
+# the #1554 note above settled on.
+#
 # issue-work.md was NOT raised for #1519 (2026-08-24) — its one-line Don't-
 # section mirror (the same shape #1166 added for "Never create a credential",
 # repeated across all seven per-mode files) landed it at EXACTLY 130000
@@ -406,7 +417,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  72000 \
+  73500 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \

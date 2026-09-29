@@ -213,6 +213,16 @@ assert_contains "$ghlog" "blocked:agent-soft" "blocked:agent-soft label applied"
 
 # --------------------------------------------------------------------------
 echo
+echo "soft: isolation pinned to the orchestrator's worktree (#1613) -> blocked:agent-soft"
+# --------------------------------------------------------------------------
+echo "" > "${WORK}/issue.13.body"
+: > "$GH_LOG"
+out="$(GH="$GH_MOCK" bash "$script" classify \
+  --repo o/r --issue 13 --reason "dispatch-isolation pinned to the orchestrator's worktree (/x/.claude/worktrees/orchestrator-s1) — refusing to write there (see #1613). re-dispatch required." 2>&1)"
+assert_contains "$out" "class=soft label=blocked:agent-soft" "orchestrator-worktree pin classifies soft, not refuse"
+
+# --------------------------------------------------------------------------
+echo
 echo "refuse (default): an unrecognized reason -> needs-human-review"
 # --------------------------------------------------------------------------
 echo '[]' > "${WORK}/issue.14.comments"

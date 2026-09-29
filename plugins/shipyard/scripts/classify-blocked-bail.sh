@@ -196,7 +196,13 @@ ${issue_body}" 2>/dev/null || true
       *"suggested fix exceeds expected scope"*|\
       *"cannot reproduce"*|\
       *"ambiguous"*|\
+      *"isolation pinned to the orchestrator's worktree"*|\
       *"did not complete within budget"*)
+        # `isolation pinned to the orchestrator's worktree` (#1613): the
+        # harness pinned a worker's Bash isolation to the orchestrator's own
+        # worktree. Intermittent launch-time condition (4 of 6 dispatches in
+        # the repro session were isolated correctly), so a later re-dispatch
+        # plausibly succeeds — soft, not refuse.
         block_class="soft"
         ;;
     esac
