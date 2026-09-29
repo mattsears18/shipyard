@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.56.5 — 2026-09-29
+
+Setup step 0.41's staleness gate no longer counts untracked files as a dirty primary checkout, so a stale primary that holds only untracked tool artifacts (`.codex/`, `AGENTS.md`, editor dirs) now fast-forwards instead of ending the session with `dirty-refuse` (closes #1616). A fast-forward cannot lose untracked content: git refuses the merge rather than overwrite an untracked path an incoming commit adds. The gate now surfaces that case as `heal-failed` with a reason that names the untracked-file collision, and nothing is clobbered. Tracked modifications, staged or unstaged, still refuse as before.
+
+- `scripts/heal-stale-primary-checkout.sh`: the dirty predicate uses `git status --porcelain --untracked-files=no`. The fast-forward runs under `LC_ALL=C` and captures stderr, so an untracked-path collision gets its own `heal-failed` reason instead of the "local commits not on origin" guess. The header comment documents the tracked/untracked split.
+- `scripts/tests/heal-stale-primary-checkout.test.sh`: three new cases. A staged-only tracked change still gets `dirty-refuse`. An untracked-only tree gets `healed`, and its files survive byte-for-byte. An untracked path the incoming commits would add gets `heal-failed`, with HEAD unmoved and the file not clobbered.
+- `commands/do-work/setup/00i-staleness-gate.md` and `00-config-worktree.md`: the sanctioned-write paragraph and the step-0.4 warning text now say "tracked-clean" instead of "clean".
+
 ### 4.56.4 — 2026-09-29
 
 Under the `Workflow`-substrate dispatch shape, every field a prompt builder reads now reaches the builder (closes #1615). `do-work-dispatch.core.js` builds each work unit field by field in STAGE 1's `workUnits` map, and a field the map left out was silently dropped, so its paragraph could never render even when the orchestrator passed it. The issue named two such fields: `stalePremisePhrase` and `stalePremiseCorrection`, which gate the #1491 stale-premise paragraph. The new guard found four more: `splitDispatch` (the #1562 neutral-branch paragraph), and `pluginRoot`, `pluginRootStale`, and `skillCacheStale` (the #969 orchestrator-supplied plugin root and the #1319 staleness warnings, which every mode renders). All six now pass through. The default `Agent`-tool dispatch shape was never affected.

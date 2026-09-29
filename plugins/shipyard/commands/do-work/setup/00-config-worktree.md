@@ -141,7 +141,8 @@ warning: this repo's primary checkout is $SHIPYARD_PLUGIN_ROOT_BEHIND commit(s) 
   (#907; step 0.42 re-reads it immediately, pre-relocation — #1351/#1191).
   Remedy: git -C "$SHIPYARD_PRIMARY_CHECKOUT_ROOT" pull --ff-only
   This is a WARNING only — step 0.41 below is the GATE that acts on it
-  (self-heal on a clean tree, refuse otherwise — #1386). Step 0.5
+  (self-heal unless tracked files are modified, refuse otherwise — #1386,
+  #1616). Step 0.5
   re-resolves CLAUDE_PLUGIN_ROOT and runs its own staleness assertion
   (#1167) — 0.3/0.4 only.
 EOF

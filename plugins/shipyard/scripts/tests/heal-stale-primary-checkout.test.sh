@@ -173,6 +173,78 @@ else
   bad "dirty-refuse: reason does not name 'git pull --ff-only'"
 fi
 
+# --- (3b) staged-only tracked change still refuses (#1616) ---------------
+# The #1616 split narrows the dirty predicate to TRACKED modifications — it
+# must still catch a staged-but-uncommitted edit, not only a worktree one.
+make_fixture 2; p="$FIXTURE_PRIMARY"
+echo "staged edit" >> "$p/seed.txt"
+git -C "$p" add seed.txt
+out="$(bash "$script" run --primary "$p" --default-branch main)"
+code=$?
+if [[ "$(field verdict "$out")" == "dirty-refuse" && "$code" -eq 1 ]]; then
+  ok "behind + staged tracked change: verdict=dirty-refuse, exit=1"
+else
+  bad "behind + staged change: got verdict='$(field verdict "$out")' exit=$code (expected dirty-refuse/1)"
+fi
+
+# --- (3c) untracked-only tree heals (#1616) --------------------------------
+# Untracked tool artifacts (.codex/, AGENTS.md, ...) cannot be lost by a
+# fast-forward, so they must not trip dirty-refuse.
+make_fixture 2; p="$FIXTURE_PRIMARY"
+mkdir -p "$p/.codex"
+echo "tool scratch" > "$p/.codex/state"
+echo "agent notes" > "$p/AGENTS.md"
+out="$(bash "$script" run --primary "$p" --default-branch main)"
+code=$?
+if [[ "$(field verdict "$out")" == "healed" && "$code" -eq 0 ]]; then
+  ok "behind + untracked-only tree: verdict=healed, exit=0"
+else
+  bad "behind + untracked-only: got verdict='$(field verdict "$out")' exit=$code (expected healed/0)"
+fi
+if [[ "$(git -C "$p" rev-parse HEAD)" == "$(git -C "$p" rev-parse origin/main)" ]]; then
+  ok "untracked-only heal: primary HEAD advanced to origin/main"
+else
+  bad "untracked-only heal: primary HEAD did not advance to origin/main"
+fi
+if grep -q "tool scratch" "$p/.codex/state" 2>/dev/null && grep -q "agent notes" "$p/AGENTS.md" 2>/dev/null; then
+  ok "untracked-only heal: the untracked files survive byte-for-byte"
+else
+  bad "untracked-only heal: an untracked file was lost or modified"
+fi
+
+# --- (3d) untracked path the incoming commits would add: heal-failed ------
+# git must refuse the fast-forward rather than overwrite the untracked file;
+# the script surfaces that as heal-failed, never a clobber.
+make_fixture 0; p="$FIXTURE_PRIMARY"
+up="$(dirname "$p")/upstream"
+(
+  cd "$up" || exit 1
+  echo "upstream version" > incoming.txt
+  git add incoming.txt
+  git commit -q -m "add incoming.txt"
+) >/dev/null 2>&1
+git -C "$p" fetch -q origin >/dev/null 2>&1
+echo "my local untracked copy" > "$p/incoming.txt"
+before="$(git -C "$p" rev-parse HEAD)"
+out="$(bash "$script" run --primary "$p" --default-branch main --no-fetch)"
+code=$?
+if [[ "$(field verdict "$out")" == "heal-failed" && "$code" -eq 2 ]]; then
+  ok "behind + colliding untracked path: verdict=heal-failed, exit=2"
+else
+  bad "behind + colliding untracked: got verdict='$(field verdict "$out")' exit=$code (expected heal-failed/2)"
+fi
+if [[ "$(git -C "$p" rev-parse HEAD)" == "$before" ]] \
+   && [[ "$(cat "$p/incoming.txt")" == "my local untracked copy" ]]; then
+  ok "colliding untracked: HEAD unmoved and the untracked file was not clobbered"
+else
+  bad "colliding untracked: the primary was modified or the untracked file clobbered"
+fi
+if grep -q "untracked file" <<<"$(field reason "$out")"; then
+  ok "colliding untracked: reason names the untracked-file collision"
+else
+  bad "colliding untracked: reason does not name the untracked collision: $(field reason "$out")"
+fi
+
 # --- (4) branch-refuse: behind + parked on a feature branch ---------------
 make_fixture 2; p="$FIXTURE_PRIMARY"
 git -C "$p" checkout -q -b my-feature
