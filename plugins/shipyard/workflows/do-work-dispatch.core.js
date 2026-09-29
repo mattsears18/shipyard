@@ -349,7 +349,9 @@ const emit = (message) => {
 
 // Per-work-unit shape (issue-work fields documented alongside the builder below):
 //   { number, mode, model, trust, branch, worktreePath,
-//     verifyGate, userFeedback, phase1Scope, tokenBudgetWarning, sessionConcurrency,
+//     pluginRoot, pluginRootStale, skillCacheStale,
+//     verifyGate, userFeedback, splitDispatch, phase1Scope,
+//     stalePremisePhrase, stalePremiseCorrection, tokenBudgetWarning, sessionConcurrency,
 //     nextAvailableVersion, changelogPath }
 const selectedIssues = Array.isArray(input.issues) ? input.issues : []
 
@@ -490,10 +492,20 @@ const workUnits = selectedIssues.map((it) => ({
   trust: it.trust ?? 'external', // conservative default; orchestrator normally sets this
   branch: it.branch ?? (it.number != null ? `do-work/issue-${it.number}` : null),
   worktreePath: it.worktreePath ?? null, // REQUIRED for every mode — see header note
+  // Every-mode worktree-anchor inputs (#969 / #1319), read by shared.mjs's
+  // worktreeAnchorLines. Every field a prompt builder reads MUST be copied here —
+  // an omitted one is silently dropped and its paragraph never renders (#1615;
+  // workflow-unit-field-passthrough-1615.test.sh enforces this).
+  pluginRoot: it.pluginRoot ?? null,
+  pluginRootStale: it.pluginRootStale ?? null,
+  skillCacheStale: it.skillCacheStale ?? null,
   // issue-work-only augmentations
   verifyGate: it.verifyGate === true,
   userFeedback: it.userFeedback === true,
+  splitDispatch: it.splitDispatch === true, // #1562 neutral-branch paragraph
   phase1Scope: it.phase1Scope ?? null,
+  stalePremisePhrase: it.stalePremisePhrase ?? null, // #1491 stale-premise paragraph
+  stalePremiseCorrection: it.stalePremiseCorrection ?? null,
   tokenBudgetWarning: it.tokenBudgetWarning ?? null,
   sessionConcurrency: concurrency, // #1594 concurrent-tenant paragraph, rendered when > 1
   nextAvailableVersion: it.nextAvailableVersion ?? null,
