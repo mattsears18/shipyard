@@ -1,6 +1,6 @@
 # Worker-preamble fragment — CI / push pitfalls (vacuous verification, git-diff-rewriting proxy, heartbeat, locale parity, fixture branch pin, push-protection)
 
-On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode **verifies a CI result**, builds or debugs a pipeline that parses `git diff` output, runs long-running commands (CI babysitting, full local test suites), adds user-facing strings, authors git-using shell test fixtures, or adds secret-shaped test fixtures. The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "An absence-assertion that observed nothing is not a pass"`, `§ "A `git diff`-rewriting shell proxy may be active"`, `§ "A truncated read cannot support a negative claim"`, `§ "Heartbeat emission around long-running commands"`, `§ "Mirror new string constants into locale / parity files"`, `§ "Pin the default branch in git-using test fixtures"`, `§ "GitHub push-protection blocking a synthetic test-fixture secret"`).
+On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode **verifies a CI result**, builds or debugs a pipeline that parses `git diff` output, runs long-running commands (CI babysitting, full local test suites), adds user-facing strings, authors git-using shell test fixtures, or adds secret-shaped test fixtures. The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "An absence-assertion that observed nothing is not a pass"`, `§ "A `git diff`-rewriting shell proxy may be active"`, `§ "A truncated read cannot support a negative claim"`, `§ "A `##[error]` annotation is not a failure verdict"`, `§ "Heartbeat emission around long-running commands"`, `§ "Mirror new string constants into locale / parity files"`, `§ "Pin the default branch in git-using test fixtures"`, `§ "GitHub push-protection blocking a synthetic test-fixture secret"`).
 
 ## An absence-assertion that observed nothing is not a pass
 
@@ -74,6 +74,28 @@ A close cousin of the section above, but distinct: that section is about a query
 2. **Before drawing a negative conclusion from a capped read, check for a completion signal.** When the tool tells you it truncated (a `Read` system-reminder, an API's `truncated: true` / pagination cursor), that's your answer — don't override it by reasoning "it's probably fine." When the tool is silent (`gh run view --log` gives you nothing to check programmatically), sanity-check the capture yourself: does the tail look like where the artifact should actually end — a job-completion marker, the shell prompt returning, a closing brace? If the capture ends mid-step, mid-line, or just stops, treat it as truncated regardless of what the exit code says.
 3. **If you can't fetch to completion, either page or say so.** Page to the next chunk (`Read`'s `offset`, a paginated API's cursor, or — for CI logs — the job-level fetch from (1)) before asserting a negative. If paging genuinely isn't practical, state the limit explicitly in whatever you write down — "I read the first N lines/tokens and did not find X there; I have not verified the remainder" — rather than writing an unqualified "X is not present." The qualified version is honest and still useful; the unqualified version is the thing that ends up wrong in a filed issue's acceptance criteria.
 4. **The check is the same regardless of what's being searched.** Before treating a "not found" result as a finding, ask: *could this tool have silently truncated what I just searched?* If yes, the honest next step is "page to completion" or "state the limit" — never "conclude absence and move on."
+
+## A `##[error]` annotation is not a failure verdict — attribute from the run summary's buckets ([#1598](https://github.com/mattsears18/shipyard/issues/1598))
+
+**Playwright emits a `##[error]` annotation for every failed *attempt*, including attempts that pass on retry.** So the per-spec annotations — exactly what `gh run view --log-failed` surfaces, since it returns only error output by construction — cannot tell a spec that genuinely **failed** from one that was **flaky** (failed once, passed on retry). Only the reporter's end-of-run summary decides, and it lives in the **full** job log, not in `--log-failed`:
+
+```
+  1 failed
+    [chromium] › e2e/web/cookie-consent.spec.ts:325:5 › COOKIE-CONSENT-7 …
+  2 flaky
+    [chromium] › e2e/web/recurring-series.spec.ts:251:5 › RECURRING-SERIES-4 …
+    [chromium] › e2e/web/tasks-crud.spec.ts:586:5 › TASKS-CRUD-12 …
+  8 skipped
+  266 passed (38.7m)
+```
+
+The #1598 repro read all three specs off the annotations, attributed the two `flaky` ones to the PR's own diff, posted that attribution publicly on the PR, and dispatched a fix-checks worker against them — ~176k tokens for a `noop`, plus a correction comment — on a repo running `failOnFlakyTests: false`, where a retry-recovered flake **cannot** redden the run.
+
+1. **Decide which specs failed from the summary's `failed` (and `interrupted`) bucket, never from annotations.** [`scripts/playwright-summary-buckets.sh`](../../scripts/playwright-summary-buckets.sh) parses the last summary block of a job log — `parse --repo <owner/repo> --job <job-id>` prints the buckets as JSON; `classify --repo <owner/repo> --job <job-id> --spec <file:line or title>` prints `failed` / `flaky` / `absent` / `indeterminate`. A spec appearing **only** in `flaky` did not fail the run.
+2. **Check the repo's flake posture before attributing.** When the Playwright config sets `failOnFlakyTests: false` (the default) — or the runner's equivalent — a `flaky` entry provably did not cause the red; say so explicitly rather than leaving it ambiguous. Only under `failOnFlakyTests: true` can a `flaky` entry be the cause.
+3. **Don't dispatch, fix, or publicly attribute on an unattributed spec.** A spec whose only evidence is an `##[error]` annotation with no matching `failed` summary entry (`absent`/`flaky`) is not a dispatchable failure. `indeterminate` (no summary — the job died before the reporter printed, or it isn't a Playwright job) means "couldn't tell," never "nothing failed" — fall back to the job's own error output and say the attribution is unconfirmed.
+4. **The annotations are still the right source for failure *detail*** — message, stack, `file:line` — once the summary has told you *which* specs failed. The rule is about which list decides, not about discarding the annotations.
+5. **A sibling PR's `passed` count is not corroborating evidence.** `passed` shifts whenever a test moves into `flaky`: two runs holding identical tests can report `268 passed` vs `266 passed` with no coverage difference at all. Compare the `failed` lists, never the `passed` totals.
 
 ## Heartbeat emission around long-running commands
 
