@@ -4154,6 +4154,159 @@ result=$(run_tob --dry-run)
 assert_equals "$(tob_rendered_salvage_name "$result")" "do-work/issue-506" \
   "(177i) a §3 collision-fallback local name still normalizes to the canonical do-work/issue-<N>"
 
+# ============================================================================
+# Issue #1608 — `--time-budget` (wall-clock bound on the sweep).
+#
+# The count caps (--max-prs / --max-removals) bound HOW MANY slow operations
+# run, not how slow each one is. On lightwork (two node_modules install roots
+# per worktree) 3 removals + 1 salvage still overran the 120s foreground
+# budget at default settings (session 13b556ec-d494-47fe-a154-0ca6124740e5),
+# backgrounding the sweep across the EnterWorktree boundary.
+#
+# A stub `date` on PATH advances a fake clock by TOB_CLOCK_STEP seconds per
+# `date +%s` call, so the budget trips deterministically without sleeping.
+#
+# Coverage goals:
+#   - Past the budget, remaining candidates are time-deferred: nothing
+#     removed, one progress line + one `time-deferred:` line each, a single
+#     `time-budget-reached:` line.
+#   - A time-deferred candidate gets NO PR (#1517 not resurrected) and the
+#     `summary:` line's four-field shape is unchanged.
+#   - --time-budget 0 means unlimited.
+#   - Not applied under --dry-run.
+#   - Bad values -> exit 64.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches wall-clock budget (issue #1608)"
+echo
+
+tob_clock_dir="$tmpdir/tob-clock"
+mkdir -p "$tob_clock_dir"
+cat > "$tob_clock_dir/date" <<'CLOCKEOF'
+#!/bin/bash
+# Fake clock for issue #1608's tests: each `date +%s` call returns the next
+# tick (base + n*step); every other invocation is passed to the real date.
+if [ "${1:-}" = "+%s" ]; then
+  n=$(cat "$TOB_CLOCK_STATE" 2>/dev/null || echo 0)
+  echo $((1000000 + n * TOB_CLOCK_STEP))
+  echo $((n + 1)) > "$TOB_CLOCK_STATE"
+  exit 0
+fi
+exec /bin/date "$@"
+CLOCKEOF
+chmod +x "$tob_clock_dir/date"
+
+# run_tob_clocked <step> [args...] — run_tob under the fake clock.
+run_tob_clocked() {
+  local step="$1"
+  shift
+  rm -f "$tob_clock_dir/state"
+  TOB_CLOCK_STATE="$tob_clock_dir/state" TOB_CLOCK_STEP="$step" \
+    PATH="$tob_clock_dir:$PATH" run_tob "$@"
+}
+
+# --- (178) past the budget, remaining candidates are time-deferred ---
+# Clock ticks 30s per read: start=0, candidate 1 sees 30 (< 60, actioned),
+# candidate 2 sees 60 (spent), candidate 3 sees 90 (spent).
+reset_tob_layout
+tob_landed_batch 700 701 702
+printf '970' > "$tob_state/next-pr-number"
+result=$(run_tob_clocked 30 --time-budget 60 --max-removals 0)
+removed=0
+for tob_n in 700 701 702; do
+  [ -d "$tob_repo/.claude/worktrees/agent-$tob_n" ] || removed=$((removed + 1))
+done
+assert_equals "$removed" "1" \
+  "(178) --time-budget spent after the first candidate -> exactly 1 worktree removed"
+tdef_lines=$(printf '%s\n' "$result" | grep -c '^time-deferred: ' || true)
+assert_equals "$tdef_lines" "2" \
+  "(178a) one 'time-deferred: <branch>' report line per deferred candidate"
+case "$result" in
+  *"time-budget-reached: 2 candidate(s) not classified or actioned after 90s elapsed; a later session picks them up, or raise --time-budget (current: 60s)"*) tbr_ok=1 ;;
+  *) tbr_ok=0 ;;
+esac
+assert_equals "$tbr_ok" "1" \
+  "(178b) a single time-budget-reached line names the count, elapsed time, and budget"
+case "$result" in
+  *"time-deferred do-work/issue-701 — --time-budget (60s) spent after 60s, not classified or actioned"*) tprog_ok=1 ;;
+  *) tprog_ok=0 ;;
+esac
+assert_equals "$tprog_ok" "1" \
+  "(178c) a time-deferred candidate gets a progress line naming the budget"
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "0" \
+  "(178d) a time-deferred candidate opens no PR (#1517 is not resurrected)"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=0 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(178e) time-deferred candidates count toward no summary field; shape unchanged"
+
+# --- (178f) a time-deferred SALVAGE candidate is not pushed or PR'd ---
+reset_tob_layout
+tob_add_worktree_ahead 710
+printf 'OPEN|' > "$tob_state/issue-probe-710"
+printf '980' > "$tob_state/next-pr-number"
+result=$(run_tob_clocked 100 --time-budget 60)
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "0" \
+  "(178f) budget already spent at the first candidate -> no salvage PR opened"
+case "$result" in
+  *"time-deferred do-work/issue-710"*) tsalv_ok=1 ;;
+  *) tsalv_ok=0 ;;
+esac
+assert_equals "$tsalv_ok" "1" \
+  "(178g) the salvage candidate is reported time-deferred"
+
+# --- (179) --time-budget 0 means unlimited ---
+reset_tob_layout
+tob_landed_batch 720 721 722
+printf '990' > "$tob_state/next-pr-number"
+result=$(run_tob_clocked 1000 --time-budget 0 --max-removals 0)
+removed=0
+for tob_n in 720 721 722; do
+  [ -d "$tob_repo/.claude/worktrees/agent-$tob_n" ] || removed=$((removed + 1))
+done
+assert_equals "$removed" "3" \
+  "(179) --time-budget 0 -> unlimited; all 3 worktrees removed despite a slow clock"
+case "$result" in
+  *"time-budget-reached:"*) tbr_present=1 ;;
+  *) tbr_present=0 ;;
+esac
+assert_equals "$tbr_present" "0" \
+  "(179a) --time-budget 0 -> no time-budget-reached line"
+
+# --- (179b) the default budget (60s) applies when the flag is omitted ---
+reset_tob_layout
+tob_landed_batch 730 731
+result=$(run_tob_clocked 100 --max-removals 0)
+case "$result" in
+  *"time-budget-reached: 2 candidate(s)"*) tdefault_ok=1 ;;
+  *) tdefault_ok=0 ;;
+esac
+assert_equals "$tdefault_ok" "1" \
+  "(179b) no --time-budget flag -> the default 60s budget applies"
+
+# --- (180) the budget is not applied under --dry-run ---
+reset_tob_layout
+tob_landed_batch 740 741
+result=$(run_tob_clocked 100 --dry-run --time-budget 60)
+case "$result" in
+  *"time-deferred"*) tdry=1 ;;
+  *) tdry=0 ;;
+esac
+assert_equals "$tdry" "0" \
+  "(180) --dry-run renders the full plan regardless of the wall-clock budget"
+
+# --- (181) --time-budget must be a non-negative integer ---
+bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
+  --default-branch "main" --time-budget "soon" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(181) triage-orphan-branches --time-budget <non-integer> -> exit 64"
+bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
+  --default-branch "main" --time-budget "-5" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(181a) triage-orphan-branches --time-budget -5 -> exit 64"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
