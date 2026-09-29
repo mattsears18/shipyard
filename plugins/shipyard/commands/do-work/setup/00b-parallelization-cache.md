@@ -34,13 +34,12 @@ The following steps are cleanup-only — they don't affect dispatch correctness 
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-# Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
+# Re-export the SHIPYARD_REPO_ROOT pin as the step-0.56 literal (#1619)
 # (issue #1059/#1064) — every shipyard-config.sh get below (warn_threshold,
 # max_per_session, auto_merge_method) would otherwise silently drop
 # .shipyard/config.local.json. Exported here so the background subshell
 # below inherits it.
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 (
   # 1.6 — Orphan session-file sweep (cost-ledger recovery). Cleanup-only — recovery
   # of historical ledger data is observational and doesn't affect this session's dispatch.

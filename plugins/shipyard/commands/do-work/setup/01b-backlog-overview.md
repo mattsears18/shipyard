@@ -94,12 +94,11 @@ Compute candidates for the following buckets:
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-  # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064) — this step runs
+  # Re-export the SHIPYARD_REPO_ROOT pin as a literal (issue #1059/#1064, #1619) — this step runs
   # post-relocation (setup sub-phase 01b, after step 0.5/0.56), so a bare
   # shipyard-config.sh call here would silently read the orchestrator
   # worktree's config instead of the primary checkout's.
-  SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-  export SHIPYARD_REPO_ROOT
+  export SHIPYARD_REPO_ROOT="<primary-root literal>"
   investigate_dispatch=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
   ```
 

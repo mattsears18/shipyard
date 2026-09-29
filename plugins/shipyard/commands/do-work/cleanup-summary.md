@@ -81,9 +81,11 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    # harness writes it at dispatch time); without an explicit declaration the
    # ancestor walk can fail to find the orchestrator whenever an intermediate
    # harness layer returns empty PPID, deferring the reap and stranding
-   # worktrees.
-   SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
-   export SHIPYARD_ORCHESTRATOR_PID
+   # worktrees. Substitute the literal `session-identity.sh
+   # detect-orchestrator-pid` printed when run as its own plain command
+   # ("" if it printed nothing) — exporting the command-substitution result directly is
+   # refused post-relocation (dont.md's "Never export a computed value", #1619).
+   export SHIPYARD_ORCHESTRATOR_PID="<orchestrator-pid literal>"
    # One helper invocation — never a for-loop wrapping `worktree-reap.sh reap`
    # (#1552). The cap is deliberately high: this is the TERMINAL reclaim pass,
    # not a bounded mid-session sweep, so nothing this pass could have taken
@@ -276,8 +278,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-   export SHIPYARD_REPO_ROOT
+   export SHIPYARD_REPO_ROOT="<primary-root literal>"
    OPERATOR_DENIAL_REGISTRY_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get operator_denial_registry.enabled 2>/dev/null || echo "false")
    ```
 
@@ -312,11 +313,10 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-   # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
+   # Re-export the SHIPYARD_REPO_ROOT pin as the step-0.56 literal (#1619)
    # (issue #1059/#1064) — otherwise this read silently drops
    # .shipyard/config.local.json post-relocation.
-   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-   export SHIPYARD_REPO_ROOT
+   export SHIPYARD_REPO_ROOT="<primary-root literal>"
    MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
    SWEEP_ON_LOOP_END=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.sweep_on_loop_end 2>/dev/null || echo "false")
    roadmap_sweep_ran=false

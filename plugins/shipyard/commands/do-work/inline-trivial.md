@@ -58,9 +58,8 @@ Same as the normal dispatch path, **before** the first file write — self-assig
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-# Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
+# Re-export the SHIPYARD_REPO_ROOT pin as a literal (issue #1059/#1064, #1619).
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
 if [ "$SELF_ASSIGN" = "true" ]; then
   gh issue edit <N> --repo <owner/repo> --add-assignee @me --add-label shipyard
@@ -117,11 +116,10 @@ Same as the worker-dispatched path's [issue-work step 6](../../agents/issue-work
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
-# Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
+# Re-export the SHIPYARD_REPO_ROOT pin as the step-0.56 literal (#1619)
 # (issue #1059/#1064) — otherwise this read silently drops
 # .shipyard/config.local.json post-relocation.
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 VERDICT=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
 # The repo is POSITIONAL — there is no --repo flag (#1502). A VERDICT starting
 # with `USAGE_ERROR:` (exit 64) means YOU called it wrong; the `= "gated"` test

@@ -10,10 +10,8 @@ Read `worktree_reap.disk_free_floor_mb` (config default `10240` MB / 10 GiB) and
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
+export SHIPYARD_REPO_ROOT="<primary-root literal>"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-SHIPYARD_REPO_ROOT=$(cat "$REPO_ROOT/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$REPO_ROOT"
-export SHIPYARD_REPO_ROOT
 
 floor_mb=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.disk_free_floor_mb 2>/dev/null || echo "10240")
 disk_probe=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" disk-check \

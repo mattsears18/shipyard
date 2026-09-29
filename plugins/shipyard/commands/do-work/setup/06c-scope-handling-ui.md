@@ -211,8 +211,7 @@ $CURRENT_BODY"
 
      ```bash
      export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-     SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null) || SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
-     export SHIPYARD_REPO_ROOT
+     export SHIPYARD_REPO_ROOT="<primary-root literal>"
      DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get scope.external_dependency_recheck_days 2>/dev/null || echo 14)
      DAYS=${DAYS//[!0-9]/14}
      DATE=$(date -u -d "+$DAYS days" +%F 2>/dev/null || date -u -v+"$DAYS"d +%F)
@@ -248,8 +247,7 @@ $CURRENT_BODY"
 
      ```bash
      export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-     SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null) || SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
-     export SHIPYARD_REPO_ROOT
+     export SHIPYARD_REPO_ROOT="<primary-root literal>"
      DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.someday_recheck_days 2>/dev/null || echo 30)
      DAYS=${DAYS//[!0-9]/30}
      TODAY=$(date -u +%F)
