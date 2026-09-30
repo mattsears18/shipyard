@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.58.2 — 2026-09-29
+
+A worker that sets or moves a number a CI step enforces now has to measure it with that step's own command (closes #1603). In lightwork PR #5036 a worker measured coverage floors with the repo's headline `test:unit:coverage` script and set the floors a few points under the result. The CI step that enforces `coverageThreshold` runs a narrower project selection, so two handlers that only a meta-project suite exercised reported 0 % against floors measured with them covered, and the required check failed three runs in a row. Every local check the worker ran was green. A run broader than the gate can only add coverage, so this mistake always errs in the unsafe direction and stays invisible locally. The worker contract now says to find the step that consumes the constant in the workflow, measure with its exact `run:` line, and record that command beside the figure.
+
+- `plugins/shipyard/skills/worker-preamble/ci-pitfalls.md` — new section "A threshold measured by a run broader than the gate is always wrong in the unsafe direction": the three rules, the broader-vs-narrower asymmetry, and a note on diagnosing a threshold breach that shows no annotation or log.
+- `plugins/shipyard/agents/issue-worker/issue-work.md` — step 4 points at the new section.
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — the fragment index row names the section and its load trigger.
+- `plugins/shipyard/scripts/tests/gate-threshold-measurement-1603.test.sh` — new suite pinning the section, the pointer, and the index entry.
+
 ### 4.58.1 — 2026-09-29
 
 An issue whose acceptance criteria describe an open PR's tree is no longer dispatched as if it were ready (closes #1602). Workers often file a follow-up that names a file or symbol their own in-flight PR introduces. The next dispatch then met a default branch where that name didn't exist yet, read the premise as stale, and could ship "the achievable half". That half can go silently wrong: the two PRs may touch disjoint files, so there is no conflict, and the default branch goes red on a required check once both land. A new deterministic detector tells an early premise apart from a stale one. It runs at every point where the decision gets made: the worker's own premise check, each issue in a co-scoped bundle, the C=1 inline scope pre-flight, and the scoping agent's `blocked-by-in-flight-pr` definition. A worker filing such a follow-up now stamps the self-clearing `<!-- do-work-blocked-by-prs: N -->` marker, so the issue stays out of the pool until the PR merges. Also fixed while here: a worker bail naming `Blocked by #<PR>` used to persist body prose that gates nothing, because the body-reference filter only joins against open *issues*. That issue went straight back into the same bail. It is now routed to the same marker.
