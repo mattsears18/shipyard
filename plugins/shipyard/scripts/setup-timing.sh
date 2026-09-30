@@ -75,7 +75,6 @@
 #   step_0_5_worktree           # step 0.5: move into orchestrator worktree
 #   step_0_7_parallel_batch     # step 0.7: fire setup parallelisation batch
 #   step_1_7_trusted_authors    # step 1.7: resolve trusted-author allowlist
-#   step_3_5_refine_issues      # step 3.5: invoke /refine-issues
 #   step_4_backlog_fetch_and_rank  # step 4: fetch + rank backlog
 #   step_6_scope_preflight      # step 6: initial scope pre-flight
 #

@@ -23,7 +23,7 @@ Apply whichever of these actually exist: `bug`, `enhancement`, `documentation`, 
 
 ## `shipyard` provenance label (REQUIRED on every filing)
 
-Every issue filed through any shipyard creation path — auditors, `/shipyard:file-issue`, `/decompose-epic` sub-issues, `/refine-issues`-spawned issues, and worker follow-up issues — MUST carry the `shipyard` label. This is the provenance/session stamp that hooks, the orphan-triage sweep, the failing-PR scan, and the end-of-session summary all key off. The `audit:<dimension>` origin labels and `shipyard` are orthogonal — auditor-filed issues carry both.
+Every issue filed through any shipyard creation path — auditors, `/shipyard:file-issue`, `/decompose-epic` sub-issues, and worker follow-up issues — MUST carry the `shipyard` label. This is the provenance/session stamp that hooks, the orphan-triage sweep, the failing-PR scan, and the end-of-session summary all key off. The `audit:<dimension>` origin labels and `shipyard` are orthogonal — auditor-filed issues carry both.
 
 Use the **ensure-then-label** pattern: create the label idempotently first (in case the target repo hasn't been bootstrapped with `/shipyard:init`), then include it on every `gh issue create`:
 

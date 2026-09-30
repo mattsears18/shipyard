@@ -40,7 +40,7 @@ The repo currently hosts one plugin (`plugins/shipyard/`), so contributing usual
 plugins/
   shipyard/
     .claude-plugin/plugin.json    # plugin manifest (name, version, permissions deny block)
-    commands/                     # slash commands: /audit, /do-work, /my-turn, /refine-issues
+    commands/                     # slash commands: /audit, /do-work, /my-turn
     agents/                       # auditor subagents + the issue-worker
     skills/                       # shared skills loaded by agents
     hooks/                        # safety hooks (worktree isolation, edit scope, error report, session-end reap)

@@ -42,7 +42,6 @@ fi
 filing_skill="$repo_root/plugins/shipyard/skills/filing-github-issues/SKILL.md"
 file_issue_cmd="$repo_root/plugins/shipyard/commands/file-issue.md"
 decompose_cmd="$repo_root/plugins/shipyard/commands/decompose-epic.md"
-refine_cmd="$repo_root/plugins/shipyard/commands/refine-issues.md"
 dont_md="$repo_root/plugins/shipyard/commands/do-work/dont.md"
 schema="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 config_sh="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
@@ -170,12 +169,6 @@ assert_file_contains "$decompose_cmd" "Don't assign a sub-issue a milestone othe
   "Don't section prohibits a different or invented milestone for a child"
 
 # --------------------------------------------------------------------------
-echo
-echo "== /refine-issues — verified no filing call site, correctly untouched"
-
-assert_file_not_contains "$refine_cmd" "gh issue create" \
-  "refine-issues.md has no gh issue create call site (only rewrites existing issues)"
-
 # --------------------------------------------------------------------------
 echo
 echo "== dont.md — the filer-never-creates-a-milestone prohibition is worker-readable"
