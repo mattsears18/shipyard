@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.58.3 — 2026-09-29
+
+Workers now have a fragment for the refused `export VAR=$(cmd)` shape (closes #1605). In a worktree-isolated session, reading a token into an environment variable for a later command is refused, because it exports "a value every later program inherits". The two-call split the refusal suggests cannot work, because shell variables do not survive across separate `Bash` calls. Every worker that authenticated against a third-party API was burning one or two turns finding the workaround. The orchestrator side already had this rule in `dont.md` (#1607, #1619), but nothing worker-facing did. The new fragment reuses those measurements, adds fresh ones, and names the forms that work. The preferred form is a scratch helper script that reads the credential and exports it inside its own process, then `exec`s the command that needs it. That keeps the value out of the transcript as well as out of any shell assignment.
+
+- `plugins/shipyard/skills/worker-preamble/export-computed-value-refusal.md` (new) — the refusal wording and a refused-versus-runs table. It covers the helper-script form, the single-command inline form (`"Bearer $(cmd)"`), and literal substitution for non-secret values only. It also has no-echo and no-file rules for the credential and a "refusal family" table linking the `source`, `bash <script>`, launcher-git and compound-shape fixes. The new measurements found the env-prefix and whole-word rules depend on the program, so the fragment steers workers away from relying on either.
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — one fragment-index row, within the existing size ceiling.
+- `plugins/shipyard/skills/worker-preamble/nvm-source-refusal.md`, `plugins/shipyard/commands/do-work/dont.md` — cross-links to the new fragment.
+- `plugins/shipyard/scripts/tests/export-computed-value-refusal-1605.test.sh` (new) — guards the fragment, the index row, and both cross-links.
+
 ### 4.58.2 — 2026-09-29
 
 A worker that sets or moves a number a CI step enforces now has to measure it with that step's own command (closes #1603). In lightwork PR #5036 a worker measured coverage floors with the repo's headline `test:unit:coverage` script and set the floors a few points under the result. The CI step that enforces `coverageThreshold` runs a narrower project selection, so two handlers that only a meta-project suite exercised reported 0 % against floors measured with them covered, and the required check failed three runs in a row. Every local check the worker ran was green. A run broader than the gate can only add coverage, so this mistake always errs in the unsafe direction and stays invisible locally. The worker contract now says to find the step that consumes the constant in the workflow, measure with its exact `run:` line, and record that command beside the figure.
