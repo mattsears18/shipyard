@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.58.4 — 2026-09-29
+
+Two worker-facing doc gaps from one lightwork `/do-work` session are closed (closes #1612). First, after a refused `source "$NVM_DIR/nvm.sh"`, workers kept typing the interpreter's full versioned path (`~/.nvm/versions/node/v24.15.0/bin/node`). That pins Node a second time beside `.nvmrc`, and it is wrong for npm even when the version matches: `bin/npm` is a `#!/usr/bin/env node` script, so npm and every child it spawns run on the ambient Node. This was measured with `.nvmrc` at `v24.12.0` and ambient Node at `v24.15.0`, where the by-path npm reported `v24.15.0`. The nvm fragment now opens with a `node -v` against `.nvmrc` check, since a match needs no workaround and that was the common case in the session. It then gives a one-command `PATH="$HOME/.nvm/versions/node/$(cat .nvmrc)/bin:$PATH" <cmd>` form that derives the directory from `.nvmrc` and ran in an isolated worktree. Second, the session's Playwright MCP is rooted at the orchestrator's worktree. A worker's screenshots and `.playwright-mcp/` snapshots land there, and an absolute `filename` into the worker's own worktree is refused as "outside allowed roots". The worker can neither redirect nor delete them. Workers now report every such file on a `Stray artifacts:` return line, and the orchestrator reaps exactly those untracked paths in a new reconcile step, A.0.7.
+
+- `plugins/shipyard/skills/worker-preamble/nvm-source-refusal.md` — "Check first" and "Never hardcode the versioned interpreter path" sections, with the measured runs-versus-refused forms.
+- `plugins/shipyard/skills/worker-preamble/shared-host-services.md` — "Browser-MCP artifacts land in the orchestrator's worktree, not yours" section, and browser-MCP use added to the load trigger.
+- `plugins/shipyard/commands/do-work/steady-state.md` — new A.0.7 reconcile step that reaps the paths a worker reports.
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — one core sentence and two index rows reworded, with no net growth.
+- `plugins/shipyard/scripts/tests/nvm-pin-and-mcp-artifacts-1612.test.sh` (new) — guards all of the above.
+
 ### 4.58.3 — 2026-09-29
 
 Workers now have a fragment for the refused `export VAR=$(cmd)` shape (closes #1605). In a worktree-isolated session, reading a token into an environment variable for a later command is refused, because it exports "a value every later program inherits". The two-call split the refusal suggests cannot work, because shell variables do not survive across separate `Bash` calls. Every worker that authenticated against a third-party API was burning one or two turns finding the workaround. The orchestrator side already had this rule in `dont.md` (#1607, #1619), but nothing worker-facing did. The new fragment reuses those measurements, adds fresh ones, and names the forms that work. The preferred form is a scratch helper script that reads the credential and exports it inside its own process, then `exec`s the command that needs it. That keeps the value out of the transcript as well as out of any shell assignment.

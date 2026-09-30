@@ -505,7 +505,11 @@ Parse `guard_out`'s five `key=value` lines: `verdict=<clean|restored|dirty-skip|
 
 **cwd-independent derivation (issue [#452](https://github.com/mattsears18/shipyard/issues/452)).** The harness can silently relocate the orchestrator's own Bash-tool cwd into a just-returned **agent's** `agent-*` isolation worktree on a reconcile turn. Always derive the primary from `git worktree list --porcelain`'s first `worktree ` entry — always the main working tree regardless of which linked worktree the cwd is in — with the cwd-strip retained only as a fallback for a layout where the porcelain read comes up empty. See [RATIONALE → Primary-checkout derivation bug (#452)](../do-work-RATIONALE.md#primary-checkout-derivation-bug-452) for the phantom-restore failure mode this replaced.
 
-Once A.0.6 has run, proceed to A.1.
+Once A.0.6 has run, proceed to A.0.7.
+
+#### A.0.7. Reap browser-MCP artifacts a worker reported ([#1612](https://github.com/mattsears18/shipyard/issues/1612))
+
+A session-level browser MCP (Playwright) is rooted at **this** orchestrator worktree, so a worker's screenshots and `.playwright-mcp/` snapshots land here, not in the worker's own tree, and the MCP refuses to write anywhere else. The worker cannot delete them. It reports them instead, on a `Stray artifacts: <path>, <path>` line in its return (in `summary` under a structured return) — see `shipyard:worker-preamble`'s [`shared-host-services.md`](../../skills/worker-preamble/shared-host-services.md) § "Browser-MCP artifacts land in the orchestrator's worktree". When that line is present, remove exactly the listed paths from this worktree, one plain `rm -rf "<orchestrator worktree>/<path>"` per path. Skip any listed path that is absolute, contains `..`, or is tracked (`git ls-files --error-unmatch <path>` exits 0) — only untracked files the worker named are reaped. No line → no-op. The line is not a disposition, so A.1 ignores it. Then proceed to A.1.
 
 #### A.1. Parse the return string
 
