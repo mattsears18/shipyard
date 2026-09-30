@@ -51,7 +51,7 @@ README.md                         # plugin overview, install, quick-start
 CHANGELOG.md                      # per-version changelog
 ```
 
-For the **why** behind the orchestrator's design choices (state model, dispatch tree, divert phases, end-of-session drain), see [`plugins/shipyard/commands/do-work-RATIONALE.md`](./plugins/shipyard/commands/do-work-RATIONALE.md). The runtime spec is in [`plugins/shipyard/commands/do-work.md`](./plugins/shipyard/commands/do-work.md); the RATIONALE companion carries the design discussion that would otherwise bloat the spec.
+For the **why** behind the orchestrator's design choices (state model, dispatch tree, divert phases, end-of-session drain), see [`docs/design/do-work-rationale.md`](./docs/design/do-work-rationale.md). The runtime spec is in [`plugins/shipyard/commands/do-work.md`](./plugins/shipyard/commands/do-work.md); the RATIONALE companion carries the design discussion that would otherwise bloat the spec.
 
 ## Adding a new auditor agent
 
@@ -74,7 +74,7 @@ If your auditor walks a structured catalog (like `dx-auditor` walks `dx-catalog`
 The orchestrator + worker stack is the most load-bearing surface in the repo. Read these in order:
 
 - [`plugins/shipyard/commands/do-work.md`](./plugins/shipyard/commands/do-work.md) — the orchestrator. Walks the per-iteration dispatch tree, the divert queues, the soft/hard collision rules, and the end-of-session drain. The runtime spec the orchestrator follows verbatim.
-- [`plugins/shipyard/commands/do-work-RATIONALE.md`](./plugins/shipyard/commands/do-work-RATIONALE.md) — the *why* companion to the spec. Read when modifying the spec to understand the failure modes the current design exists to prevent.
+- [`docs/design/do-work-rationale.md`](./docs/design/do-work-rationale.md) — the *why* companion to the spec. Read when modifying the spec to understand the failure modes the current design exists to prevent.
 - [`plugins/shipyard/agents/issue-worker.md`](./plugins/shipyard/agents/issue-worker.md) — the thin worker entry router. Reads `mode:` from the dispatch prompt and loads the matching per-mode file.
 - [`plugins/shipyard/agents/issue-worker/`](./plugins/shipyard/agents/issue-worker/) — one file per worker mode (`issue-work`, `fix-checks-only`, `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`, `investigate`, `spike`). Each file is self-contained for its mode.
 - [`plugins/shipyard/skills/worker-preamble/SKILL.md`](./plugins/shipyard/skills/worker-preamble/SKILL.md) — the shared rules every worker mode loads first. Worktree discipline, the `--label shipyard` PR-creation contract, the auto-merge + snapshot + return pattern, the worktree-reaped escape hatch, the never-`--no-verify` rule. **Modifying anything in here affects all seven worker modes.**
@@ -188,5 +188,5 @@ Be kind, be precise, attack ideas not people. Disagreement is welcome; ad homine
 - [`README.md`](./README.md) — plugin overview, install, quick-start, how-it-works.
 - [`CLAUDE.md`](./CLAUDE.md) — repo-scoped rules (permissions, label conventions). Authoritative.
 - [`CHANGELOG.md`](./CHANGELOG.md) — per-version changelog.
-- [`plugins/shipyard/commands/do-work-RATIONALE.md`](./plugins/shipyard/commands/do-work-RATIONALE.md) — orchestrator design rationale.
+- [`docs/design/do-work-rationale.md`](./docs/design/do-work-rationale.md) — orchestrator design rationale.
 - Skill `SKILL.md` files under [`plugins/shipyard/skills/`](./plugins/shipyard/skills/) — `filing-github-issues`, `audit-rubrics`, `worker-preamble`, `dx-catalog`.

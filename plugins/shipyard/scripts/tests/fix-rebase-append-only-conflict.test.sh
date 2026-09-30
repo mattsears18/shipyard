@@ -11,9 +11,9 @@
 # edited the same key" non-trivial conflict too, and the whole rebase bailed.
 # Two real drain-phase dispatches against this repo hit exactly this shape:
 # PR #1245's rebase conflicted on 5 files, 4 of which (manifest, CHANGELOG,
-# `do-work-RATIONALE.md`, `worktree-reap.sh`) were mechanically trivial and
+# `do-work-rationale.md`, `worktree-reap.sh`) were mechanically trivial and
 # 1 of which (`steady-state.md`) was genuinely not — but because
-# `do-work-RATIONALE.md` wasn't in `{manifest_path, changelog_path}`, the
+# `do-work-rationale.md` wasn't in `{manifest_path, changelog_path}`, the
 # gate bailed before even attempting the resolvable subset.
 #
 # The fix has two parts:
@@ -34,7 +34,7 @@
 #      no shared content touched — "the conflict regions don't overlap" per
 #      the issue), concatenate both sides; bail (whole rebase) if any hunk's
 #      ancestor section is non-empty. This repo's own config sets
-#      `append_only_paths` to `["plugins/shipyard/commands/do-work-RATIONALE.md"]`.
+#      `append_only_paths` to `["docs/design/do-work-rationale.md"]`.
 #
 # This test pins FOUR layers:
 #   (A) resolve-append-only-conflict.sh — direct behavioral tests: a
@@ -43,7 +43,7 @@
 #       indeterminate; a multi-hunk pure-append file resolves all hunks.
 #   (B) Config/schema — the schema declares `append_only_paths` (array of
 #       strings, default `[]`), the built-in default is `[]`, and this
-#       repo's own `shipyard.config.json` lists `do-work-RATIONALE.md` and
+#       repo's own `shipyard.config.json` lists `do-work-rationale.md` and
 #       validates.
 #   (C) Spec assertions — fix-rebase.md links to #1309, states the
 #       all-or-nothing design note, reads `append_only_paths`, widens gate 2
@@ -253,10 +253,10 @@ if [[ -f "$config_helper" ]] && command -v jq >/dev/null 2>&1; then
 
   # This repo's own committed shipyard.config.json.
   out=$(SHIPYARD_REPO_ROOT="$repo_root" SHIPYARD_HOME="$(mktemp -d)" "$config_helper" get version_coordination.append_only_paths 2>&1)
-  if [[ "$out" == *"do-work-RATIONALE.md"* ]]; then
-    ok "this repo's shipyard.config.json lists do-work-RATIONALE.md in append_only_paths"
+  if [[ "$out" == *"do-work-rationale.md"* ]]; then
+    ok "this repo's shipyard.config.json lists do-work-rationale.md in append_only_paths"
   else
-    bad "this repo's shipyard.config.json append_only_paths: expected do-work-RATIONALE.md, got: $out"
+    bad "this repo's shipyard.config.json append_only_paths: expected do-work-rationale.md, got: $out"
   fi
 
   validate_out=$(cd "$repo_root" && "$config_helper" validate --layer repo 2>&1)

@@ -25,7 +25,7 @@
 #     inherited-milestone carve-out.
 #   - commands/do-work/dont.md carries the worker-side prohibition bullet.
 #   - CLAUDE.md and README.md cross-reference the new skill/command.
-#   - do-work-RATIONALE.md carries the #1240 design-decision writeup.
+#   - do-work-rationale.md carries the #1240 design-decision writeup.
 #
 # Pure bash + grep — no network, no `gh`, no real repo.
 #
@@ -55,7 +55,7 @@ preamble_skill_path="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md
 dont_path="$repo_root/plugins/shipyard/commands/do-work/dont.md"
 claude_md_path="$repo_root/CLAUDE.md"
 readme_path="$repo_root/README.md"
-rationale_path="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+rationale_path="$repo_root/docs/design/do-work-rationale.md"
 
 pass=0
 fail=0
@@ -210,10 +210,10 @@ assert_contains "$readme_path" "commands/update-roadmap.md" "README.md links to 
 
 # --------------------------------------------------------------------------
 echo
-echo "== do-work-RATIONALE.md design-decision writeup"
+echo "== do-work-rationale.md design-decision writeup"
 # --------------------------------------------------------------------------
 
-assert_file_exists "$rationale_path" "do-work-RATIONALE.md exists"
+assert_file_exists "$rationale_path" "do-work-rationale.md exists"
 assert_contains "$rationale_path" "shipyard:update-roadmap\` skill" "RATIONALE has a shipyard:update-roadmap skill section"
 assert_contains "$rationale_path" "issue #1240" "RATIONALE section cites issue #1240"
 assert_contains "$rationale_path" "Source-unreachable fallback" "RATIONALE documents the source-unreachable fallback decision"

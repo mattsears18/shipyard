@@ -100,7 +100,7 @@ add_worktree() {
 # having returned, UNLESS the caller passes `--bypass-return-check`.
 #
 # shipped-immediate-branch-reap.sh is a genuine "gated, satisfied naturally"
-# call site (see do-work-RATIONALE.md): it only ever targets THIS turn's own
+# call site (see do-work-rationale.md): it only ever targets THIS turn's own
 # just-completed agent, and steady-state.md's A.1 wrote the return record
 # moments earlier in the SAME turn — the fixture below still has to stand
 # that write in for its own suite, otherwise that suite would be asserting

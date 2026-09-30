@@ -73,7 +73,7 @@ plugin_root="$repo_root/plugins/shipyard"
 dont_path="$plugin_root/commands/do-work/dont.md"
 dispatch_path="$plugin_root/commands/do-work/dispatch-rules.md"
 fix_checks_path="$plugin_root/agents/issue-worker/fix-checks-only.md"
-rationale_path="$plugin_root/commands/do-work-RATIONALE.md"
+rationale_path="$repo_root/docs/design/do-work-rationale.md"
 
 pass=0
 fail=0
@@ -152,7 +152,7 @@ assert_same_line "$dont_path" \
   "the bullet preserves scope-narrowing and forbids only widening"
 
 assert_contains "$dont_path" \
-  "do-work-RATIONALE.md#dont-write-a-workers-own-short-circuit-out-of-its-dispatch-prompt-issue-1513" \
+  "do-work-rationale.md#dont-write-a-workers-own-short-circuit-out-of-its-dispatch-prompt-issue-1513" \
   "dont.md links the bullet to its RATIONALE section"
 
 assert_contains "$rationale_path" \

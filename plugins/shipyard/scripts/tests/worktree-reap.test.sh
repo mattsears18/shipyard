@@ -238,7 +238,7 @@ assert_equals "$result" "dead" \
 # membership is authoritative liveness; the lock file is only a fallback
 # for worktrees the session doesn't own). See commands/do-work/dont.md's
 # "Don't reap a live-PID worktree" bullet and
-# commands/do-work-RATIONALE.md's matching section.
+# commands/do-work-rationale.md's matching section.
 fresh_wt_dir="$tmpdir/fresh-worktree-metadata-dir"
 mkdir -p "$fresh_wt_dir"
 (true) &

@@ -54,7 +54,7 @@
 # reduced to a trigger-and-pointer stub the way those were — the rule itself
 # has to be inline for a worker to internalize it during implementation, not
 # just discoverable when a rare condition fires. The repro and the narrow
-# override carve-out moved to issue-work-RATIONALE.md (uncapped); what's
+# override carve-out moved to issue-work-rationale.md (uncapped); what's
 # left here is already trimmed to the terseness of the #851/#852/#986 stubs.
 #
 # skills/worker-preamble/SKILL.md's ceiling was LOWERED 68000 -> 57000 by
@@ -82,7 +82,7 @@
 # (once to the terseness of the "Never `--no-verify`" section immediately
 # above it, once more after that still didn't fit) before touching this
 # ceiling at all; the repro and full mechanism live in auto-merge.md and
-# issue-work-RATIONALE.md (both uncapped), not duplicated here.
+# issue-work-rationale.md (both uncapped), not duplicated here.
 #
 # skills/worker-preamble/SKILL.md's ceiling was raised 58000 -> 59000 by
 # #1113 (2026-08-07): a new "Auto-backgrounded verification must be awaited
@@ -209,7 +209,7 @@
 # line. The file had only 18 bytes of headroom left after #1240's last
 # raise, so even the trimmed-once bullet (repro detail deliberately left out
 # — it already lives in fix-checks-only.md's own copy of the rule and in
-# do-work-RATIONALE.md) needed the bump.
+# do-work-rationale.md) needed the bump.
 #
 # skills/worker-preamble/SKILL.md's ceiling was raised 63000 -> 66000 by
 # #1395 (2026-08-15): a new always-loaded core section telling a worker that
@@ -300,7 +300,7 @@
 # the other and needs both rules in front of it. The section was already
 # trimmed once to fit — the measurement table, both carve-outs, and the
 # scanner rationale all live in dont.md § "The launcher rule (#1566)" and
-# do-work-RATIONALE.md rather than here. The file had ~378 bytes of overage
+# do-work-rationale.md rather than here. The file had ~378 bytes of overage
 # against the old ceiling after that trim.
 #
 # skills/worker-preamble/SKILL.md's ceiling was raised 70000 -> 72000 by

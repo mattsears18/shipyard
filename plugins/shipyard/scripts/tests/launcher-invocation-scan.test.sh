@@ -12,7 +12,7 @@
 #   shown not to run git. Refusing to run it
 #
 # BOTH halves are required, measured live one variable at a time (full
-# observation table in do-work-RATIONALE.md § "The #1566 launcher
+# observation table in do-work-rationale.md § "The #1566 launcher
 # measurement"):
 #
 #   bash <spelled-out-literal>/scripts/x.sh --help       RUNS
@@ -35,7 +35,7 @@
 # compound-block-scan.sh's curated FILES list. The shape is unambiguous
 # wherever it appears in an executable block, so it needs no per-file
 # judgment about pre- vs post-relocation. But it MUST NOT look at prose:
-# dont.md's worked-example table, do-work-RATIONALE.md's historical #1474
+# dont.md's worked-example table, do-work-rationale.md's historical #1474
 # observation rows, and several fragments all quote the refused form on
 # purpose, as inline code or inside a plain (non-`bash`) fence. Restricting
 # the scan to ```bash fences is what lets this be a repo-wide guard with no

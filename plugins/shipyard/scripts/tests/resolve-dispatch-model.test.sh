@@ -45,7 +45,7 @@
 #       family alias or a full model id, fail-open on an unrecognized family,
 #       and a usage error on a missing argument. This helper is NOT wired
 #       into dispatch (the `Agent` tool has no fallback parameter) — it exists
-#       so `do-work-RATIONALE.md`'s fallbackModel recommendation has a single
+#       so `do-work-rationale.md`'s fallbackModel recommendation has a single
 #       source of truth for the chain ordering instead of hand-maintained
 #       prose. See the script's own header comment for why this doesn't
 #       repeat #727's dead-config-surface mistake.

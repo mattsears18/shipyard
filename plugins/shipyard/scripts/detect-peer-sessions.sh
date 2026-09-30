@@ -31,7 +31,7 @@
 # This is advisory, not a lock. Two sessions can still race between one's
 # check here and the other's next write — the goal is to reliably catch the
 # common case (a peer that has been running for minutes), not to build a
-# distributed mutex. See RATIONALE in do-work-RATIONALE.md for the
+# distributed mutex. See RATIONALE in do-work-rationale.md for the
 # warn-and-continue policy this script's caller applies on a fully
 # overlapping peer, rather than halting the session to ask a human.
 #

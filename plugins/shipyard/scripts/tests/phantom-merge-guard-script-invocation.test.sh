@@ -42,7 +42,7 @@ fi
 
 issue_work_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
 spike_path="$repo_root/plugins/shipyard/agents/issue-worker/spike.md"
-rationale_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-RATIONALE.md"
+rationale_path="$repo_root/docs/design/issue-work-rationale.md"
 script_path="$repo_root/plugins/shipyard/scripts/assert-worktree-change-present.sh"
 
 pass=0
@@ -85,7 +85,7 @@ echo
 
 assert_file_exists "$issue_work_path" "agents/issue-worker/issue-work.md exists"
 assert_file_exists "$spike_path" "agents/issue-worker/spike.md exists"
-assert_file_exists "$rationale_path" "agents/issue-worker/issue-work-RATIONALE.md exists"
+assert_file_exists "$rationale_path" "agents/issue-worker/issue-work-rationale.md exists"
 assert_file_exists "$script_path" "scripts/assert-worktree-change-present.sh exists"
 
 if [[ -x "$script_path" ]]; then
@@ -149,9 +149,9 @@ fi
 # (11) The RATIONALE file must carry the measured-evidence writeup issue-work.md links to.
 if [[ -f "$rationale_path" ]]; then
   assert_contains "$rationale_path" "Why the phantom-merge guard is a script, not an inline snippet" \
-    "issue-work-RATIONALE.md documents the #1340 measured evidence"
+    "issue-work-rationale.md documents the #1340 measured evidence"
   assert_contains "$rationale_path" "script-internal invocation is immune to both" \
-    "issue-work-RATIONALE.md documents the script-internal-immunity finding"
+    "issue-work-rationale.md documents the script-internal-immunity finding"
 fi
 
 echo

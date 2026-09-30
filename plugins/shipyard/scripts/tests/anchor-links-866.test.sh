@@ -166,7 +166,7 @@ echo "== (C) regression: intraword underscore is not emphasis (CommonMark rule)"
 
 # A heading with a BARE snake_case identifier (no backticks) must NOT have
 # its underscores stripped as italic markers — this is the literal repro
-# from plugins/shipyard/commands/do-work-RATIONALE.md's real heading
+# from docs/design/do-work-rationale.md's real heading
 # "why ci skip_speculative_rerun does not disable the flake path".
 mkdir -p "$tmp/c1"
 cat > "$tmp/c1/target.md" <<'EOF'

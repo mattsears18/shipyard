@@ -87,7 +87,7 @@
 # a single enum value, not a list). There is no dispatch-time hook to wire a
 # fallback chain into, so `--fallback-chain` does NOT get consumed by
 # `dispatch-rules.md` / `setup/07-pool-fill.md` the way the live `<mode>` path
-# does — it exists purely so a human (or `do-work-RATIONALE.md`'s worked
+# does — it exists purely so a human (or `do-work-rationale.md`'s worked
 # example) can compute the recommended `fallbackModel` array for whichever
 # model a given `models.<mode>` entry resolves to, without hand-maintaining
 # the family-tier ordering in prose. Do NOT treat an unconsumed
@@ -95,7 +95,7 @@
 # repeating — #727's bug was a *config key* nothing read; this is a *pure
 # function* whose only "caller" is a human copying its output into their own
 # `settings.json`, which this repo cannot write on the user's behalf.
-# See `do-work-RATIONALE.md`'s "fallbackModel" section for the full
+# See `do-work-rationale.md`'s "fallbackModel" section for the full
 # recommendation and worked settings.json example.
 
 set -uo pipefail

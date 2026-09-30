@@ -4,7 +4,7 @@ The session-state JSON schema, the `session-state.sh` helper subcommand referenc
 
 ## Session state file
 
-The orchestrator mirrors every [orchestrator-state](../do-work.md#orchestrator-state) structure into a small JSON file at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`). The file is the durable record of the session — written through whenever state changes, read back by external tools (and a future `/do-work --resume <session-id>` flag), and removed at end-of-session by the cleanup step. The LLM's per-turn working memory still drives dispatch decisions; the file is the mirror, not the algorithm. See [RATIONALE → Session state file](../do-work-RATIONALE.md#session-state-file--why-a-file-at-all) for the design discussion.
+The orchestrator mirrors every [orchestrator-state](../do-work.md#orchestrator-state) structure into a small JSON file at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`). The file is the durable record of the session — written through whenever state changes, read back by external tools (and a future `/do-work --resume <session-id>` flag), and removed at end-of-session by the cleanup step. The LLM's per-turn working memory still drives dispatch decisions; the file is the mirror, not the algorithm. See [RATIONALE → Session state file](../../../../docs/design/do-work-rationale.md#session-state-file--why-a-file-at-all) for the design discussion.
 
 ### Schema
 
@@ -185,7 +185,7 @@ Exit codes:
 
 ### When the orchestrator writes through
 
-Every state-mutation site writes through. Batch writes at end-of-turn — one `update` call with multiple `--set` flags, not a flurry per field. See [RATIONALE → Write-through cadence](../do-work-RATIONALE.md#write-through-cadence--why-batched-per-turn).
+Every state-mutation site writes through. Batch writes at end-of-turn — one `update` call with multiple `--set` flags, not a flurry per field. See [RATIONALE → Write-through cadence](../../../../docs/design/do-work-rationale.md#write-through-cadence--why-batched-per-turn).
 
 | Site | What changes | When |
 |---|---|---|
@@ -209,7 +209,7 @@ Every state-mutation site writes through. Batch writes at end-of-turn — one `u
 
 ### Failure mode — write-through breakage
 
-If `session-state.sh update` fails (exit code != 0), log `[session-state] update failed: <exit code> — session file out of sync with working memory; continuing` and continue the turn. Working memory is authoritative; the next turn's update cycle re-attempts the write. Do not stall dispatch on a file-write failure. Mid-session exit-3 (file disappeared) is handled inline by `--allow-degraded-init` (issue #281) — the canonical `update` template above passes it by default. See [RATIONALE → Failure mode](../do-work-RATIONALE.md#failure-mode--write-through-breakage) for the full failure-mode discussion.
+If `session-state.sh update` fails (exit code != 0), log `[session-state] update failed: <exit code> — session file out of sync with working memory; continuing` and continue the turn. Working memory is authoritative; the next turn's update cycle re-attempts the write. Do not stall dispatch on a file-write failure. Mid-session exit-3 (file disappeared) is handled inline by `--allow-degraded-init` (issue #281) — the canonical `update` template above passes it by default. See [RATIONALE → Failure mode](../../../../docs/design/do-work-rationale.md#failure-mode--write-through-breakage) for the full failure-mode discussion.
 
 ### Cost-tracking write-through
 
@@ -224,4 +224,4 @@ The hook is observational and write-only — `bump-tokens` never affects dispatc
 
 The persistent cross-session ledger at `~/.shipyard/cost-history.jsonl` is [#163](https://github.com/mattsears18/shipyard/issues/163)'s scope — out of scope here. This section covers the per-session in-memory accounting only; the artifact comments posted on the issue/PR are the durable export.
 
-**This accounting is post-hoc, not pre-emptive — and stays that way.** The Claude API's beta "Task Budgets" feature (`output_config.task_budget`) gives a dispatch a token ceiling it's aware of *while running*; shipyard has no equivalent because the feature is not exposed on the `Agent`-tool dispatch surface this section's write-through attributes *after the fact* — confirmed unsupported on Claude Code, dual-sourced against both the platform docs and the `Agent` tool's own parameter surface. See [RATIONALE → Task Budgets](../do-work-RATIONALE.md#task-budgets--not-exposed-on-the-agent-dispatch-surface-spiked-and-closed-negative-765) for the full investigation and why no `budgets.<mode>` config surface follows from it.
+**This accounting is post-hoc, not pre-emptive — and stays that way.** The Claude API's beta "Task Budgets" feature (`output_config.task_budget`) gives a dispatch a token ceiling it's aware of *while running*; shipyard has no equivalent because the feature is not exposed on the `Agent`-tool dispatch surface this section's write-through attributes *after the fact* — confirmed unsupported on Claude Code, dual-sourced against both the platform docs and the `Agent` tool's own parameter surface. See [RATIONALE → Task Budgets](../../../../docs/design/do-work-rationale.md#task-budgets--not-exposed-on-the-agent-dispatch-surface-spiked-and-closed-negative-765) for the full investigation and why no `budgets.<mode>` config surface follows from it.

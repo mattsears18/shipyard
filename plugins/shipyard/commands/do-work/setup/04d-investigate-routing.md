@@ -87,4 +87,4 @@ All 47 historical applications in `lightwork` are already closed — there is no
 
 **Consuming repos that still carry the label object** are unaffected in the only way that matters: a `needs-triage`-labeled issue is no longer *dropped* or *routed* by the label, so it lands in `raw_backlog` as an ordinary candidate — and if it is genuinely a bot/Sentry crash report it still routes to investigate mode on the bot-author or symptom-body signal. A leftover label object is inert; deleting it is optional cleanup.
 
-Cold detail — the 43-day `#520`→`#859` window derivation, the original two-condition text, and the full writer-by-writer retirement inventory — lives in [RATIONALE → `needs-triage` retirement](../../do-work-RATIONALE.md#needs-triage-retirement-issue-1120).
+Cold detail — the 43-day `#520`→`#859` window derivation, the original two-condition text, and the full writer-by-writer retirement inventory — lives in [RATIONALE → `needs-triage` retirement](../../../../../docs/design/do-work-rationale.md#needs-triage-retirement-issue-1120).
