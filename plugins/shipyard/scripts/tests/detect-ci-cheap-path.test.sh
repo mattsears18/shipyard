@@ -183,14 +183,30 @@ on:
     paths-ignore: ['LICENSE', 'CHANGELOG.md']
 YAML
 
+  # Two workflows with DISJOINT ignore lists share no cheap lane: a docs-only
+  # diff still runs flow.yml, a LICENSE-only diff still runs tests.yml
+  # (#1600 — cross-file sets intersect; the old union over-claimed).
   got="$(bash "$DETECTOR" "$fixture_dir" 2>/dev/null)"
-  if [[ "$got" == cheap-path-available\ globs=* ]]; then
-    assert_pass "block-style + flow-style paths-ignore lists both detected"
-  else
-    assert_fail "block-style + flow-style paths-ignore lists both detected (got [$got])"
-  fi
-  assert_contains <(printf '%s' "$got") "docs/**" "union includes the block-style glob"
-  assert_contains <(printf '%s' "$got") "LICENSE" "union includes the flow-style glob"
+  assert_equals "disjoint paths-ignore lists across two workflows -> no-cheap-path (intersection, not union)" \
+    "no-cheap-path" "$got"
+
+  # Overlapping lists: only the shared glob survives. Block + flow style
+  # are both parsed (the shared glob comes from each style once).
+  cat > "$fixture_dir/flow.yml" <<'YAML'
+on:
+  pull_request:
+    paths-ignore: ['LICENSE', 'docs/**']
+YAML
+  got="$(bash "$DETECTOR" "$fixture_dir" 2>/dev/null)"
+  assert_equals "block-style + flow-style lists intersect to the shared glob" \
+    "cheap-path-available globs=docs/**" "$got"
+
+  single_dir="$(mktemp -d)"
+  cp "$fixture_dir/tests.yml" "$single_dir/tests.yml"
+  got="$(bash "$DETECTOR" "$single_dir" 2>/dev/null)"
+  assert_equals "a single filtered workflow reports its own full list" \
+    "cheap-path-available globs=docs/**,**/*.md" "$got"
+  rm -rf "$single_dir"
 
   empty_dir="$(mktemp -d)"
   cat > "$empty_dir/no-filter.yml" <<'YAML'
@@ -208,6 +224,141 @@ YAML
     "no-cheap-path" "$got"
 else
   assert_fail "live repo-shape discovery (detector missing)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (C2) dorny/paths-filter negation lanes (issue #1600).
+# ---------------------------------------------------------------------------
+echo "(C2) dorny/paths-filter negation lanes (#1600)"
+if [[ -f "$DETECTOR" ]]; then
+  dorny_dir="$(mktemp -d)"
+
+  # The recognized shape: '**' + negations under predicate-quantifier: every,
+  # with one negation re-admitted by a sibling filter's identical positive.
+  cat > "$dorny_dir/ci.yml" <<'YAML'
+on:
+  pull_request:
+jobs:
+  detect-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v4 # pinned
+        id: filter
+        with:
+          # comment lines inside the step are ignored
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'   # trailing comment
+              - "!data/onboarding/**"
+            onboarding:
+              - 'data/onboarding/**'
+      - name: next step
+        run: echo hi
+  other:
+    steps:
+      - name: unrelated
+        with:
+          filters: |
+            x:
+              - '**'
+              - '!src/**'
+YAML
+  got="$(bash "$DETECTOR" "$dorny_dir" 2>/dev/null)"
+  assert_equals "negations of a '**' filter under 'every' become cheap globs; a re-admitted negation is dropped; a non-dorny 'filters:' is ignored" \
+    "cheap-path-available globs=**/*.md,docs/**" "$got"
+
+  # `- name:` then `uses:` on its own line is the same step.
+  cat > "$dorny_dir/ci.yml" <<'YAML'
+jobs:
+  d:
+    steps:
+      - name: Detect
+        uses: 'dorny/paths-filter@abc123'
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!LICENSE'
+YAML
+  got="$(bash "$DETECTOR" "$dorny_dir" 2>/dev/null)"
+  assert_equals "'- name:' + separate 'uses:' line is parsed as one dorny step" \
+    "cheap-path-available globs=LICENSE" "$got"
+
+  # Default quantifier (`some`): '**' alone satisfies the filter for every
+  # file, so the negations exclude nothing — no cheap lane.
+  cat > "$dorny_dir/ci.yml" <<'YAML'
+jobs:
+  d:
+    steps:
+      - uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!docs/**'
+YAML
+  got="$(bash "$DETECTOR" "$dorny_dir" 2>/dev/null)"
+  assert_equals "without predicate-quantifier: every, negations exclude nothing -> no-cheap-path" \
+    "no-cheap-path" "$got"
+
+  # An include-only filter (no '**' catch-all) is not an exclude list.
+  cat > "$dorny_dir/ci.yml" <<'YAML'
+jobs:
+  d:
+    steps:
+      - uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: every
+          filters: |
+            web:
+              - 'apps/web/**'
+              - '!apps/web/docs/**'
+YAML
+  got="$(bash "$DETECTOR" "$dorny_dir" 2>/dev/null)"
+  assert_equals "a filter without the '**' catch-all is not treated as a cheap lane" \
+    "no-cheap-path" "$got"
+
+  # dorny lane intersected with another workflow's paths-ignore.
+  cat > "$dorny_dir/ci.yml" <<'YAML'
+jobs:
+  d:
+    steps:
+      - uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!.github/**'
+YAML
+  cat > "$dorny_dir/bundle.yml" <<'YAML'
+on:
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - '.github/**'
+      - 'scripts/**'
+YAML
+  got="$(bash "$DETECTOR" "$dorny_dir" 2>/dev/null)"
+  assert_equals "dorny lane and a paths-ignore workflow intersect to their shared globs" \
+    "cheap-path-available globs=**/*.md,.github/**" "$got"
+
+  # The issue's trap: a path under a non-negated dir is never cheap.
+  got="$(bash "$DETECTOR" --match "scripts/lib/foo.ts" "**/*.md,docs/**" 2>/dev/null)"
+  assert_equals "a docs-labeled issue whose path sits outside the lane is not cheap" \
+    "no-match" "$got"
+
+  rm -rf "$dorny_dir"
+else
+  assert_fail "dorny/paths-filter lanes (detector missing)"
 fi
 echo
 
@@ -309,6 +460,19 @@ if [[ -f "$STEADY_STATE_MD" ]]; then
     "step C documents the zero-evidence guard"
   assert_contains "$STEADY_STATE_MD" "No CI-cheap candidate found among" \
     "step C documents the fallback-to-hold path when no candidate matches"
+  assert_contains "$STEADY_STATE_MD" "The escape valve prefers the cheap lane too" \
+    "step C routes an escape-valve dispatch over a saturated queue through the cheap scan (#1600)"
+  assert_contains "$STEADY_STATE_MD" '"<multiplier>" 0' \
+    "valve detection re-asks --decide-backpressure with MIN_IN_FLIGHT=0 rather than re-deriving the threshold"
+  assert_contains "$STEADY_STATE_MD" "otherwise dispatch the normal top candidate anyway" \
+    "a valve dispatch with no cheap candidate still dispatches (never re-introduces the deadlock)"
+  assert_contains "$STEADY_STATE_MD" "states the lane and ONE escape hatch" \
+    "a cheap-lane dispatch prompt names a single precedence for leaving the lane (#1600)"
+  assert_contains "$STEADY_STATE_MD" 'CI lane: left — <paths>' \
+    "step C names the PR-body flag for an out-of-lane fix"
+  ISSUE_WORK_MD="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+  assert_contains "$ISSUE_WORK_MD" 'CI lane: left — <paths>' \
+    "issue-work.md tells the worker the same single escape hatch"
 else
   assert_fail "steady-state.md exists (missing at $STEADY_STATE_MD)"
 fi
