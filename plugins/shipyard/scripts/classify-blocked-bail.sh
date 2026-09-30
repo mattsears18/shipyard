@@ -54,6 +54,7 @@
 #
 #     Prints one line to stdout:
 #       class=dependency-wait open_blocker=<N>
+#       class=dependency-wait open_blocker=<N> blocker_kind=pr   (#1602)
 #       class=operator label=agent-console
 #       class=soft label=blocked:agent-soft now=<ISO8601>
 #       class=refuse label=needs-human-review
