@@ -80,6 +80,10 @@ fi
 
 **Caveat — this only works when the exact version is already installed.** It cannot install a missing version (that needs `nvm install`, itself only reachable via the same `source`d function), so treat a miss here (`NODE_BIN_DIR` not a directory) as a signal to fall back to option 1 or 2, not as `blocked:` — those two don't share this limitation.
 
+## Refused on `export` rather than `source`?
+
+A refusal that names `export VAR=` with "a value every later program inherits" is a different rule with a different fix. That shape usually comes up when reading a token into an environment variable. See [`export-computed-value-refusal.md`](./export-computed-value-refusal.md) ([#1605](https://github.com/mattsears18/shipyard/issues/1605)). Its "The refusal family" table indexes every refused shape that has a documented workaround.
+
 ## When NOT to load this
 
 Skip entirely on a repo with no `.nvmrc` / no `nvm`-based version-pinning convention, or when the ambient `node -v` on the host already satisfies the repo's declared engine version (check `package.json` `engines.node` or `.nvmrc` first — most hosts already have a compatible default Node and this whole fragment is a no-op).
