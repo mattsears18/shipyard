@@ -865,7 +865,7 @@ The `needs-design` design-gate label was an **inert** dispatch-exclusion + `/my-
 
 ### `needs-refinement` eliminated (issue #520)
 
-`needs-refinement` was a persisted "this issue isn't ready for `/shipyard:do-work` dispatch yet" pipeline gate. Rather than fold it into the inert human-gate (which would strand refinable work in the human queue), the gate was **retired**: `/shipyard:refine-issues` now detects refinement candidates by a live source-signal scan (`user-feedback` label → classify+rewrite, `## Open questions` heading → resolve-defaults, bot-authored / unrecognized → fall-through to `needs-human-review`) as a pre-dispatch pass, with no persisted label. The scan recomputes candidacy every run, so it never drifts out of sync with the issue body the way a cached gate label did. The GitHub `needs-refinement` label object was deleted 2026-07-25 ([#859](https://github.com/mattsears18/shipyard/issues/859)) after an audit confirmed zero open/closed issues carried it and nothing applied or read it — the manual-cleanup deferral is resolved. Security is unchanged — external-author issues still get `needs-human-review` from the separate `external-author-gate.yml`.
+`needs-refinement` was a persisted "this issue isn't ready for `/shipyard:do-work` dispatch yet" pipeline gate. Rather than fold it into the inert human-gate (which would strand refinable work in the human queue), the gate was **retired**: `refine-issues` (removed) now detects refinement candidates by a live source-signal scan (`user-feedback` label → classify+rewrite, `## Open questions` heading → resolve-defaults, bot-authored / unrecognized → fall-through to `needs-human-review`) as a pre-dispatch pass, with no persisted label. The scan recomputes candidacy every run, so it never drifts out of sync with the issue body the way a cached gate label did. The GitHub `needs-refinement` label object was deleted 2026-07-25 ([#859](https://github.com/mattsears18/shipyard/issues/859)) after an audit confirmed zero open/closed issues carried it and nothing applied or read it — the manual-cleanup deferral is resolved. Security is unchanged — external-author issues still get `needs-human-review` from the separate `external-author-gate.yml`.
 
 ### `needs-decomposition` / `tracking` → `needs-human-review` + body marker (issue #519)
 
@@ -1661,7 +1661,7 @@ Deleting a label object while something still writes to it silently recreates it
 | `agents/observability-auditor.md` | apply | vendor-choice findings take `needs-human-review` |
 | `commands/file-issue.md` | apply | gate-label guidance narrowed to `needs-human-review` |
 
-`/shipyard:refine-issues` was **not** a writer despite the repo-root `CLAUDE.md` claiming it was — its escalate branch has routed to `needs-human-review` since [#520](https://github.com/mattsears18/shipyard/issues/520). That stale bullet was corrected in the same PR.
+`refine-issues` (removed) was **not** a writer despite the repo-root `CLAUDE.md` claiming it was — its escalate branch has routed to `needs-human-review` since [#520](https://github.com/mattsears18/shipyard/issues/520). That stale bullet was corrected in the same PR.
 
 ### Where the `Needs triage: yes` catalog flag went
 

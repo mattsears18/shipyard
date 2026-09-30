@@ -499,7 +499,6 @@ Roadmap sweep (#1243): <roadmap_applied_count> applied (milestones assigned / ph
 
 ⚠️  --fast was used this session — skipped:
   - Backlog overview UI (step 2)
-  - /refine-issues (step 3.5): <fast_skip_needs_refinement> issue(s) match a refinement source signal (unrefined this session)
   - blocked:ci sweep (step 3d.1): <fast_skip_blocked_ci> PR(s) may have recoverable CI
   - blocked:agent-soft sweep (step 3d.2 sub-sweep c): <fast_skip_blocked_agent_soft> issue(s) would auto-clear under normal session
   - legacy blocked:agent migration (step 3d.2 sub-sweep b): <fast_skip_blocked_agent_legacy> issue(s) would migrate (→ needs-human-review, or → no-label if a Blocked-by ref is open) under normal session

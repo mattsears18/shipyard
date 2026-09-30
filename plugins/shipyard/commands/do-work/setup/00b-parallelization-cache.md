@@ -174,7 +174,6 @@ Either way, **don't retry the identical refused compound text** — per `shipyar
 **Steps that MUST run after the batch (foreground, serial):**
 
 - **[Step 1.7](01-repo-recovery.md#17-resolve-trusted-author-allowlist)** — its output (`trusted_authors`) gates step 2's bucketing and step 4's filter.
-- **[Step 3.5](01c-label-recovery-refine.md#35-refine-pending-issues)** — invokes `/refine-issues`, blocks until done. **Skipped under `--fast`**.
 - **[Step 4](04-backlog-divert.md#4-fetch--rank-the-backlog)** — the *filtered* backlog fetch (distinct from step 2's universe fetch). Auto-triage label-stamping depends on step 1.7 + step 2.
 
 **Steps 6+ stay serial.** Scope pre-flight (step 6) depends on `raw_backlog` from step 4; initial pool fill (step 7) depends on `ready_issues` from step 6.

@@ -7,7 +7,7 @@
 # to stamp issues (its "Don't apply the `shipyard` label" rule), and auditors
 # had no guarantee the label existed before they filed. The fix: every creation
 # path — orchestrator PRs, worker follow-up issues, `/shipyard:file-issue`, all
-# `audit:*` auditors, `/refine-issues`, `/decompose-epic` — must apply
+# `audit:*` auditors, `/decompose-epic` — must apply
 # `shipyard` and first ensure the label exists (idempotent create).
 #
 # This test is the regression guard. It asserts:

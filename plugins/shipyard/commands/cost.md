@@ -142,7 +142,6 @@ SETUP PHASE TIMING (sessions with instrumentation)
 
   Per-phase means (slowest first):
     step_6_scope_preflight: 24.1s  (n=13)
-    step_3_5_refine_issues: 3.8s   (n=13)
     step_4_backlog_fetch_and_rank: 2.1s  (n=13)
     step_0_7_parallel_batch: 1.9s  (n=13)
     step_1_7_trusted_authors: 0.9s  (n=13)
