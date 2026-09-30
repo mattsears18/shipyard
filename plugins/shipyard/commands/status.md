@@ -63,15 +63,13 @@ Batch-style workers (e.g. a refiner processing N issues per dispatch) can publis
 
 The `progress_current` / `progress_total` fields live on the per-slot record inside the session state file's `.in_flight[<slot>]` block. Individual issue-work / fix-checks-only dispatches typically don't set progress — the kind alone is informative enough — but the helper is available to any worker that wants to surface batch progress.
 
-## Substrate-agnostic by construction (#790 / #791)
+## The state file is the only contract
 
-`/shipyard:do-work` dispatches every `mode:`-driven worker through the [Dynamic Workflows substrate](../workflows/README.md) (the `Workflow` tool) — the default since the [#790](https://github.com/mattsears18/shipyard/issues/790) cutover, and the *only* path since [#791](https://github.com/mattsears18/shipyard/issues/791) retired the legacy `Agent`-tool dispatch and the `dispatch.substrate` knob. `/shipyard:status` reported accurate live rows across both changes **without any code path of its own that branches on the substrate** — and here is why that holds:
+The dashboard is decoupled from dispatch by construction:
 
-- The dashboard reads only the per-session state file at `~/.shipyard/sessions/<id>.json`. It never talks to a dispatch tool directly.
-- The orchestrator writes each in-flight worker's `.in_flight[<slot>]` record (`kind` / `target` / `model` / `started_at` / progress trio) with the same shape it always has — see [dispatch-rules.md's Workflow-substrate section, step 5](./do-work/dispatch-rules.md#workflow-substrate-dispatch--an-alternate-dispatch-shape-825) (only relevant when that alternate shape is in use; the default `Agent`-tool shape writes the same fields without a `worktree_path`, since the harness — not the orchestrator — provisions the worktree). Text, `--json`, and `--stale` all render it the same way.
-- Token counts (the `TOKENS` column) come from `.tokens.per_issue` / `.tokens.per_pr`, bumped by the orchestrator's step-A reconcile **after** the structured `Workflow` return has been translated back into the free-text vocabulary — so cost attribution is unaffected too (see [`/shipyard:cost`](./cost.md)).
-
-The upshot: the whole migration was invisible to this dashboard by construction, because the state file is the only contract between them. The `dispatch-substrate-cutover-790.test.sh` suite asserts a synthetic `Workflow`-dispatched session file renders correctly through all three output modes.
+- It reads only the per-session state file at `~/.shipyard/sessions/<id>.json`. It never talks to a dispatch tool directly.
+- The orchestrator writes each in-flight worker's `.in_flight[<slot>]` record (`kind` / `target` / `model` / `started_at` / progress trio) with the same shape it always has — see [dispatch-rules.md's Agent-tool section](./do-work/dispatch-rules.md#agent-tool-dispatch--the-default-dispatch-shape-825).
+- Token counts (the `TOKENS` column) come from `.tokens.per_issue` / `.tokens.per_pr`, bumped by the orchestrator's step-A reconcile (see [`/shipyard:cost`](./cost.md)).
 
 ## Relationship to Agent View ([#785](https://github.com/mattsears18/shipyard/issues/785))
 

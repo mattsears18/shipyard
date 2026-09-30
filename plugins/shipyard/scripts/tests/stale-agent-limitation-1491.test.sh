@@ -67,8 +67,6 @@ DETECTOR="$repo_root/plugins/shipyard/scripts/detect-stale-agent-limitation.sh"
 # setup-fragment-content-scan.sh).
 SETUP_DIR="$repo_root/plugins/shipyard/commands/do-work/setup"
 DISPATCH_MD="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
-TEMPLATE_MJS="$repo_root/plugins/shipyard/workflows/prompt-templates/issue-work.mjs"
-WORKFLOW_JS="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
 
 pass=0
 fail=0
@@ -388,21 +386,6 @@ else
   assert_fail "dispatch-rules.md exists (missing at $DISPATCH_MD)"
 fi
 
-# Both halves of the two-copy prompt contract (#880/#918): the source template
-# and the generated workflow must both render the augmentation, so this one
-# does NOT need a dispatch-prompt-parity waiver the way #851/#852 still do.
-if [[ -f "$TEMPLATE_MJS" ]]; then
-  assert_contains "$TEMPLATE_MJS" 'Stale premise in the issue body (orchestrator-verified, #1491):' \
-    "prompt-templates/issue-work.mjs renders the augmentation (workflow-substrate parity)"
-else
-  assert_fail "prompt-templates/issue-work.mjs exists (missing at $TEMPLATE_MJS)"
-fi
-if [[ -f "$WORKFLOW_JS" ]]; then
-  assert_contains "$WORKFLOW_JS" 'Stale premise in the issue body (orchestrator-verified, #1491):' \
-    "the generated do-work-dispatch.workflow.js carries the augmentation too"
-else
-  assert_fail "do-work-dispatch.workflow.js exists (missing at $WORKFLOW_JS)"
-fi
 echo
 
 printf 'passed: %d, failed: %d\n' "$pass" "$fail"

@@ -52,9 +52,6 @@ issue_work_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
 carveouts_path="$repo_root/plugins/shipyard/commands/do-work/setup/06b-scope-carveouts.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
-core_js_path="$repo_root/plugins/shipyard/workflows/do-work-dispatch.core.js"
-generated_js_path="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
-parity_checker="$repo_root/plugins/shipyard/scripts/check-worker-return-schema-parity.mjs"
 
 pass=0
 fail=0
@@ -170,21 +167,11 @@ assert_contains "$steady_state_path" "DO append \`<M>\` to \`session_prs\`" \
   "steady-state.md instructs the orchestrator to append the incidental PR to session_prs"
 
 # --- (E) Structured-return schema carries the optional field, and its hand-copied ---
-# --- Dynamic-Workflows literal (do-work-dispatch.core.js, regenerated into ---
-# --- do-work-dispatch.workflow.js) stays in parity with it. ---
 assert_file_exists "$schema_path" "schemas/worker-return.schema.json exists"
 assert_contains "$schema_path" "\"incidental_pr\"" \
   "canonical schema declares the optional incidental_pr field"
 assert_contains "$schema_path" "disposition: \\\"verified\\\"" \
   "canonical schema's incidental_pr description scopes it to the verified disposition"
-
-assert_file_exists "$core_js_path" "workflows/do-work-dispatch.core.js exists"
-assert_contains "$core_js_path" "incidental_pr: { type: ['integer', 'null'], minimum: 1 }" \
-  "do-work-dispatch.core.js's workerReturnSchema literal declares incidental_pr"
-
-assert_file_exists "$generated_js_path" "workflows/do-work-dispatch.workflow.js (generated) exists"
-assert_contains "$generated_js_path" "incidental_pr: { type: ['integer', 'null'], minimum: 1 }" \
-  "the generated workflow.js carries the regenerated incidental_pr field (core.js was regenerated, not just edited)"
 
 if [[ -f "$schema_path" ]]; then
   if command -v jq >/dev/null 2>&1 && jq empty "$schema_path" >/dev/null 2>&1; then
@@ -195,16 +182,6 @@ if [[ -f "$schema_path" ]]; then
     pass=$((pass + 1))
   else
     printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "worker-return.schema.json is valid JSON"
-    fail=$((fail + 1))
-  fi
-fi
-
-if [[ -f "$parity_checker" ]] && command -v node >/dev/null 2>&1; then
-  if node "$parity_checker" "$schema_path" "$generated_js_path" >/dev/null 2>&1; then
-    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "check-worker-return-schema-parity.mjs reports no drift between the two"
-    pass=$((pass + 1))
-  else
-    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "check-worker-return-schema-parity.mjs reports no drift between the two"
     fail=$((fail + 1))
   fi
 fi

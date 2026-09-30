@@ -41,9 +41,6 @@ preamble="$plugin_root/skills/worker-preamble/SKILL.md"
 fragment="$plugin_root/skills/worker-preamble/shared-host-services.md"
 dispatch_rules="$plugin_root/commands/do-work/dispatch-rules.md"
 issue_work="$plugin_root/agents/issue-worker/issue-work.md"
-builder_src="$plugin_root/workflows/prompt-templates/issue-work.mjs"
-core="$plugin_root/workflows/do-work-dispatch.core.js"
-generated="$plugin_root/workflows/do-work-dispatch.workflow.js"
 
 ANCHOR='Concurrent tenants on a shared host (orchestrator-supplied, #1594):'
 
@@ -61,35 +58,6 @@ assert_contains "$dispatch_rules" "**Concurrent-tenant augmentation (" "augmenta
 assert_contains "$dispatch_rules" "> **$ANCHOR**" "augmentation blockquote carries the anchor"
 assert_contains "$dispatch_rules" "When the session's \`concurrency > 1\`" "augmentation is gated on concurrency > 1"
 
-echo
-echo "== the Workflow-substrate builder renders it"
-assert_contains "$builder_src" "$ANCHOR" "buildIssueWorkPrompt source carries the anchor"
-assert_contains "$core" "sessionConcurrency: concurrency" "core stamps sessionConcurrency onto each unit"
-assert_contains "$generated" "$ANCHOR" "generated workflow.js carries the paragraph (generator re-run)"
-
-if command -v node >/dev/null 2>&1; then
-  render() {
-    node --input-type=module -e "
-      import { buildIssueWorkPrompt } from '$builder_src';
-      process.stdout.write(buildIssueWorkPrompt({ number: 7, trust: 'trusted', branch: 'do-work/issue-7', worktreePath: '/tmp/wt', sessionConcurrency: $1 }, 'o/r'));
-    "
-  }
-  out4="$(render 4)"
-  # shellcheck disable=SC2016 # literal backticks are the rendered markdown, not an expansion
-  if [[ "$out4" == *"$ANCHOR"* && "$out4" == *'--concurrency 4'* && "$out4" == *'up to `3` sibling'* ]]; then
-    ok "concurrency 4 renders the paragraph with N and N-1"
-  else
-    bad "concurrency 4 renders the paragraph with N and N-1"
-  fi
-  out1="$(render 1)"
-  if [[ -n "$out1" && "$out1" != *"$ANCHOR"* ]]; then
-    ok "concurrency 1 renders no paragraph"
-  else
-    bad "concurrency 1 renders no paragraph"
-  fi
-else
-  printf '  SKIP  node not available — behavioral render checks skipped\n'
-fi
 
 echo
 echo "== $pass passed, $fail failed"

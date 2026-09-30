@@ -71,9 +71,6 @@ plugin_root="$repo_root/plugins/shipyard"
 skill_path="$plugin_root/skills/worker-preamble/SKILL.md"
 fragment_path="$plugin_root/skills/worker-preamble/awaiting-external.md"
 schema_path="$plugin_root/schemas/worker-return.schema.json"
-core_path="$plugin_root/workflows/do-work-dispatch.core.js"
-generated_path="$plugin_root/workflows/do-work-dispatch.workflow.js"
-shared_tpl_path="$plugin_root/workflows/prompt-templates/shared.mjs"
 steady_path="$plugin_root/commands/do-work/steady-state.md"
 drain_path="$plugin_root/commands/do-work/drain.md"
 dont_path="$plugin_root/commands/do-work/dont.md"
@@ -196,34 +193,8 @@ assert_contains "$schema_path" '"awaiting_eta"' \
   "schema declares awaiting_eta"
 assert_contains "$schema_path" '"then": { "required": ["awaiting_what", "awaiting_probe"] }' \
   "schema REQUIRES what+probe on an awaiting-external outcome (a park with no probe is unpollable)"
-assert_contains "$core_path" "'awaiting-external'," \
-  "core.js mirrors the outcome enum value"
-assert_contains "$core_path" "then: { required: ['awaiting_what', 'awaiting_probe'] }," \
-  "core.js mirrors the conditional-required rule"
-assert_contains "$generated_path" "'awaiting-external'," \
-  "the generated workflow.js carries the enum value (regeneration was not skipped)"
 
-# The dispatch-prompt builders are the only place a Workflow-substrate worker
-# learns the token exists. It is emitted from ONE shared helper rather than
-# copy-pasted per mode, so the five eligible modes cannot drift apart.
-assert_contains "$shared_tpl_path" "export function awaitingExternalReturnLines" \
-  "shared.mjs exports a single awaiting-external return-contract helper"
-assert_contains "$generated_path" "awaitingExternalReturnLines(unit, 'issue-work')" \
-  "issue-work's builder emits the awaiting-external contract"
-assert_contains "$generated_path" "awaitingExternalReturnLines(unit, 'fix-main-ci')" \
-  "fix-main-ci's builder emits the awaiting-external contract"
-assert_contains "$generated_path" "awaitingExternalReturnLines(unit, 'fix-failing-prs-batch')" \
-  "fix-failing-prs-batch's builder emits the awaiting-external contract"
-assert_contains "$generated_path" "awaitingExternalReturnLines(unit, 'investigate')" \
-  "investigate's builder emits the awaiting-external contract"
-assert_contains "$generated_path" "awaitingExternalReturnLines(unit, 'spike')" \
-  "spike's builder emits the awaiting-external contract"
 
-# fix-checks-only is deliberately EXCLUDED — it already has `pending #<M>` for
-# exactly this shape, and its own return contract advertises a fixed count of
-# strings that a seventh token would silently invalidate.
-assert_not_contains "$generated_path" "awaitingExternalReturnLines(unit, 'fix-checks-only')" \
-  "fix-checks-only is excluded (its pending #<M> return already covers this)"
 assert_contains "$fragment_path" 'pending #<M>: <n> check(s) still running' \
   "fragment names fix-checks-only's pending return as the precedent it models"
 

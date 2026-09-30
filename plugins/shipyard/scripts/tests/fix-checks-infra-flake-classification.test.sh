@@ -216,12 +216,6 @@ assert_contains "$fix_checks_path" \
 assert_contains "$dispatch_rules_path" \
   "CI pool state at dispatch" \
   "#1609 dispatch-rules hands the fix-checks worker fresh pool state on a self-hosted pool"
-assert_contains "$repo_root/plugins/shipyard/workflows/prompt-templates/fix-checks-only.mjs" \
-  "unit.ciPoolState" \
-  "#1609 workflow-substrate fix-checks prompt renders ciPoolState"
-assert_contains "$repo_root/plugins/shipyard/workflows/do-work-dispatch.core.js" \
-  "ciPoolState: it.ciPoolState" \
-  "#1609 core.js passes ciPoolState through the unit normalizer (#1615)"
 
 # Local gates MUST pass — the proof the diff is not the cause.
 assert_contains "$fix_checks_path" \
@@ -332,15 +326,8 @@ assert_contains "$dispatch_rules_path" \
 # --- Structured-return schema recognizes the dirty outcome (#1015) ---------
 
 schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
-core_js_path="$repo_root/plugins/shipyard/workflows/do-work-dispatch.core.js"
-workflow_js_path="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
-prompt_template_path="$repo_root/plugins/shipyard/workflows/prompt-templates/fix-checks-only.mjs"
 
 assert_contains "$schema_path" '"dirty"' "canonical schema outcome enum includes dirty"
-assert_contains "$core_js_path" "'dirty'" "do-work-dispatch.core.js workerReturnSchema literal includes dirty"
-assert_contains "$workflow_js_path" "'dirty'" "regenerated do-work-dispatch.workflow.js includes dirty"
-assert_contains "$prompt_template_path" '"outcome": "dirty"' \
-  "fix-checks-only.mjs prompt template documents the dirty structured-return example"
 
 echo
 if (( fail > 0 )); then

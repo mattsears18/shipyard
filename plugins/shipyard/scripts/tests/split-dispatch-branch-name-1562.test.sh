@@ -37,11 +37,11 @@
 #      five leak-verification trigger shapes list it. Triggering on it would
 #      strip the canonical name from the common sliced case for no benefit.
 #
-# CHECK 3 of check-dispatch-prompt-parity.mjs already enforces that the
-# Context paragraph reaches `buildIssueWorkPrompt` (its augmentation set is
-# derived from dispatch-rules.md's own headings, #918) — this suite covers
-# what parity cannot: the trigger set, the name shape, and the four
-# branch-derivation sites.
+# The dispatch-prompt parity checker that enforced the Context paragraph reaching
+# the builder was removed with the Workflow substrate (#1654) — this suite covers
+# the trigger set, the name shape, and the four branch-derivation sites.
+
+
 #
 # Pure bash + grep, no external dependencies. Run with:
 #
@@ -71,8 +71,6 @@ fi
 dispatch_rules="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 issue_work="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
 leak_fragment="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-parent-epic-leak.md"
-builder_src="$repo_root/plugins/shipyard/workflows/prompt-templates/issue-work.mjs"
-generated="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
 guard="$repo_root/plugins/shipyard/scripts/concurrent-session-guard.sh"
 shipped_reap="$repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh"
 drain_reap="$repo_root/plugins/shipyard/scripts/drain-pre-dispatch-branch-reap.sh"
@@ -130,8 +128,6 @@ assert_contains "$dispatch_rules" "Why a bare \`do-work/slice-<N>\`, and not the
   "dispatch-rules.md records WHY the name carries no free-text slug"
 assert_contains "$dispatch_rules" 'Branch: `<dispatch_branch>`' \
   "the issue-work template's Branch: line is the computed <dispatch_branch>, not a hardcoded name"
-assert_contains "$dispatch_rules" '"splitDispatch":' \
-  "the Workflow-substrate issue-work payload documents the splitDispatch field"
 
 # The neutral name must never carry a free-text slug — that would break every
 # re-derivation site below. Guard the shape itself, not just the prose.
@@ -139,14 +135,6 @@ assert_not_contains "$dispatch_rules" 'do-work/slice-<N>-<short>-' \
   "dispatch-rules.md never prescribes a slugged slice branch as the actual name"
 
 echo
-echo "Test: the builder renders the paragraph (parity CHECK 3's other half)"
-
-assert_contains "$builder_src" "unit.splitDispatch" \
-  "buildIssueWorkPrompt gates the paragraph on unit.splitDispatch"
-assert_contains "$builder_src" "Neutral branch name (split dispatch, #1562):" \
-  "buildIssueWorkPrompt renders the anchor phrase verbatim"
-assert_contains "$generated" "Neutral branch name (split dispatch, #1562):" \
-  "the generated workflow.js carries the paragraph (generator was re-run)"
 
 echo
 echo "Test: the worker spec takes the dispatched branch name verbatim"
