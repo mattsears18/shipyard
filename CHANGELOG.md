@@ -4,6 +4,20 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.61.0 — 2026-09-30
+
+Epic decomposition stops being automated (stage 3 of the #1654 re-platform). `/decompose-epic` sharded a confirmed-non-shippable epic into an ordered `Blocked by #<sibling>` chain of sub-issues, dispatched through a dedicated `decompose-worker` agent, and `/do-work` invoked the same logic inline from scope-preflight whenever `decompose.auto` was on. A current model asked to work an epic does the sharding as part of planning it; a separate agent, its own command, a config block and a wiring test existed to make a weaker model do that reliably.
+
+**The marker survives — only the automated consumer goes.** Scope-preflight still stamps `<!-- do-work-needs-decomposition -->` with `needs-human-review` when it judges an epic non-shippable as one PR, and `/my-turn` still surfaces those issues. Those markers are on live issues today; removing the writer does not remove them, so every reader stays.
+
+- `plugins/shipyard/commands/decompose-epic.md`, `plugins/shipyard/agents/decompose-worker.md` (removed), plus `decompose-epic.test.sh` and `decompose-worker-agent.test.sh`.
+- `plugins/shipyard/commands/do-work/setup/06c-scope-handling-ui.md` — the inline auto-decompose step; `dispatch-rules.md` — the `shipyard:decompose-worker` wiring section and the `decompose.max_subissues` config read.
+- `plugins/shipyard/schemas/shipyard.config.schema.json`, `scripts/shipyard-config.sh` — the whole `decompose` config block (`auto`, `max_subissues`).
+- `plugins/shipyard/agents/issue-worker/spike.md` — **the sub-issue fan-out cap is now a fixed 8**, not a config knob. The cap is kept deliberately: it guards an unbounded external action (filing GitHub issues), which is the class of guardrail this re-platform keeps regardless of model capability. Nobody had ever tuned it, so the key is gone and the limit stays.
+- `plugins/shipyard/scripts/tests/dispatch-integration-774.test.sh` — **kept**, with only its decompose assertions removed. 32 of its 41 assertions cover spike-worker wiring, which is unaffected.
+- `plugins/shipyard/skills/mode-shim-preamble/SKILL.md` — the isolation-exemption carve-out described an agent that no longer exists.
+- `README.md`, `CLAUDE.md` — the command index and the epic-decomposition pipeline section, rewritten to describe the marker as a human-review signal rather than an automation trigger.
+
 ### 4.60.0 — 2026-09-30
 
 Two commands the model no longer needs are removed (stage 2 of the #1654 re-platform). `/optimize-markdown` existed to detect context bloat in runtime-loaded markdown — i.e. to fight shipyard's own prompt corpus, which the re-platform is now removing directly, so its subject is going away. `/refine-issues` was a source-branched refiner that classified and rewrote raw user-feedback bodies, resolved `## Open questions` blocks to defaults, and fell through to `needs-human-review` otherwise; `/do-work` invoked it at setup step 3.5 and blocked on it. A current model does that inline — a worker reading a raw reporter-prose issue classifies it as part of understanding the task, which is what the refiner was doing one pass earlier and one context-window removed from the code.

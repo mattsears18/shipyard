@@ -7,7 +7,7 @@
 # to stamp issues (its "Don't apply the `shipyard` label" rule), and auditors
 # had no guarantee the label existed before they filed. The fix: every creation
 # path — orchestrator PRs, worker follow-up issues, `/shipyard:file-issue`, all
-# `audit:*` auditors, `/decompose-epic` — must apply
+# `audit:*` auditors — must apply
 # `shipyard` and first ensure the label exists (idempotent create).
 #
 # This test is the regression guard. It asserts:
@@ -16,8 +16,6 @@
 # 2. The SKILL.md filing command examples include `--label shipyard`.
 # 3. file-issue.md no longer carries the "Don't apply the `shipyard` label" rule
 #    and instead carries the affirmative stamping rule.
-# 4. decompose-epic.md ensures the label before creating sub-issues and passes
-#    `--label shipyard` on each sub-issue create.
 # 5. issue-work.md instructs workers to use `--label shipyard` on follow-up issues.
 # 6. CLAUDE.md's Session-stamp label section says the stamp applies to every
 #    issue AND PR, and names the ensure pattern.
@@ -44,7 +42,6 @@ fi
 
 filing_skill="$repo_root/plugins/shipyard/skills/filing-github-issues/SKILL.md"
 file_issue_cmd="$repo_root/plugins/shipyard/commands/file-issue.md"
-decompose_cmd="$repo_root/plugins/shipyard/commands/decompose-epic.md"
 issue_work="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
 claude_md="$repo_root/CLAUDE.md"
 
@@ -134,18 +131,6 @@ assert_contains "$file_issue_cmd" \
   "--label shipyard" \
   "file-issue.md step 6 passes --label shipyard on gh issue create"
 
-# ── 3. decompose-epic.md ──────────────────────────────────────────────────────
-echo
-echo "3. decompose-epic.md"
-
-assert_contains "$decompose_cmd" \
-  "gh label create shipyard --repo <owner/repo> --description \"Worked on by /shipyard:do-work\" --color 5319E7 2>/dev/null || true" \
-  "decompose-epic.md ensures shipyard label before creating sub-issues"
-
-assert_contains "$decompose_cmd" \
-  "gh issue create --repo <owner/repo> --label shipyard" \
-  "decompose-epic.md passes --label shipyard on sub-issue create"
-
 # ── 4. issue-work.md ──────────────────────────────────────────────────────────
 echo
 echo "4. issue-work.md (worker follow-up issues)"
@@ -177,10 +162,6 @@ assert_contains "$claude_md" \
 assert_contains "$claude_md" \
   "audit:*" \
   "CLAUDE.md lists audit:* auditors as stamped creation paths"
-
-assert_contains "$claude_md" \
-  "/decompose-epic" \
-  "CLAUDE.md lists /decompose-epic as a stamped creation path"
 
 assert_contains "$claude_md" \
   "ensure the label exists first" \

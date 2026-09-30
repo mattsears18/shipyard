@@ -41,7 +41,6 @@ fi
 
 filing_skill="$repo_root/plugins/shipyard/skills/filing-github-issues/SKILL.md"
 file_issue_cmd="$repo_root/plugins/shipyard/commands/file-issue.md"
-decompose_cmd="$repo_root/plugins/shipyard/commands/decompose-epic.md"
 dont_md="$repo_root/plugins/shipyard/commands/do-work/dont.md"
 schema="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 config_sh="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
@@ -134,23 +133,6 @@ assert_file_contains "$file_issue_cmd" "Don't fail the filing over a milestone l
   "Don't section states the never-fail posture"
 
 # --------------------------------------------------------------------------
-echo
-echo "== /decompose-epic — sub-issue inherits the parent epic's milestone"
-
-assert_file_contains "$decompose_cmd" "PARENT_MILESTONE" \
-  "worker prompt template resolves the parent's milestone"
-assert_file_contains "$decompose_cmd" ".milestone.title // empty" \
-  "reads the parent's milestone title via gh issue view --json milestone"
-# shellcheck disable=SC2016  # literal text — must NOT expand
-assert_file_contains "$decompose_cmd" '${PARENT_MILESTONE:+--milestone "$PARENT_MILESTONE"}' \
-  "each sub-issue's gh issue create passes --milestone conditionally"
-assert_file_contains "$decompose_cmd" "Never look up or guess a different milestone for a child than the one the parent already carries" \
-  "documents unconditional inheritance — no re-matching against BET: for children"
-assert_file_contains "$decompose_cmd" "Inherited milestone (decompose only" \
-  "--dry-run per-epic output format shows the inherited milestone"
-assert_file_contains "$decompose_cmd" "Don't assign a sub-issue a milestone other than the parent's own" \
-  "Don't section prohibits a different or invented milestone for a child"
-
 # --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
 echo
