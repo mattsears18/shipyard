@@ -72,7 +72,11 @@ This is the same boundary the autonomy table draws generally, applied to the one
 
 ## Cold start — a repo with zero milestones
 
-The lightwork original never had to handle this; every port of this skill to a fresh repo does. When `gh api repos/<owner>/<repo>/milestones --paginate -f state=all` returns an empty list and `milestones.enabled` just flipped true (or this is genuinely the first run), the skill has to author the **initial phase set** from the actual open backlog, not assume phases already exist to sort issues into.
+The lightwork original never had to handle this; every port of this skill to a fresh repo does. When `gh api -X GET repos/<owner>/<repo>/milestones --paginate -f state=all` returns an empty **JSON array** and `milestones.enabled` just flipped true (or this is genuinely the first run), the skill has to author the **initial phase set** from the actual open backlog, not assume phases already exist to sort issues into.
+
+**An error is not an empty list ([#1652](https://github.com/mattsears18/shipyard/issues/1652)).** Cold start fires only when the fetch exited 0 **and** its output parsed as a JSON array of length zero. A non-zero exit, a non-array body (e.g. a `{"message": ..., "status": "422"}` error object), or unparseable output means *could not read milestones* — stop the run and report it; never treat it as "zero milestones". Misreading an error as empty would author a second, duplicate roadmap on a repo that already has one — the "clean, empty, entirely wrong" failure [Prove a check can fail before trusting it](#prove-a-check-can-fail-before-trusting-it) warns about.
+
+**`-X GET` is load-bearing.** `gh api` silently switches its default method from GET to **POST** as soon as any `-f`/`-F` field is passed, so without `-X GET` this call hits *create a milestone* with body `{"state":"all"}` instead of listing them (#1652's repro got a 422 from the create endpoint). With `-X GET`, the fields become query parameters.
 
 Procedure:
 
@@ -130,8 +134,8 @@ A milestone's sequence position is read back from its title's numeric prefix, `N
 ## Procedure
 
 1. **Gate check.** Confirm `milestones.enabled == true` (see [Gate](#gate-milestonesenabled) above). Exit cleanly if not.
-2. **Fetch current state.** All open issues (`gh issue list --state open --limit 500 --json number,title,body,labels,milestone,createdAt`) and all milestones (`gh api repos/<owner>/<repo>/milestones --paginate -f state=all --jq '[.[] | {number, title, description, state, open_issues, closed_issues}]'`).
-3. **Cold start check.** If the milestone list is empty, run [Cold start](#cold-start--a-repo-with-zero-milestones) and skip to step 7 once it completes — a freshly cold-started repo has nothing left to sweep in the same run.
+2. **Fetch current state.** All open issues (`gh issue list --state open --limit 500 --json number,title,body,labels,milestone,createdAt`) and all milestones (`gh api -X GET repos/<owner>/<repo>/milestones --paginate -f state=all --jq '[.[] | {number, title, description, state, open_issues, closed_issues}]'`).
+3. **Cold start check.** If the milestone fetch failed or returned anything other than a JSON array, stop and report *could not read milestones* — never fall through to cold start (see [Cold start](#cold-start--a-repo-with-zero-milestones)'s error-is-not-empty rule). If the milestone list is a genuinely empty array, run [Cold start](#cold-start--a-repo-with-zero-milestones) and skip to step 7 once it completes — a freshly cold-started repo has nothing left to sweep in the same run.
 4. **Unmilestoned sweep.** For every open issue with no milestone, read it against each phase's `BET:` and assign the best-fitting phase, or the fallback if none fits (per [Every open issue gets a milestone](#every-open-issue-gets-a-milestone--always) — never keyword-match). Create the fallback first if it doesn't exist yet.
 5. **Dependency sweep.** For every open issue (milestoned or not), scan its body and — for stated dependencies only — apply a `Blocked by #N` line if one isn't already present (per [Dependency detection](#dependency-detection-issue-1240s-added-scope)). Collect inferred-but-unstated dependencies and stale `Blocked by` references as proposals/reports for step 7, never applied directly.
 6. **Honesty checks.** Walk every open milestone and run the four checks in [Honesty checks](#honesty-checks) above. Collect findings — don't apply any of them; all four are propose-only or report-only.
