@@ -132,6 +132,42 @@ case "$sub" in
     done
 
     if [ "$has_open_blocker" = "true" ]; then
+      # --- Dependency-wait on an open PULL REQUEST (issue #1602). ---
+      # The `Blocked by #N` body-reference filter only gates on OPEN ISSUES
+      # (backlog-filter.sh joins against the open-issue payload, which never
+      # contains a PR number), so persisting `Blocked by #<PR>` would gate
+      # nothing and the issue would be re-dispatched into the same bail.
+      # Persist the self-clearing `<!-- do-work-blocked-by-prs: N,M -->`
+      # first-line marker instead (#1429) — `classify` drops the issue
+      # while any listed PR is OPEN and re-admits it once all resolve.
+      # `gh issue view` resolves PR numbers too, so the PR test is
+      # `gh pr view`, which fails on a plain issue number.
+      pr_state=$("$GH" pr view "$open_blocker" --repo "$repo" --json state -q .state 2>/dev/null)
+      if [ -n "$pr_state" ]; then
+        first_line=$(head -n 1 <<< "$issue_body")
+        existing=$(sed -nE 's/^<!--[[:space:]]*do-work-blocked-by-prs:[[:space:]]*([0-9]+(,[0-9]+)*)[[:space:]]*-->[[:space:]]*$/\1/p' <<< "$first_line")
+        if [ -n "$existing" ]; then
+          case ",${existing}," in
+            *",${open_blocker},"*) new_body="" ;;
+            *)
+              rest=$(tail -n +2 <<< "$issue_body")
+              new_body="<!-- do-work-blocked-by-prs: ${existing},${open_blocker} -->
+${rest}"
+              ;;
+          esac
+        else
+          new_body="<!-- do-work-blocked-by-prs: ${open_blocker} -->
+${issue_body}"
+        fi
+        if [ -n "$new_body" ]; then
+          "$GH" issue edit "$issue" --repo "$repo" --body "$new_body" 2>/dev/null || true
+        fi
+        "$GH" issue comment "$issue" --repo "$repo" \
+          --body "Worker returned blocked: ${reason}. Dependency-wait on open PR #${open_blocker}; no label applied — the self-clearing \`do-work-blocked-by-prs\` body marker gates dispatch until #${open_blocker} merges or closes." 2>/dev/null || true
+        echo "class=dependency-wait open_blocker=${open_blocker} blocker_kind=pr"
+        exit 0
+      fi
+
       # --- Dependency-wait subset → NO label; ensure the body persists the ref. ---
       if ! grep -qiE "blocked by[[:space:]]+#${open_blocker}\\b" <<< "$issue_body"; then
         "$GH" issue edit "$issue" --repo "$repo" \
