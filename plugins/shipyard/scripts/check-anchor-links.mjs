@@ -43,8 +43,7 @@
  * WHAT IT DOES
  * ------------
  * Dependency-free (no eval/new Function, matching the convention
- * `check-dispatch-prompt-parity.mjs` / `check-worker-return-schema-parity
- * .mjs` / `check-workflow-meta-literal.mjs` already use):
+ * other spec-consistency checkers already use):
  *
  *   1. Walks every `.md` file under the given root path(s) (a directory is
  *      walked recursively; a bare file path is checked directly).

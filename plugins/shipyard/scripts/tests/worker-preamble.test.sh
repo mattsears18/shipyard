@@ -959,11 +959,8 @@ if [[ -f "$issue_work_path" ]]; then
 fi
 
 worker_schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
-workflow_js_path="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
 assert_contains "$worker_schema_path" "unavailable-workflow-scope" \
   "worker-return.schema.json's auto_merge enum carries unavailable-workflow-scope (issue #812)"
-assert_contains "$workflow_js_path" "unavailable-workflow-scope" \
-  "do-work-dispatch.workflow.js's inline auto_merge enum carries unavailable-workflow-scope (issue #812)"
 
 # (1e) Orchestrator-side session-level hoist: a distinct list in orchestrator
 # state, a reconcile-time append, and a once-per-session (not once-per-PR)

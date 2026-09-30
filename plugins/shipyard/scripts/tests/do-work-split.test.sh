@@ -784,9 +784,6 @@ assert_contains "$issue_work_path333" \
 # it forces the same live verification, never less.
 fix_checks_path1211="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
 schema_path1211="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
-core_js_path1211="$repo_root/plugins/shipyard/workflows/do-work-dispatch.core.js"
-workflow_js_path1211="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
-prompt_template_path1211="$repo_root/plugins/shipyard/workflows/prompt-templates/fix-checks-only.mjs"
 
 assert_contains "$fix_checks_path1211" \
   'green #<M> @<head-SHA> (rollup verified' \
@@ -818,18 +815,6 @@ assert_contains "$dont_path" \
 assert_contains "$schema_path1211" \
   '"head_sha"' \
   "worker-return.schema.json declares the head_sha field (#1211)"
-assert_contains "$core_js_path1211" \
-  "head_sha: { type: ['string', 'null'] }" \
-  "do-work-dispatch.core.js's workerReturnSchema literal mirrors head_sha (#1211)"
-assert_contains "$workflow_js_path1211" \
-  "head_sha: { type: ['string', 'null'] }" \
-  "do-work-dispatch.workflow.js (generated) mirrors head_sha (#1211)"
-assert_contains "$prompt_template_path1211" \
-  '"head_sha"' \
-  "fix-checks-only.mjs's structured-return examples include head_sha (#1211)"
-assert_contains "$workflow_js_path1211" \
-  '"head_sha"' \
-  "do-work-dispatch.workflow.js (generated) mirrors the head_sha structured-return example (#1211)"
 
 # (19) Wide-fetch + client-side filter for the backlog (issue #332).
 #
