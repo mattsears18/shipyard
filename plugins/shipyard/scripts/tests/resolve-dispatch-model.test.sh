@@ -339,10 +339,9 @@ assert_contains "$POOL_FILL_MD" "resolve-dispatch-model.sh" \
 
 # The whole point: the resolved value must reach the dispatched worker's `model`.
 # Since #791 that is the `model` field on the Workflow call's args.issues[] work
-# unit, which the workflow script forwards to that unit's agent() stage.
 # (BT keeps the markdown backticks out of a single-quoted literal — SC2016.)
 BT=$'\x60'
-assert_contains "$DISPATCH_RULES_MD" "model\` field in the \`Workflow\` call" \
+assert_contains "$DISPATCH_RULES_MD" "set \`model: \"<dispatch_model>\"\` on the \`Agent\` call" \
   "dispatch-rules.md passes the resolved value through to the dispatched worker's model"
 
 # And the fail-open contract must be spelled out at the call site, so an empty
