@@ -165,6 +165,44 @@ fi
 
 # --------------------------------------------------------------------------
 echo
+echo "dependency-wait on an open PR -> do-work-blocked-by-prs marker, not Blocked-by prose (#1602)"
+# --------------------------------------------------------------------------
+echo "some body text" > "${WORK}/issue.20.body"
+echo "OPEN" > "${WORK}/pr.77.state"
+: > "$GH_LOG"
+out="$(GH="$GH_MOCK" bash "$script" classify \
+  --repo o/r --issue 20 --reason "premise lives on an open pr — blocked by #77 (contentmaxwidth)" 2>&1)"
+assert_contains "$out" "class=dependency-wait open_blocker=77 blocker_kind=pr" "PR blocker reports blocker_kind=pr"
+ghlog="$(cat "$GH_LOG")"
+assert_contains "$ghlog" "<!-- do-work-blocked-by-prs: 77 -->" "PR blocker writes the self-clearing blocked-by-prs marker"
+if [[ "$ghlog" == *"--body Blocked by #77"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "PR blocker does not persist inert Blocked-by prose"; fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "PR blocker does not persist inert Blocked-by prose"; pass=$((pass+1))
+fi
+
+echo "<!-- do-work-blocked-by-prs: 5 -->
+some body text" > "${WORK}/issue.21.body"
+: > "$GH_LOG"
+out="$(GH="$GH_MOCK" bash "$script" classify \
+  --repo o/r --issue 21 --reason "blocked by #77" 2>&1)"
+ghlog="$(cat "$GH_LOG")"
+assert_contains "$ghlog" "<!-- do-work-blocked-by-prs: 5,77 -->" "an existing marker is extended, not duplicated"
+
+echo "<!-- do-work-blocked-by-prs: 77 -->
+some body text" > "${WORK}/issue.22.body"
+: > "$GH_LOG"
+out="$(GH="$GH_MOCK" bash "$script" classify \
+  --repo o/r --issue 22 --reason "blocked by #77" 2>&1)"
+ghlog="$(cat "$GH_LOG")"
+if [[ "$ghlog" == *"ISSUE-EDIT"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "no body edit when the marker already lists the PR"; fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "no body edit when the marker already lists the PR"; pass=$((pass+1))
+fi
+
+# --------------------------------------------------------------------------
+echo
 echo "operator: external provisioning required -> agent-console"
 # --------------------------------------------------------------------------
 echo "" > "${WORK}/issue.12.body"
