@@ -50,7 +50,14 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 fix_checks_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
-steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+steady_state_router_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+# A.1's fix-checks-only reconcile moved to an on-demand fragment (#1643);
+# concatenate it with steady-state.md so the reconcile assertions below keep
+# finding the content regardless of which physical file holds it.
+a1_fix_checks_reconcile_path="$repo_root/plugins/shipyard/commands/do-work/a1-fix-checks-reconcile.md"
+steady_state_path="$(mktemp -t fix-checks-flake-steady.XXXXXX)"
+cat "$steady_state_router_path" "$a1_fix_checks_reconcile_path" > "$steady_state_path" 2>/dev/null
+trap 'rm -f "$steady_state_path"' EXIT
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 
 pass=0
@@ -98,7 +105,8 @@ echo "fix-checks-only infra-flake classification-and-re-run gate (issue #654)"
 echo
 
 assert_file_exists "$fix_checks_path" "fix-checks-only.md exists"
-assert_file_exists "$steady_state_path" "steady-state.md exists"
+assert_file_exists "$steady_state_router_path" "steady-state.md exists"
+assert_file_exists "$a1_fix_checks_reconcile_path" "a1-fix-checks-reconcile.md exists (#1643)"
 assert_file_exists "$dispatch_rules_path" "dispatch-rules.md exists"
 
 # --- Worker contract: the classification section + its anchor ---------------

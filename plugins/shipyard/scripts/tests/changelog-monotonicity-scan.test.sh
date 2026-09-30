@@ -53,6 +53,7 @@ fi
 scanner="$repo_root/plugins/shipyard/scripts/changelog-monotonicity-scan.sh"
 fix_rebase="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
 issue_work="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+issue_work_release_bump="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-release-bump.md"
 
 pass=0
 fail=0
@@ -351,12 +352,16 @@ fi
 
 # ── (6) Worker-side assertions exist in issue-work.md ────────────────────────
 if [[ -f "$issue_work" ]]; then
-  assert_contains "$issue_work" "changelog-monotonicity-scan" \
-    "issue-work.md references changelog-monotonicity-scan"
+  # The scan's full instructions moved to issue-work-release-bump.md (#1643);
+  # issue-work.md must still point at that fragment.
+  assert_contains "$issue_work" "issue-work-release-bump.md" \
+    "issue-work.md points at the release-bump fragment carrying the scan (#1643)"
+  assert_contains "$issue_work_release_bump" "changelog-monotonicity-scan" \
+    "issue-work-release-bump.md references changelog-monotonicity-scan"
   assert_contains "$issue_work" "github.com/mattsears18/shipyard/issues/555" \
     "issue-work.md links to originating issue #555"
-  assert_contains "$issue_work" "deleted released CHANGELOG" \
-    "issue-work.md documents the deletion-bail substring"
+  assert_contains "$issue_work_release_bump" "deleted released CHANGELOG" \
+    "issue-work-release-bump.md documents the deletion-bail substring"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

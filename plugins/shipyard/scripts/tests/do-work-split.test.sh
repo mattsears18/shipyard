@@ -93,6 +93,11 @@ disk_space_guard_path="$repo_root/plugins/shipyard/commands/do-work/disk-space-g
 # version-release.md — step B.0's release-on-non-claim hook, split out of
 # steady-state.md by #1420 for the same #611 size-cap reason as the two above.
 version_release_path="$repo_root/plugins/shipyard/commands/do-work/version-release.md"
+# a1-fix-checks-reconcile.md — A.1's fix-checks-only return reconcile (fabrication
+# pre-check, head-SHA citation check, trust-but-verify, pending/dirty/flake
+# bookkeeping), split out of steady-state.md by #1643 for the same #611 size-cap
+# reason as the fragments above; steady-state.md keeps a pointer.
+a1_fix_checks_reconcile_path="$repo_root/plugins/shipyard/commands/do-work/a1-fix-checks-reconcile.md"
 # invariant_line_path (issue #1261): the step-E per-token "what it means /
 # when it's set / divergence smells" narrative (tokens_attributed,
 # last_fresh_fetch, unfiltered_open_count, me_assigned_open, operator_q/
@@ -125,7 +130,7 @@ cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
 extracted_reap_scripts_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh $repo_root/plugins/shipyard/scripts/concurrent-session-guard.sh $repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh $repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh $repo_root/plugins/shipyard/scripts/stale-failure-check.sh $repo_root/plugins/shipyard/scripts/next-available-version.sh $repo_root/plugins/shipyard/scripts/primary-leak-guard.sh"
 steady_state_path="$(mktemp -t do-work-steady-concat.XXXXXX)"
 # shellcheck disable=SC2086  # intentional word-splitting: space-separated path list
-cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$version_release_path" "$invariant_line_path" "$operate_path" $extracted_reap_scripts_path > "$steady_state_path" 2>/dev/null
+cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$version_release_path" "$a1_fix_checks_reconcile_path" "$invariant_line_path" "$operate_path" $extracted_reap_scripts_path > "$steady_state_path" 2>/dev/null
 trap 'rm -f "$setup_path" "$operate_path" "$steady_state_path"' EXIT
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 cleanup_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
@@ -969,7 +974,8 @@ assert_not_contains "$steady_state_path" \
 #     manifest_path, manifest_version_jq, changelog_path)
 #
 # These assertions pin the post-#339 contract:
-issue_work_path339="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+# #1643 moved the version-bump rules to an on-demand fragment; issue-work.md keeps a pointer.
+issue_work_path339="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-release-bump.md"
 schema_path339="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 config_sh_path339="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
 
@@ -998,6 +1004,16 @@ assert_contains "$steady_state_path" \
   'Next-available version (orchestrator-supplied)' \
   "steady-state.md step C ships the dispatch-prompt paragraph for next-available-version (#339)"
 
+# #1643: the moved sections must stay reachable from their always-loaded parents.
+assert_contains "$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md" \
+  '(./issue-work-release-bump.md)' \
+  "issue-work.md step 4 points at the on-demand issue-work-release-bump.md fragment (#1643)"
+assert_contains "$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md" \
+  '(./issue-work-external-trust.md)' \
+  "issue-work.md step 6 points at the on-demand issue-work-external-trust.md fragment (#1643)"
+assert_contains "$steady_state_router_path" \
+  '(./a1-fix-checks-reconcile.md)' \
+  "steady-state.md A.1 points at the on-demand a1-fix-checks-reconcile.md fragment (#1643)"
 assert_contains "$issue_work_path339" \
   'issues/339' \
   "issue-work.md cites issue #339 as the source of the coordination contract"
@@ -1676,7 +1692,8 @@ done
 # release PR that nearly collided on the version row), the other included
 # it. The fix lands in issue-work.md step 4: when a per-PR release rule is
 # present, including the bump is mandatory and deferral is forbidden.
-issue_work_path460="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+# #1643 moved the version-bump rules to an on-demand fragment; issue-work.md keeps a pointer.
+issue_work_path460="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-release-bump.md"
 
 assert_contains "$issue_work_path460" \
   'issues/460' \
@@ -2045,7 +2062,8 @@ assert_contains "$setup_path" \
 # the same dispatch, and specifies that the follow-up must compute its own
 # version slot by reading origin/<default-branch> after the primary bump
 # has landed (the orchestrator-supplied version covers only the primary PR).
-issue_work_path544="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+# #1643 moved the version-bump rules to an on-demand fragment; issue-work.md keeps a pointer.
+issue_work_path544="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-release-bump.md"
 
 assert_contains "$issue_work_path544" \
   'issues/544' \
