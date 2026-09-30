@@ -71,23 +71,6 @@ assert_file_contains() {
   fi
 }
 
-assert_file_not_contains() {
-  local path="$1" needle="$2" label="$3"
-  if [[ ! -f "$path" ]]; then
-    printf '  %sFAIL%s  %s — file missing: %s\n' "$RED" "$RESET" "$label" "$path"
-    fail=$((fail+1))
-    return
-  fi
-  if grep -qF -- "$needle" "$path"; then
-    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$label"
-    printf '    expected %s to NOT contain: %s\n' "$path" "$needle"
-    fail=$((fail+1))
-  else
-    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
-    pass=$((pass+1))
-  fi
-}
-
 assert_equals() {
   local actual="$1" expected="$2" label="$3"
   if [[ "$actual" == "$expected" ]]; then
