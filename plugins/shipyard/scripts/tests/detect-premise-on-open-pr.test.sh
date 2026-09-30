@@ -21,6 +21,7 @@
 # needs no network. Run with:
 #   bash plugins/shipyard/scripts/tests/detect-premise-on-open-pr.test.sh
 
+# shellcheck disable=SC2016  # issue-body fixtures contain literal markdown backticks
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

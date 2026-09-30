@@ -14,7 +14,10 @@ A worker files a follow-up that describes the tree **as it will be once its own 
 
 When an acceptance criterion names a path or symbol missing from `origin/<default>`, run the detector before you decide anything. Run it as a plain command from your worktree:
 
+Reuse the `CLAUDE_PLUGIN_ROOT` you resolved at step 0. The `:-` fallback in the first line does nothing when that value is already set. Run each line below as its own plain command:
+
 ```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 "$CLAUDE_PLUGIN_ROOT/scripts/detect-premise-on-open-pr.sh" --repo <owner/repo> --issue <N> --base "origin/<default>"
 ```
 

@@ -77,6 +77,7 @@ set -u
 GH="${GH:-gh}"
 
 usage() {
+  # shellcheck disable=SC2016  # literal backticks in a sed address, not command substitution
   sed -n '/^# Usage/,/^# The `gh` binary/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
@@ -147,6 +148,7 @@ else
 fi
 
 # --- Extract + classify inline-backticked tokens. ---
+# shellcheck disable=SC2016  # literal backticks delimit markdown inline code
 tokens=$(printf '%s\n' "$body" | grep -oE '`[^`[:space:]]+`' | tr -d '`' | sort -u)
 
 paths=""
