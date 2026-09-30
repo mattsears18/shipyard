@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Test: orchestrator dispatch-site integration for the decompose-worker (#772)
-# and spike-worker (#773) agent modes — issue #774.
+# Test: orchestrator dispatch-site integration for the spike-worker (#773)
+# agent mode — issue #774. (The decompose-worker half was removed in #1654.)
 #
 # Background
 # ----------
@@ -67,9 +67,7 @@ cat "$scope_preflight_router_path" \
   "$repo_root/plugins/shipyard/commands/do-work/setup/06c-scope-handling-ui.md" \
   > "$scope_preflight_path" 2>/dev/null
 trap 'rm -f "$scope_preflight_path"' EXIT
-decompose_epic_path="$repo_root/plugins/shipyard/commands/decompose-epic.md"
 spike_worker_path="$repo_root/plugins/shipyard/agents/spike-worker.md"
-decompose_worker_path="$repo_root/plugins/shipyard/agents/decompose-worker.md"
 mode_shim_preamble_path="$repo_root/plugins/shipyard/skills/mode-shim-preamble/SKILL.md"
 
 pass=0
@@ -110,13 +108,13 @@ assert_not_contains() {
 }
 
 for f in "$issue_worker_path" "$dispatch_rules_path" "$steady_state_path" \
-         "$scope_preflight_router_path" "$decompose_epic_path" "$spike_worker_path" "$decompose_worker_path" \
+         "$scope_preflight_router_path" "$spike_worker_path" \
          "$mode_shim_preamble_path"; do
   assert_file_exists "$f" "$(basename "$f") exists"
 done
 
 echo
-echo "== (A) agents/issue-worker.md — spike is a 7th routed mode; decompose is explicitly NOT"
+echo "== (A) agents/issue-worker.md — spike is a routed mode"
 
 assert_contains "$issue_worker_path" "| \`spike\`" \
   "mode-routing table has a spike row"
@@ -126,16 +124,10 @@ assert_contains "$issue_worker_path" "shipyard:spike-worker" \
   "spike row's dispatched shim is shipyard:spike-worker"
 assert_contains "$issue_worker_path" "7 mutually-exclusive jobs" \
   "entry file's job count updated from 6 to 7"
-assert_contains "$issue_worker_path" "shipyard:decompose-worker" \
-  "entry file documents shipyard:decompose-worker as a related-but-excluded agent"
 # The full decompose-worker carve-out explanation (including the "does NOT get
 # a routing-table row" wording) lives in shipyard:mode-shim-preamble as of
 # issue #879's dedup — issue-worker.md's Worktree isolation contract section
 # now just points at it rather than re-stating it. Check it there instead.
-assert_contains "$mode_shim_preamble_path" "shipyard:decompose-worker" \
-  "mode-shim-preamble skill documents shipyard:decompose-worker as a related-but-excluded agent"
-assert_contains "$mode_shim_preamble_path" "not an eighth row" \
-  "mode-shim-preamble skill is explicit that decompose-worker does NOT get a mapping-table row"
 
 echo
 
@@ -162,36 +154,19 @@ assert_contains "$dispatch_rules_path" "mode: spike" \
   "dispatch-rules.md's spike prompt template names mode: spike"
 assert_contains "$dispatch_rules_path" "spike" \
   "dispatch-rules.md mentions the spike label as a detection signal"
-assert_contains "$dispatch_rules_path" "decompose.max_subissues" \
-  "dispatch-rules.md's spike prompt reads the decompose.max_subissues fan-out cap"
 assert_contains "$dispatch_rules_path" "spiked+shipped" \
   "dispatch-rules.md's spike prompt template documents the spiked+shipped return value"
 
 echo
 echo "== (E) dispatch-rules.md — decompose-worker wiring documented, never added as a routed mode"
 
-assert_contains "$dispatch_rules_path" "Wiring \`shipyard:decompose-worker\`" \
-  "dispatch-rules.md has a section documenting the decompose-worker wiring"
-assert_contains "$dispatch_rules_path" "intentionally absent from this table" \
-  "dispatch-rules.md states shipyard:decompose-worker is absent from the per-mode routing table"
 
 echo
 echo "== (F) setup/06-scope-preflight.md — inline auto-decompose now targets shipyard:decompose-worker"
 
-assert_contains "$scope_preflight_path" 'subagent_type: "shipyard:decompose-worker"' \
-  "inline auto-decompose dispatch uses subagent_type: \"shipyard:decompose-worker\""
-assert_not_contains "$scope_preflight_path" 'subagent_type: "general-purpose"' \
-  "inline auto-decompose dispatch no longer uses subagent_type: \"general-purpose\""
-assert_contains "$scope_preflight_path" "the worker only reads the codebase read-only and calls the GitHub API" \
-  "inline auto-decompose dispatch still documents the no-worktree rationale"
 
 echo
-echo "== (G) commands/decompose-epic.md — bulk dispatch now targets shipyard:decompose-worker"
 
-assert_contains "$decompose_epic_path" 'subagent_type: "shipyard:decompose-worker"' \
-  "decompose-epic.md's bulk dispatch uses subagent_type: \"shipyard:decompose-worker\""
-assert_not_contains "$decompose_epic_path" 'subagent_type: "general-purpose"' \
-  "decompose-epic.md's bulk dispatch no longer uses subagent_type: \"general-purpose\""
 
 echo
 echo "== (H) steady-state.md — A.1 reconciles the spike-work return contract"
@@ -214,12 +189,7 @@ assert_contains "$spike_worker_path" "dispatch-rules.md" \
   "spike-worker.md points at dispatch-rules.md for the routing logic"
 
 echo
-echo "== (J) decompose-worker.md — still documents the no-worktree contract unchanged by #774"
 
-assert_contains "$decompose_worker_path" "deliberately carries no \`isolation:\` frontmatter field" \
-  "decompose-worker.md still documents its worktree-isolation exemption"
-assert_contains "$decompose_worker_path" "out of scope" \
-  "decompose-worker.md still scopes out a mode-routing-table row for itself"
 
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"

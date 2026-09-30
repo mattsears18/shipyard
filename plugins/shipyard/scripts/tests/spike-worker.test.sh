@@ -134,8 +134,8 @@ assert_contains "$spec_path" "shipyard:worker-preamble" \
   "spec references the shipyard:worker-preamble skill"
 assert_contains "$spec_path" "originating_author_trust" \
   "spec documents the originating_author_trust auto-merge gate input"
-assert_contains "$spec_path" "decompose.max_subissues" \
-  "spec documents the decompose.max_subissues fan-out cap input"
+assert_contains "$spec_path" "fan-out cap" \
+  "spec documents the fixed sub-issue fan-out cap"
 
 echo
 echo "== (E) per-mode spec — the distinguishing spike lifecycle: investigate -> design doc -> decompose -> optional implement"

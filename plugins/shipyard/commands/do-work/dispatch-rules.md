@@ -28,7 +28,6 @@ Every value in the Model column is the **default**, not the last word — the me
 
 Every shim agent under [`agents/`](../../agents/) forwards to the same per-mode spec under [`agents/issue-worker/<mode>.md`](../../agents/issue-worker/) — the model pin is the only behavioral difference between shims. **When in doubt about a mode's behavioral contract, read the per-mode file; it is the single source of truth.**
 
-**`shipyard:decompose-worker` is intentionally absent from this table.** It doesn't take a `mode:` value at all, isn't reached through this per-issue routing tree, and is dispatched via the **`Agent` tool** (deliberately without `isolation: "worktree"` — it never touches code) — see [Wiring `shipyard:decompose-worker` into the existing inline auto-decompose dispatch](#wiring-shipyarddecompose-worker-into-the-existing-inline-auto-decompose-dispatch-774) below for where it's actually invoked. Neither dispatch shape's per-issue routing governs it, and it does not absorb every `Agent` dispatch shipyard makes.
 
 **Per-dispatch model resolution — honor `models.<mode>` ([#727](https://github.com/mattsears18/shipyard/issues/727)).** The plugin's built-in per-mode defaults (the frontmatter pins on the shim agents) are plugin-owned, so a consumer repo cannot edit them in place — which is precisely what the `models.*` config block exists for. **Every** dispatch in the table above — step 7's initial pool fill and step C's replacement dispatch alike — resolves the mode's model from the merged config. See [RATIONALE → The models config surface was dead until #727](../do-work-RATIONALE.md#dispatch-rules--the-models-config-surface-was-dead-until-727) for how this surface sat unread for a release:
 
@@ -459,12 +458,11 @@ When filling a slot, walk this decision tree:
    export CLAUDE_PLUGIN_ROOT="<plugin-root literal>"
    # Re-export the SHIPYARD_REPO_ROOT pin as a literal (issue #1059/#1064, #1619).
    export SHIPYARD_REPO_ROOT="<primary-root literal>"
-   decompose_max_subissues=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get decompose.max_subissues 2>/dev/null || echo "8")
    ```
 
    Prompt template:
 
-   > **`mode: spike`** — Work issue #<N> in `<owner/repo>` to completion. The `shipyard` label is already applied (self-assignment is config-gated via `backlog.self_assign`, default off — see worker-preamble). The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating. Fan-out cap for follow-on sub-issues: **`<decompose_max_subissues>`** (default 8). **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/spike.md`.** Branch: `do-work/issue-<N>`.
+   > **`mode: spike`** — Work issue #<N> in `<owner/repo>` to completion. The `shipyard` label is already applied (self-assignment is config-gated via `backlog.self_assign`, default off — see worker-preamble). The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating. Fan-out cap for follow-on sub-issues: **`8`** (default 8). **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/spike.md`.** Branch: `do-work/issue-<N>`.
    >
    > Return values: `spiked+shipped #<N> via PR #<M> (...)`, `spiked+needs-human-review #<N> (label applied)`, or `blocked: <reason>` (full vocabulary in spike.md step 11). Also available: `awaiting-external #<N>: <what> (<probe>, eta <dur>)` — terminal, NOT a human hand-back, only when everything you can finish is committed and pushed and the sole remaining input is a long external job you already started; load `skills/worker-preamble/awaiting-external.md` before using it ([#1390](https://github.com/mattsears18/shipyard/issues/1390)).
 
@@ -669,20 +667,9 @@ implements — read it as the reference for what a given return *means*, not mer
 | `spike` | `{outcome:"disposition", issue:N, disposition:"needs-human-review"}` | `spiked+needs-human-review #N (label applied)` |
 
 
-## Wiring `shipyard:decompose-worker` into the existing inline auto-decompose dispatch ([#774](https://github.com/mattsears18/shipyard/issues/774))
-
-Epic-decomposition doesn't get a **new** dispatch branch in the decision tree above — it already has one, dating to [#665](https://github.com/mattsears18/shipyard/issues/665): [setup.md step 6's Recording path, sub-step 5](./setup/06-scope-preflight.md#6-initial-scope-pre-flight) (and the [drain 5.a/5.b re-validation](./drain.md#5a--re-validate-orchestrator-judgment-entries)) inline-invokes [`/decompose-epic`'s Worker prompt template](../decompose-epic.md#worker-prompt-template) against a confirmed, mechanically-decomposable epic. **Both of that dispatch's call sites use `subagent_type: "shipyard:decompose-worker"`** — the template, the `--max-subissues` argument, the confidence gate, and the `decomposed:`/`escalated:`/`blocked:` return contract are all unchanged; `shipyard:decompose-worker` is a registered, by-name agent whose own file *is* a thin pointer at the same template (per [`decompose-worker.md`](../../agents/decompose-worker.md)'s "single source of truth" framing). See [RATIONALE → decompose-worker registered identity](../do-work-RATIONALE.md#dispatch-rules--decompose-worker-registered-identity-772-774) for what it replaced:
-
-- [`setup/06c-scope-handling-ui.md`](./setup/06c-scope-handling-ui.md#handling-each-returned-entry-fires-as-each-background-agent-completes)'s inline auto-decompose dispatch (Recording path step 5).
-- [`decompose-epic.md`](../decompose-epic.md#dispatch)'s own bulk-dispatch `Agent` call (the standalone `/decompose-epic` command).
-
-**`isolation: "worktree"` is still omitted at both call sites** — that never changes, regardless of `subagent_type`. `shipyard:decompose-worker` is deliberately excluded from `enforce-worktree-isolation.sh`'s guarded set (see that hook's own comment) precisely because it never touches code; passing `isolation: "worktree"` here would be wasted worktree setup/teardown for a job that only reads the codebase read-only and calls the GitHub API.
-
-**Why this isn't a new row in the per-mode routing table above.** `shipyard:decompose-worker` doesn't take a `mode:` value, isn't dispatched from the per-issue `ready_issues` / `divert_queue` / `investigate_candidates` decision tree, and runs a categorically different job shape (one epic in, sub-issues + a decomposed/escalated/blocked verdict out — no PR, no worktree, no CI to reconcile). Folding it into the table would suggest it's reached the same way the seven `mode:`-driven workers are; it isn't. See [`agents/issue-worker.md`'s Worktree isolation contract section](../../agents/issue-worker.md#worktree-isolation-contract) for the same point made from the routing-table side.
-
 ## Dispatch denied by the harness permission classifier ([#718](https://github.com/mattsears18/shipyard/issues/718))
 
-Every branch above assumes the dispatch tool call *happens*. It can also be **refused outright by the harness** — Claude Code's auto-mode permission classifier evaluates the orchestrator's own dispatch (the `Agent` call for a `mode:`-driven worker, or the `Agent` call for `shipyard:decompose-worker`), and can deny it:
+Every branch above assumes the dispatch tool call *happens*. It can also be **refused outright by the harness** — Claude Code's auto-mode permission classifier evaluates the orchestrator's own dispatch (the `Agent` call for a `mode:`-driven worker, or the `Agent` call for the removed `decompose-worker` agent), and can deny it:
 
 ```
 Permission for this action was denied by the Claude Code auto mode classifier.

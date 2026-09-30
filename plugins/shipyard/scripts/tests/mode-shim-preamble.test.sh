@@ -113,8 +113,6 @@ if [[ -f "$skill_path" ]]; then
     "skill documents the mode-to-shim mapping table"
   assert_contains "$skill_path" "shipyard:worker-preamble" \
     "skill cross-references worker-preamble"
-  assert_contains "$skill_path" "shipyard:decompose-worker" \
-    "skill documents the decompose-worker carve-out"
   # Frontmatter identity is explicitly out of scope for this skill — it must
   # never be the thing consolidated, since each shim is a dispatchable
   # subagent_type keyed on its own frontmatter.

@@ -17,8 +17,6 @@ The `Agent` tool (the default shape for all seven modes, as of [#825](https://gi
 
 There is nothing for a caller to pass and nothing for shipyard to police. A new worktree-isolated shim needs only the frontmatter field. `shipyard:worker-preamble` § "Worktree discipline" remains the source of truth for the rules that *follow* from being isolated (never `gh pr checkout`; never `git switch` to the default branch on return) — those are branch-management rules the harness has no opinion about, not containment rules.
 
-**Not every agent in this plugin wants isolation.** [`shipyard:decompose-worker`](../../agents/decompose-worker.md) decomposes a confirmed epic through read-only codebase inspection plus GitHub API writes. It never touches code, so it carries no `isolation:` field and pays no worktree setup cost. It is **not an eighth row** in the mapping below.
-
 ## Shared worker-preamble bullets
 
 Every shim's own "Shared rules — load first" section keeps this identical lead-in and close, plus its own bullet list built from `shipyard:worker-preamble`:

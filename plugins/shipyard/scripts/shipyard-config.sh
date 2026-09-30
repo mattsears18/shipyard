@@ -252,10 +252,6 @@ DEFAULTS_JQ='{
     "recheck_probe_url_hosts": [],
     "recheck_probe_max_bytes": 1048576
   },
-  "decompose": {
-    "auto": true,
-    "max_subissues": 8
-  },
   "dependencies": {
     "new_dep_version": "latest-stable"
   },
