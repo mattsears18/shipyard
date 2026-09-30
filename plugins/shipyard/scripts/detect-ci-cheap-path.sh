@@ -37,6 +37,13 @@
 #     anywhere in its `pull_request`-triggered workflows has NO cheap path —
 #     every PR runs the same CI regardless of changed files — and this
 #     script reports that honestly (`no-cheap-path`) rather than guessing.
+#   - Issue #1600 adds the job-level lane: a `dorny/paths-filter` step whose
+#     filter is `'**'` plus `'!...'` negations under
+#     `predicate-quantifier: every` (see extract_dorny_globs_from_file). The
+#     negations are an exclude list too, so they invert the same way.
+#   - Across workflow files the per-file glob sets are INTERSECTED, not
+#     unioned (#1600): a path is only cheap when every path-filtered
+#     workflow skips it. Workflows with no filter don't participate.
 #   - This is a heuristic, advisory read, same posture as
 #     detect-ci-runner-capacity.sh: a malformed/unreadable workflow file
 #     degrades toward "found nothing" (never toward fabricating a glob list),
@@ -202,6 +209,145 @@ extract_globs_from_file() {
   ' "$file" 2>/dev/null
 }
 
+# extract_dorny_globs_from_file <file> — print each cheap-lane glob a
+# `dorny/paths-filter` step declares, one per line (issue #1600).
+#
+# The shape recognized is the "everything except" filter a job gates its
+# heavy steps on:
+#
+#   - uses: dorny/paths-filter@v4
+#     with:
+#       predicate-quantifier: every
+#       filters: |
+#         code:
+#           - '**'
+#           - '!**/*.md'
+#           - '!docs/**'
+#
+# A filter qualifies only when BOTH hold, and each negation (minus its `!`)
+# is emitted as a cheap glob:
+#   - it carries the positive catch-all `'**'` plus at least one `'!...'`
+#     negation, AND
+#   - the step sets `predicate-quantifier: every`. Under dorny's default
+#     (`some`), `'**'` alone satisfies the filter for every file, so the
+#     negations exclude NOTHING — that repo has no cheap lane at all, and
+#     reporting one would bias dispatch toward PRs that still run the full
+#     matrix (the exact failure #1600 exists to prevent).
+#
+# A negated glob that is ALSO a positive pattern of another filter in the
+# same step is dropped: that is the "re-admit" idiom (a second filter ORed
+# into the heavy gate for a path the negation excludes), so a diff there is
+# not reliably cheap. Only an exact-text re-admit is detected; this stays a
+# heuristic, advisory read like the rest of this script. Flow-style filter
+# lists and a `filters:` value naming an external file are not parsed —
+# they yield nothing, never a guess.
+extract_dorny_globs_from_file() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+
+  awk '
+    function indent_of(s,   m) { match(s, /^[ ]*/); return RLENGTH }
+    function unquote(s) {
+      sub(/[ \t]+#.*$/, "", s)
+      gsub(/^[ \t'"'"'"]+/, "", s)
+      gsub(/[ \t'"'"'"]+$/, "", s)
+      return s
+    }
+    function reset_step() {
+      in_step = 0; every = 0; in_filters = 0; filters_col = -1
+      cur = ""; nfilters = 0
+      delete pats; delete fnames
+    }
+    function flush_step(   i, f, n, k, arr, p, g, positives, has_all, negs) {
+      if (!in_step) return
+      if (every) {
+        # Collect every positive pattern, keyed by filter, for the re-admit check.
+        for (i = 1; i <= nfilters; i++) {
+          f = fnames[i]
+          n = split(pats[f], arr, "\n")
+          for (k = 1; k <= n; k++) {
+            p = arr[k]
+            if (p != "" && substr(p, 1, 1) != "!" && p != "**") positives[f SUBSEP p] = 1
+          }
+        }
+        for (i = 1; i <= nfilters; i++) {
+          f = fnames[i]
+          n = split(pats[f], arr, "\n")
+          has_all = 0; negs = 0
+          for (k = 1; k <= n; k++) {
+            if (arr[k] == "**") has_all = 1
+            if (substr(arr[k], 1, 1) == "!") negs++
+          }
+          if (!has_all || negs == 0) continue
+          for (k = 1; k <= n; k++) {
+            p = arr[k]
+            if (substr(p, 1, 1) != "!") continue
+            g = substr(p, 2)
+            if (g == "" || readmitted(g, f, positives)) continue
+            print g
+          }
+        }
+      }
+      reset_step()
+    }
+    function readmitted(g, self, positives,   key, parts) {
+      for (key in positives) {
+        split(key, parts, SUBSEP)
+        if (parts[1] != self && parts[2] == g) return 1
+      }
+      return 0
+    }
+    BEGIN { reset_step() }
+    {
+      line = $0
+      if (line ~ /^[ \t]*$/ || line ~ /^[ \t]*#/) next
+      ind = indent_of(line)
+
+      if (line ~ /uses:[ \t]*["'"'"']?dorny\/paths-filter/) {
+        flush_step()
+        in_step = 1
+        # The step key column: `uses:` itself (for `- uses:` add the dash).
+        step_col = ind
+        if (line ~ /^[ ]*-[ ]+uses:/) { t = line; sub(/^[ ]*-[ ]+/, "", t); step_col = length(line) - length(t) }
+        next
+      }
+      if (!in_step) next
+
+      if (ind < step_col) { flush_step(); next }
+
+      if (in_filters) {
+        if (ind <= filters_col) {
+          in_filters = 0
+        } else if (line ~ /^[ ]*-[ ]*/) {
+          if (cur != "") {
+            p = line; sub(/^[ ]*-[ ]*/, "", p); p = unquote(p)
+            if (p != "") pats[cur] = (pats[cur] == "" ? p : pats[cur] "\n" p)
+          }
+          next
+        } else if (line ~ /^[ ]*[A-Za-z0-9_.-]+:[ \t]*$/) {
+          cur = line; sub(/^[ ]*/, "", cur); sub(/:[ \t]*$/, "", cur)
+          fnames[++nfilters] = cur
+          next
+        } else {
+          cur = ""
+          next
+        }
+      }
+
+      if (line ~ /predicate-quantifier:/) {
+        v = line; sub(/^[^:]*:/, "", v); v = unquote(v)
+        if (v == "every") every = 1
+        next
+      }
+      if (line ~ /^[ ]*filters:[ \t]*[|>]/) {
+        in_filters = 1; filters_col = ind; cur = ""
+        next
+      }
+    }
+    END { flush_step() }
+  ' "$file" 2>/dev/null
+}
+
 # decide_repo_shape <workflows-dir> — the live-discovery path.
 decide_repo_shape() {
   local dir="$1" f glob_str=""
@@ -211,14 +357,40 @@ decide_repo_shape() {
     return 0
   fi
 
-  local -a all_globs=()
+  # A diff is cheap only if EVERY path-filtered workflow skips it (issue
+  # #1600): union the globs WITHIN one file (a trigger-level `paths-ignore:`
+  # and a job-level dorny negation each independently skip that file's
+  # heavy work), then INTERSECT across files. The pre-#1600 union across
+  # files over-claimed — a glob one light workflow ignores (`.github/**` in
+  # a bundle-size check) was reported cheap even though the heavy workflow
+  # still runs on it. The intersection is exact-text, so a glob spelled
+  # differently in two workflows drops out: the conservative direction.
+  # A workflow declaring no filter at all is not part of the intersection —
+  # its cost can't be read from the file, and an unfiltered repo stays
+  # `no-cheap-path` because no workflow contributes a glob.
+  local -a common=() file_globs=() next=()
+  local first=1 g item file_csv
   while IFS= read -r -d '' f; do
+    file_globs=()
     while IFS= read -r g; do
-      [ -n "$g" ] && all_globs+=("$g")
-    done < <(extract_globs_from_file "$f")
-  done < <(find "$dir" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null)
+      [ -n "$g" ] && file_globs+=("$g")
+    done < <(extract_globs_from_file "$f"; extract_dorny_globs_from_file "$f")
+    [ "${#file_globs[@]}" -eq 0 ] && continue
 
-  if [ "${#all_globs[@]}" -eq 0 ]; then
+    file_csv=",$(IFS=,; printf '%s' "${file_globs[*]}"),"
+    if [ "$first" -eq 1 ]; then
+      first=0
+      common=("${file_globs[@]}")
+    else
+      next=()
+      for item in ${common[@]+"${common[@]}"}; do
+        case "$file_csv" in *",${item},"*) next+=("$item");; esac
+      done
+      common=(${next[@]+"${next[@]}"})
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null | sort -z)
+
+  if [ "${#common[@]}" -eq 0 ]; then
     printf 'no-cheap-path\n'
     return 0
   fi
@@ -226,8 +398,7 @@ decide_repo_shape() {
   # De-duplicate while preserving order.
   local -a deduped=()
   local seen_csv=","
-  local item
-  for item in "${all_globs[@]}"; do
+  for item in "${common[@]}"; do
     case "$seen_csv" in
       *",${item},"*) ;;
       *) deduped+=("$item"); seen_csv="${seen_csv}${item},";;
