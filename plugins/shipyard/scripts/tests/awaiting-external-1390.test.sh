@@ -83,7 +83,7 @@ config_schema_path="$plugin_root/schemas/shipyard.config.schema.json"
 session_state_path="$plugin_root/scripts/session-state.sh"
 classify_path="$plugin_root/scripts/classify-blocked-bail.sh"
 validator="$plugin_root/scripts/validate-awaiting-external-probe.sh"
-rationale_path="$plugin_root/commands/do-work-RATIONALE.md"
+rationale_path="$repo_root/docs/design/do-work-rationale.md"
 
 pass=0
 fail=0

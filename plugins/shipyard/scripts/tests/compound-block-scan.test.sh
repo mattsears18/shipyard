@@ -568,7 +568,7 @@ fi
 # (c) No allow markers in the directory. Every executable spec there is
 # post-relocation by construction, so an exemption could only ever be a
 # shortcut around a real refused shape. The one file that could legitimately
-# want an exemption some day — issue-work-RATIONALE.md, which quotes worked
+# want an exemption some day — issue-work-rationale.md, which quotes worked
 # examples — carries no ```bash fences at all today, so the scanner is inert on
 # it. If that changes, this assertion failing is the intended prompt to revisit
 # the scanner's own admission comment, not to quietly relax the rule.

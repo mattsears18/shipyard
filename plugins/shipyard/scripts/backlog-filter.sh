@@ -99,7 +99,7 @@
 #     bug>fix(*)>feat(*)>chore(*)>other, then oldest-updatedAt-first.
 #     When BOTH --milestones-enabled and --milestones-prioritize-dispatch
 #     are true, the eligible order becomes (issue #1241 — see
-#     do-work-RATIONALE.md for why each tier sits where it does):
+#     do-work-rationale.md for why each tier sits where it does):
 #       1. P0 — global, wins in ANY milestone (an emergency escape, not
 #          part of the sequencing plan).
 #       2. prioritized-label tier — an explicit per-run operator override,
@@ -265,7 +265,7 @@
 #     bucket; this gates ELIGIBILITY itself and must keep working on a repo
 #     that has not opted into milestone-ranked dispatch at all (the #1406
 #     motivating repro has `milestones.enabled: false`). See
-#     do-work-RATIONALE.md for the full design writeup.
+#     do-work-rationale.md for the full design writeup.
 #     `--someday-recheck-days <N>` (issue #1422, follow-up to #1406) is the
 #     slow re-scope cadence, in days, for a someday-milestone-parked issue.
 #     Default "0" — disables the cadence entirely, reproducing #1406's
@@ -1252,7 +1252,7 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
       # milestone-on branch promotes P0 to a global tier ABOVE
       # _prioritized_tier -- a deliberate behavior CHANGE, gated so it can
       # only fire when a repo has actually opted into milestone-ordered
-      # dispatch (see header comment + do-work-RATIONALE.md for the full
+      # dispatch (see header comment + do-work-rationale.md for the full
       # tier-ordering rationale). The milestone tier is milestone_rank,
       # not milestone_seq, so an unmilestoned issue TIES with the fallback
       # milestone rather than losing to it -- the milestone tier then has

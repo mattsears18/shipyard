@@ -96,7 +96,7 @@ STEADY_STATE="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 SETUP_WORKTREE="$repo_root/plugins/shipyard/commands/do-work/setup/01c-label-recovery-refine.md"
 DRAIN="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 DO_WORK="$repo_root/plugins/shipyard/commands/do-work.md"
-RATIONALE="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+RATIONALE="$repo_root/docs/design/do-work-rationale.md"
 # A.0.5's merge-arm call moved from steady-state.md's inline prose into
 # scripts/crash-recovery-reap.sh with issue #1291's extraction — the
 # call-site assertions below target the script now, not the .md.
@@ -208,14 +208,14 @@ echo
 #     was NOT adopted — a worker shares the orchestrator's own `gh` token on
 #     this host, so delegating would not actually route around the block.
 # ---------------------------------------------------------------------------
-echo "(E) do-work-RATIONALE.md documents why delegation-to-worker was rejected"
+echo "(E) do-work-rationale.md documents why delegation-to-worker was rejected"
 if [[ -f "$RATIONALE" ]]; then
   assert_contains "$RATIONALE" '#850 — why not delegate the arm to a worker' \
-    "do-work-RATIONALE.md has a dedicated #850 section"
+    "do-work-rationale.md has a dedicated #850 section"
   assert_contains "$RATIONALE" 'same host, as the same user' \
-    "do-work-RATIONALE.md explains a dispatched worker shares the orchestrator's own gh token"
+    "do-work-rationale.md explains a dispatched worker shares the orchestrator's own gh token"
 else
-  assert_fail "do-work-RATIONALE.md exists (missing at $RATIONALE)"
+  assert_fail "do-work-rationale.md exists (missing at $RATIONALE)"
 fi
 echo
 

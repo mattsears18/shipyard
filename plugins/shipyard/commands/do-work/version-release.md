@@ -8,7 +8,7 @@
 
 `reseed-if-idle` ([#1417](https://github.com/mattsears18/shipyard/issues/1417)) cannot recover this variant, and that is not a shortcoming in it: it fires only once `session_prs` has **no OPEN member**, while this leak routinely happens with sibling PRs still open. The [#1420](https://github.com/mattsears18/shipyard/issues/1420) repro observed the cursor at `4.40.0` while the true highest claim across every open PR was `4.38.0` — from a worker that *declined* and never took any version at all, so no amount of bump-level discipline would have prevented it. **This step is the other half of the self-heal.**
 
-See [`orchestrator-state-reference.md`](./orchestrator-state-reference.md#cold-orchestrator-state-structures) for the `version_cursor` struct, and [RATIONALE](../do-work-RATIONALE.md#release-on-non-claim--why-a-released-slot-becomes-a-hole-instead-of-a-cursor-rollback-and-why-that-needs-no-per-slot-promise-ledger-issue-1420) for the full design — in particular why a released slot becomes a *hole* rather than a cursor rollback, and why that needs no per-slot promise ledger.
+See [`orchestrator-state-reference.md`](./orchestrator-state-reference.md#cold-orchestrator-state-structures) for the `version_cursor` struct, and [RATIONALE](../../../../docs/design/do-work-rationale.md#release-on-non-claim--why-a-released-slot-becomes-a-hole-instead-of-a-cursor-rollback-and-why-that-needs-no-per-slot-promise-ledger-issue-1420) for the full design — in particular why a released slot becomes a *hole* rather than a cursor rollback, and why that needs no per-slot promise ledger.
 
 ## Ordering — run this BEFORE removing the slot from `in_flight`
 

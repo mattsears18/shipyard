@@ -7,7 +7,7 @@
 # when the loop shipped and filed nothing.
 #
 # This is a structural/content regression suite, not a live-`gh` behavioral
-# one — cleanup-summary.md / audit.md / dont.md / do-work-RATIONALE.md are
+# one — cleanup-summary.md / audit.md / dont.md / do-work-rationale.md are
 # agent-executed prose+procedure (like update-roadmap.test.sh's own target),
 # not deterministic scripts, so there is no binary to exercise. Same
 # grep-based-assertion pattern as update-roadmap.test.sh and
@@ -26,7 +26,7 @@
 #     auto-wiring the same sweep, per the issue's final paragraph.
 #   - do-work/dont.md carries the non-fatal / skip-on-noop prohibition
 #     bullet for this feature.
-#   - do-work-RATIONALE.md carries the #1243 design-decision writeup.
+#   - do-work-rationale.md carries the #1243 design-decision writeup.
 #   - CLAUDE.md and README.md cross-reference the new consumer.
 #   - The `milestones.sweep_on_loop_end` schema/config knob this step reads
 #     already exists (regression guard — #1239 shipped it as scaffolding;
@@ -57,7 +57,7 @@ fi
 cleanup_summary_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
 audit_path="$repo_root/plugins/shipyard/commands/audit.md"
 dont_path="$repo_root/plugins/shipyard/commands/do-work/dont.md"
-rationale_path="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+rationale_path="$repo_root/docs/design/do-work-rationale.md"
 claude_md_path="$repo_root/CLAUDE.md"
 readme_path="$repo_root/README.md"
 schema_path="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
@@ -156,10 +156,10 @@ assert_contains "$dont_path" "shipped_count + filed_count == 0" "dont.md bullet 
 
 # --------------------------------------------------------------------------
 echo
-echo "== do-work-RATIONALE.md design-decision writeup"
+echo "== do-work-rationale.md design-decision writeup"
 # --------------------------------------------------------------------------
 
-assert_file_exists "$rationale_path" "do-work-RATIONALE.md exists"
+assert_file_exists "$rationale_path" "do-work-rationale.md exists"
 assert_contains "$rationale_path" "End-of-loop milestone roadmap sweep" "RATIONALE has an end-of-loop milestone roadmap sweep section"
 assert_contains "$rationale_path" "issue #1243" "RATIONALE section cites issue #1243"
 assert_contains "$rationale_path" "start-of-session sweep" "RATIONALE explains why the start-of-session pass is out of scope here"

@@ -52,7 +52,7 @@ fi
 
 SCRIPT="$repo_root/plugins/shipyard/scripts/eval-recheck-probe.sh"
 HOOKS_MD="$repo_root/plugins/shipyard/commands/do-work/operate/04-steady-state-hooks.md"
-RATIONALE_MD="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+RATIONALE_MD="$repo_root/docs/design/do-work-rationale.md"
 CONFIG_SCHEMA="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 CONFIG_SH="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
 
@@ -528,7 +528,7 @@ if [[ -f "$RATIONALE_MD" ]]; then
   assert_contains "$RATIONALE_MD" "#1198" \
     "RATIONALE.md carries a #1198 section"
 else
-  assert_fail "do-work-RATIONALE.md exists (missing at $RATIONALE_MD)"
+  assert_fail "do-work-rationale.md exists (missing at $RATIONALE_MD)"
 fi
 
 if [[ -f "$CONFIG_SCHEMA" ]]; then

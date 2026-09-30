@@ -44,7 +44,7 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
-rationale_path="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+rationale_path="$repo_root/docs/design/do-work-rationale.md"
 # The setup phase was split into a thin router + step-cluster sub-files under
 # do-work/setup/ (issue #611 — the monolithic setup.md crossed the 256KB
 # single-file Read limit). `setup_router_path` is the thin entry; `setup_path`
@@ -248,7 +248,7 @@ echo
 
 # (1) Every spec file exists — entry + RATIONALE + 5 per-phase files.
 assert_file_exists "$do_work_path" "commands/do-work.md exists (thin entry)"
-assert_file_exists "$rationale_path" "commands/do-work-RATIONALE.md exists"
+assert_file_exists "$rationale_path" "docs/design/do-work-rationale.md exists"
 assert_file_exists "$setup_router_path" "commands/do-work/setup.md exists (thin router)"
 assert_file_exists "$steady_state_router_path" "commands/do-work/steady-state.md exists (hot-path file)"
 assert_file_exists "$dispatch_rules_path" "commands/do-work/dispatch-rules.md exists (#616 reference split)"
@@ -346,7 +346,7 @@ assert_contains "$do_work_path" "do-work/dont.md" \
   "entry routes to dont.md"
 
 # (5) Key anchors that external files reference (agents/issue-worker/*.md,
-#     commands/cost.md, commands/do-work-RATIONALE.md) — verify the
+#     commands/cost.md, commands/do-work-rationale.md) — verify the
 #     section headers still exist somewhere in the per-phase files.
 assert_contains "$steady_state_path" "### A. Reconcile the return" \
   "anchor in steady-state.md: A. Reconcile the return (referenced by issue-worker/*.md)"
@@ -402,7 +402,7 @@ assert_count_at_least_across "self-ancestor" 1 \
 # (9) RATIONALE cross-references survive — counted across the entry +
 #     all per-phase files (≥10 total). Originally a do-work.md-only
 #     assertion; the per-phase split spreads the references across files.
-assert_count_at_least_across "do-work-RATIONALE.md" 10 \
+assert_count_at_least_across "do-work-rationale.md" 10 \
   "RATIONALE cross-referenced ≥10 times across entry + per-phase files" \
   "$do_work_path" "$setup_path" "$steady_state_path" "$drain_path" "$cleanup_path" "$dont_path"
 
@@ -1244,7 +1244,7 @@ assert_contains "$inline_trivial_path340" \
 #     and the why-same-class rationale.
 setup_path348="$setup_path"  # concat of router + setup/ sub-files (#611)
 drain_path348="$repo_root/plugins/shipyard/commands/do-work/drain.md"
-rationale_path348="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+rationale_path348="$repo_root/docs/design/do-work-rationale.md"
 
 assert_contains "$setup_path348" \
   'Detector 2 — Claude-Code self-modification target proposal' \
@@ -1294,7 +1294,7 @@ assert_contains "$rationale_path348" \
 #     by a policy, not an un-decomposable epic).
 setup_path591="$setup_path"  # concat of router + setup/ sub-files (#611)
 drain_path591="$repo_root/plugins/shipyard/commands/do-work/drain.md"
-rationale_path591="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+rationale_path591="$repo_root/docs/design/do-work-rationale.md"
 config_sh591="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
 schema591="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 
@@ -1366,7 +1366,7 @@ assert_contains "$schema591" \
 #     auto-sliced residual).
 #   - shipyard-config.sh default config + schema carry the new knob.
 setup_path1294="$setup_path"  # concat of router + setup/ sub-files (#611)
-rationale_path1294="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+rationale_path1294="$repo_root/docs/design/do-work-rationale.md"
 config_sh1294="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
 schema1294="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 
@@ -3044,7 +3044,7 @@ assert_contains "$dont_path" \
 # RATIONALE.md must carry the full history of the #577 → #1060 inversion.
 assert_contains "$rationale_path" \
   '#1060 supersedes #577' \
-  "do-work-RATIONALE.md carries the #1060 supersedes #577 section"
+  "do-work-rationale.md carries the #1060 supersedes #577 section"
 
 # (P) Genuine within-budget-exhaustion bail classifies as soft, not the
 # conservative refuse default (issue #1135, follow-up to #1115). Before this
@@ -3071,7 +3071,7 @@ assert_contains "$steady_state_path" \
 # Backticks are literal markdown punctuation in the needle.
 assert_contains "$rationale_path" \
   'Why a within-budget-exhaustion bail routes to `soft`' \
-  "do-work-RATIONALE.md cross-references the within-budget-exhaustion soft-routing decision (#1135)"
+  "do-work-rationale.md cross-references the within-budget-exhaustion soft-routing decision (#1135)"
 
 # (Q) A sixth `defer_reason_class`, `time-gated`, lets scope pre-flight
 # PRODUCE the `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker
@@ -3449,7 +3449,7 @@ assert_contains "$rationale_path" \
 #      multi-terminal-line trigger (reusing the existing #1205 live-verify
 #      branch rather than inventing a parallel one), and its timestamp
 #      check now fires in both directions instead of future-only.
-#   4. dont.md and do-work-RATIONALE.md were updated in lockstep so the
+#   4. dont.md and do-work-rationale.md were updated in lockstep so the
 #      pinned "don't" list and the historical narrative both describe the
 #      four-check (not two-check) pre-check.
 fix_checks_path1335="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"

@@ -28,7 +28,7 @@
 #       and the explicit no-routing-change statement;
 #   (E) cleanup-summary.md carries the dedicated summary line, correctly
 #       gated to omit-when-empty;
-#   (F) do-work-RATIONALE.md documents why automated combining is out of
+#   (F) do-work-rationale.md documents why automated combining is out of
 #       scope for this PR.
 #
 # Run with:
@@ -53,7 +53,7 @@ fi
 DETECTOR="$repo_root/plugins/shipyard/scripts/detect-mutually-blocking-prs.sh"
 DRAIN_MD="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 SUMMARY_MD="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
-RATIONALE_MD="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+RATIONALE_MD="$repo_root/docs/design/do-work-rationale.md"
 
 pass=0
 fail=0
@@ -336,15 +336,15 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
-# (F) do-work-RATIONALE.md — documents why automated combining is deferred.
+# (F) do-work-rationale.md — documents why automated combining is deferred.
 # ---------------------------------------------------------------------------
-echo "(F) do-work-RATIONALE.md — combining-out-of-scope rationale"
+echo "(F) do-work-rationale.md — combining-out-of-scope rationale"
 if [[ -f "$RATIONALE_MD" ]]; then
-  assert_pass "do-work-RATIONALE.md exists"
+  assert_pass "do-work-rationale.md exists"
   assert_contains "$RATIONALE_MD" 'Mutually-blocking PR detection — why combining is out of scope' \
     "RATIONALE documents why combining is out of scope for #1140"
 else
-  assert_fail "do-work-RATIONALE.md exists (missing at $RATIONALE_MD)"
+  assert_fail "do-work-rationale.md exists (missing at $RATIONALE_MD)"
 fi
 echo
 

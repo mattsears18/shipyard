@@ -62,7 +62,7 @@
 # and on illustrative pseudo-code never pasted into a single Bash call.
 # Distinguishing those requires knowing, per fenced block, whether it runs
 # post-relocation AND whether it is executed verbatim -- neither is expressed
-# anywhere in the markdown. See do-work-RATIONALE.md's "The #1474
+# anywhere in the markdown. See do-work-rationale.md's "The #1474
 # resolvability-boundary measurement" for the full observation table and
 # "The #1474 scanner decision: build nothing" for the five-point reasoning.
 # Do not re-propose this scanner without re-running the experiment first.
@@ -293,7 +293,7 @@ unset _wp
 # per-mode file or fragment added later is covered the moment it lands.
 #
 # One difference from skills/worker-preamble/ worth recording: this directory
-# also holds issue-work-RATIONALE.md, a reference doc nothing executes, whose
+# also holds issue-work-rationale.md, a reference doc nothing executes, whose
 # job includes quoting refused shapes as worked examples. It carries no ```bash
 # fences today, so the scanner is inert on it and the companion test's
 # zero-allow-markers assertion is safe. If it ever gains one specifically to
