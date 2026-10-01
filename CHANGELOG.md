@@ -4,6 +4,21 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.62.1 — 2026-09-30
+
+Six purely behavioural rules come out of `do-work/dont.md` — the ones a current model does not need told. They are the subset that cites **no issue number**, meaning nothing ever went wrong to produce them: don't go idle while the backlog has items, don't exit the drain while forward progress continues, don't ask the user whether to keep working, don't narrate instead of dispatching, don't wait for the whole pool to drain before refilling, and don't assert a deliverable is outstanding without checking.
+
+**This is deliberately a small cut, and the reason is the useful part.** The first attempt removed 17 rules; the test suite and an independent audit of the full spec defended 11 of them. Four of those are worth recording, because each reads as a behavioural nag and is not one:
+
+- `#718` / `#1278` — "don't iterate prompt wording against the permission classifier" and "don't instruct a worker to route around its own classifier denial" are **classifier-integrity** rules, naming specific forbidden bypass shapes (refspec-push, merge-commit, update-ref).
+- `#1194` — the canonical backlog query exists because the naive one *missed issues*.
+- `#1250` — "queues empty" and "the filter erased the work" are observationally identical from internal-state arithmetic; the completion ledger is the only discriminator. Vacuous-gate shape, not diligence.
+- `#1486` — re-reading the spec mid-session means running a *mixed* spec version.
+
+`dont.md` 103.6 → 101.1 KB. The remaining 51 rules encode GitHub behaviour, harness behaviour, classifier integrity, safety rails, or maintainer policy.
+
+Full audit and the ~85–100 KB of reduction that does **not** require claiming any rule expired — repro-narrative trimming, exact de-duplication (one `export` line appears 28 times), and a `dispatch-rules.md` run already carried by `verify-dispatch-claims.sh` — are filed as [#1660](https://github.com/mattsears18/shipyard/issues/1660).
+
 ### 4.62.0 — 2026-09-30
 
 Both RATIONALE files move out of the plugin's runtime tree into `docs/design/` (stage 4 of the #1654 re-platform). `commands/do-work-RATIONALE.md` was **519 KB of human-readable design record sitting in the directory the orchestrator reads specs from**, and its own header says the orchestrator never needs to read it. It carries no YAML frontmatter, so it never registered as a command — its only runtime cost was being one over-eager `Read` away from consuming a large slice of context. `agents/issue-worker/issue-work-RATIONALE.md` moves for the same reason; #885 had already split it out of `issue-work.md` precisely because that file is the hottest per-dispatch context cost in the plugin.
