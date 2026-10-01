@@ -959,7 +959,7 @@ Step B identifies the worktree by `agent_id` (available in working memory at rel
 
 **Stamp the invariant-line tokens immediately, from this same wide-fetch payload, BEFORE classification runs** ([#1246](https://github.com/mattsears18/shipyard/issues/1246)) — `scripts/backlog-filter.sh summary` is the single-source-of-truth implementation (the same pure-function split as `classify` itself), so this count can never drift from what [step E's invariant line](#e-invariant-line-end-of-every-steady-state-turn) reports. `unfiltered_open_count` ([added in #332](https://github.com/mattsears18/shipyard/issues/332)) is the wide fetch's raw array length; `me_assigned_open` ([added in #1194](https://github.com/mattsears18/shipyard/issues/1194)) narrows that same wide-fetch payload to the count of issues assigned to the gh-authenticated user — the bucket a wrong assignee filter is most likely to erase:
 
-**Substitute the login as a LITERAL and feed the payload by FILE, not a herestring ([#1479](https://github.com/mattsears18/shipyard/issues/1479)).** The old shape passed the login as a bare `--me` variable read and piped the payload in as a `<<<` herestring — *two* bare whole-word expansions in one command, and [`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word) refuses the command on either one alone — fixing only `--me` leaves it refused. Mirror [setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog): read the login as its own plain call, materialize the wide fetch to a file with the `Write` tool, and let each downstream command read that file.
+**Substitute the login as a LITERAL and feed the payload by FILE, not a herestring ([#1479](https://github.com/mattsears18/shipyard/issues/1479)).** The old shape passed the login as a bare `--me` variable read and piped the payload in as a `<<<` herestring — *two* bare whole-word expansions in one command, and `dont.md`'s corrected rule refuses the command on either one alone — fixing only `--me` leaves it refused. Mirror [setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog): read the login as its own plain call, materialize the wide fetch to a file with the `Write` tool, and let each downstream command read that file.
 
 ```bash
 gh api user --jq '.login'
@@ -1197,7 +1197,7 @@ Otherwise, the refresh is **event-driven with adaptive backoff** (see [refresh t
 
       If that value is **not** `<orchestrator-worktree-root>/plugins/shipyard`, this session resolved the installed-plugin layer: the orchestrator worktree is the *target* repo, and its distance from `origin/<default-branch>` says nothing about which spec is executing. Set `SHIPYARD_SPEC_DRIFT = n/a`, skip (b) entirely, and move on — a consumer session pays **zero** commands beyond this `cat`. (The installed-plugin layer's own drift is covered by [#1319](https://github.com/mattsears18/shipyard/issues/1319)'s skill-cache check and [cleanup-summary.md step 8.6](./cleanup-summary.md#end-of-session-cleanup)'s `Plugin root moved:` line — different artifact, different check.)
 
-   b. **Otherwise (the dogfooding layer) — measure, reusing [step 0.5's #1167 assertion](./setup/00-config-worktree.md#05-move-into-the-orchestrators-worktree) shape verbatim.** Two plain commands; `<default-branch>` is the **resolved literal**, substituted by the orchestrator, never a `"$DEFAULT_BRANCH"` word ([`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word)):
+   b. **Otherwise (the dogfooding layer) — measure, reusing [step 0.5's #1167 assertion](./setup/00-config-worktree.md#05-move-into-the-orchestrators-worktree) shape verbatim.** Two plain commands; `<default-branch>` is the **resolved literal**, substituted by the orchestrator, never a `"$DEFAULT_BRANCH"` word (`dont.md`'s corrected rule):
 
       ```bash
       git fetch origin <default-branch> --quiet 2>/dev/null || true
@@ -1215,7 +1215,7 @@ Otherwise, the refresh is **event-driven with adaptive backoff** (see [refresh t
 
 6. **Config-staleness measurement ([#1493](https://github.com/mattsears18/shipyard/issues/1493))** — re-measure whether the repo-layer config this session is *reading* (`shipyard.config.json` under the [step-0.56 `SHIPYARD_REPO_ROOT` pin](./setup/00k-repo-root-pin.md)) has fallen behind `origin/<default-branch>`, and name the keys that differ. Like sub-steps 2, 4, and 5 it runs regardless of queue depth and regardless of `--fast`. **Unlike sub-step 5 it does NOT short-circuit on a consumer install** — #1493's repro was a consumer session, and a consumer repo is exactly where a session's own merged PR most often edits `shipyard.config.json`.
 
-   a. **Fetch the comparison ref** — one plain command, `<default-branch>` the **resolved literal** ([`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word)). Skip when sub-step 5b already fetched this turn — same ref, same tick:
+   a. **Fetch the comparison ref** — one plain command, `<default-branch>` the **resolved literal** (`dont.md`'s corrected rule). Skip when sub-step 5b already fetched this turn — same ref, same tick:
 
       ```bash
       git fetch origin <default-branch> --quiet 2>/dev/null || true

@@ -338,7 +338,7 @@ if [[ -f "$DRAIN_MD" ]]; then
   assert_contains_line "drain.md points at watch-pr-terminal.sh as the preferred helper" \
     "$(cat "$DRAIN_MD")" "watch-pr-terminal.sh"
   assert_contains_line "drain.md cross-references dont.md's compound-block rule" \
-    "$(cat "$DRAIN_MD")" "dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277"
+    "$(cat "$DRAIN_MD")" "dont.md#post-relocation-bash-command-shape--measurements-retired-2026-09-30"
   assert_contains_line "drain.md cross-references the harness command-shape docs" \
     "$(cat "$DRAIN_MD")" "code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation"
   assert_contains_line "drain.md states the worktree-local scratch convention (not the job/session temp dir)" \

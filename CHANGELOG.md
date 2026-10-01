@@ -4,6 +4,26 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.63.0 — 2026-09-30
+
+**The permission-classifier command-shape measurements are retired, because all ten were re-probed against Claude Code 2.1.286 and every one now RUNS.** `dont.md` 103.6 → 72.1 KB.
+
+Disproved, each tested as its own Bash call: bare `"$VAR"` as a whole word; `bash "$VAR/script.sh"`; `git -C "$VAR" rev-parse`; `export V=$(cmd)`; unquoted `VAR=$(cmd)/suffix`; `V=$(cmd); export V; "$V/x.sh"`; a computed command name in an env prefix; a launcher with an expanded flag value; `curl -H "$(cmd)"`; and #1474's "corrected rule" that a word whose entire content is a single unresolvable expansion is refused. Also disproved: the `git worktree list --porcelain | awk …` pipe two worker specs called "refused by the worktree-isolation guard."
+
+**Deleted rather than re-measured, and that is the point.** The section had already retired four of its own theories — line count, flag count, line continuations, assignment-RHS `$(cmd)` — before the rest of the table expired with them. The classifier is versioned software; a table of its behaviour is a snapshot with a short half-life. Re-deriving the current state took nine commands; carrying the stale copy cost 32% of the file.
+
+- `commands/do-work/dont.md` — the 33.3 KB section replaced by ~25 lines: what to do when a call *is* refused (read the refusal, reshape once, don't theorise, don't iterate wording — #718/#1278 is live), plus the two claims re-verified as still true.
+- `skills/worker-preamble/export-computed-value-refusal.md`, `launcher-git-refusal.md` (removed), with their two dedicated test suites. Both documented a refusal that no longer occurs.
+- `skills/worker-preamble/classifier-denial.md` — **kept.** It is about *handling* a denial; denials still happen, and one still kills the entire Bash tool call so recovery bundled into that call never runs (#712/#1274, re-verified).
+- `commands/probe-harness.md` (new) — a weekly read-only pass that re-probes these claims against the installed Claude Code and **proposes** cuts without applying them. It cannot be a script: the classifier evaluates Bash *tool calls*, so each probe must be its own call, and a denial would end a batched one. Its step 12 compares the live worktree prefix against every hard-coded glob, which is the check that would have caught #1664.
+- 11 files repointed off the retired anchors, two worker-spec paragraphs rebuilt around the one durable premise (a shell variable does not survive to the next `Bash` call).
+
+**Still true and untouched:** `$CLAUDE_PLUGIN_ROOT` is not propagated into Bash-tool subprocess shells.
+
+The probe runs weekly as a cloud Routine (`trig_018ZBgRxFTAkeDznk6zaSFYf`, Mondays 07:07 ET). **A cloud run probes the cloud's Claude Code, not the maintainer's local install**, so its verdicts are a drift early-warning rather than an authoritative answer for local sessions — the Routine states that caveat in every issue it files, and `/shipyard:probe-harness` run locally is the authoritative form.
+
+Companion findings: the #326 orphan-branch reaper matches a prefix the harness renamed, with 797 refs accumulated ([#1664](https://github.com/mattsears18/shipyard/issues/1664)); and the rule that replaces version-stamping — document the response, not the observation ([#1665](https://github.com/mattsears18/shipyard/issues/1665)).
+
 ### 4.62.1 — 2026-09-30
 
 Six purely behavioural rules come out of `do-work/dont.md` — the ones a current model does not need told. They are the subset that cites **no issue number**, meaning nothing ever went wrong to produce them: don't go idle while the backlog has items, don't exit the drain while forward progress continues, don't ask the user whether to keep working, don't narrate instead of dispatching, don't wait for the whole pool to drain before refilling, and don't assert a deliverable is outstanding without checking.
