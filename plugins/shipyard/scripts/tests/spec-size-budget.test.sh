@@ -287,7 +287,6 @@
 # look for it, so the one-line fix sits in the core where every worker sees
 # it before its first refusal. The file had ~440 bytes of headroom after #1519's raise, and the
 # trimmed section plus the row needed the bump. The detail lives in
-# launcher-git-refusal.md.
 #
 # skills/worker-preamble/SKILL.md's ceiling was raised 69000 -> 70000 by
 # #1566 (2026-09-17): a short always-loaded "Invoke a helper script by

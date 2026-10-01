@@ -131,7 +131,6 @@ For `gh` subcommands that don't take a `-C`-equivalent local-path flag (most acc
 
 ## Plain `git` refused as "runs `<launcher>` with a git command among its operands" ([#1558](https://github.com/mattsears18/shipyard/issues/1558))
 
-A host-global hook (e.g. RTK) rewrote `git …` into `<launcher> git …`. Retry as `/usr/bin/git …` (`-C` unchanged) for the rest of the dispatch; never touch the hook, and don't return `blocked:` over it. See [`launcher-git-refusal.md`](./launcher-git-refusal.md).
 
 ## Invoke a helper script by direct exec — never `bash <script>` ([#1566](https://github.com/mattsears18/shipyard/issues/1566))
 
@@ -267,8 +266,6 @@ The rarely-hit reference material lives in fragments in this directory (`plugins
 | [`milestone-prohibition.md`](./milestone-prohibition.md) | A worker never touches the roadmap — worker-side half of `shipyard:update-roadmap`'s orchestrator-only boundary | Asked to create/rename/renumber/reassign a milestone or invoke `/shipyard:update-roadmap`. Rare. | Any mode ([#1240](https://github.com/mattsears18/shipyard/issues/1240)) |
 | [`irreversible-external-action.md`](./irreversible-external-action.md) | The read/create/narrow vs delete/widen taxonomy, the announce-before-acting rule, the `agent-console`-routing hand-back string, and the carve-outs | You are weighing a mutation of live external state (a hosted config row, a cloud resource, a registry, repo settings) — or a hook blocked one. | Any mode ([#1519](https://github.com/mattsears18/shipyard/issues/1519)) |
 | [`shared-host-services.md`](./shared-host-services.md) | Concurrent tenants on a shared host | Before a local service or browser MCP; a suite fails unexplained. | Any mode ([#1594](https://github.com/mattsears18/shipyard/issues/1594)) |
-| [`launcher-git-refusal.md`](./launcher-git-refusal.md) | Plain `git` refused under a command-rewriting hook — the absolute-path fix | A `Bash` call is refused as running a launcher with git among its operands. | Any mode, isolated ([#1558](https://github.com/mattsears18/shipyard/issues/1558)) |
-| [`export-computed-value-refusal.md`](./export-computed-value-refusal.md) | `export VAR=$(cmd)` refused — passing a credential to a command | Refused for exporting a value every later program inherits. | Any mode, isolated ([#1605](https://github.com/mattsears18/shipyard/issues/1605)) |
 | [`decision-freshness-check.md`](./decision-freshness-check.md) | Don't re-apply `needs-human-review` over an already-recorded decision — the ordering check (a decision-resolved sentinel newer than the prior escalation, not a bare "does a resolution comment exist" scan), the per-call-site escalation-marker table | You (or the orchestrator, classifying your `blocked:` return) are about to apply — or re-apply — `needs-human-review` as an escalation. | investigate (§4b), spike (§4b); the orchestrator's blocked→refuse routing in `steady-state.md` ([#1279](https://github.com/mattsears18/shipyard/issues/1279)) |
 
 ## What this skill does NOT cover

@@ -54,7 +54,7 @@ NVMRC=$(cat .nvmrc); PATH="$HOME/.nvm/versions/node/$NVMRC/bin:$PATH" npm ci
 NVMRC=$(cat .nvmrc); "$HOME/.nvm/versions/node/$NVMRC/bin/node" -v
 ```
 
-The `PATH=` prefix form is the general one — the same measurement printed `v24.12.0` for `npm exec -c 'node -v'`, so npm's children get the pinned Node too. Use the direct-path form only for a bare `node` invocation. Hoist only the **version** into the variable, as above. Two shapes that look equivalent were **refused**: hoisting the whole directory and running a command out of it (`NODE_BIN="$HOME/.nvm/versions/node/$NVMRC/bin"; "$NODE_BIN/node" -v` — *"runs node after NODE_BIN is set here to a value that configures what it loads or runs"*), and any `export` of the computed path ([`export-computed-value-refusal.md`](./export-computed-value-refusal.md)).
+The `PATH=` prefix form is the general one — the same measurement printed `v24.12.0` for `npm exec -c 'node -v'`, so npm's children get the pinned Node too. Use the direct-path form only for a bare `node` invocation. Hoist only the **version** into the variable, as above. Two shapes that look equivalent were **refused**: hoisting the whole directory and running a command out of it (`NODE_BIN="$HOME/.nvm/versions/node/$NVMRC/bin"; "$NODE_BIN/node" -v` — *"runs node after NODE_BIN is set here to a value that configures what it loads or runs"*), and any `export` of the computed path ([`export-computed-value-refusal.md`]).
 
 Both forms assume `.nvmrc` holds a full `vX.Y.Z`, which is what `nvm` itself writes. If it holds `X.Y.Z` with no `v`, write `v$NVMRC` in the path. If it holds a partial version or an alias (`24`, `lts/*`, `node`), there is no single directory to name — use option 1 (`nvm-exec`) below, which resolves those. A missing directory fails loudly (`No such file or directory`), never silently on the wrong Node. Like option 3, these only reach a version that is already installed.
 
@@ -117,7 +117,7 @@ fi
 
 ## Refused on `export` rather than `source`?
 
-A refusal that names `export VAR=` with "a value every later program inherits" is a different rule with a different fix. That shape usually comes up when reading a token into an environment variable. See [`export-computed-value-refusal.md`](./export-computed-value-refusal.md) ([#1605](https://github.com/mattsears18/shipyard/issues/1605)). Its "The refusal family" table indexes every refused shape that has a documented workaround.
+A refusal that names `export VAR=` with "a value every later program inherits" is a different rule with a different fix. That shape usually comes up when reading a token into an environment variable. See [`export-computed-value-refusal.md`] ([#1605](https://github.com/mattsears18/shipyard/issues/1605)). Its "The refusal family" table indexes every refused shape that has a documented workaround.
 
 ## When NOT to load this
 
