@@ -4,6 +4,10 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.63.2 — 2026-10-03
+
+**`nvm-source-refusal.md` 11.3 → 6.0 KB, and `probe-harness.md` now distinguishes the two guards it was conflating.** Two of the fragment's four remediations reached only an already-installed Node version — exactly what its own one-line PATH-prepend form does — so they added shapes to get refused without adding reach; they and the #1186 repro narrative are gone, while `nvm-exec` and the PATH-prepend form stay. **The refusal itself is NOT retired:** it comes from the worktree-isolation Bash guard, which engages only for an isolated agent and is a different mechanism from the auto-mode permission classifier retired in 4.63.0. `probe-harness.md` had no such distinction and would have reported live isolation-guard rules as expired; it now says to report them UNTESTED. Two test assertions that matched the bare words `nvm-exec` / `PATH-prepend` — satisfiable by a sentence saying the remediation was deleted — now pin the runnable commands.
+
 ### 4.63.1 — 2026-10-03
 
 **Cut 5.5 KB of pointers that restated the file they point at.** 31 files: the 18-copy auditor-preamble pointer, the 7-copy `Never irreversibly mutate live external state` and `Never create a credential` pointers, and the 6-copy worker mode-shim pointer each inlined a summary of their target. A pointer's job is to name where the rule lives; restating it means two copies to keep in sync and the pointer is the one that goes stale. Each is now phrase + pointer + issue ref.

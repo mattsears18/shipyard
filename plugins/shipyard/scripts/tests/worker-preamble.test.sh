@@ -1312,10 +1312,16 @@ assert_contains "$skill_path" "(./nvm-source-refusal.md)" \
   "SKILL.md fragment-index links nvm-source-refusal.md (issue #1186)"
 assert_contains "$nvm_source_refusal_path" "harness's own built-in worktree-isolation Bash classifier" \
   "nvm-source-refusal.md attributes the refusal to the harness, not a shipyard hook (issue #1186)"
-assert_contains "$nvm_source_refusal_path" "nvm-exec" \
-  "nvm-source-refusal.md documents the nvm-exec remediation (issue #1186)"
-assert_contains "$nvm_source_refusal_path" "PATH-prepend" \
-  "nvm-source-refusal.md documents the PATH-prepend fallback remediation (issue #1186)"
+# Pin the remediation by its INVOCATION, not by its name. The previous
+# assertions matched the bare words "nvm-exec" / "PATH-prepend", which a
+# sentence saying the remediation had been DELETED satisfies just as well --
+# a gate that reads as a verification and checks nothing (#1665).
+# shellcheck disable=SC2016 # the literal `$HOME` is the markdown text being matched
+assert_contains "$nvm_source_refusal_path" '"$HOME/.nvm/nvm-exec" npm ci' \
+  "nvm-source-refusal.md gives the runnable nvm-exec remediation (issue #1186)"
+# shellcheck disable=SC2016 # the literal `$HOME` / `$NVMRC` are the markdown text being matched
+assert_contains "$nvm_source_refusal_path" 'PATH="$HOME/.nvm/versions/node/$NVMRC/bin:$PATH" npm ci' \
+  "nvm-source-refusal.md gives the runnable PATH-prepend fallback (issue #1186)"
 assert_contains "$node_bootstrap_path" "nvm-source-refusal.md" \
   "node-bootstrap.md points a worker with a Node-version (not just deps) mismatch at nvm-source-refusal.md (issue #1186)"
 

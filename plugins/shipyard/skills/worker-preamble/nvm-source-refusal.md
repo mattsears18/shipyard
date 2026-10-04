@@ -2,27 +2,6 @@
 
 On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md) § "Node dependency-bootstrap check for Node-based target repos"). Load this when a target repo documents (in its own `CLAUDE.md` or a runbook) the standard `nvm`-based Node-version-pinning snippet — `source "$NVM_DIR/nvm.sh"; nvm use` — to pick up the repo's `.nvmrc`-pinned Node version in a non-interactive shell, and running it hits a refusal.
 
-## The refusal is the Claude Code harness's own Bash guard, not a shipyard hook ([#1186](https://github.com/mattsears18/shipyard/issues/1186))
-
-Confirmed repro: an `issue-work` dispatch against `mattsears18/lightwork` (session `session_01NRs5SoNFJVcYXHhYRB4SUL`) needed Node 24 to run `npm ci` in a non-interactive `Bash` shell — lightwork's own root `CLAUDE.md` prescribes exactly this fix under "`npm ci` needs Node 24":
-
-```bash
-export NVM_DIR="$HOME/.nvm"; source "$NVM_DIR/nvm.sh"; nvm use   # reads .nvmrc
-node -v   # must print v24.x
-npm ci
-```
-
-Running it — already inside a correctly-isolated worktree, confirmed via `assert-worktree-cwd.sh` returning `worktree` — was refused:
-
-```
-This agent is isolated in the worktree <path>, but this command runs a string through
-source, which can't be verified to stay inside the worktree; run the command directly
-instead. Refusing to run it — a worktree-isolated agent's git operations must target its
-own worktree. Run the equivalent from <path> without the redirect.
-```
-
-Re-trying a **bare** `source "$NVM_DIR/nvm.sh"` alone — no `export`, no `nvm use`, no chaining, no redirect — was refused identically. **This rules out shipyard's own `enforce-worktree-isolation.sh` as the source of the message**: that `PreToolUse` hook only gates the `Agent` and `Workflow` tools at dispatch time (verifying a worker was launched with `isolation: "worktree"` / a provisioned `worktreePath`) — it never inspects `Bash` command text at all. Of the four hooks shipyard actually wires to the `Bash` matcher in [`hooks.json`](../../hooks/hooks.json) (`refuse-escape-symlink-commit.sh`, `guard-primary-checkout.sh`, `refuse-broad-process-kill.sh`, `refuse-credential-mint.sh`), none reference `source`, "redirect", or this message text. The refusal is the **Claude Code harness's own built-in worktree-isolation Bash classifier** (the same family documented in [Claude Code's command-shape check](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation) for compound shapes) — a policy boundary shipyard cannot narrow or configure. Don't retry the identical `source` invocation with cosmetic edits; it refuses again for the same reason.
-
 ## Check first — you may need none of this ([#1612](https://github.com/mattsears18/shipyard/issues/1612))
 
 Before reaching for any remediation below, compare the ambient Node against the pin, as two plain commands:
@@ -37,88 +16,40 @@ cat .nvmrc
 
 If they match, stop here. The ambient interpreter already is the pinned one, so there is nothing to `source`, wrap, or prepend, and every workaround below is wasted turns. In the #1612 session (`do-work-20260928T134101Z-17500`, lightwork, `--concurrency 4`) that was the common case: several workers spent turns on an `nvm` workaround while ambient `node -v` already printed the `.nvmrc` version.
 
+## Where the refusal comes from ([#1186](https://github.com/mattsears18/shipyard/issues/1186))
+
+When it does fire, the refusal is the **harness's own built-in worktree-isolation Bash classifier** — not a shipyard hook. Shipyard's `enforce-worktree-isolation.sh` gates only the `Agent`/`Workflow` tools at dispatch time and never inspects `Bash` text, and none of the four hooks shipyard wires to the `Bash` matcher mentions `source` or redirects. It is a policy boundary shipyard cannot narrow or configure, so **don't retry the identical `source` invocation with cosmetic edits** — read the refusal and reshape once, per [`classifier-denial.md`](./classifier-denial.md).
+
+**Scope note (2026-10-03).** This guard engages for a worktree-**isolated agent**; it is a different mechanism from the auto-mode permission classifier whose command-shape measurements were retired in [#1666](https://github.com/mattsears18/shipyard/issues/1666). Re-probing it needs an isolated dispatch, so a check run from a non-isolated session does not settle it either way. Treat the remediation below as live.
+
 ## Never hardcode the versioned interpreter path ([#1612](https://github.com/mattsears18/shipyard/issues/1612))
 
-The tempting workaround after a `source` refusal is to type the interpreter's full path — `~/.nvm/versions/node/v24.15.0/bin/node`. Three workers in the #1612 session reached for that shape independently. It has two defects:
+The tempting workaround after a `source` refusal is to type the interpreter's full path — `~/.nvm/versions/node/v24.15.0/bin/node`. Three workers in the #1612 session reached for that shape independently. It has two defects, and the second bites silently:
 
-- **It pins the Node version a second time.** `.nvmrc` is the authoritative pin, and every call site that spells the version out is a copy that drifts silently the moment `.nvmrc` moves (a rebase onto a Node bump is enough).
-- **It is wrong for `npm`/`npx` even when the version matches.** `bin/npm` is a `#!/usr/bin/env node` script, so invoking it by path runs npm itself — and every script, hook, and `node` child it spawns — on whatever `node` is first on `PATH`, not the version whose directory you named. Measured for #1612, with `.nvmrc` holding `v24.12.0` and ambient Node `v24.15.0`: `"$HOME/.nvm/versions/node/v24.12.0/bin/npm" exec -c 'node -v'` printed `v24.15.0`.
+- **It pins the Node version a second time.** `.nvmrc` is the authoritative pin, and every call site that spells the version out is a copy that drifts the moment `.nvmrc` moves — a rebase onto a Node bump is enough.
+- **It is wrong for `npm`/`npx` even when the version matches.** `bin/npm` is a `#!/usr/bin/env node` script, so invoking it by path runs npm itself — and every script, hook, and `node` child it spawns — on whatever `node` is first on `PATH`, not the version whose directory you named. Measured for #1612, with `.nvmrc` holding `v24.12.0` and ambient Node `v24.15.0`: `"$HOME/.nvm/versions/node/v24.12.0/bin/npm" exec -c 'node -v'` printed **`v24.15.0`**.
 
-Derive the directory from `.nvmrc` at call time instead, and put it on `PATH` for the one command. Both forms below ran in an isolated worktree for #1612; each is one plain `Bash` call that reads the version into a variable and uses it in the same call:
+Derive the directory from `.nvmrc` at call time instead and put it on `PATH` for the one command, so npm's children inherit the pin too. One plain `Bash` call:
 
 ```bash
 NVMRC=$(cat .nvmrc); PATH="$HOME/.nvm/versions/node/$NVMRC/bin:$PATH" npm ci
 ```
 
-```bash
-NVMRC=$(cat .nvmrc); "$HOME/.nvm/versions/node/$NVMRC/bin/node" -v
-```
+This PATH-prepend form assumes `.nvmrc` holds a full `vX.Y.Z`, which is what `nvm` itself writes; if it holds `X.Y.Z` with no `v`, write `v$NVMRC`. A partial version or alias (`24`, `lts/*`, `node`) names no single directory — use `nvm-exec` below, which resolves those. A missing directory fails loudly (`No such file or directory`), never silently on the wrong Node, and this reaches only an already-installed version.
 
-The `PATH=` prefix form is the general one — the same measurement printed `v24.12.0` for `npm exec -c 'node -v'`, so npm's children get the pinned Node too. Use the direct-path form only for a bare `node` invocation. Hoist only the **version** into the variable, as above. Two shapes that look equivalent were **refused**: hoisting the whole directory and running a command out of it (`NODE_BIN="$HOME/.nvm/versions/node/$NVMRC/bin"; "$NODE_BIN/node" -v` — *"runs node after NODE_BIN is set here to a value that configures what it loads or runs"*), and any `export` of the computed path ([`export-computed-value-refusal.md`]).
+## Remediation — `nvm-exec` keeps `source` off the command line entirely
 
-Both forms assume `.nvmrc` holds a full `vX.Y.Z`, which is what `nvm` itself writes. If it holds `X.Y.Z` with no `v`, write `v$NVMRC` in the path. If it holds a partial version or an alias (`24`, `lts/*`, `node`), there is no single directory to name — use option 1 (`nvm-exec`) below, which resolves those. A missing directory fails loudly (`No such file or directory`), never silently on the wrong Node. Like option 3, these only reach a version that is already installed.
-
-## Remediation, in priority order
-
-### 1. Prefer `nvm-exec` — it never puts `source` on the command line at all
-
-`nvm` ships a standalone, directly-executable wrapper script at `$NVM_DIR/nvm-exec` (mode `755`, not a shell function) that reads `.nvmrc` from the current directory, resolves the pinned version, and `exec`s the given command under it. It sources `nvm.sh` **inside its own script body**, not in the command line the harness classifier evaluates — so invoking it is a single ordinary executable call, not a `source` invocation:
+`nvm` ships a standalone, directly-executable wrapper at `$NVM_DIR/nvm-exec` (mode `755`, not a shell function) that reads `.nvmrc` from the current directory, resolves the pinned version, and `exec`s the given command under it. It sources `nvm.sh` **inside its own script body**, not in the command line the classifier evaluates, so invoking it is a single ordinary executable call:
 
 ```bash
 "$HOME/.nvm/nvm-exec" node -v          # prints the .nvmrc-pinned version
 "$HOME/.nvm/nvm-exec" npm ci
-"$HOME/.nvm/nvm-exec" npm run typecheck
 ```
 
-Confirm it exists first (`test -x "$HOME/.nvm/nvm-exec"`, one plain command) — it ships with every standard `nvm` install (present alongside `nvm.sh` in the `nvm` repo itself) but a nonstandard install could be missing it. If present, this is the cleanest fix: no `PATH` surgery, no version-string parsing, and it fails loudly (`exit 127`) if `.nvmrc` can't be resolved, rather than silently running the wrong Node.
+Confirm it exists first (`test -x "$HOME/.nvm/nvm-exec"`, one plain command) — it ships with every standard `nvm` install but a nonstandard one could lack it. It needs no `PATH` surgery and no version-string parsing, resolves aliases and partial versions, and fails loudly (`exit 127`) if `.nvmrc` can't be resolved rather than silently running the wrong Node.
 
-### 2. Script-file escape hatch — the general compound-command-refusal pattern applies here too
-
-If `nvm-exec` isn't available, `Write` the exact `export`/`source`/`nvm use` sequence to a scratch script and invoke *that script* as one plain command — mirroring [Claude Code's command-shape check](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation)'s "Write a helper script into `.shipyard-scratch/`, invoke it as ONE plain command" recovery. The classifier evaluates the single `Bash` invocation that runs the script, not the script's own internal shell, so a `source` line buried inside a file `bash` executes doesn't trigger the same refusal as a bare `source` on the command line:
-
-```bash
-WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-# Write to $WORKTREE_PATH/.shipyard-scratch/nvm-use.sh (Write tool) with content:
-#   #!/usr/bin/env bash
-#   export NVM_DIR="$HOME/.nvm"
-#   # shellcheck disable=SC1091
-#   source "$NVM_DIR/nvm.sh"
-#   nvm use
-#   exec "$@"
-chmod +x "$WORKTREE_PATH/.shipyard-scratch/nvm-use.sh"
-```
-
-```bash
-"$WORKTREE_PATH/.shipyard-scratch/nvm-use.sh" npm ci
-```
-
-**The `chmod` is load-bearing, and so is direct-exec'ing the result ([#1566](https://github.com/mattsears18/shipyard/issues/1566)).** The `Write` tool doesn't set an exec bit, so the script isn't runnable until you set one — and `bash "$WORKTREE_PATH/…/nvm-use.sh"` is not the way around that: prefixing a launcher onto a script path the guard can't statically resolve is itself refused (`SKILL.md` § "Invoke a helper script by direct exec"). `chmod` then direct-exec, as two plain commands.
-
-Seed `.shipyard-scratch/.gitignore` first per `SKILL.md` § "Scratch directory" if you haven't already this dispatch, and clean the script up best-effort when done.
-
-### 3. Last resort — PATH-prepend against an already-installed version
-
-If the exact `.nvmrc` version is already installed under `$NVM_DIR/versions/node/` (common on a recycled worktree host that's run this repo before), skip `nvm` entirely and prepend that version's `bin/` directly. When `.nvmrc` holds a full version, the one-command `PATH=` prefix in "Never hardcode the versioned interpreter path" above does this in a single plain call; the block below also tolerates a `.nvmrc` with or without the leading `v` and a patch-level prefix match, at the cost of being a multi-statement block you may need to run from a `.shipyard-scratch/` helper script:
-
-```bash
-NVMRC_VERSION="$(cat .nvmrc 2>/dev/null | tr -d 'v[:space:]')"
-# A glob into an array, not `ls … | head -1` — a pipe spanning a shell command
-# boundary is refused by the worktree-isolation guard (dont.md's
-# post-relocation rule). An unmatched glob stays literal, which `-d` rejects.
-NODE_BIN_CANDIDATES=("$HOME/.nvm/versions/node/v$NVMRC_VERSION"*)
-NODE_BIN_DIR="${NODE_BIN_CANDIDATES[0]}"
-if [ -d "$NODE_BIN_DIR" ]; then
-  export PATH="$NODE_BIN_DIR/bin:$PATH"
-  node -v   # confirm it matches .nvmrc before trusting any npm output
-fi
-```
-
-**Caveat — this only works when the exact version is already installed.** It cannot install a missing version (that needs `nvm install`, itself only reachable via the same `source`d function), so treat a miss here (`NODE_BIN_DIR` not a directory) as a signal to fall back to option 1 or 2, not as `blocked:` — those two don't share this limitation.
-
-## Refused on `export` rather than `source`?
-
-A refusal that names `export VAR=` with "a value every later program inherits" is a different rule with a different fix. That shape usually comes up when reading a token into an environment variable. See [`export-computed-value-refusal.md`] ([#1605](https://github.com/mattsears18/shipyard/issues/1605)). Its "The refusal family" table indexes every refused shape that has a documented workaround.
+If `nvm-exec` is missing, fall back to the PATH-prepend form above. **The two previous fallbacks — a `.shipyard-scratch/` wrapper script and a multi-statement glob-and-prepend block — are retired ([#1665](https://github.com/mattsears18/shipyard/issues/1665)):** each reached only an already-installed version, which is exactly what the one-line PATH-prepend already does, so they added shapes to get refused without adding reach. Neither can install a missing version; that needs `nvm install`, itself only reachable through the `source`d function. A miss on both paths is a signal to use `nvm-exec`, not a `blocked:` bail.
 
 ## When NOT to load this
 
-Skip entirely on a repo with no `.nvmrc` / no `nvm`-based version-pinning convention, or when the ambient `node -v` on the host already satisfies the repo's declared engine version (check `package.json` `engines.node` or `.nvmrc` first — most hosts already have a compatible default Node and this whole fragment is a no-op).
+Skip entirely on a repo with no `.nvmrc` / no `nvm`-based version-pinning convention, or when the ambient `node -v` on the host already satisfies the repo's declared engine version — check `package.json` `engines.node` or `.nvmrc` first, since most hosts already have a compatible default Node and this whole fragment is then a no-op.

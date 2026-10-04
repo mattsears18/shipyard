@@ -55,7 +55,18 @@ each, record RAN or REFUSED.
 | 12 | `git worktree list --porcelain \| awk '/^worktree /{print $2}' \| xargs -n1 basename` | count the prefixes in use |
 
 **Probe 9 targets port 1 on loopback deliberately** — connection refused, nothing
-leaves the machine. **Probe 12 is the one that catches renames:** compare the live
+leaves the machine.
+
+**Probes 1-10 only cover the auto-mode permission classifier. They do NOT cover the
+worktree-isolation Bash guard**, which is a separate mechanism that engages only for a
+worktree-**isolated agent** and announces itself with *"This agent is isolated in the
+worktree &lt;path&gt;, but…"*. Running those shapes from this session proves nothing about
+it: an un-isolated session is not subject to it, so every shape "RAN" for a reason that
+has nothing to do with the guard. Confusing the two will retire live rules — it nearly
+retired `nvm-source-refusal.md`'s remediation on 2026-10-03. To probe the isolation
+guard you need an isolated dispatch; until this command can do that
+([#1670](https://github.com/mattsears18/shipyard/issues/1670)), **report its claims as
+UNTESTED, never as expired.** **Probe 12 is the one that catches renames:** compare the live
 prefix against every hard-coded glob (`grep -rn 'worktree-agent-\*\|agent-\*'
 scripts/`). A matcher asserting a prefix the harness no longer uses is #1664.
 
@@ -97,6 +108,9 @@ rules that read like nags and encoded real facts.
 - **Don't treat a refusal as proof the claim is still correctly *worded*.** Probe 8
   may refuse because of a host-global command-rewriting hook (RTK) rather than the
   classifier. Report what you observed; don't infer the mechanism.
+- **Don't report an isolation-guard claim as expired on the strength of these probes.**
+  Different guard, different trigger condition — see the scope note above. A shape that
+  runs here may still refuse inside an isolated worker.
 - **Don't widen a probe to make it refuse.** The point is to find out, not to
   confirm. An expired claim is the valuable result.
 - **Don't skip step 12 because nothing looks broken.** #1664 was invisible for
