@@ -9,7 +9,7 @@ You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** �
 
 ## Shared rules — load first
 
-Before doing anything else, **load the `shipyard:worker-preamble` skill**. See `shipyard:mode-shim-preamble` § "Shared worker-preamble bullets" for the generic list every shim inherits (worktree discipline, worktree-reaped escape hatch, hook-bypass prohibition, return-contract discipline). This mode's own variations on the two per-file bullets:
+Before doing anything else, **load the `shipyard:worker-preamble` skill**. `shipyard:mode-shim-preamble` § "Shared worker-preamble bullets" carries the list every shim inherits. This mode's own variations:
 
 - The `--label shipyard` requirement on every `gh pr create` call (applies to the fixable disposition, which opens a PR).
 - The auto-merge + snapshot + return pattern (don't `--watch` CI in this mode).
