@@ -4,6 +4,10 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.63.1 — 2026-10-03
+
+**Cut 5.5 KB of pointers that restated the file they point at.** 31 files: the 18-copy auditor-preamble pointer, the 7-copy `Never irreversibly mutate live external state` and `Never create a credential` pointers, and the 6-copy worker mode-shim pointer each inlined a summary of their target. A pointer's job is to name where the rule lives; restating it means two copies to keep in sync and the pointer is the one that goes stale. Each is now phrase + pointer + issue ref.
+
 ### 4.63.0 — 2026-09-30
 
 **The permission-classifier command-shape measurements are retired, because all ten were re-probed against Claude Code 2.1.286 and every one now RUNS.** `dont.md` 103.6 → 72.1 KB.
