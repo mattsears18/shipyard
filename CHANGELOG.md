@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.63.3 — 2026-10-16
+
+**Handle GitHub StatusContext nodes in `fix-checks-only` rollups (closes #1684).** Status rollups previously treated every commit status as pending and could hide failing contexts. The updated projections read the fields GitHub provides for both rollup node types.
+
+- `agents/issue-worker/fix-checks-only.md` reads `state` for status results and `context` for grouping and named-check verification.
+- `scripts/tests/fix-checks-status-context.test.sh` covers mixed rollups, latest-per-context reduction, failure selection, and named-check output.
+- `scripts/tests/do-work-split.test.sh` pins the updated grouping contract.
+
 ### 4.63.2 — 2026-10-03
 
 **`nvm-source-refusal.md` 11.3 → 6.0 KB, and `probe-harness.md` now distinguishes the two guards it was conflating.** Two of the fragment's four remediations reached only an already-installed Node version — exactly what its own one-line PATH-prepend form does — so they added shapes to get refused without adding reach; they and the #1186 repro narrative are gone, while `nvm-exec` and the PATH-prepend form stay. **The refusal itself is NOT retired:** it comes from the worktree-isolation Bash guard, which engages only for an isolated agent and is a different mechanism from the auto-mode permission classifier retired in 4.63.0. `probe-harness.md` had no such distinction and would have reported live isolation-guard rules as expired; it now says to report them UNTESTED. Two test assertions that matched the bare words `nvm-exec` / `PATH-prepend` — satisfiable by a sentence saying the remediation was deleted — now pin the runnable commands.
