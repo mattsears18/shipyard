@@ -69,10 +69,10 @@ When you finish, your **last line MUST be exactly one of the six strings below**
 ```bash
 gh pr view <M> --repo <owner/repo> --json statusCheckRollup --jq '
   [.statusCheckRollup
-   | group_by(.name)
+   | group_by(.name // .context)
    | map(sort_by(.completedAt // .startedAt // "") | last)
    | .[]
-   | (.conclusion // .status // "" | ascii_downcase)] as $c
+   | (.conclusion // .status // .state // "" | ascii_downcase)] as $c
   | { passed:  ([$c[] | select(. == "success" or . == "skipped" or . == "neutral")] | length),
       pending: ([$c[] | select(. == "" or . == "pending" or . == "in_progress" or . == "queued" or . == "expected")] | length),
       failing: ([$c[] | select(. == "failure" or . == "error" or . == "timed_out" or . == "cancelled" or . == "action_required")] | length) }'
@@ -88,10 +88,10 @@ You may write `green` or `noop: already green` **only** when this count reads `p
 gh pr view <M> --repo <owner/repo> --json statusCheckRollup,headRefOid --jq '
   .headRefOid as $sha |
   [.statusCheckRollup
-   | group_by(.name)
+   | group_by(.name // .context)
    | map(sort_by(.completedAt // .startedAt // "") | last)
    | .[]
-   | (.conclusion // .status // "" | ascii_downcase)] as $c
+   | (.conclusion // .status // .state // "" | ascii_downcase)] as $c
   | { sha: $sha,
       passed:  ([$c[] | select(. == "success" or . == "skipped" or . == "neutral")] | length),
       pending: ([$c[] | select(. == "" or . == "pending" or . == "in_progress" or . == "queued" or . == "expected")] | length),
@@ -108,14 +108,14 @@ A `green` return with no evidence clause, no head-SHA citation, or one whose cla
   ```bash
   fails=$(gh pr view <M> --repo <owner/repo> --json statusCheckRollup --jq '
     [.statusCheckRollup
-     | group_by(.name)
+     | group_by(.name // .context)
      | map(sort_by(.completedAt // .startedAt // "") | last)
      | .[]
-     | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
+     | select((.conclusion // .status // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
     | length')
   ```
 
-  `fails == 0` is necessary but **not sufficient** for `noop: already green` — you also need `pending == 0` from the evidence-clause count above (a rollup can have `fails == 0` and still have checks `QUEUED` / `IN_PROGRESS`, which is the honest `pending` case below, not `noop: already green`). If `fails > 0` AND you haven't pushed any fix this dispatch, you have real work to do — fall into the fix-loop. The reduction is load-bearing: `group_by(.name) | map(... | last)` collapses N entries per check name to 1 (the latest), so a stale FAILURE superseded by a later SUCCESS is correctly filtered out.
+  `fails == 0` is necessary but **not sufficient** for `noop: already green` — you also need `pending == 0` from the evidence-clause count above (a rollup can have `fails == 0` and still have checks `QUEUED` / `IN_PROGRESS`, which is the honest `pending` case below, not `noop: already green`). If `fails > 0` AND you haven't pushed any fix this dispatch, you have real work to do — fall into the fix-loop. The reduction is load-bearing: `group_by(.name // .context) | map(... | last)` collapses N entries per check name or context to 1 (the latest), so a stale FAILURE superseded by a later SUCCESS is correctly filtered out.
 
 - `pending #<M>: <n> check(s) still running (<comma-separated names>)` — **the honest exit for "I fixed it (or nothing was broken), and CI genuinely hasn't finished."** Use it whenever, at the moment you'd otherwise return, the evidence-clause count above reads `failing: 0` AND `pending > 0` — nothing is broken, but the rollup has not fully settled. This is the vocabulary gap [#985](https://github.com/mattsears18/shipyard/issues/985) and [#987](https://github.com/mattsears18/shipyard/issues/987) both identify as the root cause of the false-green pattern: faced with "I fixed it, checks still running," a worker with only `green` / `noop` / `flake` / `blocked` available reached for `green` because it was closest to what it believed — `blocked` overstates (and burns an attempt against the 3-cap) and there was no honest middle option. `pending` neither overclaims like `green` nor wastes a fix attempt like `blocked`. Two legitimate paths to it:
   - **Before any fix attempt** — your very first rollup read shows zero failing checks but at least one still unsettled (the failure that triggered this dispatch already appears to have resolved between dispatch and your first read, but you can't yet call it `noop: already green` because the rollup hasn't fully completed). Don't declare `noop` on an unsettled rollup and don't block through a run that isn't actually broken — return `pending` immediately.
@@ -177,18 +177,18 @@ gh pr view <M> --repo <owner/repo> --json statusCheckRollup,headRefOid --jq "
     head_matches_pushed: (\$head == \"$PUSHED_SHA\"),
     # For each check that was failing at dispatch, the latest run's conclusion.
     named_checks: [.statusCheckRollup
-                   | group_by(.name)
+                   | group_by(.name // .context)
                    | map(sort_by(.completedAt // .startedAt // \"\") | last)
                    | .[]
-                   | select(.name == \"<failing-check-name>\")
-                   | {name, conclusion: (.conclusion // .status // null)}]
+                   | select((.name // .context) == \"<failing-check-name>\")
+                   | {name: (.name // .context), conclusion: (.conclusion // .status // .state // null)}]
   }"
 ```
 
 Treat the return as `green` **only when all four hold**:
 
 - `head_matches_pushed == true` — GitHub's PR head is the SHA you pushed (you're not reading a stale rollup from before your push).
-- **`named_checks | length` equals the number of checks you recorded as failing at dispatch** — i.e. every name you're re-probing actually came back. **An empty (or short) `named_checks` array is `unknown`, never green** (issue [#717](https://github.com/mattsears18/shipyard/issues/717)): "every element of an empty array concluded SUCCESS" is *vacuously true*, so a `select(.name == "<failing-check-name>")` that matches nothing — a typo'd name, a renamed check, a rollup that hasn't populated yet — would silently satisfy the next bullet while having observed nothing at all. If a name doesn't come back, you have NOT verified it; keep watching, or re-read the rollup to find what the check is actually called. See `shipyard:worker-preamble` § "An absence-assertion that observed nothing is not a pass" (fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md)).
+- **`named_checks | length` equals the number of checks you recorded as failing at dispatch** — i.e. every name you're re-probing actually came back. **An empty (or short) `named_checks` array is `unknown`, never green** (issue [#717](https://github.com/mattsears18/shipyard/issues/717)): "every element of an empty array concluded SUCCESS" is *vacuously true*, so a `select((.name // .context) == "<failing-check-name>")` that matches nothing — a typo'd name, a renamed check, a rollup that hasn't populated yet — would silently satisfy the next bullet while having observed nothing at all. If a name doesn't come back, you have NOT verified it; keep watching, or re-read the rollup to find what the check is actually called. See `shipyard:worker-preamble` § "An absence-assertion that observed nothing is not a pass" (fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md)).
 - Every named-at-dispatch failing check appears in `named_checks` with `conclusion == "SUCCESS"` (or `SKIPPED` / `NEUTRAL`).
 - **The overall rollup is all-green per the latest-per-name projection used in the `noop:` path above — every check currently in the rollup, not only the named one(s) you were dispatched to fix ([#754](https://github.com/mattsears18/shipyard/issues/754)).** Read this bullet literally: it does not say "no *other* check regressed" as in "no check I touched broke a check that was previously passing" — it says the **entire rollup** must be green, full stop. A required check that was **already red before your dispatch started**, that you weren't assigned, and that your fix never touched is still covered by this bullet. "It's pre-existing" and "it's unrelated to the check I was assigned" are diagnosis notes, not exemptions — they do not make that check's redness stop counting against `green`. If any check besides your named target is still red when you're ready to return, you are NOT green: either keep working it (within your 3-attempt cap) or return `blocked #<M> at fix-checks: <that check> — <reason, e.g. "pre-existing failure outside my assigned check, still gating merge">`. Never return `green` while it sits red.
 

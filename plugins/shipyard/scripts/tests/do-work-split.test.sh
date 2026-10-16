@@ -724,8 +724,8 @@ assert_contains "$fix_rebase_path333" \
   'issues/333' \
   "fix-rebase.md cites issue #333 as the source of the latest-per-name rule"
 assert_contains "$fix_checks_path333" \
-  'group_by(.name)' \
-  "fix-checks-only.md return-contract uses group_by(.name) latest-per-name projection (#333)"
+  'group_by(.name // .context)' \
+  "fix-checks-only.md return-contract groups CheckRun names and StatusContext contexts (#1684)"
 assert_contains "$fix_checks_path333" \
   'issues/333' \
   "fix-checks-only.md cites issue #333 as the source of the latest-per-name rule"
