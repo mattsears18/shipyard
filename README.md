@@ -1,3 +1,8 @@
+> [!WARNING]
+> **Shipyard is deprecated and no longer under active development.**
+>
+> **Modern agent harnesses like Grok Bot now handle the agent orchestration Shipyard was built to do, so Shipyard is obsolete. The code stays here for reference, but it won't get new features or fixes.**
+
 <p align="center">
   <img src="docs/images/shipyard-marketing.png" alt="Shipyard: Turn Your Backlog into Shipped Work. /audit (auditors), third-party services, user feedback, and manual entry feed into the issue backlog stack; the orchestrator (/do-work) directs issue workers loading containers onto shipping vessels." width="100%" />
 </p>
